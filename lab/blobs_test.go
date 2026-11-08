@@ -82,23 +82,29 @@ func TestBlobDistribution(t *testing.T) {
 	server1.WriteFile(t, blobFile, list)
 	server1.MustExec(t, "chmod", "600", blobFile)
 
+	up1 := server1.Start(t, "thinkpol", "up", "-mode", "server")
+	up2 := server2.Start(t, "thinkpol", "up", "-mode", "server")
+	waitLog(t, up1, `worker space=\S+ .*`+applied(version[1]))
+	waitLog(t, up2, `worker space=\S+ .*`+applied(version[1]))
+
 	// server-2's overlay address answers on the blob port with a tampered
-	// list, once: a server that has been tampered with. server-2 runs in
-	// device mode, so its overlay address is in the node's own namespace,
-	// where the stand-in listens, and thinkpol serves no blobs there.
+	// list, once: a server that has been tampered with. In its worker's
+	// namespace, where its overlay address is, the blob port is
+	// redirected to a stand-in, ahead of the worker's own blob server.
 	resp := binary.BigEndian.AppendUint64([]byte{0}, uint64(len(list)))
 	resp = append(resp, []byte(strings.Repeat("\x5a", len(list)))...)
 	server2.WriteFile(t, "/tmp/tampered.resp", resp)
-	tampering := server2.Start(t, "sh", "-c", "exec nc -l 4717 < /tmp/tampered.resp")
+	worker2 := "nsenter --net=/proc/" + strings.TrimSpace(server2.MustExec(t, "pgrep", "-f", "thinkpol worker")) + "/ns/net "
+	server2.MustExec(t, "sh", "-ec", worker2+`nft -f - <<'EOF'
+table inet tamper {
+	chain prerouting { type nat hook prerouting priority dstnat; policy accept; tcp dport 4717 redirect to :4720; }
+}
+EOF`)
+	tampering := server2.Start(t, "sh", "-c", "exec "+worker2+"nc -l 4720 < /tmp/tampered.resp")
 	lab.Eventually(t, 30*time.Second, func() error {
-		_, err := execRead(server2, pollTimeout, "sh", "-c", "ss -Htln 'sport = :4717' | grep -q .")
+		_, err := execRead(server2, pollTimeout, "sh", "-c", worker2+"ss -Htln 'sport = :4720' | grep -q .")
 		return err
 	})
-
-	up1 := server1.Start(t, "thinkpol", "up")
-	up2 := server2.Start(t, "thinkpol", "up", "-mode", "device")
-	waitLog(t, up1, `worker space=\S+ .*`+applied(version[1]))
-	waitLog(t, up2, applied(version[1]))
 
 	upA := devA.Start(t, "thinkpol", "up")
 	waitLog(t, upA, `msg="blob rejected: the peer sent something else; trying another peer" .*blob=\S+ kind=geoip name=ru peer=`+server2ID)
@@ -180,12 +186,9 @@ func TestBlobDistribution(t *testing.T) {
 			}
 		}
 
-		// Devices, and servers run in device mode, only fetch: nothing
-		// listens on the blob port there.
-		for name, n := range map[string]*lab.Node{"device-a": devA, "server-2": server2} {
-			if out := n.MustExec(t, "sh", "-c", "ss -Htln 'sport = :4717'"); out != "" {
-				t.Errorf("%s listens on the blob port:\n%s", name, out)
-			}
+		// A device only fetches: nothing listens on the blob port there.
+		if out := devA.MustExec(t, "sh", "-c", "ss -Htln 'sport = :4717'"); out != "" {
+			t.Errorf("device-a listens on the blob port:\n%s", out)
 		}
 		// From the router, a neighbour of device-a's on its LAN, routed to
 		// its overlay addresses by its LAN addresses: a listener there not

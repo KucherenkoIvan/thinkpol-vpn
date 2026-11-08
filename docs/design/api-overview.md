@@ -44,7 +44,7 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 | [Configuration](#configuration) | every key, its default and where it is documented; input files; lab variables |
 | [On-disk state](#on-disk-state) | every file the node, the service and the dev tools write or read |
 | [Built since the snapshot](#built-since-the-snapshot) | what TP-140, TP-166 and TP-141 added |
-| [Planned, not built](#planned-not-built) | what TP-111 and TP-133 propose |
+| [Planned, not built](#planned-not-built) | what TP-183 and TP-133 propose |
 | [Consistency findings](#consistency-findings) | F1–F21 with suggested verdicts |
 | [Verdicts (owner, 2026-11-07)](#verdicts-owner-2026-11-07) | the decided conventions: configuration levels, status versus diag, exit codes, naming |
 
@@ -58,7 +58,7 @@ There is no node config file. `up` reads the environment (`agent.LoadConfig`, wi
 |---|---|---|---|
 | `THINKPOL_STATE_DIR` | `-state` | `/var/lib/thinkpol`; macOS `/private/var/lib/thinkpol` | flag help; `agent` doc (as `-state`) |
 | `THINKPOL_MAP` | `-map` | `<state>/map.bin` | flag help; `agent` doc (as `-map`) |
-| `THINKPOL_MODE` | `-mode` | `auto` | flag help; `agent` doc; RESIDUAL-RISKS.md RR42 (as `-mode`) |
+| `THINKPOL_MODE` | `-mode` | `device` (`auto` until TP-111) | flag help; `agent` doc; configuration.md; runbook; RESIDUAL-RISKS.md RR42 (as server mode) |
 | `THINKPOL_LOG_LEVEL` | `-log-level` | `info` | flag help; `agent` doc |
 | `THINKPOL_INTERFACE` | `-interface` | platform default | flag help only |
 | `THINKPOL_LINK_MTU` | `-link-mtu` | `0` (1500) | flag help only |
@@ -203,12 +203,21 @@ Answered (F5): `no_link_up` is reused; the new code is snake_case.
 
 The node file `node.json` and the device file `device.json` exist, `rules.local` is carried into `device.json` and removed, connect-on-boot is the member's toggle (`thinkpol connect-on-boot on|off`, local API `SetConnectOnBoot`), the service runs `up -service` with no `THINKPOL_CONNECT_ON_BOOT`, `service connect-on-boot` and `service install -connect-on-boot` are refused, a bad configuration exits 78, and `diag` reports systemd drop-ins. [Configuration](configuration.md) is current; the rest of this file, the reference and the findings are not updated for TP-166.
 
+### TP-111: `-mode` defaults to `device`
+
+| Surface | Behaviour |
+|---|---|
+| `-mode` / `THINKPOL_MODE` / node file `mode` | `device` (the default) or `server`; flags over the environment over the node file over the default. `auto` is gone: the map's node kind no longer picks how a node runs (PRD A4). `auto`, or any other value, exits 78 (`mode "auto" is gone: want device or server (a server sets mode server)`) |
+| a server section run as a device | runs nothing of the map: no listener, link, relay or egress, and the host's network is left alone; status shows `mode_mismatch`, and the log says to set `"mode": "server"` in `node.json` (or `-mode server`) and restart. A map that makes a running device a server stops its data plane the same way |
+| `service install` | a node file without `mode` is installed as a device only while the map shows the node as one; otherwise a server's definition (no crash trace), warning that a server sets `"mode": "server"` |
+| upgrade | a server that relied on `auto` needs `"mode": "server"` in `node.json` (or `-mode server`) before it runs the new binary (runbook, "Updating a binary over SSH") |
+
 ### TP-141: a device's crash trace
 
 | Surface | Behaviour |
 |---|---|
 | file | `crash-trace` in the state directory, chosen over the runtime directory because it survives a reboot (`/run` is a tmpfs on Linux) and exists before the agent makes any directory, so the manager can open it. A device's `service install` creates it 0600 root (exclusively, not through a symlink) before the service starts. A start that finds it wider, or someone else's, fixes it and logs what it fixed; one with another link isn't read (emptied, removed, the run's stderr sent to the null device); one it can't fix, cut or empty stops the start without writing to it. Holds what the runtime writes to stderr and the error `up` exits with, never the log (which then goes only to the ring) and nothing on a clean stop. A start reads its head (64 KiB, kept in memory as valid UTF-8) and cuts the file to it; the node empties it once it has the trace, so a start that fails before keeps the trace and adds its error |
-| service definition | a device's plist gets `StandardErrorPath`, its unit `StandardError=append:` (systemd 240+; an older one ignores the line and keeps no trace); a server's is unchanged. `service install` picks one by the mode the node will run in: the node file's, else the node's kind in the map; a node of unknown kind gets a server's, with a warning. An agent that runs as a server under a device's definition detaches from the file and removes it, and warns to reinstall; right after reading it, before anything else can fail, unless the node is known to be a device (its mode, else its kind in the map), so a failing start of a server or a node of unknown kind adds nothing to it |
+| service definition | a device's plist gets `StandardErrorPath`, its unit `StandardError=append:` (systemd 240+; an older one ignores the line and keeps no trace); a server's is unchanged. `service install` picks one by the mode the node will run in: the node file's; with none, a device's only while the map shows the node as one, else a server's, with a warning (TP-111). An agent that runs as a server under a device's definition detaches from the file and removes it, and warns to reinstall; right after reading it, before anything else can fail, unless the node is known to be a device (its node file says so, or sets no mode and its map shows a device), so a failing start of a server, or of a node the map makes a server or doesn't hold, adds nothing to it |
 | `diag` | `last_run`: `unreadable`, `lines` (the trace's head, line by line) and `truncated`. Root only: the group's snapshot has it unreadable, "root only", when there is one. Still schema 1 |
 | `status` | `last_run_crashed` and `last_run_unreadable` (`-json`), and a `last run:` line in the text for each. No health problem: health is the node's state now, and a code would hold until the next restart |
 
@@ -218,13 +227,14 @@ Answered: the path (`crash-trace`), the field names (`last_run`, `last_run_crash
 
 **Planned, not built.** These come from the tickets' scopes. Each needs the owner's verdict before it starts (ORCHESTRATION.md, "Pre-M2 phase"). The open naming questions are listed last in each part, and the findings they touch are named.
 
-### TP-111: the node's capability ceiling (planned, not built)
+### TP-183: the node's capability ceiling (planned, not built)
+
+Split from TP-111 (owner's MVP cut, 2026-11-07); TP-111 built the `device` default, above.
 
 | Surface | Proposal |
 |---|---|
 | setting | a preset, `device` (the default) or `server`; within `server`, separate switches for ingress, egress (with `EgressAllowed`) and relaying |
 | where | "the root-owned file from TP-046", plus flags for the lab and development. **That file doesn't exist**: TP-046 shipped env plus flags, and a service definition that the `service` commands compare byte for byte (F1) |
-| `-mode` / `THINKPOL_MODE` | `auto` is removed: the map's node kind no longer picks how a node runs. The default changes from `auto` to `device`, which changes an existing flag's meaning |
 | at start | a map that asks for more than the ceiling leaves the node down, with a health problem naming what was asked and what is allowed (code not named yet) |
 | while running | a map asking for more keeps the last accepted capabilities, takes the rest, and reports the refusal in health and the log. The accepted capabilities are saved, so a restart comes back to them. **Where they are saved isn't named** (a new on-disk file?) |
 | ceiling lowered | "the owner lowering the ceiling under a running map is handled the same way" (the ticket's words), so it is refused and reported in health and the log as in the row above. **Not spelled out:** what happens to capabilities already in use that the lower ceiling no longer allows |
@@ -362,7 +372,7 @@ The refusal's client message is fixed text, whatever the call. On macOS, before 
 
 ### F10. Usage errors don't say what was wrong
 
-`logs -n 0`, `service install -connect-on-boot maybe`, `service connect-on-boot maybe`, `rules preset` without an argument and `worker` without `-space` print only the synopsis. `up -mode bogus`, though, says `mode "bogus": want auto, device or server`. Its message also carries the go-kernel prefix `config: validation:`.
+`logs -n 0`, `service install -connect-on-boot maybe`, `service connect-on-boot maybe`, `rules preset` without an argument and `worker` without `-space` print only the synopsis. `up -mode bogus`, though, says `mode "bogus": want device or server`. Its message also carries the go-kernel prefix `config: validation:`.
 
 - **Suggested verdict: change (cheap).** Print one line of why before the synopsis, and drop the prefix.
 

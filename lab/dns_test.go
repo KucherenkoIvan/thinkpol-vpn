@@ -33,7 +33,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 	a4, _ := space.overlay(2)
 	b4, b6 := space.overlay(3)
 
-	exit := startDeviceExit(t, server, inetIP, v1)
+	exit := startServerExit(t, server, inetIP, v1, netip.PrefixFrom(inetIP, 24).Masked())
 
 	parent := t // the exit outlives the subtests
 	t.Run("resolv.conf", func(t *testing.T) {
@@ -66,7 +66,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 			t.Errorf("the exit: %v", err)
 		}
 		wantNoAnswer(t, devA, "down.tunnel.test", "a tunnel-bound name with the exit down")
-		exit = startDeviceExit(parent, server, inetIP, v1)
+		exit = startServerExit(parent, server, inetIP, v1, netip.PrefixFrom(inetIP, 24).Masked())
 
 		if err := capture.Complete(); err != nil {
 			t.Fatal(err)

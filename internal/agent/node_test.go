@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,14 +16,24 @@ import (
 )
 
 func testConfig(dir string) Config {
-	return Config{StateDir: dir, Mode: ModeAuto, LogLevel: "info", Interface: "thinkpol0", LinkMTU: 1500, MapPoll: time.Second,
+	return Config{StateDir: dir, Mode: ModeDevice, LogLevel: "info", Interface: "thinkpol0", LinkMTU: 1500, MapPoll: time.Second,
 		Connect: true, APISocket: "/run/thinkpol-api/api.sock"}
 }
 
-// The service is installed for the node file's mode, else the node's
-// kind in its map; a node the map doesn't hold is taken for a server,
-// which keeps no crash trace, and said to be of unknown kind. A state
-// directory the node can't run from is an error.
+// serverConfig is testConfig for a server: a's section runs in server
+// mode only when told to.
+func serverConfig(dir string) Config {
+	c := testConfig(dir)
+	c.Mode = ModeServer
+	return c
+}
+
+// The service is installed for the node file's mode; a node file that
+// sets none leaves the node a device, installed as one only while its map
+// shows it as one: one the map makes a server or doesn't hold is
+// installed for a server, which keeps no crash trace, with why. A state
+// directory the node can't run from, or a node file asking for the gone
+// auto, is an error. Crash tracing (knownDevice) follows the same rule.
 func TestServiceModeIsTheNodesMode(t *testing.T) {
 	s := newTestSpace(t)
 	withMode := func(dir, mode string) string {
@@ -34,21 +45,24 @@ func TestServiceModeIsTheNodesMode(t *testing.T) {
 		return dir
 	}
 	for name, tc := range map[string]struct {
-		dir   string
-		mode  Mode
-		known bool
+		dir  string
+		mode Mode
+		why  ModeUnknown
 	}{
-		"a server":                      {s.stateDir(t, s.a, 1), ModeServer, true},
-		"a device":                      {s.stateDir(t, s.b, 1), ModeDevice, true},
-		"a server, auto":                {withMode(s.stateDir(t, s.a, 1), "auto"), ModeServer, true},
-		"a server set to device":        {withMode(s.stateDir(t, s.a, 1), "device"), ModeDevice, true},
-		"a device set to server":        {withMode(s.stateDir(t, s.b, 1), "server"), ModeServer, true},
-		"a device missing from the map": {removed(s.stateDir(t, s.b, 1), s.b), ModeServer, false},
-		"one missing, set to device":    {withMode(removed(s.stateDir(t, s.b, 1), s.b), "device"), ModeDevice, true},
+		"a server set to server":        {withMode(s.stateDir(t, s.a, 1), "server"), ModeServer, ModeKnown},
+		"a server, no mode":             {s.stateDir(t, s.a, 1), ModeServer, UnknownMapShowsServer},
+		"a device, no mode":             {s.stateDir(t, s.b, 1), ModeDevice, ModeKnown},
+		"a server set to device":        {withMode(s.stateDir(t, s.a, 1), "device"), ModeDevice, ModeKnown},
+		"a device set to server":        {withMode(s.stateDir(t, s.b, 1), "server"), ModeServer, ModeKnown},
+		"a device missing from the map": {removed(s.stateDir(t, s.b, 1), s.b), ModeServer, UnknownNotInMap},
+		"one missing, set to device":    {withMode(removed(s.stateDir(t, s.b, 1), s.b), "device"), ModeDevice, ModeKnown},
 	} {
-		mode, known, err := ServiceMode(tc.dir)
-		if err != nil || mode != tc.mode || known != tc.known {
-			t.Errorf("%s: %q, known %v, %v", name, mode, known, err)
+		mode, why, err := ServiceMode(tc.dir)
+		if err != nil || mode != tc.mode || why != tc.why {
+			t.Errorf("%s: %q, why %d, %v", name, mode, why, err)
+		}
+		if device := tc.mode == ModeDevice && tc.why == ModeKnown; knownDevice(tc.dir) != device {
+			t.Errorf("%s: known to be a device %v", name, !device)
 		}
 	}
 	empty := filepath.Join(tempDir(t), "state")
@@ -58,9 +72,14 @@ func TestServiceModeIsTheNodesMode(t *testing.T) {
 	if _, _, err := ServiceMode(empty); err == nil {
 		t.Error("a node without keys can run")
 	}
+	var cerr *ConfigError
+	if _, _, err := ServiceMode(withMode(s.stateDir(t, s.a, 1), "auto")); !errors.As(err, &cerr) || !strings.Contains(err.Error(), "gone") {
+		t.Errorf("a node file asking for auto: %v", err)
+	}
 }
 
-func TestPrepareTakesTheModeFromTheNodesKind(t *testing.T) {
+// The mode is the node's own: its kind in the map never picks it.
+func TestTheModeIsTheNodesNotTheMaps(t *testing.T) {
 	s := newTestSpace(t)
 	var out bytes.Buffer
 	logs, err := NewLogs("info", &out)
@@ -72,9 +91,9 @@ func TestPrepareTakesTheModeFromTheNodesKind(t *testing.T) {
 		mode Mode
 		want Mode
 	}{
-		{s.a, ModeAuto, ModeServer},
-		{s.b, ModeAuto, ModeDevice},
 		{s.a, ModeDevice, ModeDevice},
+		{s.b, ModeDevice, ModeDevice},
+		{s.a, ModeServer, ModeServer},
 		{s.b, ModeServer, ModeServer},
 	} {
 		cfg := testConfig(s.stateDir(t, tc.keys, 1))
@@ -97,6 +116,7 @@ func TestPrepareChecksTheConfig(t *testing.T) {
 		want   string
 	}{
 		{func(c *Config) { c.Mode = "client" }, `mode "client"`},
+		{func(c *Config) { c.Mode = "auto" }, `mode "auto" is gone`},
 		{func(c *Config) { c.LogLevel = "loud" }, `log level "loud"`},
 		{func(c *Config) { c.Interface = "a/b" }, `interface name "a/b"`},
 		{func(c *Config) { c.Interface = "much-too-long-name" }, "1 to 15"},
@@ -126,18 +146,18 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{Mode: ModeAuto, LogLevel: "info", MapPoll: 5 * time.Second, Connect: true, APIGroup: "thinkpol", DNS: true}
+	want := Config{Mode: ModeDevice, LogLevel: "info", MapPoll: 5 * time.Second, Connect: true, APIGroup: "thinkpol", DNS: true}
 	if cfg != want {
 		t.Fatalf("defaults %+v", cfg)
 	}
-	t.Setenv("THINKPOL_MODE", "device")
+	t.Setenv("THINKPOL_MODE", "server")
 	t.Setenv("THINKPOL_MAP", "/x/m.bin")
 	t.Setenv("THINKPOL_MAP_POLL", "2s")
 	t.Setenv("THINKPOL_CONNECT", "false")
 	if cfg, err = LoadConfig(); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Mode != ModeDevice || cfg.MapPath() != "/x/m.bin" || cfg.MapPoll != 2*time.Second || cfg.Connect {
+	if cfg.Mode != ModeServer || cfg.MapPath() != "/x/m.bin" || cfg.MapPoll != 2*time.Second || cfg.Connect {
 		t.Fatalf("from the environment %+v", cfg)
 	}
 }
@@ -187,7 +207,7 @@ func TestARemovedNodeWaitsForAMapWithIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !n.State().Removed || n.Mode() != ModeAuto {
+	if !n.State().Removed || n.Mode() != ModeDevice {
 		t.Fatalf("removed %v, mode %s", n.State().Removed, n.Mode())
 	}
 
@@ -224,9 +244,10 @@ func TestARemovedNodeWaitsForAMapWithIt(t *testing.T) {
 	}
 }
 
-// A server removed while it was down drops a connect asked for meanwhile,
-// and says so before its one back-in-space line, which has its mode.
-func TestARemovedServerSaysTheDroppedConnectFirst(t *testing.T) {
+// A server removed while it was down is a server all the same: it
+// refuses a connect at once, its mode known before a map has it, and its
+// one back-in-space line has its mode.
+func TestARemovedServerRefusesConnect(t *testing.T) {
 	s := newTestSpace(t)
 	dir := s.stateDir(t, s.a, 1)
 	writeFile(t, filepath.Join(dir, MapFileName), s.buildWithout(t, 1, s.a), 0o644)
@@ -235,7 +256,7 @@ func TestARemovedServerSaysTheDroppedConnectFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := Prepare(testConfig(dir), logs, testPlatform())
+	n, err := Prepare(serverConfig(dir), logs, testPlatform())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,17 +265,17 @@ func TestARemovedServerSaysTheDroppedConnectFirst(t *testing.T) {
 	maps := make(chan []byte, 1)
 	result := make(chan bool, 1)
 	go func() { result <- n.awaitSection(ctx, maps) }()
-	if err := n.Connect(ctx); err != nil {
-		t.Fatal(err)
+	if err := n.Connect(ctx); !errors.Is(err, ErrServerMode) {
+		t.Fatalf("got %v, want ErrServerMode", err)
+	}
+	if st := n.Status(); !st.Removed || st.Mode != ModeServer {
+		t.Fatalf("status %+v", st)
 	}
 	maps <- s.build(t, 2)
 	if !<-result {
 		t.Fatalf("gave up:\n%s", out.String())
 	}
-	got := out.String()
-	warn, back := strings.Index(got, "is dropped"), strings.Index(got, "back in space")
-	if strings.Count(got, "back in space") != 1 || warn < 0 || back < warn ||
-		!strings.Contains(got[back:], "version=2 mode=server") {
+	if got := out.String(); strings.Count(got, "back in space") != 1 || !strings.Contains(got, "version=2 mode=server") {
 		t.Fatalf("log:\n%s", got)
 	}
 }

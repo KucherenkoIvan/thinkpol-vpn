@@ -67,9 +67,9 @@ type Node struct {
 	rulesRequests chan rulesRequest
 }
 
-// Prepare reads and checks what a node runs from (LoadState) and decides
-// its mode: a node whose map is invalid, or holds no section for its keys,
-// never starts. The platform is the host's adapters, per OS.
+// Prepare reads and checks what a node runs from (LoadState): a node
+// whose map is invalid never starts. The platform is the host's
+// adapters, per OS.
 func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -103,17 +103,11 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
 	}
 	connect, recorded := startConnected(cfg, st.Device.ConnectOnBoot, plat.ConnectRecord, logs)
-	n.conn, n.bootChoice = newConnection(connect, st.Removed), !recorded && keepsConnect(cfg)
+	mismatch := modeMismatch(cfg.Mode, st)
+	n.conn, n.bootChoice = newConnection(connect, st.Removed || mismatch), !recorded && keepsConnect(cfg)
 	n.device = st.Device
-	mode := cfg.Mode
-	if !st.Removed {
-		mode = n.resolveMode()
-	}
-	n.report = report{mode: mode, space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed,
-		conn: n.conn.state, preset: n.device.Rules.Preset.String(), connectOnBoot: n.device.ConnectOnBoot}
-	if mode == ModeDevice && !cfg.Connect && cfg.APISocket == "" {
-		return nil, &ConfigError{errors.New("a device that starts disconnected needs the local API to connect: set an API socket")}
-	}
+	n.report = report{mode: cfg.Mode, space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed,
+		mismatch: mismatch, conn: n.conn.state, preset: n.device.Rules.Preset.String(), connectOnBoot: n.device.ConnectOnBoot}
 	return n, nil
 }
 
@@ -153,48 +147,69 @@ func (n *Node) remember(connect bool) {
 	}
 }
 
-// resolveMode is the node's mode, ModeAuto decided by its kind in its
-// section.
-func (n *Node) resolveMode() Mode { return ResolveMode(n.cfg.Mode, n.state) }
+// ModeUnknown says why a node's mode isn't known from its state
+// directory (knownMode), ModeKnown when it is.
+type ModeUnknown int
 
-// ResolveMode is the mode a node configured with mode runs in on st:
-// ModeAuto decided by its kind in its section, a device's when st has
-// none (Removed).
-func ResolveMode(mode Mode, st State) Mode {
+const (
+	ModeKnown ModeUnknown = iota
+	// UnknownMapShowsServer: the node file sets no mode and the map makes
+	// the node a server, say a server whose node file lost its mode.
+	UnknownMapShowsServer
+	// UnknownNotInMap: the node file sets no mode and the map holds no
+	// section for the node (removed, or not in it yet), or can't be read.
+	UnknownNotInMap
+)
+
+// knownMode is the mode a node is known to run in: its node file's (set),
+// whatever its map (a device whose map is broken is one still), or, with
+// none set, device by default while its map (st, unless stErr) shows it
+// as one.
+func knownMode(set *Mode, st State, stErr error) (Mode, ModeUnknown) {
 	switch {
-	case mode != ModeAuto:
-		return mode
-	case st.Section.Node.Kind == netmap.NodeServer:
-		return ModeServer
+	case set != nil:
+		return *set, ModeKnown
+	case stErr != nil || st.Removed:
+		return "", UnknownNotInMap
+	case st.Section.Node.Kind == netmap.NodeDevice:
+		return ModeDevice, ModeKnown
 	}
-	return ModeDevice
+	return "", UnknownMapShowsServer
 }
 
 // ServiceMode reads the node's state directory as `thinkpol up` would
 // (an error: the node can't run yet), and says which mode its service is
-// installed for: the node file's mode, else its kind in the map. A node
-// whose kind isn't known (removed from its space, or not in the map yet)
-// is taken for a server, whose definition keeps no crash trace (PRD S2);
-// its agent, should it turn out a device, runs without one.
-func ServiceMode(dir string) (mode Mode, known bool, err error) {
+// installed for: the known mode (knownMode), else server, whose
+// definition keeps no crash trace (PRD S2), with why it isn't known.
+func ServiceMode(dir string) (Mode, ModeUnknown, error) {
 	s, err := ReadNodeFile(dir)
 	if err != nil {
-		return "", false, err
+		return "", ModeKnown, err
 	}
 	st, err := LoadState(dir, filepath.Join(dir, MapFileName))
 	if err != nil {
-		return "", false, err
+		return "", ModeKnown, err
 	}
-	switch {
-	case s.Mode != nil && *s.Mode != ModeAuto:
-		return *s.Mode, true, nil
-	case st.Removed:
-	case st.Section.Node.Kind == netmap.NodeDevice:
-		return ModeDevice, true, nil
-	case st.Section.Node.Kind == netmap.NodeServer:
-		return ModeServer, true, nil
+	mode, why := knownMode(s.Mode, st, nil)
+	if why != ModeKnown {
+		mode = ModeServer
 	}
-	return ModeServer, false, nil
+	return mode, why, nil
+}
+
+// knownDevice is whether the node of state directory dir is known to be
+// a device (knownMode); a node file that can't be read says nothing.
+func knownDevice(dir string) bool {
+	s, err := ReadNodeFile(dir)
+	if err != nil {
+		return false
+	}
+	var st State
+	if s.Mode == nil {
+		st, err = LoadState(dir, filepath.Join(dir, MapFileName))
+	}
+	mode, why := knownMode(s.Mode, st, err)
+	return why == ModeKnown && mode == ModeDevice
 }
 
 // Status reports the node's state; safe to call from any goroutine.
@@ -344,12 +359,13 @@ func (n *Node) request(ctx context.Context, connect bool) error {
 	}
 }
 
-// Mode is the mode the node runs in; ModeAuto while the node is removed
-// from its space and its kind unknown. Safe to call from any goroutine.
-func (n *Node) Mode() Mode {
-	n.report.mu.Lock()
-	defer n.report.mu.Unlock()
-	return n.report.mode
+// Mode is the mode the node runs in (Config.Mode), fixed at Prepare.
+func (n *Node) Mode() Mode { return n.cfg.Mode }
+
+// modeMismatch is whether a node run in mode on st can't run its section:
+// device mode never runs a server's (PRD A4).
+func modeMismatch(mode Mode, st State) bool {
+	return mode == ModeDevice && !st.Removed && st.Section.Node.Kind == netmap.NodeServer
 }
 
 // KeepLastRun keeps what TakeCrashTrace found for Status and Diagnose,
@@ -377,10 +393,10 @@ func (n *Node) KeepLastRun(ct *CrashTrace) error {
 }
 
 // keepNoTrace stops a server's stderr going to a crash trace (PRD S2: a
-// server keeps no logs on disk): under a device's definition, which a
-// node of unknown kind may have been installed with, the file is emptied
-// and removed, and stderr goes nowhere. A trace file left in the state directory is
-// warned about.
+// server keeps no logs on disk): under a device's definition (its node
+// file set device mode when it was installed), the file is emptied and
+// removed, and stderr goes nowhere. A trace file left in the state
+// directory is warned about.
 func (n *Node) keepNoTrace() {
 	if ct := n.crashTrace; ct != nil && ct.Tracing {
 		if err := ct.detach(false); err != nil {
@@ -468,20 +484,18 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	if n.bootChoice && n.Mode() != ModeServer {
 		n.remember(!n.conn.disconnected())
 	}
-	if n.Mode() != ModeServer && n.conn.state != connConnecting {
-		// What the data plane left in the host's routing when the node
-		// died connected (a crash, kill -9): a device that starts
-		// without connecting has nothing holding it, and connecting
-		// takes it over anyway.
-		n.plat.clearNetwork(n.logs.Logger)
+	// A server's section in device mode (a server whose node file lost
+	// its mode) leaves the host alone: nothing is put back or taken over
+	// until a map makes the node a device.
+	mismatch := modeMismatch(n.Mode(), n.state)
+	if !mismatch {
+		n.restoreHost()
 	}
-	// A resolver configuration a crash left behind goes back first,
-	// whatever the node does next.
-	if err := n.plat.RestoreDNS(); err != nil {
-		n.logs.Warn("DNS: restoring the system's resolver configuration left behind", "err", err)
-	}
-	if n.state.Removed && !n.awaitSection(ctx, maps) {
+	if (n.state.Removed || mismatch) && !n.awaitSection(ctx, maps) {
 		return nil
+	}
+	if mismatch {
+		n.restoreHost()
 	}
 	if n.Mode() == ModeServer {
 		return n.runServer(ctx, reg, maps)
@@ -517,28 +531,52 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	return RunDataPlane(ctx, dp)
 }
 
-// awaitSection follows the space's maps while the node is removed from it,
-// until one includes the node (true) or ctx ends (false). A node removed
-// while it was down starts this way instead of failing, which under a
-// service manager would only restart it over and over.
+// restoreHost puts back what a crashed run left on the host.
+func (n *Node) restoreHost() {
+	if n.Mode() != ModeServer && n.conn.state != connConnecting {
+		// What the data plane left in the host's routing when the node
+		// died connected (a crash, kill -9): a device that starts
+		// without connecting has nothing holding it, and connecting
+		// takes it over anyway.
+		n.plat.clearNetwork(n.logs.Logger)
+	}
+	// A resolver configuration a crash left behind goes back first,
+	// whatever the node does next.
+	if err := n.plat.RestoreDNS(); err != nil {
+		n.logs.Warn("DNS: restoring the system's resolver configuration left behind", "err", err)
+	}
+}
+
+// awaitSection follows the space's maps while the node runs nothing of
+// them, removed from its space or, in device mode, made a server by its
+// map, until one gives the node a section it runs (true) or ctx ends
+// (false). A node removed while it was down starts this way instead of
+// failing, which under a service manager would only restart it over and
+// over; so does a device-mode node the map makes a server.
 func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 	f := mapFollower{log: n.logs.Logger, keys: n.state.Keys, report: &n.report,
-		removedMsg: "waiting for a map that includes it"}
-	f.markRemoved(n.state.Map)
-	// The report gets the map, the connection and, once back, the mode;
-	// the events are told after it shows them.
-	mode := ModeAuto
+		removedMsg: "waiting for a map that includes it", device: n.Mode() == ModeDevice}
+	if n.state.Removed {
+		f.markRemoved(n.state.Map)
+	} else {
+		f.cur, f.section = n.state.Map, n.state.Section
+		f.checkKind()
+	}
+	// The report gets the map and the connection; the events are told
+	// after it shows them.
 	publish := func() {
 		n.report.set(func(p *report) {
-			p.version, p.removed, p.conn = f.cur.Header().Version, f.removed, n.conn.state
-			if mode != ModeAuto {
-				p.mode = mode
-			}
+			p.version, p.removed, p.mismatch, p.conn = f.cur.Header().Version, f.removed, f.mismatch, n.conn.state
 		})
 	}
 	publish()
-	emitter(n.emit).emit(EventRemovedFromSpace, f.cur.Header().Version)
-	requested := false
+	if f.removed {
+		emitter(n.emit).emit(EventRemovedFromSpace, f.cur.Header().Version)
+	}
+	sayBack := func() {
+		f.sayBack("mode", n.Mode())
+		emitter(n.emit).emit(EventBackInSpace, f.cur.Header().Version)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -552,8 +590,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			// Stored already: the data plane starts with them.
 			req.done <- nil
 		case req := <-n.requests:
-			// Kept for when the node is back in its space.
-			requested = true
+			// Kept for when the node runs its section.
 			n.remember(req.connect)
 			var err error
 			switch {
@@ -574,24 +611,21 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			if !taken {
 				continue
 			}
-			if !back {
+			if f.out() {
 				publish() // still out, on a newer map
+				if back {
+					sayBack()
+				}
 				continue
 			}
 			n.state.Map, n.state.Section, n.state.Removed = f.cur, f.section, false
-			mode = n.resolveMode()
-			if mode == ModeServer {
-				n.keepNoTrace()
-			}
-			if mode != ModeServer && n.conn.state == connRemoved {
+			if n.Mode() != ModeServer && n.conn.state == connRemoved {
 				logRefused(n.logs.Logger, n.conn.resume())
 			}
 			publish()
-			if requested && mode == ModeServer {
-				n.logs.Warn("a connect or disconnect taken while removed is dropped: this node is a server, which always serves its spaces")
+			if back {
+				sayBack()
 			}
-			f.sayBack("mode", mode)
-			emitter(n.emit).emit(EventBackInSpace, f.cur.Header().Version)
 			return true
 		}
 	}

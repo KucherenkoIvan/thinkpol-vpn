@@ -45,7 +45,9 @@ func keepUpGlobals(t *testing.T) {
 // A start of a node that isn't known to be a device, under a device's
 // definition, keeps no trace even when it fails before the node runs:
 // the file is gone and its error goes nowhere. A device's failed start
-// keeps the previous run's trace.
+// keeps the previous run's trace: one its node file names a device,
+// whatever its map. A device mode by flag alone, or by default, doesn't
+// name one: the map that would show it can't be read.
 func TestOnlyAKnownDevicesFailedStartKeepsTheTrace(t *testing.T) {
 	unsetTHINKPOL(t)
 	keepUpGlobals(t)
@@ -61,8 +63,8 @@ func TestOnlyAKnownDevicesFailedStartKeepsTheTrace(t *testing.T) {
 	}{
 		"a server by its flag":      {[]string{"-state", failingState(t, "device-a"), "-mode", "server"}, false},
 		"a server by its node file": {[]string{"-state", withNodeFile(failingState(t, "device-a"), "server")}, false},
-		"of unknown kind":           {[]string{"-state", failingState(t, "device-a")}, false},
-		"a device by its flag":      {[]string{"-state", failingState(t, "server-1"), "-mode", "device"}, true},
+		"a device by default":       {[]string{"-state", failingState(t, "device-a")}, false},
+		"a device by its flag":      {[]string{"-state", failingState(t, "device-a"), "-mode", "device"}, false},
 		"a device by its node file": {[]string{"-state", withNodeFile(failingState(t, "server-1"), "device")}, true},
 	} {
 		t.Run(name, func(t *testing.T) {

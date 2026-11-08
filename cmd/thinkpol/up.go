@@ -19,7 +19,7 @@ import (
 func init() {
 	register(command{
 		path:        "up",
-		args:        "[-state dir] [-map file] [-mode auto|device|server] [flags]",
+		args:        "[-state dir] [-map file] [-mode device|server] [flags]",
 		summary:     "run this node from the keys and map in its state directory (settings: flags, THINKPOL_*, node.json)",
 		ownsSignals: true,
 		run:         runUp,

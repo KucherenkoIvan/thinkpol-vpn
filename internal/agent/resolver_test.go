@@ -267,27 +267,26 @@ func TestAWorkerWithEveryUpstreamRefusedHasNone(t *testing.T) {
 	}
 }
 
-// A server's section run in device mode (no worker) is not an exit's
-// worker: with no -dns-upstream its resolver falls back to the host's
-// resolvers, as a device's does.
-func TestAServerSectionInDeviceModeFallsBackToTheSystemResolvers(t *testing.T) {
+// A device with no -dns-upstream asks the host's resolvers, never its
+// own overlay addresses (where its resolver listens).
+func TestADeviceWithNoUpstreamFallsBackToTheSystemResolvers(t *testing.T) {
 	sp := newTestSpace(t)
-	section, err := openSection(sp.verified(t, 1), sp.a)
+	section, err := openSection(sp.verified(t, 1), sp.b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	asked := false
+	var excluded []netip.Addr
 	r := &runner{dp: DataPlane{DNS: true, Log: slog.New(slog.DiscardHandler),
-		Device: &DeviceHost{SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
-			asked = true
+		Device: &DeviceHost{SystemUpstreams: func(exclude []netip.Addr) ([]netip.Addr, error) {
+			excluded = exclude
 			return []netip.Addr{netip.MustParseAddr("192.0.2.53")}, nil
 		}},
 	}, follow: mapFollower{section: section}}
 	if res := r.newResolver(); res == nil {
 		t.Fatal("no resolver")
 	}
-	if !asked {
-		t.Error("a server's section in device mode didn't fall back to the host's resolvers")
+	if !slices.Contains(excluded, section.Node.IPv4) || !slices.Contains(excluded, section.Node.IPv6) {
+		t.Errorf("excluded %v, want the device's own %v and %v", excluded, section.Node.IPv4, section.Node.IPv6)
 	}
 	if len(r.upstreams) != 1 || r.upstreams[0] != netip.MustParseAddrPort("192.0.2.53:53") {
 		t.Errorf("upstreams %v", r.upstreams)

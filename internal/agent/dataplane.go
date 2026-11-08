@@ -65,7 +65,7 @@ type DataPlane struct {
 	// RunDataPlane runs it, and gives it each map's plan once the map is
 	// applied. ServeBlobs (a server's worker) also serves them, and holds
 	// the header's whole set to pass on; otherwise the node only fetches
-	// its own (a device, or a server run in device mode).
+	// its own (a device).
 	Blobs      *blobs.Service
 	ServeBlobs bool
 	// DNS runs the node's resolver on its overlay addresses (see
@@ -80,7 +80,8 @@ type DataPlane struct {
 	// Namespace is what the data plane needs of its network namespace;
 	// Device, a device's host adapters (required with RouteTable; nil in
 	// a server's worker, which then never asks or points the OS's
-	// resolvers).
+	// resolvers). With Device set the data plane runs no server's
+	// section: a map that makes the node one stops it, as a removal does.
 	Namespace WorkerHost
 	Device    *DeviceHost
 
@@ -164,7 +165,12 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 		follow: mapFollower{
 			log: dp.Log, keys: dp.Keys, report: dp.report, cur: dp.Map, section: section,
 			removedMsg: "the data plane stops until a map includes it again",
+			device:     dp.Device != nil,
 		},
+	}
+	if r.follow.checkKind(); r.follow.mismatch {
+		// Node.run waits these out (awaitSection) before it gets here.
+		return errors.New("agent: device mode runs no server's section")
 	}
 	if dp.Blobs != nil {
 		r.blobsChanged = dp.Blobs.Subscribe()
@@ -488,6 +494,7 @@ func (r *runner) publish() {
 	r.dp.report.set(func(p *report) {
 		p.engine, p.version, p.removed, p.retrying, p.listeners, p.conn, p.dns =
 			r.engine, r.follow.cur.Header().Version, r.follow.removed, !r.retryAt.IsZero(), n, r.conn.state, r.guard.problem
+		p.mismatch = r.follow.mismatch
 		p.dnsNoUpstream = r.noUpstream()
 	})
 	// What Status says of them (DNSUnprotected; DataPlane.RouteTable's
@@ -541,12 +548,16 @@ func (r *runner) connect(ctx context.Context, connect bool) error {
 		// retry: either way it starts now, and says if it can't; out of
 		// its space, once a map has it again.
 		retry := !r.conn.disconnected()
-		if err := r.conn.connect(!r.follow.removed); err != nil {
+		if err := r.conn.connect(!r.follow.out()); err != nil {
 			logRefused(r.dp.Log, err)
 			return err
 		}
 		if r.conn.state == connRemoved {
-			r.dp.Log.Info("connecting once a map includes this node")
+			if r.follow.mismatch {
+				r.dp.Log.Warn("connecting once the map makes this node a device; " + modeMismatchMsg)
+			} else {
+				r.dp.Log.Info("connecting once a map includes this node")
+			}
 			break
 		}
 		if err := r.start(ctx); err != nil {
@@ -609,8 +620,8 @@ func (r *runner) retry(ctx context.Context) {
 }
 
 // next takes a newer map, if it is one, and acts on it: a map without the
-// node stops the data plane, one with it applies it (or starts the data
-// plane on it).
+// node, or that makes a device a server, stops the data plane, one with
+// it applies it (or starts the data plane on it).
 func (r *runner) next(ctx context.Context, envelope []byte) {
 	taken, removed, back := r.follow.take(envelope)
 	if !taken {
@@ -623,7 +634,7 @@ func (r *runner) next(ctx context.Context, envelope []byte) {
 	if removed {
 		r.tell(EventRemovedFromSpace)
 	}
-	if r.follow.removed {
+	if r.follow.out() {
 		logRefused(r.dp.Log, r.conn.remove())
 		r.stop()
 		r.retryAt = time.Time{}
@@ -683,7 +694,7 @@ func (r *runner) updateBlobs() {
 	if r.dp.Blobs == nil {
 		return
 	}
-	if r.engine == nil && r.follow.removed {
+	if r.engine == nil && r.follow.out() {
 		r.dp.Blobs.Update(blobs.Plan{}) // the space's lists are no use now
 		return
 	}
@@ -710,9 +721,6 @@ func (r *runner) applied() {
 	if n := r.follow.section.Node; n.Kind == netmap.NodeServer {
 		attrs = append(attrs, serverSettings(n)...)
 		attrs = append(attrs, "exit", onOff(st.Exit))
-		if n.AllowEgress && !st.Exit {
-			r.dp.Log.Warn("the map allows egress, but a server forwards its space's internet traffic only in server mode: not an exit here")
-		}
 	}
 	if st.RouteTable.Enforced {
 		attrs = append(attrs, "route_table_routes", st.RouteTable.Routes)

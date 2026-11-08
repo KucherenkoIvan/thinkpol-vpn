@@ -23,7 +23,7 @@ func TestHealthWithNoLinkUp(t *testing.T) {
 	envelope, _ := space.build(t)
 	space.install(t, server, "server-1", envelope)
 	space.install(t, dev, "device-a", envelope)
-	srv := server.Start(t, "thinkpol", "up")
+	srv := server.Start(t, "thinkpol", "up", "-mode", "server")
 	waitLog(t, srv, `worker space=\S+ .*msg="map applied"`)
 	s4, s6 := server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)
 

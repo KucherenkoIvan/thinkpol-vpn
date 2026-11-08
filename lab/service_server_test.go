@@ -78,6 +78,10 @@ func TestServiceUninstallAfterAServerCrash(t *testing.T) {
 	envelope, _ := space.build(t)
 	space.install(t, server, "server-1", envelope)
 	space.install(t, dev, "device-a", envelope)
+	// The service runs `up -service`: the node file alone makes it a
+	// server (TP-111).
+	server.WriteFile(t, stateDir+"/node.json", []byte(`{"mode": "server"}`+"\n"))
+	server.MustExec(t, "chmod", "600", stateDir+"/node.json")
 	t.Logf("install:\n%s", server.MustExec(t, "/opt/thinkpol/bin/thinkpol", "service", "install"))
 	dev.Start(t, "thinkpol", "up")
 	s4, _ := space.overlay(1)

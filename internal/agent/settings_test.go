@@ -141,7 +141,7 @@ func TestTheNodeFileIsRootsAlone(t *testing.T) {
 	}
 }
 
-// Keys are checked at every depth (TP-111's ceiling and TP-048's toggles
+// Keys are checked at every depth (TP-183's ceiling and TP-048's toggles
 // will nest): exactly, and once per object.
 func TestSettingsKeysAreCheckedAtEveryDepth(t *testing.T) {
 	type nested struct {
@@ -197,13 +197,13 @@ func TestNodeSettingsPrecedence(t *testing.T) {
 	}{
 		{"the default", `{}`, nil, nil,
 			func(c Config) bool {
-				return c.LinkMTU == 0 && c.Mode == ModeAuto && c.DNS && c.MapPoll == 5*time.Second
+				return c.LinkMTU == 0 && c.Mode == ModeDevice && c.DNS && c.MapPoll == 5*time.Second
 			}},
-		{"the file over the default", `{"link_mtu": 1400, "mode": "device", "dns": false, "map_poll": "2s"}`, nil, nil,
+		{"the file over the default", `{"link_mtu": 1400, "mode": "server", "dns": false, "map_poll": "2s"}`, nil, nil,
 			func(c Config) bool {
-				return c.LinkMTU == 1400 && c.Mode == ModeDevice && !c.DNS && c.MapPoll == 2*time.Second
+				return c.LinkMTU == 1400 && c.Mode == ModeServer && !c.DNS && c.MapPoll == 2*time.Second
 			}},
-		{"the environment over the file", `{"link_mtu": 1400, "mode": "device"}`, map[string]string{"THINKPOL_LINK_MTU": "1300"}, nil,
+		{"the environment over the file", `{"link_mtu": 1400, "mode": "server"}`, map[string]string{"THINKPOL_LINK_MTU": "1300", "THINKPOL_MODE": "device"}, nil,
 			func(c Config) bool { return c.LinkMTU == 1300 && c.Mode == ModeDevice }},
 		{"the environment over the default", `{}`, map[string]string{"THINKPOL_LINK_MTU": "1300"}, nil,
 			func(c Config) bool { return c.LinkMTU == 1300 }},
@@ -211,6 +211,8 @@ func TestNodeSettingsPrecedence(t *testing.T) {
 			func(c Config) bool { return c.LinkMTU == 1200 }},
 		{"a flag over the file", `{"link_mtu": 1400, "mode": "server"}`, nil, []string{"-link-mtu", "1200"},
 			func(c Config) bool { return c.LinkMTU == 1200 && c.Mode == ModeServer }},
+		{"a mode flag over the file", `{"mode": "server"}`, nil, []string{"-mode", "device"},
+			func(c Config) bool { return c.Mode == ModeDevice }},
 		{"a flag given its default still wins", `{"dns": false}`, nil, []string{"-dns=true"},
 			func(c Config) bool { return c.DNS }},
 		{"a variable set empty still wins", `{"dns_upstream": ["192.0.2.53"]}`, map[string]string{"THINKPOL_DNS_UPSTREAM": ""}, nil,
@@ -371,7 +373,7 @@ func TestRulesLocalIsCarriedOverIntoTheDeviceFile(t *testing.T) {
 	// A server has no rules of its own: nothing is carried over.
 	server := s.stateDir(t, s.a, 1)
 	writeFile(t, filepath.Join(server, LocalRulesFile), []byte("preset everything\n"), 0o644)
-	a, err := Prepare(testConfig(server), logs, testPlatform())
+	a, err := Prepare(serverConfig(server), logs, testPlatform())
 	if err != nil {
 		t.Fatal(err)
 	}

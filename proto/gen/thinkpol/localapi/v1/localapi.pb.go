@@ -37,7 +37,7 @@ const (
 type Mode int32
 
 const (
-	Mode_MODE_UNSPECIFIED Mode = 0 // removed from its space, kind unknown
+	Mode_MODE_UNSPECIFIED Mode = 0 // not set: an agent never reports it
 	Mode_MODE_DEVICE      Mode = 1
 	Mode_MODE_SERVER      Mode = 2
 )
