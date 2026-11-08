@@ -54,6 +54,17 @@ The adapter: the client, a standalone listener, the conformance suite and a lab 
 - **Proposed split (implementer, 2026-11-07):** this branch is the adapter: the client, a standalone listener, the conformance suite and the stock-Xray check. The rest is a ticket of its own (TP-087b, for the board to file): (1) `reality` as a `transport.StreamRoutable`: the supervisor-side router opens the session id and keeps the replay cache, and the worker's `HandoffListener` runs REALITY's server, which needs the listener's settings in the shared-listener IPC message (supervisor and worker packages); (2) the agent's transport registry and `thinkpol dev map` spec support for reality endpoints and keys; (3) a lab camouflage-target container TP-026 can point its prober at; (4) the censor-matrix rows, the wireguard-rhythm cell probed for two rekey periods with default settings included, and a minimal padding default if it fails. Matrix rows need all of (1)–(3): a server node always serves through the supervisor. Approved by the owner on 2026-11-08 and filed as TP-201.
 - **What the lab check covers:** our dialer against stock Xray 26.3.27's REALITY inbound (right short id: Xray's certificate proves its key; wrong one: spliced raw and whole to a target site in the lab node, whose certificate fails the dial). Our listener is checked against our dialer only (unit tests and the conformance suite), not against a stock Xray client.
 
+## Review findings
+Round 1 (2026-11-07):
+- [ ] R1.1 (blocker) timing distinguisher: the target is dialled only after the whole first record arrived (up to 10 s), so a stalling prober sees the close ~10 s later than at the real site. Dial the target at accept and forward each chunk as it is read, as upstream does; hand that same target connection to REALITY for a hello that authenticates.
+- [ ] R1.2 the replay cache is global: one short id sending fresh hellos fills it and locks every other client out for the window. A per-short-id share; future-dated seals must not block eviction for others.
+- [ ] R1.3 a splice whose one direction ended blocks forever on a silent client, and Close doesn't end live splices: a short read deadline on the other direction, Close ends them.
+- [ ] R1.4 detect: an unreachable or stalled target leaves REALITY with no records learned (or looping in 5 s sleeps for every authenticated connection). Listen fails when the records weren't learned; a test pins the key format against the pinned module; detect is a plain function.
+- [ ] R1.5 docs and comments: Options.Control, the Notes' list of upstream APIs, "planned stream transports", registry's nil Camouflage, go.mod pin comment, doc.go (in-memory replay cache, REALITY's real clock), go mod tidy.
+- [ ] R1.6 duplication: one shaping bounds helper in the port for udp and reality; one checkDial for CheckEndpoint and Dial.
+- [ ] R1.7 a refused entry sharing a short id with a valid one leaves the valid one in the table.
+- [ ] R1.8 tests: t.Helper in fixture helpers, theTarget fails each caller on a setup error, behaviour-sentence test names, a test telling our freshness gate apart from REALITY's MaxTimeDiff; nits.
+
 ## Log
 - 2026-10-15 created in backlog (TP-064 findings)
 - 2026-10-19 Notes: move udp's skew window and sentFresh to the port first (TP-101 review round 2)
@@ -75,3 +86,4 @@ The adapter: the client, a standalone listener, the conformance suite and a lab 
 - 2026-11-08 lab: make lab-gotest PKG=./lab RUN=TestRealityStockXray passes (both in-node subtests, right and wrong short id, passed); full make lab-test (GOFLAGS=-p=2, LAB_P=1) green on b5b30df
 - 2026-11-08 not verified here: our listener against a stock Xray client (dialer-side only, see Notes); everything behind the shared listener and the matrix is TP-201
 - 2026-11-08 in-progress → review
+- 2026-11-08 review → has-errors (round 1 findings R1.1–R1.8)
