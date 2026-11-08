@@ -212,6 +212,18 @@ The node file `node.json` and the device file `device.json` exist, `rules.local`
 | `service install` | a node file without `mode` is installed as a device only while the map shows the node as one; otherwise a server's definition (no crash trace), warning that a server sets `"mode": "server"` |
 | upgrade | a server that relied on `auto` needs `"mode": "server"` in `node.json` (or `-mode server`) before it runs the new binary (runbook, "Updating a binary over SSH") |
 
+
+### TP-048: the kill switch and allow-LAN
+
+| Surface | Behaviour |
+|---|---|
+| `thinkpol kill-switch [on\|off]`, local API `SetKillSwitch` | no value shows it (`kill-switch: on, allow-LAN off (in place)`); a value sets it, stored in `device.json` (`kill_switch`), in effect before the call returns; the status follows. The access group may call it; a server refuses it (`server_mode`) |
+| `thinkpol allow-lan [on\|off]`, local API `SetAllowLAN` | the same shape for allow-LAN (`allow_lan`): private, link-local and multicast addresses of both families pass the kill switch |
+| `node.json` `kill_switch`, `allow_lan`, `fail_closed_after_crash`; flags `-kill-switch`, `-allow-lan`, `-fail-closed-after-crash` | the node's defaults until a member sets a toggle; `fail_closed_after_crash` (default true) is the crash posture's opt-out |
+| `status`, `Status.kill_switch` | `kill switch: on, allow-LAN off (in place)`, or `(held by the crash posture while connecting or connected)`, or `(not enforced: apply_failed, retrying)`; JSON `on`, `allow_lan`, `active`, `enforced`, `error` |
+| health | `kill_switch_not_enforced` (degraded): putting it in place or removing it failed, retried every 10 s; `kill_switch_unsupported` (degraded): the OS can't hold it while it should be in |
+
+The captive-portal pause is not built: proposed as its own ticket. TP-167 aligns the exit codes.
 ### TP-141: a device's crash trace
 
 | Surface | Behaviour |

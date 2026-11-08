@@ -65,6 +65,9 @@
 //	dns             whether a device runs its resolver, true or false (-dns)
 //	dns_upstream    a list of resolvers, each "IP" or "IP:port" (-dns-upstream)
 //	egress_allowed  a list of private prefixes an exit's spaces may reach (-egress-allowed)
+//	kill_switch     a device's kill switch until a member sets it, true or false (-kill-switch)
+//	allow_lan       whether the kill switch lets the LAN out, until a member sets it (-allow-lan)
+//	fail_closed_after_crash  the crash posture, true (the default) or false to opt out (-fail-closed-after-crash)
 //
 // What says where the node's files are (-state, -map, -api-socket,
 // -api-group) or how it is run (-service, -connect) is not in it. The file
@@ -299,14 +302,51 @@
 //	connect_on_boot  true or false: the service connects at a boot's first start
 //	rule_preset      "space", "everything" or "all-but-domestic"
 //	rules            the device's own rules, ahead of the preset's, each "match -> action"
+//	kill_switch      true or false: the kill switch (below); once a member set it
+//	allow_lan        true or false: whether the kill switch lets the LAN out; once set
 //
-// Only the service writes it, atomically, every key, when a member of the
-// API group changes a toggle; a key left out is its default. A device kept
+// Only the service writes it, atomically, every key (the kill switch's
+// once a member set them: until then the node's defaults hold), when a
+// member of the API group changes a toggle; a key left out is its
+// default. A device kept
 // its rules in rules.local ([LocalRulesFile]) before: the first start that
 // finds one (under the host lock, [Node.Adapters]) writes its preset and
 // own rules into the device file, removes rules.local and logs it; a
 // directory holding both (a start stopped between the two) keeps the
 // device file and only removes rules.local.
+//
+// # The kill switch
+//
+// A device's kill switch ([KillSwitch], the host's: package firewall) is
+// kept by the goroutine that runs the node, never by the route table: it
+// outlives a disconnect, a stop and a crash. It is in place when the
+// toggle is on (the device file's kill_switch, else the node's), and,
+// the toggle off, under the "everything" and "all but domestic" presets
+// while the connection is meant up (connecting, connected, retrying,
+// removed), unless the node file opts out (fail_closed_after_crash): the
+// crash posture, so a crash leaves it. Otherwise it is removed. Its rules
+// ([firewall.KillSwitchRules]) are the down shape (the endpoints of the
+// links in the device's section, none while removed, and with allow-LAN
+// the LAN) or, while the data plane is up, the connected one: the TUN,
+// and the direct destinations and upstreams the route table exempts
+// (routetable.GuardFor of the last Want) on top.
+//
+// When: at start, before connecting (a crashed or stopped run's rules are
+// narrowed to the down shape, or removed if not meant); at every turn of
+// the node's loop (a connect, a disconnect, a map, a preset, a retry);
+// every 10 s (a re-apply checks it is whole, and on Linux renews the
+// direct destinations, which expire 30 s after the last one); and when a
+// member changes a toggle ([Node.SetKillSwitch], [Node.SetAllowLAN]),
+// which return once it was acted on. A stop is no deliberate disconnect:
+// the node returning leaves the down shape in place if it was meant up or
+// the toggle is on, as a crash would. Only a deliberate disconnect with
+// the toggle off (or no crash posture), a start that comes up so, or
+// `service uninstall` ([Platform.ClearHost]) removes it. A failure is
+// logged, retried at the next turn or within 10 s, and in the status
+// ([KillSwitchStatus], health `kill_switch_not_enforced`, or
+// `kill_switch_unsupported` where the OS can't hold it); it never fails a
+// connect. A device whose map makes it a server leaves it alone, as it
+// leaves the rest of the host; a server has none.
 //
 // # Events
 //
@@ -389,7 +429,8 @@
 //   - On macOS, records under /private/var/db/thinkpol: netcfg's route
 //     records (netcfg/<owner>.routes, next to <owner>.lock), which list
 //     the routes it added, the link endpoints' addresses among them, and
-//     the leak guard's pf enable reference (pf-guard.token). They outlive
+//     the leak guard's and the kill switch's pf enable references
+//     (pf-guard.token, pf-killswitch.token). They outlive
 //     a crash on purpose, and are stamped with the boot session, so a
 //     record of an earlier boot owns nothing. A corrupt route record is
 //     set aside by its owner at start, as <owner>.routes.corrupt-<boot
@@ -401,6 +442,10 @@
 //   - Routes and policy rules (package routetable and netcfg), and the
 //     leak guard: an nftables table on Linux; a pf anchor and an enable
 //     reference on macOS (package firewall).
+//   - A device's kill switch: an nftables table on Linux; a pf anchor and
+//     an enable reference (its record pf-killswitch.token, next to the
+//     guard's) on macOS (package firewall). It outlives a crash and a
+//     stop on purpose (above).
 //   - The OS's resolver configuration (package dns): on Linux
 //     systemd-resolved's link for the TUN, or /etc/resolv.conf rewritten
 //     with the overlay resolver's addresses and the space's zone, the

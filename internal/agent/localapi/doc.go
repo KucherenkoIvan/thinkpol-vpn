@@ -35,8 +35,14 @@
 // in the same boot comes back as the last Connect or Disconnect left it
 // ([agent.ConnectRecord]). A server
 // serves its spaces whenever it runs: it reports its workers and public
-// listeners and refuses Connect, Disconnect, SetRulePreset and
-// SetConnectOnBoot.
+// listeners and refuses Connect, Disconnect, SetRulePreset,
+// SetConnectOnBoot, SetKillSwitch and SetAllowLAN.
+//
+// SetKillSwitch and SetAllowLAN set a device's kill switch toggles
+// (`thinkpol kill-switch on|off`, `thinkpol allow-lan on|off`), stored in
+// its device file, and return once the node put the kill switch in place
+// or removed it; GetStatus shows them, and whether it is in place as
+// meant (Status.kill_switch).
 //
 // # Where the socket is
 //
@@ -72,7 +78,7 @@
 // LOCAL_PEERCRED on macOS), against the call's level ([Policy]): root and
 // the service's own user may do everything; members of the group see the
 // status and the spaces, control the node (Connect, Disconnect), set the
-// member's toggles (SetRulePreset, SetConnectOnBoot) and take the diagnostics without their host parts; the
+// member's toggles (SetRulePreset, SetConnectOnBoot, SetKillSwitch, SetAllowLAN) and take the diagnostics without their host parts; the
 // log is root's only, because its debug lines may quote the map. A call
 // not listed needs everything. On macOS the recorded groups are only those
 // the caller's process got at login, and only the first 16 of those

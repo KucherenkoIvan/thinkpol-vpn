@@ -1,9 +1,10 @@
 // Package firewall keeps traffic from leaving around the tunnel where
 // routing can't: the IPv6 leak guard, an adapter for routetable's Guard
 // port that the agent composes with the route table (TP-021: nftables on
-// Linux; TP-078: a pf anchor on macOS) and, later, the kill
-// switch (TP-048: pf, nftables, WFP). Desktop-only: it imports routetable,
-// never the other way round.
+// Linux; TP-078: a pf anchor on macOS), and the kill switch
+// ([KillSwitch], TP-048: nftables on Linux, a pf anchor on macOS; WFP is
+// TP-076's), which the agent applies on its own. Desktop-only: it
+// imports routetable, never the other way round.
 //
 // # The leak guard
 //
@@ -27,9 +28,9 @@
 // device's own IPv6 leaves a physical interface only to direct
 // destinations and entries, on the link, or from the links' own sockets.
 //
-// Only IPv6 is the guard's: IPv4's interface-bound sockets still leave by
-// the main table's default route until the kill switch (TP-048), a
-// separate owner with its own table or anchor. The guard is the
+// Only IPv6 is the guard's: IPv4's interface-bound sockets leave by the
+// main table's default route unless the kill switch is in place, a
+// separate owner with its own table or anchor (below). The guard is the
 // connection's, in place while a device is connected, not the kill
 // switch (docs/design/security.md "Kill switch"). Forwarded traffic isn't its business:
 // nothing forwarded is bound to an interface, and routing (rule 5301 on
@@ -497,4 +498,82 @@
 //
 // On a device the guard loads and passes its own check; that it blocks
 // its leak paths is not yet proven on a device (TP-096).
+//
+// # The kill switch
+//
+// [KillSwitch] lets nothing out of any interface but loopback except
+// what [KillSwitchRules] allows, both families, a socket bound to an
+// interface or not: the entries and, with allow-LAN, the LAN ([LAN]) in
+// Allow; while connected the TUN, the direct destinations (Direct) and,
+// on macOS, DNS to the direct upstreams; on Linux the links' marked
+// sockets; and always DHCP (v4 and v6) and the link's neighbour
+// discovery and MLD. Everything else is refused (a reset, an ICMP error).
+// What is allowed, and when it is in place, is the agent's choice (the
+// agent package doc, "The kill switch"); the firewall applies it, checks
+// it is whole, and removes it. It is an owner of its own, apart from the
+// guard: the guard is the connection's and goes on a disconnect, the kill
+// switch may stay. Its table or anchor outlives the process on purpose: a
+// crash or a stop leaves it in place, and a fresh kill switch's Close
+// removes whatever a run left.
+//
+// On Linux it is the table `inet thinkpol-killswitch` ([KillSwitchTable]),
+// built, replaced and compared the way the guard's is (one transaction;
+// a re-apply compares flags, the one chain, every rule and every set
+// element, and rebuilds what differs):
+//
+//	table inet thinkpol-killswitch {
+//	  set allow4, allow6 { flags interval; elements = <Allow> }
+//	  set direct4, direct6 { flags interval,timeout; timeout 30s; elements = <Direct> }
+//	  chain output { type filter hook output priority 2147483647; policy accept;
+//	    oifname "lo" accept; oifname <TUN> accept (connected); meta mark <Mark> accept
+//	    ip daddr @allow4 accept; ip6 daddr @allow6 accept
+//	    ip daddr @direct4 accept; ip6 daddr @direct6 accept
+//	    udp 68 -> 67 accept (IPv4); udp 546 -> 547 accept (IPv6)
+//	    neighbour discovery (hop limit 255) and MLD (hop limit 1) accept, as the guard's
+//	    meta l4proto tcp reject with tcp reset; reject with icmpx admin-prohibited
+//	  }
+//	}
+//
+// Hooked last at output, as the guard's; both chains must accept a
+// packet. Direct's elements expire [DirectTimeout] after they were put
+// in, and every Apply, a re-apply of what is in place included, puts them
+// in again (flush and add, one transaction): the agent re-applies every
+// 10 s, so only a dead agent lets them go, leaving the entries and the
+// LAN. A kernel without nf_tables makes it unsupported
+// ([ErrKillSwitchUnsupported]), by the guard's probe.
+//
+// On macOS it is the anchor `com.apple/001.thinkpol-killswitch`
+// ([KillSwitchAnchor]) under Apple's hook, sorting after the guard's (an
+// anchor before the guard's is a bypass to it), with one table of both
+// families (Allow and Direct together: pf can't expire an entry, so a
+// dead agent's direct destinations stay until the next start narrows
+// them), loaded with its rules in one `pfctl -f - -o none`:
+//
+//	pass out quick on lo0 all no state
+//	pass out quick on <utun> all no state                                             (connected)
+//	pass out quick from any to <thinkpol_killswitch> no state
+//	pass out quick proto { tcp, udp } from any to <upstream> port <its port> no state (each upstream, connected)
+//	pass out quick inet proto udp from any port 68 to any port 67 no state
+//	pass out quick inet6 proto udp from any port 546 to any port 547 no state
+//	pass out quick inet6 proto ipv6-icmp all icmp6-type { 133, 134, 135, 136, 137 } no state
+//	pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type { 130, 131, 132, 143 } no state
+//	block return out quick all
+//
+// pf can't match a hop limit: neighbour discovery passes by its ICMPv6
+// type to any destination, MLD only to multicast. Every Apply checks the
+// main ruleset has the hook (without it: an ordinary failure, retried),
+// reads the anchor back (the rules checked for their words, as the
+// guard's, the table entry for entry) and reloads what differs, holds pf
+// on by a reference of its own (`pfctl -E`, recorded in
+// pf-killswitch.token next to the guard's record, released by Close
+// under the guard's rules: the reference machinery is shared), and after
+// a load or pf found off kills the states, of either family, whose other
+// end isn't in its table. It doesn't look for what passes before its
+// anchor (RESIDUAL-RISKS.md RR57): while the guard is in place, its quick
+// passes decide IPv6 first, and what they pass is what the connected
+// shape passes, but link-local unicast and multicast, which the guard
+// passes whole. An interface pf skips is filtered by no rule: lo0 costs
+// nothing, any other carries everything past the kill switch, and pfctl
+// never showed the skip on a device (TP-143), so it isn't read. With no
+// pfctl at all it is unsupported. The device checks are in TP-048's Notes.
 package firewall

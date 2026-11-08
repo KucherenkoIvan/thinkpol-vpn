@@ -97,7 +97,8 @@ type Platform struct {
 
 // ClearHost undoes what a crashed run left on the host: a device's, as a
 // start that doesn't connect does (the routing, clearNetwork, and the OS's
-// resolver configuration), and a server's, as its supervisor's next start
+// resolver configuration), and its kill switch, which nothing else but a
+// deliberate disconnect removes; and a server's, as its supervisor's next start
 // would (supervisor.ClearLeftovers: the spaces' veths, the root's
 // forwarding it turned on, its tables and routes). The three are each
 // tried, though a step that fails within the server's stops the server's
