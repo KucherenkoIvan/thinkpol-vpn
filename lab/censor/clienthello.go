@@ -48,8 +48,8 @@ func clientHelloMessage(b []byte) ([]byte, error) {
 			return nil, errIncomplete
 		}
 		n := int(binary.BigEndian.Uint16(b[3:]))
-		// Versions 3.0 to 3.4 on the record layer; a ClientHello's says
-		// 3.1 or 3.3, but censors match the major byte.
+		// The record layer's version: major 3, minor 0 to 4 (a
+		// ClientHello's says 3.1 or 3.3, but any of them is TLS).
 		if b[0] != tlsHandshake || b[1] != 3 || b[2] > 4 || n == 0 || n > tlsMaxRecord {
 			return nil, errNotClientHello
 		}
@@ -100,19 +100,19 @@ func serverName(body []byte) (string, error) {
 		return "", errNotClientHello
 	}
 	// legacy_session_id, cipher_suites, legacy_compression_methods
-	if _, ok := r.vector(1); !ok {
+	if _, ok := r.vector8(); !ok {
 		return "", errNotClientHello
 	}
-	if _, ok := r.vector(2); !ok {
+	if _, ok := r.vector16(); !ok {
 		return "", errNotClientHello
 	}
-	if _, ok := r.vector(1); !ok {
+	if _, ok := r.vector8(); !ok {
 		return "", errNotClientHello
 	}
 	if len(r) == 0 {
 		return "", nil // no extensions at all (TLS 1.2 allows it)
 	}
-	exts, ok := r.vector(2)
+	exts, ok := r.vector16()
 	if !ok || len(r) != 0 {
 		return "", errNotClientHello
 	}
@@ -121,14 +121,14 @@ func serverName(body []byte) (string, error) {
 		if !ok {
 			return "", errNotClientHello
 		}
-		data, ok := exts.vector(2)
+		data, ok := exts.vector16()
 		if !ok {
 			return "", errNotClientHello
 		}
 		if typ != tlsExtServerName {
 			continue
 		}
-		list, ok := data.vector(2)
+		list, ok := data.vector16()
 		if !ok || len(data) != 0 {
 			return "", errNotClientHello
 		}
@@ -137,7 +137,7 @@ func serverName(body []byte) (string, error) {
 			if !ok {
 				return "", errNotClientHello
 			}
-			name, ok := list.vector(2)
+			name, ok := list.vector16()
 			if !ok {
 				return "", errNotClientHello
 			}
@@ -179,24 +179,25 @@ func (r *reader) uint16() (uint16, bool) {
 	return v, true
 }
 
-// vector reads a length-prefixed field whose length takes lenBytes (1 or
-// 2) bytes.
-func (r *reader) vector(lenBytes int) (reader, bool) {
-	var n int
-	switch lenBytes {
-	case 1:
-		v, ok := r.uint8()
-		if !ok {
-			return nil, false
-		}
-		n = int(v)
-	default:
-		v, ok := r.uint16()
-		if !ok {
-			return nil, false
-		}
-		n = int(v)
+// vector8 reads a field behind a 1-byte length.
+func (r *reader) vector8() (reader, bool) {
+	n, ok := r.uint8()
+	if !ok {
+		return nil, false
 	}
+	return r.take(int(n))
+}
+
+// vector16 reads a field behind a 2-byte length.
+func (r *reader) vector16() (reader, bool) {
+	n, ok := r.uint16()
+	if !ok {
+		return nil, false
+	}
+	return r.take(int(n))
+}
+
+func (r *reader) take(n int) (reader, bool) {
 	if len(*r) < n {
 		return nil, false
 	}

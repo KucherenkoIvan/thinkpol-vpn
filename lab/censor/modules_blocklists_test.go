@@ -44,7 +44,7 @@ func TestIPBlocklistEitherEnd(t *testing.T) {
 		if a.Is6() {
 			peer = netip.MustParseAddr("2001:db8:2::1")
 		}
-		if d := m.Inspect(udpPacket(peer, a, 1, 2, nil), &Flow{}); d != retire {
+		if d := m.Inspect(udpPacket(peer, a, 1, 2, nil), &Flow{}); d != retired {
 			t.Errorf("%s isn't listed: %+v", free, d)
 		}
 	}
@@ -54,9 +54,9 @@ func TestIPBlocklistEitherEnd(t *testing.T) {
 // and throttle with its rate.
 func TestIPBlocklistSettings(t *testing.T) {
 	for settings, wantErr := range map[string]string{
-		`{}`:                                   "no destinations",
-		`{"addresses": ["203.0.113.0/33"]}`:    "destination",
-		`{"addresses": ["x"], "verdict": "x"}`: "destination",
+		`{}`:                                   "no address listed",
+		`{"addresses": ["203.0.113.0/33"]}`:    `address "203.0.113.0/33"`,
+		`{"addresses": ["x"], "verdict": "x"}`: `address "x"`,
 		`{"addresses": ["203.0.113.9"], "verdict": "poison"}`:   "verdict",
 		`{"addresses": ["203.0.113.9"], "rate": -1}`:            "rate",
 		`{"addresses": ["203.0.113.9"], "verdict": "reset"}`:    "",
@@ -209,8 +209,33 @@ func TestSNIBlocklistPasses(t *testing.T) {
 			t.Errorf("%s: the module didn't retire from the flow", name)
 		}
 	}
-	if d := m.Inspect(udpPacket(clientAddr, serverAddr, 1, 443, helloFor(t, "example.net")), &Flow{}); d != retire {
+	if d := m.Inspect(udpPacket(clientAddr, serverAddr, 1, 443, helloFor(t, "example.net")), &Flow{}); d != retired {
 		t.Errorf("udp: %+v", d)
+	}
+}
+
+// TestSNIBlocklistOutgrowsPrefix: a ClientHello whose records outgrow
+// the stream's prefix can never be read whole: once the prefix is full the
+// module retires from the flow, its packets having passed.
+func TestSNIBlocklistOutgrowsPrefix(t *testing.T) {
+	m := buildPassive(t, "sni-blocklist", `{"names": ["example.net"]}`)
+	// A message within the prefix, framed in 10-byte records: half again
+	// as long on the wire.
+	const msgLen = retainBytes - 1000
+	msg := append([]byte{tlsClientHello, msgLen >> 16, msgLen >> 8 & 0xff, msgLen & 0xff}, make([]byte, msgLen)...)
+	stream := splitRecords(append([]byte{tlsHandshake, 3, 1, 0, 0}, msg...), 10)
+	eng := NewEngine([]Passive{m}, nil, nil)
+	seq := handshake(eng)
+	const segment = 1400
+	for off := 0; off < retainBytes+segment; off += segment {
+		end := min(off+segment, len(stream))
+		if a := eng.Handle(tcpPacket(clientAddr, serverAddr, 40000, 443, seq+uint32(off), 5001, Ack, stream[off:end])); a.Verdict != Accept {
+			t.Fatalf("segment at %d: %+v", off, a)
+		}
+	}
+	f := eng.flows.flows[FlowKey{ProtoTCP, clientAddr, serverAddr, 40000, 443}]
+	if f.done == nil || !f.done[0] {
+		t.Error("the module didn't retire from a flow whose ClientHello outgrew the prefix")
 	}
 }
 
@@ -227,8 +252,9 @@ func TestSNIBlocklistMidstream(t *testing.T) {
 func TestSNIBlocklistSettings(t *testing.T) {
 	for settings, wantErr := range map[string]string{
 		`{}`:                               "no names",
-		`{"names": ["."]}`:                 "name",
-		`{"names": ["a..b"]}`:              "name",
+		`{"names": ["."]}`:                 `name ".": want a domain name`,
+		`{"names": ["A..B."]}`:             `name "A..B.": want a domain name`,
+		`{"names": [".example.net"]}`:      `name ".example.net": want a domain name`,
 		`{"names": ["a"], "verdict": "x"}`: "verdict",
 	} {
 		if _, err := newSNIBlocklist([]byte(settings)); err == nil || !strings.Contains(err.Error(), wantErr) {

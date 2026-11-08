@@ -34,10 +34,10 @@ func newReplay(settings json.RawMessage) (Passive, error) {
 	var s struct {
 		Destinations []string `json:"destinations"`
 	}
-	if err := json.Unmarshal(settings, &s); err != nil {
+	if err := unmarshalSettings(settings, &s); err != nil {
 		return nil, err
 	}
-	dests, err := parseDestinations(s.Destinations)
+	dests, err := parsePrefixes("destination", s.Destinations)
 	if err != nil {
 		return nil, err
 	}

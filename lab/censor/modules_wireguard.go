@@ -9,28 +9,14 @@ func init() {
 	RegisterPassive("wireguard-fingerprint", newWireGuardFingerprint)
 }
 
-// WireGuard's message types and their sizes on the wire (the WireGuard
-// paper, section 5.4; wgInitiation and wgResponse are wgrhythm's).
-const (
-	wgTypeInitiation  = 1
-	wgTypeResponse    = 2
-	wgTypeCookieReply = 3
-	wgTypeTransport   = 4
-	wgCookieReply     = 64
-	// wgTransportMin is an empty transport message, a keepalive: header,
-	// receiver index, counter and tag. Its payload is padded to 16 bytes.
-	wgTransportMin = 32
-)
-
 // wireGuardFingerprint is the usual DPI signature of WireGuard over UDP,
 // on any port: a datagram starting with a message type from 1 to 4 and
 // three zero bytes, at the size its type has on the wire (148-byte
 // initiations, 92-byte responses, 64-byte cookie replies, transport data
-// of at least 32 bytes in 16-byte steps). The first such datagram blocks
-// its flow (drop by default). Transport data alone is enough, so a tunnel
-// that came up before the censor did is caught by its next packet; random
-// bytes match the header about once in a billion datagrams, the size
-// aside.
+// of at least 32 bytes). The first such datagram blocks its flow (drop by
+// default). Transport data alone is enough, so a tunnel that came up
+// before the censor did is caught by its next packet; random bytes match
+// the header about once in a billion datagrams, the size aside.
 type wireGuardFingerprint struct {
 	block blocking
 }
@@ -53,7 +39,7 @@ func (m *wireGuardFingerprint) Name() string { return "wireguard-fingerprint" }
 
 func (m *wireGuardFingerprint) Inspect(p *Packet, _ *Flow) Decision {
 	if p.Proto != ProtoUDP {
-		return retire
+		return retired
 	}
 	// The receiver discards a datagram with a bad checksum.
 	if p.BadChecksum {
@@ -77,7 +63,7 @@ func wireGuardMessage(b []byte) string {
 		return "handshake response"
 	case b[0] == wgTypeCookieReply && len(b) == wgCookieReply:
 		return "cookie reply"
-	case b[0] == wgTypeTransport && len(b) >= wgTransportMin && len(b)%16 == 0:
+	case b[0] == wgTypeTransport && len(b) >= wgTransportMin:
 		return "transport data"
 	}
 	return ""

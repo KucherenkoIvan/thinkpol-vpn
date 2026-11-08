@@ -3,6 +3,7 @@ package censor
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 )
 
 // blockSettings are the settings every blocking module shares:
@@ -44,14 +45,43 @@ func (s blockSettings) parse(def Verdict) (blocking, error) {
 
 // decide is the blocking decision, pinned to the flow.
 func (b blocking) decide(reason string) Decision {
-	return Decision{Verdict: b.verdict, Flow: true, Rate: b.rate, Burst: b.burst, Reason: reason}
+	d := b.decidePacket(reason)
+	d.Flow = true
+	return d
 }
 
-// retire is a pinned Accept: the module has judged the flow and sees it no
-// more, and the modules after it still do.
-var retire = Decision{Verdict: Accept, Flow: true}
+// decidePacket is the blocking decision for one packet, not pinned.
+func (b blocking) decidePacket(reason string) Decision {
+	return Decision{Verdict: b.verdict, Rate: b.rate, Burst: b.burst, Reason: reason}
+}
 
-// unmarshalSettings reads a module's settings; none at all is {}.
+// retired is a pinned Accept: the module has judged the flow and sees it
+// no more, and the modules after it still do.
+var retired = Decision{Verdict: Accept, Flow: true}
+
+// parsePrefixes reads a list of addresses and prefixes, each called a
+// field in errors; there must be one.
+func parsePrefixes(field string, in []string) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+	for _, d := range in {
+		p, err := netip.ParsePrefix(d)
+		if err != nil {
+			a, err := netip.ParseAddr(d)
+			if err != nil {
+				return nil, fmt.Errorf("%s %q: %v", field, d, err)
+			}
+			p = netip.PrefixFrom(a, a.BitLen())
+		}
+		prefixes = append(prefixes, p)
+	}
+	if len(prefixes) == 0 {
+		return nil, fmt.Errorf("no %s listed", field)
+	}
+	return prefixes, nil
+}
+
+// unmarshalSettings reads a module's settings; none at all is {}. Every
+// module reads its settings through it.
 func unmarshalSettings(settings json.RawMessage, into any) error {
 	if len(settings) == 0 {
 		return nil

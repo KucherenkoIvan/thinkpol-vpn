@@ -34,7 +34,7 @@ func newIPBlocklist(settings json.RawMessage) (Passive, error) {
 	if err := unmarshalSettings(settings, &s); err != nil {
 		return nil, err
 	}
-	prefixes, err := parseDestinations(s.Addresses)
+	prefixes, err := parsePrefixes("address", s.Addresses)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ func (m *ipBlocklist) Inspect(p *Packet, _ *Flow) Decision {
 			return m.block.decide(fmt.Sprintf("address %s listed as %s", a, listed))
 		}
 	}
-	return retire
+	return retired
 }
 
 // prefixSet finds the listed network an address is in with one map lookup

@@ -19,8 +19,9 @@ func init() {
 // arrived its packets pass, and the packet that completes it meets the
 // verdict. A stream that starts with anything else, joined midstream, or
 // whose ClientHello outgrows the stream's prefix, is not judged: the
-// module retires from it. A ClientHello without a server name passes,
-// and so does an encrypted one (ECH): it reads the outer name only.
+// module retires from it. A ClientHello without a server name passes. An
+// encrypted ClientHello (ECH) is judged by its outer name, the inner one
+// being unreadable.
 type sniBlocklist struct {
 	names map[string]bool
 	block blocking
@@ -41,10 +42,11 @@ func newSNIBlocklist(settings json.RawMessage) (Passive, error) {
 		return nil, err
 	}
 	m := &sniBlocklist{names: map[string]bool{}}
-	for _, n := range s.Names {
-		n = canonicalName(n)
-		if n == "" || strings.Contains(n, "..") {
-			return nil, fmt.Errorf("name %q", n)
+	for _, raw := range s.Names {
+		n := canonicalName(raw)
+		// A leading dot or an empty label would never match a name.
+		if n == "" || strings.HasPrefix(n, ".") || strings.Contains(n, "..") {
+			return nil, fmt.Errorf("name %q: want a domain name", raw)
 		}
 		m.names[n] = true
 	}
@@ -64,7 +66,7 @@ func (m *sniBlocklist) Name() string { return "sni-blocklist" }
 
 func (m *sniBlocklist) Inspect(_ *Packet, f *Flow) Decision {
 	if f.Stream == nil || f.Stream.Midstream() {
-		return retire
+		return retired
 	}
 	prefix := f.Stream.Prefix()
 	if len(prefix) == 0 {
@@ -75,12 +77,12 @@ func (m *sniBlocklist) Inspect(_ *Packet, f *Flow) Decision {
 	case errors.Is(err, errIncomplete) && len(prefix) < retainBytes:
 		return Decision{Verdict: Accept}
 	case err != nil:
-		return retire
+		return retired
 	}
 	if listed, ok := m.listed(name); ok {
 		return m.block.decide(fmt.Sprintf("server name %s listed as %s", name, listed))
 	}
-	return retire
+	return retired
 }
 
 // listed finds the listed name that name is, or is under.

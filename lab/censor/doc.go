@@ -110,11 +110,12 @@
 // nothing.
 //
 // New modules join by registering themselves. Two modules prove the
-// framework, and are not censors of their own: block-ip decides packets
-// by destination (optionally only those with payload, so a handshake
-// completes first; the matrix's address blocklist is ip-blocklist), and replay, passive and active at once, tags a TCP
-// flow to its destinations once its stream holds a whole TLS record and
-// replays the retained bytes to the flow's destination from the router.
+// framework, and are not censors of their own: block-ip decides packets by
+// destination (optionally only those with payload, so a handshake completes
+// first; the matrix's address blocklist is ip-blocklist), and replay,
+// passive and active at once, tags a TCP flow to its destinations once its
+// stream holds a whole TLS record and replays the retained bytes to the
+// flow's destination from the router.
 //
 // The blocklists and the VPN fingerprints are what real censors block
 // first (docs/design/lab.md "Censor lab"), each pinning its verdict to the
@@ -136,8 +137,9 @@
 //     looks like a WireGuard message, on any port: a type from 1 to 4
 //     and three zero bytes, at the type's size (148-byte initiations,
 //     92-byte responses, 64-byte cookie replies, transport data of 32
-//     bytes or more in 16-byte steps; drop by default). Transport data
-//     alone matches, so a tunnel up before the censor is caught too.
+//     bytes or more; drop by default). Transport data alone matches,
+//     full-MTU packets the kernel can't pad to 16 bytes included, so a
+//     tunnel up before the censor is caught by its next packet.
 //     thinkpol's udp transport carries WireGuard, but nothing on its
 //     wire looks like it (PRD C1, lab TestM0), so it passes.
 //   - openvpn-fingerprint blocks an OpenVPN connection, over UDP or TCP
@@ -252,30 +254,33 @@
 //
 // # The matrix
 //
-// lab's TestCensorMatrix scores every transport against every censor
-// setup and regenerates lab/RESULTS.md. New transports join it by adding a
-// probe: bring the transport up between device-a and server-1 through the
-// router, and report whether data crossed over IPv4 and over IPv6. A cell
-// passes only when both did and fails only when neither did: one family
-// alone is partial, which no cell expects, so a blocking censor one
-// family slips past is caught. A transport's cell without a censor runs
-// first, and its censored cells are judged only once that one passed.
-// Every cell is probed, and one whose censor can't be trusted (censord
-// died, the kernel dropped queued packets ([QueueStats]), the verdict log
-// lacks the probe's flows) is an error, which keeps lab/RESULTS.md from
-// being written, and a blocked cell fails unless the verdict log blames
-// the module its case names. Control rows check that plain TCP and HTTPS to an
-// unlisted site on the underlay, what TLS-shaped transports ride, cross
-// the censor and are seen by it; reference rows run real WireGuard
-// (kernel) and OpenVPN (UDP and TCP), one tunnel per underlay family,
-// their handshakes starting once the censor is up, so the fingerprint
-// modules are judged on the real thing.
+// lab's TestCensorMatrix scores every transport against every censor setup
+// and regenerates lab/RESULTS.md. New transports join it by adding a probe:
+// bring the transport up between device-a and server-1 through the router,
+// and report whether data crossed over IPv4 and over IPv6. A cell passes
+// only when both did and fails only when neither did: one family alone is
+// partial, which no cell expects, so a blocking censor one family slips
+// past is caught. A transport's cell without a censor runs first, and its
+// censored cells are judged only once that one passed. Every cell is
+// probed, and one whose censor can't be trusted (censord died, the kernel
+// dropped queued packets ([QueueStats]), the verdict log lacks the probe's
+// flows) is an error, which keeps lab/RESULTS.md from being written, and a
+// blocked cell fails unless the verdict log blames the module its case
+// names. Control rows check that plain TCP and HTTPS to an unlisted site on
+// the underlay, what TLS-shaped transports ride, cross the censor and are
+// seen by it; reference rows run real WireGuard (kernel) and OpenVPN (UDP
+// and TCP), one tunnel per underlay family, on ports other than their
+// defaults, their handshakes starting once the censor is up, so the
+// fingerprint modules are judged on the real thing, on any port.
 //
 // # Limits
 //
 // Verdicts are per direction, but for Throttle: a pinned Drop or Reset, or
 // a flag, decides the flow it names, not its reverse. The flow table keeps
-// every flow until the censor stops (a lab test's few thousand at most). A
+// every flow until the censor stops (a lab test's few thousand at most),
+// and so does openvpn-fingerprint its state per connection (a few packet
+// heads each), replaced only when the connection's addresses and ports
+// carry a new one. A
 // module learns of a flow's end only from the packets themselves (FIN,
 // RST). A pinned Drop or Reset outlives the connection it blocked: a new
 // SYN on the same addresses and ports is decided by it (dropped, or reset

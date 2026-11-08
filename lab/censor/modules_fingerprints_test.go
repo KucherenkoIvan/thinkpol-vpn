@@ -19,31 +19,40 @@ func wgDatagram(r *rand.Rand, typ byte, n int) []byte {
 }
 
 // TestWireGuardFingerprint blocks each of WireGuard's messages at its own
-// size, transport data on its own included, through the engine: the flow
-// stays dropped. A header at the wrong size, random datagrams, a datagram
-// the receiver discards and TCP pass.
+// size, transport data on its own included, through the engine, on a port
+// that isn't WireGuard's: the flow stays dropped. A full-MTU transport
+// message, which the kernel can't pad to 16 bytes, is blocked too. A
+// header at the wrong size, random datagrams, a datagram the receiver
+// discards and TCP pass.
 func TestWireGuardFingerprint(t *testing.T) {
 	r := rand.New(rand.NewPCG(1, 2))
 	m := buildPassive(t, "wireguard-fingerprint", `{}`)
-	for name, msg := range map[string][]byte{
-		"handshake initiation": wgDatagram(r, 1, 148),
-		"handshake response":   wgDatagram(r, 2, 92),
-		"cookie reply":         wgDatagram(r, 3, 64),
-		"transport data":       wgDatagram(r, 4, 32+16*40),
+	for _, c := range []struct {
+		name, want string
+		msg        []byte
+	}{
+		{"handshake initiation", "handshake initiation", wgDatagram(r, 1, 148)},
+		{"handshake response", "handshake response", wgDatagram(r, 2, 92)},
+		{"cookie reply", "cookie reply", wgDatagram(r, 3, 64)},
+		{"keepalive", "transport data, 32 bytes", wgDatagram(r, 4, 32)},
+		{"transport data", "transport data", wgDatagram(r, 4, 32+16*40)},
+		// A 1420-byte packet, the default MTU, padded no further: the
+		// 16-byte header, the packet and the 16-byte tag.
+		{"transport data, full MTU", "transport data, 1452 bytes", wgDatagram(r, 4, 1452)},
 	} {
 		eng := NewEngine([]Passive{m}, nil, nil)
-		a := eng.Handle(udpPacket(clientAddr, serverAddr, 40000, 51820, msg))
-		if a.Verdict != Drop || a.Module != "wireguard-fingerprint" || !strings.Contains(a.Reason, name) {
-			t.Errorf("%s: %+v", name, a)
+		a := eng.Handle(udpPacket(clientAddr, serverAddr, 40000, 443, c.msg))
+		if a.Verdict != Drop || a.Module != "wireguard-fingerprint" || !strings.Contains(a.Reason, c.want) {
+			t.Errorf("%s: %+v", c.name, a)
 		}
-		if a := eng.Handle(udpPacket(clientAddr, serverAddr, 40000, 51820, []byte("anything"))); a.Verdict != Drop {
-			t.Errorf("%s: the flow's next datagram: %+v", name, a)
+		if a := eng.Handle(udpPacket(clientAddr, serverAddr, 40000, 443, []byte("anything"))); a.Verdict != Drop {
+			t.Errorf("%s: the flow's next datagram: %+v", c.name, a)
 		}
 	}
 	for name, msg := range map[string][]byte{
 		"initiation, 149 bytes": wgDatagram(r, 1, 149),
 		"response, 148 bytes":   wgDatagram(r, 2, 148),
-		"transport, unpadded":   wgDatagram(r, 4, 33),
+		"transport, 31 bytes":   wgDatagram(r, 4, 31),
 		"transport, too short":  wgDatagram(r, 4, 16),
 		"type 5":                wgDatagram(r, 5, 64),
 		"short":                 {1, 0, 0},
@@ -68,7 +77,7 @@ func TestWireGuardFingerprint(t *testing.T) {
 	if d := m.Inspect(bad, &Flow{}); d.Verdict != Accept {
 		t.Errorf("bad checksum: %+v", d)
 	}
-	if d := m.Inspect(tcpPacket(clientAddr, serverAddr, 1, 2, 1, 1, Ack, wgDatagram(r, 1, 148)), &Flow{}); d != retire {
+	if d := m.Inspect(tcpPacket(clientAddr, serverAddr, 1, 2, 1, 1, Ack, wgDatagram(r, 1, 148)), &Flow{}); d != retired {
 		t.Errorf("tcp: %+v", d)
 	}
 }
@@ -162,6 +171,8 @@ func TestOpenVPNFingerprintStrays(t *testing.T) {
 	for name, c := range map[string]struct{ up1, down, up2 []byte }{
 		"client starts with data":     {ovpnPacket(9, 0, clientSession, 40), answer, control},
 		"client reset, key id 1":      {ovpnPacket(ovpnControlHardResetClient2, 1, clientSession, 40), answer, control},
+		"server reset, key id 1":      {reset, ovpnPacket(ovpnControlHardResetServer2, 1, serverSession, 52), control},
+		"client's next, key id 1":     {reset, answer, ovpnPacket(ovpnControlV1, 1, clientSession, 300)},
 		"server answers otherwise":    {reset, ovpnPacket(ovpnControlV1, 0, serverSession, 52), control},
 		"another session":             {reset, answer, ovpnPacket(ovpnControlV1, 0, clientSession+1, 300)},
 		"client's next isn't control": {reset, answer, ovpnPacket(ovpnControlHardResetServer2, 0, clientSession, 300)},

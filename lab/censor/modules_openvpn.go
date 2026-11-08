@@ -61,11 +61,19 @@ type ovpnConn struct {
 	// from; a flow the engine started over is a new connection.
 	flows [2]*Flow
 	heads [2][][ovpnHead]byte
-	// verdict is "" while undecided, else why the connection is
-	// OpenVPN; notOpenVPN once it strayed from the pattern.
-	verdict    string
-	notOpenVPN bool
+	state ovpnState
+	// reason is why the connection is OpenVPN, once it is.
+	reason string
 }
+
+// ovpnState is what the module has made of a connection.
+type ovpnState uint8
+
+const (
+	ovpnUndecided ovpnState = iota
+	ovpnIsOpenVPN
+	ovpnNotOpenVPN
+)
 
 // newOpenVPNFingerprint builds the module from blockSettings: verdict
 // (drop by default), rate and burst.
@@ -85,24 +93,24 @@ func (m *openVPNFingerprint) Name() string { return "openvpn-fingerprint" }
 
 func (m *openVPNFingerprint) Inspect(p *Packet, f *Flow) Decision {
 	if p.Proto != ProtoTCP && p.Proto != ProtoUDP {
-		return retire
+		return retired
 	}
 	if f.Stream != nil && f.Stream.Midstream() {
-		return retire
+		return retired
 	}
 	if p.BadChecksum || !m.hasPayload(p, f) {
 		return Decision{Verdict: Accept}
 	}
 	c, dir := m.conn(f)
-	if c.verdict == "" && !c.notOpenVPN {
+	if c.state == ovpnUndecided {
 		m.read(c, dir, p, f)
 		m.judge(c)
 	}
-	switch {
-	case c.verdict != "":
-		return m.block.decide(c.verdict)
-	case c.notOpenVPN:
-		return retire
+	switch c.state {
+	case ovpnIsOpenVPN:
+		return m.block.decide(c.reason)
+	case ovpnNotOpenVPN:
+		return retired
 	}
 	return Decision{Verdict: Accept}
 }
@@ -144,7 +152,7 @@ func (m *openVPNFingerprint) conn(f *Flow) (*ovpnConn, int) {
 func (m *openVPNFingerprint) read(c *ovpnConn, dir int, p *Packet, f *Flow) {
 	if f.Stream == nil {
 		if len(p.Payload) < ovpnHead {
-			c.notOpenVPN = true
+			c.state = ovpnNotOpenVPN
 			return
 		}
 		c.add(dir, p.Payload)
@@ -155,7 +163,7 @@ func (m *openVPNFingerprint) read(c *ovpnConn, dir int, p *Packet, f *Flow) {
 	for len(b) >= 2 && len(c.heads[dir]) < ovpnHeads {
 		n := int(binary.BigEndian.Uint16(b))
 		if n < ovpnHead {
-			c.notOpenVPN = true
+			c.state = ovpnNotOpenVPN
 			return
 		}
 		if len(b) < 2+ovpnHead {
@@ -189,13 +197,13 @@ func (m *openVPNFingerprint) judge(c *ovpnConn) {
 	client, server := c.heads[0], c.heads[1]
 	if len(client) > 0 {
 		if op, key := opcode(client[0]); op != ovpnControlHardResetClient2 && op != ovpnControlHardResetClient3 || key != 0 {
-			c.notOpenVPN = true
+			c.state = ovpnNotOpenVPN
 			return
 		}
 	}
 	if len(server) > 0 {
 		if op, key := opcode(server[0]); op != ovpnControlHardResetServer2 || key != 0 {
-			c.notOpenVPN = true
+			c.state = ovpnNotOpenVPN
 			return
 		}
 	}
@@ -205,17 +213,18 @@ func (m *openVPNFingerprint) judge(c *ovpnConn) {
 	op, key := opcode(client[1])
 	if op != ovpnControlV1 && op != ovpnAckV1 && op != ovpnControlWKCV1 || key != 0 ||
 		!bytes.Equal(client[1][1:], client[0][1:]) {
-		c.notOpenVPN = true
+		c.state = ovpnNotOpenVPN
 		return
 	}
 	if len(server) == 0 {
 		// The client went on without the server's answer: wait for it,
 		// but not past the heads the module reads.
 		if len(client) >= ovpnHeads {
-			c.notOpenVPN = true
+			c.state = ovpnNotOpenVPN
 		}
 		return
 	}
 	cop, _ := opcode(client[0])
-	c.verdict = fmt.Sprintf("openvpn handshake: client reset (opcode %d), server reset, client opcode %d, session %x", cop, op, client[0][1:])
+	c.state = ovpnIsOpenVPN
+	c.reason = fmt.Sprintf("openvpn handshake: client reset (opcode %d), server reset, client opcode %d, session %x", cop, op, client[0][1:])
 }
