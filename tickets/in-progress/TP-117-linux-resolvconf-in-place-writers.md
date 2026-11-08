@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-115]
 refs: [docs/design/routing.md#routing-rules-and-dns]
-owner: ""
-branch: ""
+owner: "agent-tp-117"
+branch: "tp-117-linux-resolvconf-in-place-writers"
 ---
 
 ## Goal
@@ -35,3 +35,4 @@ A DHCP client that rewrites `/etc/resolv.conf` in place while the node manages i
 ## Log
 - 2026-10-21 created in backlog (TP-115 review round 1)
 - 2026-10-22 docs (TP-128 review): the empty-read cases, Restore putting back an empty file, and RR5
+- 2026-11-09 backlog → in-progress, owner: agent-tp-117
