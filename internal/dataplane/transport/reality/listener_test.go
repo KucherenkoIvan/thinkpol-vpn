@@ -157,20 +157,24 @@ func TestAnAnswerAfterTheClientsFINFlowsOnPastTheLinger(t *testing.T) {
 
 // Before the hello is decided, the target closing without a word closes
 // the client whole, as REALITY's server does: a prober writing after the
-// FIN is reset.
+// FIN is reset. The reset shows on the next write: Linux reads EOF after
+// it, since the FIN came first.
 func TestBeforeTheHelloTheTargetsCloseClosesTheClientWhole(t *testing.T) {
 	tg := newIdleTarget(t, 300*time.Millisecond, nil)
 	l := listenTo(t, newTransport(Options{}), tg, newKeys(t))
 	c := probe(t, l.Addr().String(), []byte{recordTypeHandshake, 3, 1, 0x02})
 	closedWithin(t, c, 5*time.Second)
-	if _, err := c.Write([]byte("after the FIN")); err != nil {
-		return // reset already
+	for i := range 2 {
+		_, err := c.Write([]byte("after the FIN"))
+		if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("write %d past the FIN: %v, want %v or %v", i, err, syscall.ECONNRESET, syscall.EPIPE)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	time.Sleep(100 * time.Millisecond)
-	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, err := c.Read(make([]byte, 64)); !errors.Is(err, syscall.ECONNRESET) {
-		t.Errorf("read after writing past the FIN: %v, want %v", err, syscall.ECONNRESET)
-	}
+	t.Error("two writes past the FIN went through: the listener's end of the client is still open")
 }
 
 // Before the hello is decided, the client's FIN closes the target whole,
