@@ -25,15 +25,15 @@ The lab blocks what real censors block first: listed IPs and SNIs, WireGuard and
 - [x] plain HTTPS to an unlisted site passes
 
 ## Review findings
-- [ ] R1.1 wireguard-fingerprint's transport rule needs len%16 == 0, but the kernel caps padding at the MTU: a full 1420-MTU packet is 1452 bytes and passes. Match type 4 + three zeros with length >= 32.
-- [ ] R1.2 ip-blocklist errors say 'destinations' for its 'addresses' key; one parsePrefixes(field, in) helper for both modules, test text fixed.
-- [ ] R1.3 blockSettings.parse copies block-ip's verdict/rate parsing; block-ip uses the shared code (per-packet, Flow false), one settings-unmarshal helper for every module.
-- [ ] R1.4 'on any port' is untested: unit positives on port 443, matrix reference rows off the default ports; a 51820-only mutation must fail.
-- [ ] R1.5 censorCase.blocker is unchecked: check it up front next to the cc.modules == nil check.
-- [ ] R1.6 WireGuard wire constants in one const block used by wgrhythm.
-- [ ] R1.7 modules_sniblocklist.go comment: an ECH ClientHello is judged by its outer name.
-- [ ] R1.8 pin the OpenVPN package version in lab/Dockerfile; ping's 'Network is unreachable' before the tun exists counts as no reply (or a comment says why not).
-- [ ] R1.9 nits: leading-dot sni names rejected; sni name errors print the raw name and a reason; tests for the key id and retainBytes OpenVPN/sni mutations; clienthello.go version comment; vector8/vector16; ovpnConn state field plus reason; retire → retired; curl exit 35 blocked only on a reset; doc.go Limits names openvpn-fingerprint's per-connection state; doc.go long lines rewrapped.
+- [x] R1.1 wireguard-fingerprint's transport rule needs len%16 == 0, but the kernel caps padding at the MTU: a full 1420-MTU packet is 1452 bytes and passes. Match type 4 + three zeros with length >= 32.
+- [x] R1.2 ip-blocklist errors say 'destinations' for its 'addresses' key; one parsePrefixes(field, in) helper for both modules, test text fixed.
+- [x] R1.3 blockSettings.parse copies block-ip's verdict/rate parsing; block-ip uses the shared code (per-packet, Flow false), one settings-unmarshal helper for every module.
+- [x] R1.4 'on any port' is untested: unit positives on port 443, matrix reference rows off the default ports; a 51820-only mutation must fail.
+- [x] R1.5 censorCase.blocker is unchecked: check it up front next to the cc.modules == nil check.
+- [x] R1.6 WireGuard wire constants in one const block used by wgrhythm.
+- [x] R1.7 modules_sniblocklist.go comment: an ECH ClientHello is judged by its outer name.
+- [x] R1.8 pin the OpenVPN package version in lab/Dockerfile; ping's 'Network is unreachable' before the tun exists counts as no reply (or a comment says why not).
+- [x] R1.9 nits: leading-dot sni names rejected; sni name errors print the raw name and a reason; tests for the key id and retainBytes OpenVPN/sni mutations; clienthello.go version comment; vector8/vector16; ovpnConn state field plus reason; retire → retired; curl exit 35 blocked only on a reset; doc.go Limits names openvpn-fingerprint's per-connection state; doc.go long lines rewrapped.
 
 ## Log
 - 2026-10-10 created in backlog
@@ -45,3 +45,6 @@ The lab blocks what real censors block first: listed IPs and SNIs, WireGuard and
 - 2026-11-07 make lint, make test green; full make lab-test green on f63235a
 - 2026-11-07 in-progress → review
 - 2026-11-07 review → has-errors (round 1 findings R1.x)
+- 2026-11-08 R1 fixes (continuing after the previous agent stopped on a usage limit; its uncommitted edits reviewed and kept): wireguard-fingerprint matches transport data of 32 bytes or more at any length (R1.1, a 1452-byte full-MTU message is blocked; doc.go's 'caught by its next packet' holds); parsePrefixes(field, in) for block-ip, replay and ip-blocklist (R1.2); block-ip on blockSettings, per packet (decidePacket, Flow false), and every module reads settings through unmarshalSettings (R1.3); unit positives on port 443, the matrix's WireGuard on 443/4443 and OpenVPN on 8443/9443 (R1.4); a censor case that expects a fail names a blocker, checked before any cell runs (R1.5); WireGuard wire constants in lab/censor/wireguard.go, wgrhythm uses them (R1.6); ECH comment (R1.7); lab/Dockerfile pins openvpn=2.6.14-0+deb12u2, the version the lab image ran, and the OpenVPN probe counts ping's 'Network is unreachable' before the tun is up as no reply, the verdict log still having to blame the handshake for a blocked cell (R1.8); R1.9 nits all done
+- 2026-11-08 mutation checks, each seen to fail its test and restored: the 16-byte step back (TestWireGuardFingerprint); match on DstPort 51820 only (TestWireGuardFingerprint); parsePrefixes ignoring its field, and its empty-list error (TestIPBlocklistSettings); block-ip pinned to the flow (TestBlockIPDropsByDestination); nil settings unmarshalled (TestModulesWithoutSettings); a leading dot accepted (TestSNIBlocklistSettings); key id unchecked on client[1], and on server[0] (TestOpenVPNFingerprintStrays); sni retiring on an incomplete ClientHello regardless of retainBytes (TestSNIBlocklistOutgrowsPrefix). Not mutation-run: the R1.5 blocker check, the matrix's port move, R1.8's ping and the curl exit 35 rule (lab-only, judged by the matrix run). The old block-ip reset (entry) row stays removed: a UDP reset-as-drop end-to-end check no longer exists (TCP reset: TestTCPResetReachesClient)
+- 2026-11-08 make lint, make test green on fc251c5. make lab-test not run to completion: the pinned OpenVPN changes lab/Dockerfile, so the lab image must be rebuilt, and Docker can't reach the registry (a base image pull and both builders hang resolving the base image, past 9 minutes), so the run timed out waiting for the image. TestCensorMatrix with the new ports and lab/RESULTS.md are not re-run. Handoff: once Docker pulls again, run the full make lab-test on the branch head, commit lab/RESULTS.md if it changed, then has-errors → review
