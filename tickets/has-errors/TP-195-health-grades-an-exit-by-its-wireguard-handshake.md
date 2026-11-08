@@ -27,6 +27,8 @@ None named.
 
 ## Notes
 - From TP-140's round-1 reviews, 2026-11-07. On the MVP path (orchestrator's call): the tray and daily use read health.
+- Proposed follow-up (round-1 review, not built): replace the log parsing with a conn.Bind wrapper around the path.Bind that watches outbound WireGuard messages by type: a type-1 (initiation) sent to a peer's endpoint sets its pending time, a type-2 (response) received from or sent to it clears it. That drops the dependence on wireguard-go's log wording and works with the verbose log off.
+- Grading: a chain has one exit (netmap.Chain.Exit), so R1.1's "none of the default chain's exits is live while one is unanswered" is that exit unanswered; "live" isn't computed. If chains get several exits, exitHandshakes needs it.
 
 ## Review findings
 - [ ] R1.1 grading: an exit is unanswered (pending past the deadline), live (a handshake within RejectAfterTime) or neither, computed in one function called from statusWith; down when the default route goes through a chain and none of that chain's exits is live while one is unanswered, any other unanswered exit degraded; table tests; ProblemExitNoHandshake comment and both api-overview files say exactly this

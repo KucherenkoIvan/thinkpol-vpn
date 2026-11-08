@@ -19,7 +19,7 @@ func (p fakePeer) String() string { return string(p) }
 // handshakes and keepalives stay at debug.
 func TestHandshakeTimeoutsAreLoggedAtInfoLevel(t *testing.T) {
 	var out bytes.Buffer
-	h := &handshakeLog{log: slog.New(slog.NewTextHandler(&out, &slog.HandlerOptions{Level: slog.LevelInfo})), late: make(map[string]bool), pending: make(map[string]time.Time)}
+	h := newHandshakes(slog.New(slog.NewTextHandler(&out, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	a, b := fakePeer("peer(A)"), fakePeer("peer(B)")
 	// WireGuard's own formats (device/timers.go, device/send.go).
 	h.verbosef("%v - Received handshake response", a)
@@ -47,17 +47,17 @@ func TestHandshakeTimeoutsAreLoggedAtInfoLevel(t *testing.T) {
 	}
 }
 
-// A peer the map takes away while its handshake keeps failing leaves the
-// log's memory with it.
+// A peer WireGuard removes while its handshake keeps failing leaves no
+// trace behind.
 func TestRemovedPeersAreForgotten(t *testing.T) {
-	h := &handshakeLog{log: slog.New(slog.DiscardHandler), late: make(map[string]bool), pending: make(map[string]time.Time)}
+	h := newHandshakes(nil)
 	var kept, removed netmap.WireGuardKey
 	kept[0], removed[0] = 1, 2
 	for _, k := range []netmap.WireGuardKey{kept, removed} {
 		h.verbosef("%v - Sending handshake initiation", fakePeer(peerName(k)))
 		h.verbosef("%s - Handshake did not complete after %d seconds, retrying (try %d)", fakePeer(peerName(k)), 5, 2)
 	}
-	h.keep(map[netmap.WireGuardKey]Peer{kept: {}})
+	h.forget([]netmap.WireGuardKey{removed})
 	if len(h.late) != 1 || !h.late[peerName(kept)] {
 		t.Errorf("late %v", h.late)
 	}

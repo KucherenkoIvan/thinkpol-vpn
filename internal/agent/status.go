@@ -446,9 +446,11 @@ const (
 	// ProblemExitNoHandshake: an exit the device routes through,
 	// directly or behind a relay, has left WireGuard's handshake
 	// unanswered past the deadline while its first hop was up
-	// (Status.ExitsUnanswered): down when it is the exit of the chain the
-	// default rule uses (the internet no other rule names is lost),
-	// degraded for any other exit.
+	// (Status.ExitsUnanswered). Down when the default rule goes through a
+	// chain and that chain's exit is unanswered (a chain has one exit, so
+	// none of its exits answers): the destinations no other rule names
+	// are lost. Degraded for any other exit unanswered. Only a completed
+	// handshake clears it, even if the device goes idle.
 	ProblemExitNoHandshake Problem = "exit_no_handshake"
 )
 

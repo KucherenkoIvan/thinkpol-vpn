@@ -25,6 +25,16 @@
 // message is no substitute, since every packet sent without a session
 // re-initiates (at most once per RekeyTimeout) and pushes back the retry
 // timer that logs it. No persistent keepalive is set, so WireGuard
-// initiates only for traffic: a peer nothing is sent to has nothing
-// pending.
+// initiates only for traffic: a peer nothing was sent to has nothing
+// pending. Once pending, it stays so until a handshake completes, even if
+// the traffic stops and WireGuard gives up retrying: a peer that went
+// silent isn't taken for one that answers. A peer WireGuard removes, or
+// adds back with the same key, starts afresh.
+//
+// This depends on three of wireguard-go's messages, matched by substring:
+// "Sending handshake initiation" sets it, and "Received handshake
+// response" (A's initiation answered) and "Sending handshake response"
+// (the peer's initiation answered) clear it. A wireguard-go upgrade that
+// rewords one fails TestAnUnansweredHandshakeStaysPendingUntilOneCompletes
+// or TestAPeersInitiationClearsAPendingOne, which run the real thing.
 package wg

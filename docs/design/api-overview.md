@@ -197,7 +197,7 @@ The node writes no log file. The log goes to stderr and into an in-memory ring, 
 
 Answered (F5): `no_link_up` is reused; the new code is snake_case.
 
-**What `health: ok` covers.** The neighbor check is about the first hop only; TP-195 grades the exits behind it.
+**What `health: ok` covers.** The neighbor check is about the first hop only; TP-195 grades exits, direct or behind it, by their WireGuard handshake.
 
 ### TP-166: node.json, device.json and connect-on-boot
 
@@ -218,10 +218,10 @@ Answered: the path (`crash-trace`), the field names (`last_run`, `last_run_crash
 
 | Surface | Behaviour |
 |---|---|
-| health | an exit the device routes through (the exit of a chain its rules use), directly or behind a relay, that has left a WireGuard handshake initiation unanswered for 15 s: `exit_no_handshake`, down when no exit answers, degraded when another does. A completed handshake clears it |
+| health | an exit the device routes through (the exit of a chain its rules use), directly or behind a relay, that has left a WireGuard handshake initiation unanswered for 15 s while its first hop was up: `exit_no_handshake`. Down when the default rule goes through a chain and that chain's exit is unanswered (a chain has one exit, so none of its exits answers): the destinations no other rule names are lost. Degraded for any other exit unanswered, including every exit when the default rule goes direct. Only a completed handshake clears it, even if the device goes idle. While the exit's first hop is down only `no_link_up` or `neighbor_down` is raised, and the 15 s start over when it comes back |
 | `status`, `diag` | show it with the existing rendering |
 
-The deadline is three of WireGuard's initiations in a row, which it sends 5 s apart (REKEY_TIMEOUT) while it has traffic for the exit, so one lost packet doesn't flip health; it is also how long WireGuard waits on a session that stopped hearing back (KEEPALIVE_TIMEOUT + REKEY_TIMEOUT). The age of the last handshake is no test: no persistent keepalive is set, so an idle exit's last handshake grows old on a healthy device. That is also what still reads ok: an exit nothing was sent to, and a device peer behind a relay (RR48).
+The deadline is three of WireGuard's initiations in a row, which it sends 5 s apart (REKEY_TIMEOUT) while it has traffic for the exit, so one lost packet doesn't flip health; it is also how long WireGuard waits on a session that stopped hearing back (KEEPALIVE_TIMEOUT + REKEY_TIMEOUT). A session that dies under traffic is noticed after about 30 s: WireGuard re-initiates once it has heard nothing back for 15 s, then the deadline runs. The age of the last handshake is no test: no persistent keepalive is set, so an idle exit's last handshake grows old on a healthy device. That is also what still reads ok: an exit nothing was sent to, and every peer that isn't an exit, direct or relayed (RR48). An exit once flagged stays flagged after traffic stops, until a handshake completes: reading ok for an exit that went silent would be the worse mistake.
 
 ## Planned, not built
 
@@ -420,7 +420,7 @@ Under systemd the agent's stderr goes to the journal, which is on disk unless vo
 - On a server, `uplink:` lines up with the workers' columns and lands far to the right.
 - Two `udp` public listeners (IPv4 and IPv6) look the same.
 - `health: ok` with a peer at `no path yet` (TP-140's case for exits; for a device peer it's expected).
-- **Suggested verdict: change (cheap)** for the first three. The fourth is TP-140's, built: a first hop that never linked is `no_link_up` or `neighbor_down`; an exit, direct or behind a relay, that leaves WireGuard's initiations unanswered is `exit_no_handshake` (TP-195); an exit nothing was sent to still reads ok (RR48).
+- **Suggested verdict: change (cheap)** for the first three. The fourth is TP-140's, built: a first hop that never linked is `no_link_up` or `neighbor_down`; an exit, direct or behind a relay, that leaves WireGuard's initiations unanswered is `exit_no_handshake` (TP-195), down for the default rule's exit and degraded for another, and stays so until a handshake completes; an exit nothing was sent to still reads ok (RR48).
 
 ### F17. `service uninstall` with nothing installed
 
