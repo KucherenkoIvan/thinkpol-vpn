@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
