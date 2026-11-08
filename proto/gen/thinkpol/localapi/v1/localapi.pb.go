@@ -977,7 +977,8 @@ type Diagnostics struct {
 	// The schema. Bumped when a field is removed or renamed or its type or
 	// meaning changes; not when a field is added. `unreadable` texts are
 	// free-form, and the values of enumerated strings (a route's type, an
-	// Apply's step) may grow without a bump.
+	// Apply's step) may grow without a bump. This is the service's; the
+	// CLI's JSON carries the CLI's own (the localapi package doc's "JSON").
 	SchemaVersion uint32                 `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
 	TakenAt       *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=taken_at,json=takenAt,proto3" json:"taken_at,omitempty"`
 	// The agent's OS ("linux", "darwin") and version.
@@ -2943,13 +2944,8 @@ type Status struct {
 	// The service's crash trace file was there but wasn't read: Diagnose's
 	// last_run says why.
 	LastRunUnreadable bool `protobuf:"varint,18,opt,name=last_run_unreadable,json=lastRunUnreadable,proto3" json:"last_run_unreadable,omitempty"`
-	// The schema of the JSON this status is written as (`status -json`, and
-	// Diagnostics' status), the same number as Diagnostics.schema_version:
-	// see the localapi package doc. The service sets it; `status -json`
-	// writes the CLI's own, whose schema the JSON has.
-	SchemaVersion uint32 `protobuf:"varint,19,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Status) Reset() {
@@ -3106,13 +3102,6 @@ func (x *Status) GetLastRunUnreadable() bool {
 		return x.LastRunUnreadable
 	}
 	return false
-}
-
-func (x *Status) GetSchemaVersion() uint32 {
-	if x != nil {
-		return x.SchemaVersion
-	}
-	return 0
 }
 
 // Uplink is a server's way to the internet, for its spaces that allow
@@ -4275,7 +4264,7 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	" \x01(\bR\vnodeWritten\"/\n" +
 	"\x05Space\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
-	"\x06active\x18\x02 \x01(\bR\x06active\"\xed\x06\n" +
+	"\x06active\x18\x02 \x01(\bR\x06active\"\xc6\x06\n" +
 	"\x06Status\x12.\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x1a.thinkpol.localapi.v1.ModeR\x04mode\x12\x19\n" +
 	"\bspace_id\x18\x02 \x01(\tR\aspaceId\x12\x1f\n" +
@@ -4300,8 +4289,7 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\fmaps_refused\x18\x0f \x01(\x04R\vmapsRefused\x12&\n" +
 	"\x0fconnect_on_boot\x18\x10 \x01(\bR\rconnectOnBoot\x12(\n" +
 	"\x10last_run_crashed\x18\x11 \x01(\bR\x0elastRunCrashed\x12.\n" +
-	"\x13last_run_unreadable\x18\x12 \x01(\bR\x11lastRunUnreadable\x12%\n" +
-	"\x0eschema_version\x18\x13 \x01(\rR\rschemaVersion\"\xa8\x01\n" +
+	"\x13last_run_unreadable\x18\x12 \x01(\bR\x11lastRunUnreadable\"\xa8\x01\n" +
 	"\x06Uplink\x12\x1c\n" +
 	"\tinterface\x18\x01 \x01(\tR\tinterface\x12\x12\n" +
 	"\x04ipv4\x18\x02 \x01(\bR\x04ipv4\x12\x12\n" +

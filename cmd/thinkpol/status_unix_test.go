@@ -164,10 +164,12 @@ func TestStatusJSONHasEveryFieldBySchemaName(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &obj); err != nil {
 		t.Fatalf("%v:\n%s", err, out)
 	}
-	checkFields(t, (&localapiv1.Status{}).ProtoReflect().Descriptor(), obj, "status")
+	// The CLI's schema version, the one key that isn't Status's.
 	if obj["schema_version"] != float64(localapi.SchemaVersion) {
 		t.Errorf("schema_version %v, want %d", obj["schema_version"], localapi.SchemaVersion)
 	}
+	delete(obj, "schema_version")
+	checkFields(t, (&localapiv1.Status{}).ProtoReflect().Descriptor(), obj, "status")
 	// Zero values are there as themselves: false, "", an empty list, null.
 	dp, _ := obj["data_plane"].(map[string]any)
 	for key, want := range map[string]any{"removed": false, "retrying": false, "rule_preset_unavailable": false, "maps_refused": "0", "uplink": nil} {

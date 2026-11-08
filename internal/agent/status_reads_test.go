@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -14,7 +16,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
 )
 
 // hostCalls records every call a node makes into its host's network
@@ -109,9 +110,9 @@ func (r recordedSystem) Update(dns.SystemConfig) error { r.h.add("DNS.Update"); 
 func (recordedSystem) Problem() error                  { return nil }
 func (r recordedSystem) Restore() error                { r.h.add("DNS.Restore"); return nil }
 
-// dialRecorder is a memory network whose dials are recorded.
+// dialRecorder is a transport whose dials are recorded.
 type dialRecorder struct {
-	*memory.Network
+	transport.Transport
 	h *hostCalls
 }
 
@@ -119,7 +120,7 @@ func (d dialRecorder) Dialer() transport.Dialer { return d }
 
 func (d dialRecorder) Dial(ctx context.Context, endpoint string, cfg transport.DialConfig) (transport.Link, error) {
 	d.h.add("Dial %s", endpoint)
-	return d.Network.Dial(ctx, endpoint, cfg)
+	return d.Transport.Dialer().Dial(ctx, endpoint, cfg)
 }
 
 // A connected device's Status reads its state and nothing else: it asks
@@ -132,7 +133,7 @@ func TestStatusAsksTheHostAndTheNetworkNothing(t *testing.T) {
 	net, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
 	var h hostCalls
-	deviceReg, err := transport.NewRegistry(dialRecorder{Network: net, h: &h})
+	deviceReg, err := transport.NewRegistry(dialRecorder{Transport: net, h: &h})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +159,8 @@ func TestStatusAsksTheHostAndTheNetworkNothing(t *testing.T) {
 	if len(after) != len(before) {
 		t.Errorf("Status called the host or the network: %v", after[len(before):])
 	}
-	if len(before) == 0 {
-		t.Fatal("nothing recorded while the device connected: the recorders aren't in place")
+	if !slices.ContainsFunc(before, func(c string) bool { return strings.HasPrefix(c, "Dial ") }) ||
+		!slices.Contains(before, "RouteTable.Enforce") || !slices.Contains(before, "SetSystemDNS") {
+		t.Fatalf("connecting recorded %v: the recorders aren't in place", before)
 	}
 }

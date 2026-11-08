@@ -52,12 +52,10 @@ func WriteJSONLine(w io.Writer, m proto.Message) error {
 
 // conventionJSON is m in the JSON convention, compact: the schema's own
 // names, every field present, enum values as enumValueName spells them,
-// and the top-level `schema_version` this client's SchemaVersion. A nil
-// message is written as an empty one.
+// and the top-level `schema_version` this client's SchemaVersion. The
+// version goes into the JSON, not the message, so a nil message (a
+// response without its status) is written whole, as an empty one.
 func conventionJSON(m proto.Message) ([]byte, error) {
-	if !m.ProtoReflect().IsValid() {
-		m = m.ProtoReflect().Type().New().Interface()
-	}
 	b, err := protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: true}.Marshal(m)
 	if err != nil {
 		return nil, err
