@@ -28,11 +28,14 @@ type command struct {
 	run         func(ctx context.Context, e env, args []string) error
 }
 
-// env is the process's standard streams, swapped for buffers in tests.
+// env is the process's standard streams, swapped for buffers in tests,
+// and how it reaches the local API (nil: the OS's sockets), swapped for a
+// dialer that sees every connection.
 type env struct {
 	stdin  io.Reader
 	stdout io.Writer
 	stderr io.Writer
+	dial   localapi.Dialer
 }
 
 var commands = map[string]command{}
@@ -115,7 +118,7 @@ func (c apiCommand) dial(e env, args []string, argsOK func(*flag.FlagSet) bool) 
 	if !argsOK(c.FlagSet) {
 		return nil, errUsage
 	}
-	return localapi.Dial(*c.socket)
+	return localapi.DialWith(*c.socket, e.dial)
 }
 
 // noArgs and oneArg are apiCommand.dial's usual argsOK.

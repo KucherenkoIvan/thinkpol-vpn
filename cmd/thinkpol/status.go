@@ -29,7 +29,7 @@ func runStatus(ctx context.Context, e env, args []string) error {
 	defer func() { _ = c.Close() }()
 	write := func(st *localapiv1.Status) error {
 		if *asJSON {
-			return localapi.WriteJSON(e.stdout, st)
+			return localapi.WriteStatusJSON(e.stdout, st)
 		}
 		return localapi.WriteStatus(e.stdout, st, time.Now())
 	}

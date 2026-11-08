@@ -28,9 +28,11 @@ func statusProto(st agent.Status) *localapiv1.Status {
 		Health:     &localapiv1.Health{Level: healthProto(h.Level), Problems: problemCodes(h.Problems)},
 		RulePreset: st.RulePreset, RulesEnforced: st.RulesEnforced, RulePresetUnavailable: st.PresetUnavailable,
 		ConnectOnBoot: st.ConnectOnBoot, LastRunCrashed: st.LastRunCrashed, LastRunUnreadable: st.LastRunUnreadable,
+		SchemaVersion: SchemaVersion,
 	}
 	if dp := st.DataPlane; dp != nil {
 		out.DataPlane = dataPlaneProto(dp, st.Listeners)
+		out.DataPlane.Interface = agent.Sanitize(st.Interface)
 	}
 	for _, w := range st.Workers {
 		out.Workers = append(out.Workers, &localapiv1.Worker{

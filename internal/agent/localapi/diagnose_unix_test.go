@@ -155,7 +155,7 @@ func TestDiagnoseServesAVersionedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.GetSchemaVersion() != DiagSchemaVersion || d.GetOs() != runtime.GOOS || d.GetAgentVersion() != testVersion ||
+	if d.GetSchemaVersion() != SchemaVersion || d.GetOs() != runtime.GOOS || d.GetAgentVersion() != testVersion ||
 		d.GetTakenAt().AsTime().Before(before.Truncate(time.Second)) {
 		t.Fatalf("header: %v", d)
 	}
@@ -193,7 +193,7 @@ func TestDiagnoseServesAVersionedSnapshot(t *testing.T) {
 		}
 	}
 	tun, _ := parsed["tun"].(map[string]any)
-	if parsed["schema_version"] != float64(DiagSchemaVersion) || tun["name"] != "utun9" || tun["unreadable"] != "" {
+	if parsed["schema_version"] != float64(SchemaVersion) || tun["name"] != "utun9" || tun["unreadable"] != "" {
 		t.Fatalf("JSON:\n%s", out.String())
 	}
 
@@ -261,7 +261,7 @@ func TestTheSnapshotHasNoSecretField(t *testing.T) {
 
 func TestWriteDiagnosticsFileIsTheOwnersOnly(t *testing.T) {
 	dir := t.TempDir()
-	d := &localapiv1.Diagnostics{SchemaVersion: DiagSchemaVersion, Os: "linux"}
+	d := &localapiv1.Diagnostics{SchemaVersion: SchemaVersion, Os: "linux"}
 	path := filepath.Join(dir, "diag.json")
 	check := func(t *testing.T) {
 		t.Helper()
@@ -273,7 +273,7 @@ func TestWriteDiagnosticsFileIsTheOwnersOnly(t *testing.T) {
 		var got struct {
 			SchemaVersion int `json:"schema_version"`
 		}
-		if err := json.Unmarshal(b, &got); err != nil || got.SchemaVersion != DiagSchemaVersion {
+		if err := json.Unmarshal(b, &got); err != nil || got.SchemaVersion != SchemaVersion {
 			t.Fatalf("%s: %v", b, err)
 		}
 	}

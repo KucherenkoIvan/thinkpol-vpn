@@ -44,8 +44,21 @@ type Client struct {
 // socket at the default path. Those checks are all that keeps another
 // process from posing as the service; they must stay exact. A path given
 // by hand is trusted as given.
-func Dial(path string) (*Client, error) {
-	probe, err := net.DialTimeout("unix", path, 5*time.Second)
+func Dial(path string) (*Client, error) { return DialWith(path, nil) }
+
+// Dialer opens a connection; the client asks it only for ("unix", the
+// socket's path).
+type Dialer func(ctx context.Context, network, address string) (net.Conn, error)
+
+// DialWith is Dial, every connection opened through dial (nil:
+// net.Dialer's): a test's dial sees everything the client reaches.
+func DialWith(path string, dial Dialer) (*Client, error) {
+	if dial == nil {
+		dial = (&net.Dialer{}).DialContext
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	probe, err := dial(ctx, "unix", path)
+	cancel()
 	if err != nil {
 		return nil, dialError(path, err)
 	}
@@ -54,7 +67,9 @@ func Dial(path string) (*Client, error) {
 	if filepath.IsAbs(path) {
 		target = "unix://" + path
 	}
-	conn, err := grpckit.Connect(target)
+	conn, err := grpckit.Connect(target, grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+		return dial(ctx, "unix", path)
+	}))
 	if err != nil {
 		return nil, err
 	}

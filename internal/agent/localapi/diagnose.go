@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -23,13 +22,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	localapiv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/localapi/v1"
 )
-
-// DiagSchemaVersion is the schema of Diagnose's snapshot
-// (Diagnostics.schema_version). It is bumped when a field is removed or
-// renamed or its type or meaning changes, not when one is added;
-// `unreadable` texts are free-form, and enumerated string values (a
-// route's type, an Apply's step) may grow without a bump.
-const DiagSchemaVersion = 1
 
 // Diagnose serves the snapshot: whole to root and the service's user, to
 // the group without the parts that name public addresses.
@@ -42,7 +34,7 @@ func (s *server) Diagnose(ctx context.Context, _ *localapiv1.DiagnoseRequest) (*
 // diagnosticsProto is d on the wire, taken at now by an agent of version.
 func diagnosticsProto(d agent.Diagnostics, now time.Time, version string) *localapiv1.Diagnostics {
 	return &localapiv1.Diagnostics{
-		SchemaVersion:  DiagSchemaVersion,
+		SchemaVersion:  SchemaVersion,
 		TakenAt:        timestamppb.New(now),
 		Os:             runtime.GOOS,
 		AgentVersion:   version,
@@ -246,12 +238,7 @@ func (c *Client) Diagnose(ctx context.Context) (*localapiv1.Diagnostics, error) 
 // v1 form: JSON with the schema's own field names (snake_case) and every
 // field present, an unset one as its zero value or null.
 func WriteDiagnostics(w io.Writer, d *localapiv1.Diagnostics) error {
-	b, err := protojson.MarshalOptions{Multiline: true, UseProtoNames: true, EmitUnpopulated: true}.Marshal(d)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(w, "%s\n", b)
-	return err
+	return writeJSON(w, d)
 }
 
 // ErrNotAFile: -o names something there that isn't a regular file (a

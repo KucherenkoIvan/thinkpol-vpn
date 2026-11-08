@@ -471,6 +471,11 @@ message Status {
   // The service's crash trace file was there but wasn't read: Diagnose's
   // last_run says why.
   bool last_run_unreadable = 18;
+  // The schema of the JSON this status is written as (`status -json`, and
+  // Diagnostics' status), the same number as Diagnostics.schema_version:
+  // see the localapi package doc. The service sets it; `status -json`
+  // writes the CLI's own, whose schema the JSON has.
+  uint32 schema_version = 19;
 }
 
 // Uplink is a server's way to the internet, for its spaces that allow
@@ -545,6 +550,8 @@ message DataPlane {
   // the rules, and how often the overlay interface was re-applied after its
   // link came up ("interface.reapplies").
   map<string, uint64> counters = 10;
+  // The overlay's TUN, by the name the OS gave it.
+  string interface = 11;
 }
 
 // A WireGuard peer.

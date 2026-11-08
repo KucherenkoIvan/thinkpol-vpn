@@ -2943,8 +2943,13 @@ type Status struct {
 	// The service's crash trace file was there but wasn't read: Diagnose's
 	// last_run says why.
 	LastRunUnreadable bool `protobuf:"varint,18,opt,name=last_run_unreadable,json=lastRunUnreadable,proto3" json:"last_run_unreadable,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// The schema of the JSON this status is written as (`status -json`, and
+	// Diagnostics' status), the same number as Diagnostics.schema_version:
+	// see the localapi package doc. The service sets it; `status -json`
+	// writes the CLI's own, whose schema the JSON has.
+	SchemaVersion uint32 `protobuf:"varint,19,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Status) Reset() {
@@ -3101,6 +3106,13 @@ func (x *Status) GetLastRunUnreadable() bool {
 		return x.LastRunUnreadable
 	}
 	return false
+}
+
+func (x *Status) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
 }
 
 // Uplink is a server's way to the internet, for its spaces that allow
@@ -3274,7 +3286,9 @@ type DataPlane struct {
 	// "route_table.reapplies", "route_table.rules_ahead") while it enforces
 	// the rules, and how often the overlay interface was re-applied after its
 	// link came up ("interface.reapplies").
-	Counters      map[string]uint64 `protobuf:"bytes,10,rep,name=counters,proto3" json:"counters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	Counters map[string]uint64 `protobuf:"bytes,10,rep,name=counters,proto3" json:"counters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	// The overlay's TUN, by the name the OS gave it.
+	Interface     string `protobuf:"bytes,11,opt,name=interface,proto3" json:"interface,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3377,6 +3391,13 @@ func (x *DataPlane) GetCounters() map[string]uint64 {
 		return x.Counters
 	}
 	return nil
+}
+
+func (x *DataPlane) GetInterface() string {
+	if x != nil {
+		return x.Interface
+	}
+	return ""
 }
 
 // A WireGuard peer.
@@ -4254,7 +4275,7 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	" \x01(\bR\vnodeWritten\"/\n" +
 	"\x05Space\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
-	"\x06active\x18\x02 \x01(\bR\x06active\"\xc6\x06\n" +
+	"\x06active\x18\x02 \x01(\bR\x06active\"\xed\x06\n" +
 	"\x06Status\x12.\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x1a.thinkpol.localapi.v1.ModeR\x04mode\x12\x19\n" +
 	"\bspace_id\x18\x02 \x01(\tR\aspaceId\x12\x1f\n" +
@@ -4279,7 +4300,8 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\fmaps_refused\x18\x0f \x01(\x04R\vmapsRefused\x12&\n" +
 	"\x0fconnect_on_boot\x18\x10 \x01(\bR\rconnectOnBoot\x12(\n" +
 	"\x10last_run_crashed\x18\x11 \x01(\bR\x0elastRunCrashed\x12.\n" +
-	"\x13last_run_unreadable\x18\x12 \x01(\bR\x11lastRunUnreadable\"\xa8\x01\n" +
+	"\x13last_run_unreadable\x18\x12 \x01(\bR\x11lastRunUnreadable\x12%\n" +
+	"\x0eschema_version\x18\x13 \x01(\rR\rschemaVersion\"\xa8\x01\n" +
 	"\x06Uplink\x12\x1c\n" +
 	"\tinterface\x18\x01 \x01(\tR\tinterface\x12\x12\n" +
 	"\x04ipv4\x18\x02 \x01(\bR\x04ipv4\x12\x12\n" +
@@ -4289,7 +4311,7 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\x05error\x18\x06 \x01(\tR\x05error\"]\n" +
 	"\x06Health\x127\n" +
 	"\x05level\x18\x01 \x01(\x0e2!.thinkpol.localapi.v1.HealthLevelR\x05level\x12\x1a\n" +
-	"\bproblems\x18\x02 \x03(\tR\bproblems\"\xfc\x03\n" +
+	"\bproblems\x18\x02 \x03(\tR\bproblems\"\x9a\x04\n" +
 	"\tDataPlane\x12\x10\n" +
 	"\x03mtu\x18\x01 \x01(\rR\x03mtu\x12\x12\n" +
 	"\x04ipv6\x18\x02 \x01(\bR\x04ipv6\x12\x19\n" +
@@ -4301,7 +4323,8 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\askipped\x18\b \x03(\v2\x1a.thinkpol.localapi.v1.SkipR\askipped\x12\x1c\n" +
 	"\tlisteners\x18\t \x01(\rR\tlisteners\x12I\n" +
 	"\bcounters\x18\n" +
-	" \x03(\v2-.thinkpol.localapi.v1.DataPlane.CountersEntryR\bcounters\x1a;\n" +
+	" \x03(\v2-.thinkpol.localapi.v1.DataPlane.CountersEntryR\bcounters\x12\x1c\n" +
+	"\tinterface\x18\v \x01(\tR\tinterface\x1a;\n" +
 	"\rCountersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\xeb\x01\n" +

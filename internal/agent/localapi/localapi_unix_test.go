@@ -184,7 +184,8 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	if st.GetConnection() != localapiv1.Connection_CONNECTION_DISCONNECTED || st.GetMapVersion() != 7 ||
-		st.GetSpaceId() != (netmap.SpaceID{0xab, 1}).String() || st.GetHealth().GetLevel() != localapiv1.HealthLevel_HEALTH_LEVEL_DOWN {
+		st.GetSpaceId() != (netmap.SpaceID{0xab, 1}).String() || st.GetHealth().GetLevel() != localapiv1.HealthLevel_HEALTH_LEVEL_DOWN ||
+		st.GetSchemaVersion() != SchemaVersion {
 		t.Fatalf("status %v", st)
 	}
 	if st, err = c.Connect(ctx); err != nil || st.GetConnection() != localapiv1.Connection_CONNECTION_CONNECTED || st.GetDataPlane().GetMtu() != 1328 {
@@ -437,7 +438,7 @@ func TestCallersAreCheckedByTheirCredentials(t *testing.T) {
 	if st, err := c.SetConnectOnBoot(ctx, true); err != nil || !st.GetConnectOnBoot() {
 		t.Fatalf("member's connect-on-boot: %v, %v", st, err)
 	}
-	if d, err := c.Diagnose(ctx); err != nil || d.GetSchemaVersion() != DiagSchemaVersion {
+	if d, err := c.Diagnose(ctx); err != nil || d.GetSchemaVersion() != SchemaVersion {
 		t.Fatalf("member's diagnostics: %v, %v", d, err)
 	}
 	// Without the parts that name public addresses: those are root's.
