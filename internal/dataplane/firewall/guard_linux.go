@@ -124,10 +124,14 @@ func forceBuffers(c *netlink.Conn) error {
 	return serr
 }
 
-func (g *IPv6Guard) conn() (*nftables.Conn, error) {
+func (g *IPv6Guard) conn() (*nftables.Conn, error) { return nftConn(g.netns) }
+
+// nftConn is an nftables connection in the namespace netns (-1: the
+// calling thread's), its buffers forced to sockbuf.
+func nftConn(netns int) (*nftables.Conn, error) {
 	opts := []nftables.ConnOption{nftables.WithSockOptions(forceBuffers)}
-	if g.netns >= 0 {
-		opts = append(opts, nftables.WithNetNSFd(g.netns))
+	if netns >= 0 {
+		opts = append(opts, nftables.WithNetNSFd(netns))
 	}
 	c, err := nftables.New(opts...)
 	if err != nil {
@@ -231,24 +235,37 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) error {
 }
 
 // whole reports whether the table holds exactly what Apply put there for
-// e: no flags (a dormant table's chains are unhooked: no guard at all),
-// its one chain as hooked (another base chain in it, one setting the
-// links' mark, would run before ours), each rule's expressions (counters
-// aside) in order, and the set's elements, an element added (a leak) or
-// removed (a refusal) included. It dumps the set: tens of milliseconds
-// for a country-sized one, on each re-apply.
+// e (wholeTable).
 func whole(c *nftables.Conn, e routetable.Exempt) bool {
-	table, err := c.ListTableOfFamily(GuardTable, nftables.TableFamilyINet)
+	return wholeTable(c, GuardTable, guardRules(e, guardSet, 0),
+		wantSet{guardSet, nftables.TypeIP6Addr, intervals(e.Ranges6())})
+}
+
+// wantSet is one interval set of a table as Apply builds it.
+type wantSet struct {
+	name     string
+	keyType  nftables.SetDatatype
+	elements []nftables.SetElement
+}
+
+// wholeTable reports whether the inet table name holds exactly what an
+// Apply put there: no flags (a dormant table's chains are unhooked: no
+// filter at all), its one chain, "output", as hooked (another base chain
+// in it, one setting the links' mark, would run before ours), each rule's
+// expressions (counters aside) in order, and each set's elements, an
+// element added (a leak) or removed (a refusal) included. It dumps the
+// sets: tens of milliseconds for a country-sized one, on each re-apply.
+func wholeTable(c *nftables.Conn, name string, want [][]expr.Any, sets ...wantSet) bool {
+	table, err := c.ListTableOfFamily(name, nftables.TableFamilyINet)
 	if err != nil || table.Flags != 0 {
 		return false
 	}
-	chain, ok := onlyChain(c)
+	chain, ok := onlyChain(c, name)
 	if !ok || chain.Hooknum == nil || *chain.Hooknum != *nftables.ChainHookOutput ||
 		chain.Priority == nil || *chain.Priority != guardPriority || chain.Policy == nil || *chain.Policy != nftables.ChainPolicyAccept {
 		return false
 	}
 	rules, err := c.GetRules(table, chain)
-	want := guardRules(e, guardSet, 0)
 	if err != nil || len(rules) != len(want) {
 		return false
 	}
@@ -257,33 +274,38 @@ func whole(c *nftables.Conn, e routetable.Exempt) bool {
 			return false
 		}
 	}
-	set, err := c.GetSetByName(table, guardSet)
-	if err != nil || !set.Interval || set.KeyType.Name != nftables.TypeIP6Addr.Name {
-		return false
+	for _, w := range sets {
+		set, err := c.GetSetByName(table, w.name)
+		if err != nil || !set.Interval || set.KeyType.Name != w.keyType.Name {
+			return false
+		}
+		elems, err := c.GetSetElements(set)
+		if err != nil || !sameElements(elems, w.elements) {
+			return false
+		}
 	}
-	elems, err := c.GetSetElements(set)
-	return err == nil && sameElements(elems, intervals(e.Ranges6()))
+	return true
 }
 
-// guardChains are the chains of the guard's table.
-func guardChains(c *nftables.Conn) ([]*nftables.Chain, error) {
+// tableChains are the chains of our inet table name.
+func tableChains(c *nftables.Conn, name string) ([]*nftables.Chain, error) {
 	chains, err := c.ListChainsOfTableFamily(nftables.TableFamilyINet)
 	if err != nil {
 		return nil, err
 	}
 	var ours []*nftables.Chain
 	for _, ch := range chains {
-		if ch.Table != nil && ch.Table.Name == GuardTable {
+		if ch.Table != nil && ch.Table.Name == name {
 			ours = append(ours, ch)
 		}
 	}
 	return ours, nil
 }
 
-// onlyChain is the guard table's chain when it is the only one and is
-// guardChain.
-func onlyChain(c *nftables.Conn) (*nftables.Chain, bool) {
-	ours, err := guardChains(c)
+// onlyChain is table name's chain when it is the only one and is
+// guardChain ("output", the kill switch's too).
+func onlyChain(c *nftables.Conn, name string) (*nftables.Chain, bool) {
+	ours, err := tableChains(c, name)
 	if err != nil || len(ours) != 1 || ours[0].Name != guardChain {
 		return nil, false
 	}
