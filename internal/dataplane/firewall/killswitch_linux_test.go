@@ -300,6 +300,136 @@ func TestKillSwitchDirectDestinationsExpireWithoutTheAgent(t *testing.T) {
 	}
 }
 
+// behind adds a client namespace the device forwards for (a container,
+// a VM, a hotspot's client): its eth0 is a veth to the device's ctr0, its
+// default routes go through the device, and the gateway routes its
+// networks back. It returns the client's namespace.
+func (p *pair) behind(t *testing.T) string {
+	t.Helper()
+	client := p.dev + "-c"
+	if out, err := exec.Command("ip", "netns", "add", client).CombinedOutput(); err != nil {
+		t.Fatalf("ip netns add: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _, _ = exec.Command("ip", "netns", "del", client).CombinedOutput() })
+	p.ip(t, p.dev, "link", "add", "ctr0", "type", "veth", "peer", "name", "eth0", "netns", client)
+	for _, args := range [][]string{
+		{"link", "set", "ctr0", "up"},
+		{"addr", "add", "10.77.0.1/24", "dev", "ctr0"},
+		{"addr", "add", "2001:db8:77::1/64", "dev", "ctr0", "nodad"},
+	} {
+		p.ip(t, p.dev, args...)
+	}
+	for _, args := range [][]string{
+		{"link", "set", "lo", "up"},
+		{"link", "set", "eth0", "up"},
+		{"addr", "add", "10.77.0.2/24", "dev", "eth0"},
+		{"addr", "add", "2001:db8:77::2/64", "dev", "eth0", "nodad"},
+		{"route", "add", "default", "via", "10.77.0.1"},
+		{"-6", "route", "add", "default", "via", "2001:db8:77::1"},
+	} {
+		p.ip(t, client, args...)
+	}
+	p.ip(t, p.gw, "route", "add", "10.77.0.0/24", "via", "192.0.2.2")
+	p.ip(t, p.gw, "-6", "route", "add", "2001:db8:77::/64", "via", "2001:db8:1::2")
+	for _, key := range []string{"net.ipv4.ip_forward=1", "net.ipv6.conf.all.forwarding=1"} {
+		if out, err := exec.Command("ip", "netns", "exec", p.dev, "sysctl", "-qw", key).CombinedOutput(); err != nil {
+			t.Fatalf("sysctl %s: %v: %s", key, err, out)
+		}
+	}
+	return client
+}
+
+// pingFrom says whether one ping from namespace ns is answered.
+func pingFrom(ns, dst string) bool {
+	family := "-4"
+	if netip.MustParseAddr(dst).Is6() {
+		family = "-6"
+	}
+	return exec.Command("ip", "netns", "exec", ns, "ping", family, "-c", "1", "-W", "2", dst).Run() == nil
+}
+
+// clientDial4 connects TCP from namespace ns to dst:80 and returns the
+// error (nil: connected) within 3 s.
+func clientDial4(t *testing.T, ns, dst string) error {
+	t.Helper()
+	var err error
+	inNS(t, ns, func() {
+		var fd int
+		if fd, err = unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0); err != nil {
+			return
+		}
+		defer func() { _ = unix.Close(fd) }()
+		tv := unix.NsecToTimeval((3 * time.Second).Nanoseconds())
+		_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &tv)
+		err = unix.Connect(fd, &unix.SockaddrInet4{Port: 80, Addr: netip.MustParseAddr(dst).As4()})
+	})
+	return err
+}
+
+// What the device forwards (a container, a VM, a hotspot's client) never
+// meets the output chain: the kill switch's forward chain lets it reach
+// only the entries (their replies coming back) while the tunnel is down,
+// and the direct destinations too while connected, both families.
+func TestKillSwitchConfinesForwardedTraffic(t *testing.T) {
+	p := ksPair(t)
+	client := p.behind(t)
+	// IPv6 may need a few seconds after the namespaces came up (the
+	// link-local addresses' DAD).
+	for _, dst := range []string{foreign4, foreign6, entry4, entry6} {
+		deadline := time.Now().Add(10 * time.Second)
+		for !pingFrom(client, dst) {
+			if time.Now().After(deadline) {
+				t.Fatalf("the client doesn't reach %s without a kill switch: the test proves nothing", dst)
+			}
+		}
+	}
+	k := p.killSwitch(t)
+	ctx := context.Background()
+	check := func(when string, want map[string]bool) {
+		t.Helper()
+		for dst, w := range want {
+			if got := pingFrom(client, dst); got != w {
+				t.Errorf("%s: the client's ping to %s answered %v, want %v", when, dst, got, w)
+			}
+		}
+	}
+	down := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: set(t, entry4+"/32", entry6+"/128")}
+	if err := k.Apply(ctx, down); err != nil {
+		t.Fatal(err)
+	}
+	check("down", map[string]bool{foreign4: false, foreign6: false, domestic6: false, entry4: true, entry6: true})
+	// The refusal goes back to the client by output, where the client's
+	// address is allowed only with allow-LAN: then it is refused at once.
+	if err := clientDial4(t, client, foreign4); err == nil {
+		t.Error("down: the client's TCP connect succeeded")
+	}
+	lan := down
+	lan.Allow = set(t, append([]string{entry4 + "/32", entry6 + "/128"}, prefixStrings(firewall.LAN)...)...)
+	if err := k.Apply(ctx, lan); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := clientDial4(t, client, foreign4); !errors.Is(err, syscall.ECONNREFUSED) || time.Since(start) > 2*time.Second {
+		t.Errorf("down, allow-LAN: the client's TCP connect: %v after %v, want refused at once", err, time.Since(start))
+	}
+	check("down, allow-LAN", map[string]bool{foreign4: false, foreign6: false, entry4: true})
+
+	up := firewall.KillSwitchRules{TUN: "thinkpol0", Mark: routetable.Mark, Allow: set(t, entry4+"/32", entry6+"/128"), Direct: set(t, domestic6+"/128")}
+	if err := k.Apply(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	check("connected", map[string]bool{foreign4: false, foreign6: false, domestic6: true, entry6: true})
+	// Re-applied whole: the forward chain is part of what is compared.
+	p.nft(t, "flush", "chain", "inet", firewall.KillSwitchTable, "forward")
+	if !pingFrom(client, foreign4) {
+		t.Fatal("still refused with the forward chain flushed")
+	}
+	if err := k.Apply(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	check("connected, re-applied", map[string]bool{foreign4: false, domestic6: true})
+}
+
 // The kill switch and the guard are two tables: IPv6 must pass both, and
 // removing one leaves the other.
 func TestKillSwitchAndGuardAreSeparateOwners(t *testing.T) {

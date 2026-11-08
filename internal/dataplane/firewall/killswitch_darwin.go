@@ -67,9 +67,6 @@ func (a *appliedKillSwitch) allows(addr netip.Addr) bool {
 	return slices.ContainsFunc(a.table, func(p netip.Prefix) bool { return p.Contains(addr) })
 }
 
-// errKillSwitchClosed: the kill switch was closed.
-var errKillSwitchClosed = errors.New("firewall: the kill switch is closed")
-
 // NewKillSwitch returns the host's kill switch, its record in
 // netcfg.StateDir. Nothing changes until Apply or Close.
 func NewKillSwitch() *KillSwitch {

@@ -62,3 +62,6 @@ const DirectTimeout = 30 * time.Second
 // ErrKillSwitchUnsupported: the OS can't hold the kill switch (no
 // nf_tables in the kernel; no pfctl).
 var ErrKillSwitchUnsupported = errors.New("firewall: the OS can't hold the kill switch")
+
+// errKillSwitchClosed: the kill switch was closed.
+var errKillSwitchClosed = errors.New("firewall: the kill switch is closed")

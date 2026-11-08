@@ -20,6 +20,7 @@ import (
 // guard's, so a successor finds what a crashed or stopped run left.
 const (
 	KillSwitchTable = "thinkpol-killswitch"
+	forwardChain    = "forward"
 	killSwitchSet4  = "allow4"
 	killSwitchSet6  = "allow6"
 	directSet4      = "direct4"
@@ -49,10 +50,38 @@ const (
 //	    meta l4proto tcp counter reject with tcp reset
 //	    counter reject with icmpx admin-prohibited
 //	  }
+//	  chain forward { type filter hook forward priority 2147483647; policy accept;
+//	    oifname <TUN> accept                                 (connected only)
+//	    iifname <TUN> accept                                 (connected only)
+//	    meta nfproto ipv4 ip daddr @allow4 accept
+//	    meta nfproto ipv6 ip6 daddr @allow6 accept
+//	    meta nfproto ipv4 ip daddr @direct4 accept
+//	    meta nfproto ipv6 ip6 daddr @direct6 accept
+//	    ct direction reply meta nfproto ipv4 ip saddr @allow4 accept
+//	    ct direction reply meta nfproto ipv6 ip6 saddr @allow6 accept
+//	    ct direction reply meta nfproto ipv4 ip saddr @direct4 accept
+//	    ct direction reply meta nfproto ipv6 ip6 saddr @direct6 accept
+//	    meta l4proto tcp counter reject with tcp reset
+//	    counter reject with icmpx admin-prohibited
+//	  }
 //	}
 //
-// Hooked last at output, as the guard's chain is; a packet must pass
-// both, an accept ending only its own chain. The direct sets' elements
+// Output and forward are both hooked last, as the guard's chain is; a
+// packet must pass every table's chain, an accept ending only its own.
+// The forward chain confines what the device routes for others
+// (containers, VMs, a hotspot's clients), which never meets output: it
+// lets it into and out of the TUN, and to the allowed and direct
+// destinations; their replies pass by their source only in conntrack's
+// reply direction, so a client can't make a packet to anywhere else pass
+// by spoofing its source. ICMP errors from routers on the way to an
+// allowed or direct destination aren't replies from it, and are refused
+// (path MTU discovery of a forwarded client's direct flow included; its
+// tunnelled flows come in by the TUN). A refusal goes back to the client
+// by output, which lets it out only to an allowed address (the client's,
+// with allow-LAN); otherwise it is refused in turn, and the client times
+// out instead of failing at once. Not postrouting:
+// reject is refused there (input, forward and output only), and output
+// already has what the device sends itself. The direct sets' elements
 // expire DirectTimeout after they were put in: every Apply puts them in
 // again, so a dead agent's direct destinations go within DirectTimeout
 // and only the entries (and the LAN) are left. The table stays when the
@@ -65,9 +94,6 @@ type KillSwitch struct {
 	closed  bool
 	capable bool
 }
-
-// errKillSwitchClosed: the kill switch was closed.
-var errKillSwitchClosed = errors.New("firewall: the kill switch is closed")
 
 // NewKillSwitch returns the kill switch of the calling thread's network
 // namespace. Nothing changes until Apply or Close.
@@ -122,7 +148,7 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) error {
 	}
 	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: KillSwitchTable}
 	sets := killSwitchSets(table, r)
-	if k.applied != nil && k.applied.Equal(r) && wholeTable(c, KillSwitchTable, killSwitchRules(r, 0, 0, 0, 0), wants(sets)...) {
+	if k.applied != nil && k.applied.Equal(r) && wholeTable(c, KillSwitchTable, killSwitchChains(r, [4]uint32{}), wants(sets)...) {
 		// Put the direct sets' elements in again, their timeouts anew.
 		for _, s := range sets[2:] {
 			c.FlushSet(s.set)
@@ -148,13 +174,15 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) error {
 		}
 	}
 	accept := nftables.ChainPolicyAccept
-	prio := guardPriority
-	chain := c.AddChain(&nftables.Chain{
-		Name: guardChain, Table: table, Type: nftables.ChainTypeFilter,
-		Hooknum: nftables.ChainHookOutput, Priority: &prio, Policy: &accept,
-	})
-	for _, exprs := range killSwitchRules(r, sets[0].set.ID, sets[1].set.ID, sets[2].set.ID, sets[3].set.ID) {
-		c.AddRule(&nftables.Rule{Table: table, Chain: chain, Exprs: exprs})
+	prio := lastPriority
+	for _, w := range killSwitchChains(r, [4]uint32{sets[0].set.ID, sets[1].set.ID, sets[2].set.ID, sets[3].set.ID}) {
+		chain := c.AddChain(&nftables.Chain{
+			Name: w.name, Table: table, Type: nftables.ChainTypeFilter,
+			Hooknum: &w.hook, Priority: &prio, Policy: &accept,
+		})
+		for _, exprs := range w.rules {
+			c.AddRule(&nftables.Rule{Table: table, Chain: chain, Exprs: exprs})
+		}
 	}
 	if err := c.Flush(); err != nil {
 		return fmt.Errorf("firewall: apply the kill switch: %w", err)
@@ -253,9 +281,66 @@ func ranges(s *lists.Set, v6 bool) []lists.Range {
 	return out
 }
 
-// killSwitchRules are the output chain's rules, in order (see
-// KillSwitch), looking the sets up by name and batch id.
-func killSwitchRules(r KillSwitchRules, set4, set6, direct4, direct6 uint32) [][]expr.Any {
+// killSwitchChains are the table's chains for r (see KillSwitch), looking
+// the sets up by name and batch id: allow4, allow6, direct4, direct6.
+func killSwitchChains(r KillSwitchRules, ids [4]uint32) []wantChain {
+	return []wantChain{
+		{outputChain, *nftables.ChainHookOutput, outputRules(r, ids)},
+		{forwardChain, *nftables.ChainHookForward, forwardRules(r, ids)},
+	}
+}
+
+// ksLookups are "<family> <load> @set accept" for each of the four sets,
+// the address loaded by load(v6).
+func ksLookups(ids [4]uint32, load func(v6 bool) expr.Any) [][]expr.Any {
+	accept := &expr.Verdict{Kind: expr.VerdictAccept}
+	names := [4]string{killSwitchSet4, killSwitchSet6, directSet4, directSet6}
+	out := make([][]expr.Any, 4)
+	for i, name := range names {
+		family := byte(unix.NFPROTO_IPV4)
+		if i%2 == 1 {
+			family = unix.NFPROTO_IPV6
+		}
+		out[i] = append(nfproto(family), load(i%2 == 1), &expr.Lookup{SourceRegister: 1, SetName: name, SetID: ids[i]}, accept)
+	}
+	return out
+}
+
+// daddr loads a packet's destination address.
+func daddr(v6 bool) expr.Any {
+	if v6 {
+		return &expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16}
+	}
+	return &expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4}
+}
+
+// saddr loads a packet's source address.
+func saddr(v6 bool) expr.Any {
+	if v6 {
+		return &expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16}
+	}
+	return &expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4}
+}
+
+// refused are the chains' last two rules: TCP reset, the rest an ICMP
+// "administratively prohibited".
+func refused() [][]expr.Any {
+	return [][]expr.Any{
+		{
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
+			&expr.Counter{},
+			&expr.Reject{Type: unix.NFT_REJECT_TCP_RST},
+		},
+		{
+			&expr.Counter{},
+			&expr.Reject{Type: unix.NFT_REJECT_ICMPX_UNREACH, Code: unix.NFT_REJECT_ICMPX_ADMIN_PROHIBITED},
+		},
+	}
+}
+
+// outputRules are the output chain's rules, in order.
+func outputRules(r KillSwitchRules, ids [4]uint32) [][]expr.Any {
 	accept := &expr.Verdict{Kind: expr.VerdictAccept}
 	rules := [][]expr.Any{append(oifname("lo"), accept)}
 	if r.TUN != "" {
@@ -268,39 +353,36 @@ func killSwitchRules(r KillSwitchRules, set4, set6, direct4, direct6 uint32) [][
 			accept,
 		})
 	}
-	return append(rules,
-		append(nfproto(unix.NFPROTO_IPV4),
-			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
-			&expr.Lookup{SourceRegister: 1, SetName: killSwitchSet4, SetID: set4},
-			accept),
-		append(nfproto(unix.NFPROTO_IPV6),
-			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
-			&expr.Lookup{SourceRegister: 1, SetName: killSwitchSet6, SetID: set6},
-			accept),
-		append(nfproto(unix.NFPROTO_IPV4),
-			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
-			&expr.Lookup{SourceRegister: 1, SetName: directSet4, SetID: direct4},
-			accept),
-		append(nfproto(unix.NFPROTO_IPV6),
-			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 24, Len: 16},
-			&expr.Lookup{SourceRegister: 1, SetName: directSet6, SetID: direct6},
-			accept),
+	rules = append(rules, ksLookups(ids, daddr)...)
+	rules = append(rules,
 		append(udpPorts(unix.NFPROTO_IPV4, 68, 67), accept),
 		append(udpPorts(unix.NFPROTO_IPV6, 546, 547), accept),
 		append(append(icmpv6Type(), &expr.Range{Op: expr.CmpOpEq, Register: 1, FromData: []byte{133}, ToData: []byte{137}}), hopLimit(255, accept)...),
 		append(append(icmpv6Type(), &expr.Range{Op: expr.CmpOpEq, Register: 1, FromData: []byte{130}, ToData: []byte{132}}), hopLimit(1, accept)...),
 		append(append(icmpv6Type(), &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{143}}), hopLimit(1, accept)...),
-		[]expr.Any{
-			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
-			&expr.Counter{},
-			&expr.Reject{Type: unix.NFT_REJECT_TCP_RST},
-		},
-		[]expr.Any{
-			&expr.Counter{},
-			&expr.Reject{Type: unix.NFT_REJECT_ICMPX_UNREACH, Code: unix.NFT_REJECT_ICMPX_ADMIN_PROHIBITED},
-		},
 	)
+	return append(rules, refused()...)
+}
+
+// forwardRules are the forward chain's rules, in order.
+func forwardRules(r KillSwitchRules, ids [4]uint32) [][]expr.Any {
+	accept := &expr.Verdict{Kind: expr.VerdictAccept}
+	var rules [][]expr.Any
+	if r.TUN != "" {
+		rules = append(rules, append(oifname(r.TUN), accept), append(iifname(r.TUN), accept))
+	}
+	rules = append(rules, ksLookups(ids, daddr)...)
+	// "ct direction reply": a reply of a flow someone else opened. (Not
+	// "ct original ip daddr": nftables sends and reads that key's
+	// direction as 4 bytes where the kernel dumps 1, so the table would
+	// never read back whole.)
+	for _, l := range ksLookups(ids, saddr) {
+		rules = append(rules, append([]expr.Any{
+			&expr.Ct{Register: 1, Key: expr.CtKeyDIRECTION},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}}, // IP_CT_DIR_REPLY
+		}, l...))
+	}
+	return append(rules, refused()...)
 }
 
 // nfproto is "meta nfproto == family".
