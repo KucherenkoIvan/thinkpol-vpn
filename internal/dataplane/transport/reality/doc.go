@@ -136,6 +136,14 @@
 // is 24 bytes per packet (record header, inner content type, AEAD tag and
 // frame length), plus the largest random padding.
 //
+// A shaping that asks for no padding pads every record to at least
+// MinRecord (512) bytes, a product default the lab set (TP-201): unpadded,
+// a rekey's two records showed in the handshake size band the lab's
+// wireguard-rhythm censor watches, and it caught reality within two rekey
+// periods. The cost is up to 488 bytes on each small record (a TCP ACK
+// through the tunnel, a ping); a full record is unchanged. A map that
+// pads to buckets or at random gets what it asks for instead.
+//
 // # Settings
 //
 // The listener's settings are a RealityListenSettings (X25519 private key,

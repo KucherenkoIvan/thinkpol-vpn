@@ -119,7 +119,9 @@
 // [SendStats] count what shaping costs on the wire, the overhead the lab
 // weighs against what shaping hides. udp implements padding and refuses
 // the rest; the lab measures how much shaping is enough per transport and
-// tunes the defaults, which are no shaping until it says otherwise.
+// tunes the defaults, which are no shaping until it says otherwise. It
+// has for reality: without padding of its own, a link pads every record
+// to at least 512 bytes (package reality).
 //
 // # Shared listeners
 //
