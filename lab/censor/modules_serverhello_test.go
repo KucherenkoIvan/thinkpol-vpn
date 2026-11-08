@@ -157,3 +157,17 @@ func TestServerHelloComparesWithTheSite(t *testing.T) {
 		t.Errorf("a hello for an unlisted name was compared:\n%s", log.String())
 	}
 }
+
+func TestServerHelloSettings(t *testing.T) {
+	for name, settings := range map[string]string{
+		"none":        ``,
+		"no sites":    `{}`,
+		"bad site":    `{"sites": {"a.example.net": "198.51.100.10"}}`,
+		"bad timeout": `{"sites": {"a.example.net": "198.51.100.10:443"}, "timeout": "0s"}`,
+		"bad verdict": `{"sites": {"a.example.net": "198.51.100.10:443"}, "verdict": "poison"}`,
+	} {
+		if _, err := newServerHelloCheck(json.RawMessage(settings)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

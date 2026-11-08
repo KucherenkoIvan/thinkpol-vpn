@@ -91,7 +91,8 @@
 //     module tags, with its retained payload, and may probe and flag flows
 //     ([FlagFunc]); a flag is pinned from the flow's next packet on.
 //     Feeding them never makes the queue wait: a snapshot an active module
-//     has no room for is counted ([Engine.Unnoticed]) and skipped.
+//     has no room for is counted ([Engine.Unnoticed]), logged
+//     ([EventUnnoticed]) and skipped.
 //   - both: a module built by [RegisterPassive] that also implements
 //     [Active] is run as both, one value, so its passive half can tag what
 //     its active half acts on.
@@ -260,7 +261,12 @@
 // bytes, say) and the rest later passes too, as it does past the Great
 // Firewall. With tagOnly it tags instead of blocking, for the prober.
 // Random bytes are exempt only by chance, their first six bytes printable,
-// about one stream in 400; a WireGuard initiation, ending in 16 zero bytes
+// about one stream in 383. thinkpol's udp starts every datagram with its
+// connection id, fixed for a link's direction and hour and the same over
+// IPv4 and IPv6 (it doesn't depend on the address), so its chance is per
+// link and hour, not per datagram: the matrix, which expects udp to fail
+// fully-encrypted, shows an exempt hour as a failed run, never as a wrong
+// score. A WireGuard initiation, ending in 16 zero bytes
 // (mac2, without a cookie), averages about 3.47 set bits per byte and is
 // exempt about one in four, its tunnel with it, since a flow is judged
 // once.
@@ -270,16 +276,23 @@
 // router, and compares each answer with the reference's, the real site an
 // entry would pretend to be (the camouflage target, a setting so the
 // matrix can point it at any site). Suspects are what fully-encrypted
-// tags and, with destinations set, every TCP connection to one once its
-// client sent data; a UDP suspect is flagged Accept, "not probed". The
+// tags (tagOnly, before the prober in the config) and, with destinations
+// set, every TCP connection to one once its client sent data. The
+// prober's passive half tags each, a TCP one only once its client's first
+// bytes are settled: a whole ClientHello (one with a post-quantum key
+// share, as Chrome, uTLS and Go send, spans two segments), bytes that
+// can't start one, or retainBytes of one still unfinished; the replay
+// probe and the TLS comparison get the whole hello. A UDP suspect, and a
+// suspect connection to the reference itself, is flagged Accept, "not
+// probed". The
 // probes: the suspect's first bytes replayed, random bytes of 3, 16, 49,
 // 221 and 1000 bytes, and, when the suspect's ClientHello names the
 // reference, a TLS handshake of the censor's own that reads the server
 // hello's JA3S, JA4S, extensions in order and the negotiated ALPN (which
 // TLS 1.3 sends encrypted, out of the ServerHello). A reaction is what
 // came back (nothing, an echo, a TLS alert or handshake, an HTTP response,
-// other bytes) and how the connection ended (closed, reset, or open at the
-// timeout); a server whose reaction to any probe differs from the
+// other bytes) and how the connection ended (closed, reset, open at the
+// timeout, or failed, named by its errno alone); a server whose reaction to any probe differs from the
 // reference's, whose handshake differs, or that shows the upstream tell is
 // flagged, its suspect connections blocked both ways and every later
 // connection to or from it dropped, as the Great Firewall blocks a server
@@ -291,8 +304,11 @@
 //
 // The upstream tell: an entry that relays what it doesn't recognize to the
 // real site opens a connection of its own to the site for each probe.
-// REALITY does so by design, on every connection, so the check may flag
-// it: the matrix reports it as it is. The censor sees the entry's
+// REALITY does so by design, on every connection, so the check flags it.
+// The upstreamTell setting says what the tell does: "flag" (the default)
+// flags the server on the tell alone; "report" only says so in the
+// verdict, the server judged on the probes' answers, for a matrix row
+// meant to show those. The censor sees the entry's
 // connection only from a vantage on the entry's uplink to the site. In
 // the lab that is lab.Upstream, the camouflage target behind the router,
 // where the entry's connection crosses the censor as a client's does; a
@@ -348,29 +364,36 @@
 // bring the transport up between device-a and server-1 through the router,
 // and report whether data crossed over IPv4 and over IPv6. A cell passes
 // only when both did and fails only when neither did: one family alone is
-// partial, which no cell expects, so a blocking censor one family slips
-// past is caught. A transport's cell without a censor runs first, and its
+// partial, which fails the run unless the row varies (below), so a
+// blocking censor one family slips past is caught. A transport's cell without a censor runs first, and its
 // censored cells are judged only once that one passed. Every cell is
 // probed, and one whose censor can't be trusted (censord died, the kernel
 // dropped queued packets ([QueueStats]), the verdict log lacks the probe's
-// flows) is an error, which keeps lab/RESULTS.md from being written, and a
+// flows or logs a snapshot an active module missed ([EventUnnoticed]), a
+// case's module never compared what the cell needs compared) is an error, which keeps lab/RESULTS.md from being written, and a
 // blocked cell fails unless the verdict log blames the module its case
-// names. Control rows check that plain TCP and HTTPS to an unlisted site on
+// names, over each family that didn't cross. Control rows check that plain TCP and HTTPS to an unlisted site on
 // the underlay, what TLS-shaped transports ride, cross the censor and are
 // seen by it; reference rows run real WireGuard (kernel) and OpenVPN (UDP
 // and TCP), one tunnel per underlay family, on ports other than their
 // defaults, their handshakes starting once the censor is up, so the
 // fingerprint modules are judged on the real thing, on any port, and
 // random-tcp, a naive echo server fed random bytes, is what a fully
-// encrypted proxy looks like to fully-encrypted and the prober. A case
+// encrypted proxy looks like to fully-encrypted and the prober, and
+// relay-tcp, an entry that splices every connection to the camouflage
+// site as REALITY does with what it doesn't recognize, run in
+// lab.Upstream in every cell, shows the prober's upstream tell. The https
+// row asks for the camouflage site's name, so the prober's TLS comparison
+// and server-hello compare it with the site. A case
 // with an active module probes twice and scores the second probe, once
 // every flow of server-1 a passive module tagged has a flag: the prober
 // judges a connection only after it crossed. Cases that compare with the
 // camouflage site run in lab.Upstream, nginx serving it, and quote the
 // module's verdict on the row's first connection in the cell. A cell
 // whose result is chance by nature (WireGuard against fully-encrypted)
-// varies: any result is accepted and shown, with why, and a family that
-// didn't cross must still be the module's doing.
+// varies: any result is accepted and shown, with why, and each family that
+// didn't cross must still be the module's doing. Only a reference row may
+// vary, so a gate row (a thinkpol transport) never does.
 //
 // # Limits
 //

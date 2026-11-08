@@ -63,12 +63,19 @@ http {
 }
 
 // startCamouflage runs the camouflage site on lab.Upstream's camouflage
-// node, both families, port 443, and returns its addresses.
+// node, both families, port 443, unless it runs already (a row and its
+// case may both need it), and returns its addresses.
 func startCamouflage(t *testing.T, l *lab.Lab) []netip.AddrPort {
 	t.Helper()
 	node := l.Node(lab.Camouflage)
 	addrs := []netip.Addr{node.IPv4(lab.NetWorld), node.IPv6(lab.NetWorld)}
-	startNginx(t, node, "/tmp/camouflage", camouflageName, 443, addrs)
+	res, err := execResult(node, pollTimeout, "test", "-e", "/tmp/camouflage/nginx.conf")
+	switch {
+	case err != nil && res.ExitCode == 1:
+		startNginx(t, node, "/tmp/camouflage", camouflageName, 443, addrs)
+	case err != nil:
+		t.Fatalf("camouflage: %v\n%s", err, res.Stderr)
+	}
 	return []netip.AddrPort{netip.AddrPortFrom(addrs[0], 443), netip.AddrPortFrom(addrs[1], 443)}
 }
 
@@ -88,6 +95,20 @@ func proberSettings(t *testing.T, l *lab.Lab, camouflage []netip.AddrPort) json.
 		t.Fatal(err)
 	}
 	return b
+}
+
+// startRelay splices every connection to server's port, each family, to
+// the camouflage site in the same family.
+func startRelay(t *testing.T, server *lab.Node, port int, camouflage []netip.AddrPort) {
+	t.Helper()
+	for _, a := range serverAddrs(server) {
+		ref, pf := camouflage[0], "TCP4"
+		if a.Is6() {
+			ref, pf = camouflage[1], "TCP6"
+		}
+		server.Start(t, "socat", fmt.Sprintf("%s-LISTEN:%d,bind=%s,fork,reuseaddr", pf, port, a), "TCP:"+ref.String())
+	}
+	waitSockets(t, server, "-lnt", port, 2)
 }
 
 // startEcho runs a naive echo server on server-1, both families: what a
@@ -175,10 +196,10 @@ func TestFullyEncryptedRandomNotHTTPS(t *testing.T) {
 	if got := probeRandom(t, l, to, false); got.v4 || got.v6 {
 		t.Errorf("the random stream crossed: %+v", got)
 	}
-	if got := probeHTTPS(t, l, to, true); !got.v4 || !got.v6 {
+	if got := probeHTTPSOn(443)(t, l, to, true); !got.v4 || !got.v6 {
 		t.Errorf("HTTPS didn't cross: %+v", got)
 	}
-	if _, err := blockedBy(t, l, c, "fully-encrypted"); err != nil {
+	if _, err := blockedBy(t, l, c, "fully-encrypted", crossed{}, false); err != nil {
 		t.Error(err)
 	}
 	if c.logged(t, func(e verdictLine) bool {
@@ -229,14 +250,7 @@ func TestProberTellsEchoFromNginx(t *testing.T) {
 	startNginx(t, server, "/tmp/entry", camouflageName, 443, serverAddrs(server))
 	const echoPort, relayPort = 7443, 9443
 	startEcho(t, server, echoPort)
-	for _, a := range serverAddrs(server) {
-		ref, pf := camouflage[0], "TCP4"
-		if a.Is6() {
-			ref, pf = camouflage[1], "TCP6"
-		}
-		server.Start(t, "socat", fmt.Sprintf("%s-LISTEN:%d,bind=%s,fork,reuseaddr", pf, relayPort, a), "TCP:"+ref.String())
-	}
-	waitSockets(t, server, "-lnt", relayPort, 2)
+	startRelay(t, server, relayPort, camouflage)
 	c := startCensor(t, l, []censor.ModuleConfig{{Name: "prober", Settings: proberSettings(t, l, camouflage)}})
 
 	for _, a := range serverAddrs(server) {

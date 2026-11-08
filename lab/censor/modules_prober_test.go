@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strings"
 	"syscall"
 	"testing"
@@ -161,7 +162,7 @@ func waitFlag(t *testing.T, flags <-chan flagged, key FlowKey) flagged {
 func suspectTo(server netip.AddrPort, sport uint16, payload []byte) FlowSnapshot {
 	return FlowSnapshot{
 		Key:     FlowKey{Proto: ProtoTCP, Src: netip.MustParseAddr("192.0.2.1"), Dst: server.Addr(), SrcPort: sport, DstPort: server.Port()},
-		Payload: payload, Tagger: "fully-encrypted", Tag: "fully encrypted",
+		Payload: payload, Tagger: "prober", Tag: "tagged by fully-encrypted",
 	}
 }
 
@@ -203,10 +204,43 @@ func TestProberTellsEchoFromWebServer(t *testing.T) {
 		t.Errorf("a new connection to the blocked server: %+v", d)
 	}
 
-	udp := FlowSnapshot{Key: FlowKey{Proto: ProtoUDP, Src: netip.MustParseAddr("192.0.2.1"), Dst: echoed.Addr(), SrcPort: 1, DstPort: 2}, Tagger: "fully-encrypted"}
+	udp := FlowSnapshot{Key: FlowKey{Proto: ProtoUDP, Src: netip.MustParseAddr("192.0.2.1"), Dst: echoed.Addr(), SrcPort: 1, DstPort: 2}, Tagger: "prober"}
 	flows <- udp
 	if f := waitFlag(t, flags, udp.Key); f.verdict != Accept || !strings.Contains(f.why, "not probed") {
 		t.Errorf("a UDP suspect: %+v", f)
+	}
+
+	s = suspectTo(ref, 40004, random)
+	flows <- s
+	if f := waitFlag(t, flags, s.Key); f.verdict != Accept || f.why != "not probed: the reference itself" {
+		t.Errorf("a suspect connection to the reference: %+v", f)
+	}
+}
+
+// TestConnEnd: failures alike compare alike, whatever the connection's
+// addresses and ports.
+func TestConnEnd(t *testing.T) {
+	failure := func(local, remote string) error {
+		return &net.OpError{
+			Op: "read", Net: "tcp",
+			Source: net.TCPAddrFromAddrPort(netip.MustParseAddrPort(local)),
+			Addr:   net.TCPAddrFromAddrPort(netip.MustParseAddrPort(remote)),
+			Err:    os.NewSyscallError("read", syscall.EHOSTUNREACH),
+		}
+	}
+	server, ref := connEnd(failure("192.0.2.1:40000", "203.0.113.9:443")), connEnd(failure("192.0.2.1:40001", "198.51.100.10:443"))
+	if server != ref || server != "failed: "+syscall.EHOSTUNREACH.Error() {
+		t.Errorf("the same failure: the server's %q, the reference's %q", server, ref)
+	}
+	for err, want := range map[error]string{
+		io.EOF: "closed",
+		fmt.Errorf("read: %w", syscall.ECONNRESET): "reset",
+		os.ErrDeadlineExceeded:                     "open",
+		errors.New("tls: something"):               "failed",
+	} {
+		if got := connEnd(err); got != want {
+			t.Errorf("connEnd(%v) = %q, want %q", err, got, want)
+		}
 	}
 }
 
@@ -252,7 +286,7 @@ func TestProberComparesTLS(t *testing.T) {
 func TestProberUpstreamTell(t *testing.T) {
 	ref := webServer(t, webTLS(t, siteName))
 	for _, seen := range []bool{true, false} {
-		p := newTestProber(t, ref, "")
+		p := newTestProber(t, ref, `, "upstreamTell": "flag"`)
 		flows, flags := runProber(t, p)
 		var entry netip.AddrPort
 		entry = listen(t, relay(ref, func() {
@@ -274,6 +308,23 @@ func TestProberUpstreamTell(t *testing.T) {
 		case !seen && f.verdict != Accept:
 			t.Errorf("a relay whose uplink the censor doesn't see: %+v", f)
 		}
+	}
+}
+
+// TestProberReportsUpstreamTell: with upstreamTell "report", a relay whose
+// uplink the censor sees passes, and the verdict says it showed the tell.
+func TestProberReportsUpstreamTell(t *testing.T) {
+	ref := webServer(t, webTLS(t, siteName))
+	p := newTestProber(t, ref, `, "upstreamTell": "report"`)
+	flows, flags := runProber(t, p)
+	var entry netip.AddrPort
+	entry = listen(t, relay(ref, func() {
+		flows <- FlowSnapshot{Key: FlowKey{Proto: ProtoTCP, Src: entry.Addr(), Dst: ref.Addr(), SrcPort: 50000, DstPort: ref.Port()}, Started: time.Now()}
+	}))
+	s := suspectTo(entry, 40025, helloFor(t, siteName))
+	flows <- s
+	if f := waitFlag(t, flags, s.Key); f.verdict != Accept || !strings.Contains(f.why, "upstream tell: a connection") || !strings.Contains(f.why, "reported, not flagged") {
+		t.Errorf("a relay, the tell reported: %+v", f)
 	}
 }
 
@@ -299,6 +350,40 @@ func TestProberTagsListedDestinations(t *testing.T) {
 	eng.Handle(tcpPacket(clientAddr, elsewhere, 40001, 443, 2, 10, Ack|Psh, []byte("x")))
 	if len(tagged) != 1 {
 		t.Errorf("tagged an unlisted destination: %v", tagged)
+	}
+}
+
+// TestProberWaitsForTheWholeHello: a ClientHello with a post-quantum key
+// share spans two segments; the prober tags the flow only once all of it
+// is in, so the replay probe sends the whole hello and the TLS comparison
+// runs.
+func TestProberWaitsForTheWholeHello(t *testing.T) {
+	ref := webServer(t, webTLS(t, siteName))
+	same := webServer(t, webTLS(t, siteName))
+	hello := helloFor(t, siteName)
+	// crypto/tls's default key shares include X25519MLKEM768's 1216 bytes,
+	// as Chrome's and uTLS's do.
+	if len(hello) < 1400 {
+		t.Fatalf("a %d-byte ClientHello: want one with a post-quantum key share", len(hello))
+	}
+	p := newTestProber(t, ref, fmt.Sprintf(`, "destinations": ["%s/32"]`, same.Addr()))
+	var log syncBuffer
+	eng := NewEngine([]Passive{p}, []Active{p}, &log)
+	t.Cleanup(eng.Shutdown)
+	client, srv, port := netip.MustParseAddr("127.0.0.2"), same.Addr(), same.Port()
+	eng.Handle(tcpPacket(client, srv, 40000, port, 1000, 0, Syn, nil))
+	eng.Handle(tcpPacket(srv, client, port, 40000, 5000, 1001, Syn|Ack, nil))
+	split := 1000
+	eng.Handle(tcpPacket(client, srv, 40000, port, 1001, 5001, Ack|Psh, hello[:split]))
+	if strings.Contains(log.String(), `"event":"tag"`) {
+		t.Fatalf("tagged on half a ClientHello:\n%s", log.String())
+	}
+	eng.Handle(tcpPacket(client, srv, 40000, port, 1001+uint32(split), 5001, Ack|Psh, hello[split:]))
+	waitLog(t, &log, `"event":"flag"`)
+	for _, want := range []string{"answers like the reference", "TLS: the server", "replay: answered a TLS handshake"} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("the verdict doesn't say %q:\n%s", want, log.String())
+		}
 	}
 }
 
@@ -363,13 +448,9 @@ func TestProberSettings(t *testing.T) {
 		"bad destination":   `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "destinations": ["x"]}`,
 		"bad timeout":       `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "timeout": "-1s"}`,
 		"bad verdict":       `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "verdict": "poison"}`,
-		"server-hello none": ``,
+		"bad upstream tell": `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "upstreamTell": "ignore"}`,
 	} {
-		build := newProber
-		if strings.HasPrefix(name, "server-hello") {
-			build = newServerHelloCheck
-		}
-		if _, err := build(json.RawMessage(settings)); err == nil {
+		if _, err := newProber(json.RawMessage(settings)); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}

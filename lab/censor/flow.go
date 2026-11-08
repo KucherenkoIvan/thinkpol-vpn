@@ -96,7 +96,8 @@ type Flow struct {
 	FirstDatagram []byte
 
 	reverse *Flow
-	// initiator: a UDP flow the censor saw before its reverse.
+	// initiator: the censor saw the flow before its reverse. Initiator
+	// reads it for UDP only; a TCP flow's comes from its SYN.
 	initiator bool
 	// pinned is the flow's terminal verdict, nil while none is.
 	pinned *rule
@@ -139,6 +140,10 @@ func (f *Flow) Initiator() bool {
 	}
 	return f.initiator
 }
+
+// TaggedBy reports whether the named passive module tagged the flow:
+// earlier in the config on this packet, or on an earlier one.
+func (f *Flow) TaggedBy(module string) bool { return f.tagged[module] }
 
 // Payload is what the censor retained of the flow: a TCP stream's prefix,
 // a UDP flow's first datagram. A module that keeps it clones it.

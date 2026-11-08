@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"time"
 )
 
 // blockSettings are the settings every blocking module shares:
@@ -16,6 +17,18 @@ type blockSettings struct {
 	Verdict string `json:"verdict"`
 	Rate    int    `json:"rate"`
 	Burst   int    `json:"burst"`
+}
+
+// parseTimeout reads a duration setting, def when "".
+func parseTimeout(s string, def time.Duration) (time.Duration, error) {
+	if s == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("timeout %q: want a positive duration", s)
+	}
+	return d, nil
 }
 
 // blocking is a module's verdict as its settings gave it.

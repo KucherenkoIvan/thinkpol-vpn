@@ -87,18 +87,6 @@ func newServerHelloCheck(settings json.RawMessage) (Passive, error) {
 	return m, nil
 }
 
-// parseTimeout reads a duration setting, def when "".
-func parseTimeout(s string, def time.Duration) (time.Duration, error) {
-	if s == "" {
-		return def, nil
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil || d <= 0 {
-		return 0, fmt.Errorf("timeout %q: want a positive duration", s)
-	}
-	return d, nil
-}
-
 func (m *serverHelloCheck) Name() string { return "server-hello" }
 
 func (m *serverHelloCheck) Inspect(_ *Packet, f *Flow) Decision {

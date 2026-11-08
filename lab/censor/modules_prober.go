@@ -1,20 +1,16 @@
 package censor
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
-	"os"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -33,9 +29,17 @@ func init() {
 //
 // Suspects are the flows the modules named in suspects tag (the passive
 // fully-encrypted module by default) and, with destinations set, every TCP
-// connection to one of them once its client has sent data (the prober's
-// own passive half tags those). A UDP suspect is flagged Accept, "not
-// probed": the prober probes TCP servers.
+// connection to one of them once its client has sent data. The prober's
+// own passive half tags each, and the active half probes only what it
+// tagged: a suspect module has to let the flow through (fully-encrypted's
+// tagOnly), and the prober sees its tag on the same packet when it comes
+// after it in the config, on the flow's next packet otherwise. A TCP
+// suspect is tagged once its client's first bytes are settled: a whole
+// ClientHello (one with a post-quantum key share spans two segments),
+// bytes that can't start one, or retainBytes of one still unfinished, so
+// the replay probe and the TLS comparison have the whole hello. A UDP
+// suspect is flagged Accept, "not probed": the prober probes TCP servers;
+// so is a suspect connection to the reference itself.
 //
 // Probes, each on a connection of its own, each sent to the server and the
 // reference alike:
@@ -68,19 +72,22 @@ func init() {
 // of one address are probed one at a time, so another service of the
 // entry's that connects to the site isn't counted for this one's probes;
 // a connection to the site an entry's real clients cause during a probe
-// still is.
+// still is. With upstreamTell "report" the tell is reported in the
+// verdict and doesn't flag the server.
 type prober struct {
 	refName string
 	refs    []netip.AddrPort
 	dests   []netip.Prefix
 	// suspects are the modules whose tags make a flow suspect.
-	suspects map[string]bool
-	timeout  time.Duration
-	block    blocking
-	random   [][]byte
-	dial     func(ctx context.Context, network, addr string) (net.Conn, error)
-	blocked  blockedServers
-	grace    time.Duration // upstreamGrace; tests shorten it
+	suspects []string
+	// reportTell: the upstream tell is reported, not flagged.
+	reportTell bool
+	timeout    time.Duration
+	block      blocking
+	random     [][]byte
+	dial       func(ctx context.Context, network, addr string) (net.Conn, error)
+	blocked    blockedServers
+	grace      time.Duration // upstreamGrace; tests shorten it
 
 	mu      sync.Mutex
 	servers map[netip.AddrPort]*probedServer
@@ -123,12 +130,14 @@ const upstreamKeep = time.Minute
 //	{"reference": {"name": "camouflage.example.net",
 //	               "addresses": ["198.51.100.10:443", "[2001:db8::10]:443"]},
 //	 "destinations": ["192.0.2.0/24"], "suspects": ["fully-encrypted"],
-//	 "timeout": "2s"}
+//	 "timeout": "2s", "upstreamTell": "flag"}
 //
 // with blockSettings' verdict (drop by default), rate and burst. The
 // reference is required; destinations are optional; suspects default to
 // fully-encrypted; timeout is how long a probe waits for the server to
-// answer or close (2 s by default).
+// answer or close (2 s by default); upstreamTell is "flag" (the default:
+// the tell alone flags a server) or "report" (the verdict says so, and
+// only the probes' answers flag it).
 func newProber(settings json.RawMessage) (Passive, error) {
 	var s struct {
 		Reference struct {
@@ -138,12 +147,13 @@ func newProber(settings json.RawMessage) (Passive, error) {
 		Destinations []string `json:"destinations"`
 		Suspects     []string `json:"suspects"`
 		Timeout      string   `json:"timeout"`
+		UpstreamTell string   `json:"upstreamTell"`
 		blockSettings
 	}
 	if err := unmarshalSettings(settings, &s); err != nil {
 		return nil, err
 	}
-	m := &prober{refName: s.Reference.Name, suspects: map[string]bool{}, servers: map[netip.AddrPort]*probedServer{}, probing: map[netip.Addr]*sync.Mutex{}, grace: upstreamGrace}
+	m := &prober{refName: s.Reference.Name, suspects: s.Suspects, servers: map[netip.AddrPort]*probedServer{}, probing: map[netip.Addr]*sync.Mutex{}, grace: upstreamGrace}
 	for _, a := range s.Reference.Addresses {
 		ap, err := netip.ParseAddrPort(a)
 		if err != nil {
@@ -160,11 +170,15 @@ func newProber(settings json.RawMessage) (Passive, error) {
 			return nil, err
 		}
 	}
-	if s.Suspects == nil {
-		s.Suspects = []string{"fully-encrypted"}
+	if m.suspects == nil {
+		m.suspects = []string{"fully-encrypted"}
 	}
-	for _, n := range s.Suspects {
-		m.suspects[n] = true
+	switch s.UpstreamTell {
+	case "", "flag":
+	case "report":
+		m.reportTell = true
+	default:
+		return nil, fmt.Errorf("upstreamTell %q: want flag or report", s.UpstreamTell)
 	}
 	var err error
 	if m.timeout, err = parseTimeout(s.Timeout, 2*time.Second); err != nil {
@@ -189,10 +203,41 @@ func (m *prober) Inspect(_ *Packet, f *Flow) Decision {
 	if why, ok := m.blocked.of(f.Key); ok {
 		return m.block.decide(why)
 	}
-	if len(m.dests) == 0 || f.Stream == nil || !f.Initiator() || !contains(m.dests, f.Key.Dst) || len(f.Stream.Prefix()) == 0 {
+	if f.TaggedBy(m.Name()) {
 		return Decision{Verdict: Accept}
 	}
-	return Decision{Verdict: Accept, Tag: "a connection to a listed destination sent data"}
+	why := m.suspicion(f)
+	if why == "" || f.Stream != nil && !helloSettled(f.Stream.Prefix()) {
+		return Decision{Verdict: Accept}
+	}
+	return Decision{Verdict: Accept, Tag: why}
+}
+
+// suspicion says why a flow is suspect, "" when it isn't.
+func (m *prober) suspicion(f *Flow) string {
+	for _, n := range m.suspects {
+		if f.TaggedBy(n) {
+			return "tagged by " + n
+		}
+	}
+	if len(m.dests) > 0 && f.Stream != nil && f.Initiator() && contains(m.dests, f.Key.Dst) && len(f.Stream.Prefix()) > 0 {
+		return "a connection to a listed destination sent data"
+	}
+	return ""
+}
+
+// helloSettled says whether a client's first bytes are all the prober
+// waits for: a whole ClientHello, bytes that can't start one, or
+// retainBytes of one still unfinished.
+func helloSettled(b []byte) bool {
+	if len(b) >= retainBytes {
+		return true
+	}
+	if len(b) < tlsRecordHeader {
+		return len(b) > 0 && b[0] != tlsHandshake || len(b) > 1 && b[1] != 3 || len(b) > 2 && b[2] > 4
+	}
+	_, err := clientHelloServerName(b)
+	return !errors.Is(err, errIncomplete)
 }
 
 func (m *prober) Run(ctx context.Context, flows <-chan FlowSnapshot, flag FlagFunc) {
@@ -204,10 +249,10 @@ func (m *prober) Run(ctx context.Context, flows <-chan FlowSnapshot, flag FlagFu
 			if !ok {
 				return
 			}
-			switch {
-			case f.Tagger == "":
+			switch f.Tagger {
+			case "":
 				m.noteUpstream(f)
-			case f.Tagger == m.Name() || m.suspects[f.Tagger]:
+			case m.Name():
 				m.suspect(ctx, f, flag)
 			}
 		}
@@ -261,6 +306,7 @@ func (m *prober) suspect(ctx context.Context, f FlowSnapshot, flag FlagFunc) {
 	}
 	server := netip.AddrPortFrom(f.Key.Dst, f.Key.DstPort)
 	if m.isReference(server) {
+		flag(f.Key, Accept, "not probed: the reference itself")
 		return
 	}
 	m.mu.Lock()
@@ -351,7 +397,9 @@ func (m *prober) examine(ctx context.Context, server netip.AddrPort, first []byt
 		}
 	}
 	total := len(probes)
-	if name, err := clientHelloServerName(first); err == nil && canonicalName(name) == canonicalName(m.refName) {
+	name, err := clientHelloServerName(first)
+	switch {
+	case err == nil && canonicalName(name) == canonicalName(m.refName):
 		start := time.Now()
 		var got, want handshakeResult
 		both(func() { got = m.handshake(ctx, server) }, func() { want = m.handshake(ctx, ref) })
@@ -361,13 +409,20 @@ func (m *prober) examine(ctx context.Context, server netip.AddrPort, first []byt
 		if d := got.differences(want); len(d) > 0 {
 			diffs = append(diffs, "TLS: "+strings.Join(d, "; "))
 		}
-	} else {
-		report = append(report, "TLS: not compared, the connection doesn't name the reference")
+	case err == nil:
+		report = append(report, fmt.Sprintf("TLS: not compared, the ClientHello names %q, not the reference", name))
+	case errors.Is(err, errIncomplete):
+		report = append(report, fmt.Sprintf("TLS: not compared, the ClientHello is incomplete in the %d bytes kept", len(first)))
+	default:
+		report = append(report, "TLS: not compared, the connection doesn't start with a ClientHello")
 	}
-	if total >= 2 && upstream == total {
-		diffs = append(diffs, fmt.Sprintf("upstream tell: a connection from %s to the reference during every probe (%d of %d)", server.Addr(), upstream, total))
-	} else {
+	switch tell := fmt.Sprintf("upstream tell: a connection from %s to the reference during every probe (%d of %d)", server.Addr(), upstream, total); {
+	case total < 2 || upstream < total:
 		report = append(report, fmt.Sprintf("connections to the reference during %d of %d probes", upstream, total))
+	case m.reportTell:
+		report = append(report, tell+", reported, not flagged")
+	default:
+		diffs = append(diffs, tell)
 	}
 	if len(diffs) == 0 {
 		return Accept, fmt.Sprintf("server %s answers like the reference %s: %s", server, ref, strings.Join(report, "; "))
@@ -404,92 +459,6 @@ func sleep(ctx context.Context, d time.Duration) {
 	case <-ctx.Done():
 	case <-t.C:
 	}
-}
-
-// reaction is how a server answered one probe.
-type reaction struct {
-	// answer is the kind of bytes it sent back (see answerKind), end how
-	// the connection ended: "closed", "reset", "open" (the probe's
-	// timeout passed), or "no connection".
-	answer, end string
-	// read counts the bytes answered; first is when the first came, from
-	// the dial on. Neither is compared: they are for the report.
-	read  int
-	first time.Duration
-}
-
-func (r reaction) like(o reaction) bool { return r.answer == o.answer && r.end == o.end }
-
-func (r reaction) String() string {
-	if r.read == 0 {
-		return fmt.Sprintf("answered nothing, %s", r.end)
-	}
-	return fmt.Sprintf("answered %s (%d bytes, first after %s), %s", r.answer, r.read, r.first.Round(time.Millisecond/10), r.end)
-}
-
-// react sends one probe on a connection of its own and watches the
-// answer until the server closes or resets it, or the timeout passes.
-func (m *prober) react(ctx context.Context, addr netip.AddrPort, payload []byte) reaction {
-	ctx, cancel := context.WithTimeout(ctx, m.timeout)
-	defer cancel()
-	start := time.Now()
-	c, err := m.dial(ctx, "tcp", addr.String())
-	if err != nil {
-		return reaction{answer: "nothing", end: "no connection"}
-	}
-	defer func() { _ = c.Close() }()
-	stop := context.AfterFunc(ctx, func() { _ = c.SetDeadline(time.Now()) })
-	defer stop()
-	var r reaction
-	if _, err := c.Write(payload); err != nil {
-		r.end = connEnd(err)
-	}
-	var answer []byte
-	buf := make([]byte, 4096)
-	for r.end == "" {
-		n, err := c.Read(buf)
-		if n > 0 && r.read == 0 {
-			r.first = time.Since(start)
-		}
-		r.read += n
-		answer = append(answer, buf[:min(n, 64-min(64, len(answer)))]...)
-		if err != nil {
-			r.end = connEnd(err)
-		}
-	}
-	r.answer = answerKind(answer, payload)
-	return r
-}
-
-// connEnd names how a connection ended from the error that ended it.
-func connEnd(err error) string {
-	var ne net.Error
-	switch {
-	case errors.Is(err, io.EOF):
-		return "closed"
-	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE):
-		return "reset"
-	case errors.Is(err, os.ErrDeadlineExceeded), errors.As(err, &ne) && ne.Timeout():
-		return "open"
-	}
-	return "failed: " + err.Error()
-}
-
-// answerKind classifies the first bytes a server answered a probe with.
-func answerKind(answer, probe []byte) string {
-	switch {
-	case len(answer) == 0:
-		return "nothing"
-	case len(answer) <= len(probe) && bytes.Equal(answer, probe[:len(answer)]):
-		return "an echo"
-	case len(answer) >= 2 && answer[0] == 0x15 && answer[1] == 3:
-		return "a TLS alert"
-	case len(answer) >= 2 && answer[0] == tlsHandshake && answer[1] == 3:
-		return "a TLS handshake"
-	case bytes.HasPrefix(answer, []byte("HTTP/")):
-		return "an HTTP response"
-	}
-	return "other bytes"
 }
 
 // handshakeResult is the censor's own TLS handshake with a server.
