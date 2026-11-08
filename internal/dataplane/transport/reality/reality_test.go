@@ -395,3 +395,64 @@ func TestOnlyREALITYsCertificateProvesTheKey(t *testing.T) {
 		t.Error("a real certificate proved the key")
 	}
 }
+
+// A link whose shaping asks for no padding pads every record to MinRecord,
+// as a capture of what the dialer sends shows: no record of
+// application data after the handshake is smaller. One the map pads to
+// buckets is padded as it says.
+func TestRecordsArePaddedToMinRecordByDefault(t *testing.T) {
+	tr := newTransport(Options{})
+	k := newKeys(t)
+	id, _ := shortIDs()
+	l := listenFor(t, tr, k, 0, peerLink(id))
+	for _, c := range []struct {
+		name    string
+		shaping transport.Shaping
+		want    int
+	}{{"no shaping", transport.Shaping{}, MinRecord}, {"buckets", transport.Shaping{Padding: transporttest.Buckets(1024)}, 1024}} {
+		t.Run(c.name, func(t *testing.T) {
+			tp := newTap(t, l.Addr().String())
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			client, err := tr.Dial(ctx, tp.addr(), transport.DialConfig{Credential: id, Settings: dialSettingsFor(t, k), Shaping: c.shaping})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = client.Close() }()
+			server, _, err := l.Accept(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = server.Close() }()
+			const packets = 3
+			for range packets {
+				if err := client.WritePacket([]byte("ping")); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := server.ReadPacket(make([]byte, 64)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stream := tp.captured()[0]
+			var sizes []int
+			for len(stream) >= recordHeaderSize {
+				size := recordHeaderSize + int(stream[3])<<8 | int(stream[4])
+				if size > len(stream) {
+					break
+				}
+				if stream[0] == 23 { // application data
+					sizes = append(sizes, size)
+				}
+				stream = stream[size:]
+			}
+			if len(sizes) < packets {
+				t.Fatalf("records %v", sizes)
+			}
+			for _, size := range sizes[len(sizes)-packets:] {
+				if size != c.want {
+					t.Errorf("a packet's record of %d bytes, want %d (records %v)", size, c.want, sizes)
+				}
+			}
+		})
+	}
+}

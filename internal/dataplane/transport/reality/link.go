@@ -49,11 +49,32 @@ func newLink(tlsConn, tcp net.Conn, s transport.Shaping, meter *transport.SendMe
 		done:    make(chan struct{}),
 		onClose: onClose,
 	}
-	l.shaping.Store(&s)
+	l.setShaping(s)
 	return l
 }
 
-func (l *link) setShaping(s transport.Shaping) { l.shaping.Store(&s) }
+// setShaping takes the link's shaping, padding to MinRecord where it asks
+// for none.
+func (l *link) setShaping(s transport.Shaping) {
+	if s.Padding.Mode == transport.PadNone {
+		s.Padding = defaultPadding
+	}
+	l.shaping.Store(&s)
+}
+
+// MinRecord is the smallest record a link writes when its shaping asks for
+// no padding: every record is padded to at least this size, header and
+// tag included, so WireGuard's handshake messages never show in records
+// of their own sizes, and a rekey's exchange falls out of the sizes the
+// lab's wireguard-rhythm censor watches (up to a handshake message plus
+// 256 bytes). Bigger records go as they are.
+const MinRecord = 512
+
+var defaultPadding = func() transport.Padding {
+	p := transport.Padding{Mode: transport.PadToBuckets}
+	p.Buckets[0] = MinRecord
+	return p
+}()
 
 func (l *link) ReadPacket(p []byte) (int, error) {
 	l.rmu.Lock()
