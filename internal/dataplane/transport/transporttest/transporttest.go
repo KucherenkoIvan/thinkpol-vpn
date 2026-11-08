@@ -840,19 +840,47 @@ func testListenerRestart(t *testing.T, h Harness) {
 	e := newEnv(t, h, pl)
 	client, _ := e.connect(pl)
 	e.restart()
+	type acceptResult struct {
+		l   transport.Link
+		id  transport.Identity
+		err error
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*wait)
+	defer cancel()
+	accepted := make(chan acceptResult, 1)
+	go func() {
+		l, id, err := e.listener.Accept(ctx)
+		accepted <- acceptResult{l, id, err}
+	}()
 	// The dialer's link carries on with the new listener, or reports closed
-	// so the layer above redials.
-	if err := client.WritePacket([]byte("after restart")); err != nil {
+	// so the layer above redials. A stream link learns that its peer closed
+	// only when it reads the close, so a write just before may succeed and
+	// be lost with the link (delivery is best effort): a link that closes
+	// instead of delivering is redialed too.
+	redial := func(err error) {
 		if !errors.Is(err, net.ErrClosed) {
-			t.Fatalf("write after the listener restarted: %v", err)
+			t.Fatalf("the dialer's link after the listener restarted: %v", err)
 		}
 		client = e.dial(pl)
 		client.write([]byte("after restart"))
 	}
-	server, id := e.accept()
-	if id != pl.Peer {
-		t.Fatalf("accepted %s, want %s", id, pl.Peer)
+	if err := client.WritePacket([]byte("after restart")); err != nil {
+		redial(err)
 	}
+	var r acceptResult
+	select {
+	case r = <-accepted:
+	case err := <-client.err:
+		redial(err)
+		r = <-accepted
+	}
+	if r.err != nil {
+		t.Fatalf("accept: %v", r.err)
+	}
+	if r.id != pl.Peer {
+		t.Fatalf("accepted %s, want %s", r.id, pl.Peer)
+	}
+	server := watch(t, r.l)
 	server.expect([]byte("after restart"))
 	for i := range 5 {
 		p := []byte(fmt.Sprintf("from the new listener %d", i))
