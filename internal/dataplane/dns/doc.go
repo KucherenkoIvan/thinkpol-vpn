@@ -195,8 +195,8 @@
 // comment even when it knows no servers, and replaces the file
 // atomically (a temporary file renamed over it), so a zero-byte uplink
 // is a file caught mid-write or truncated, and the rule assumes
-// resolved's writer. An empty /etc/resolv.conf itself is still a good
-// read (TP-117 owns that case).
+// resolved's writer. An empty /etc/resolv.conf itself can be a good
+// read (see the next section).
 //
 // # Linux: /etc/resolv.conf
 //
@@ -228,6 +228,31 @@
 // reads but names no server keeps them too, the log says to set
 // `-dns-upstream`, and Problem reports [ErrNoSystemUpstream] (not
 // unprotected) until a read names one again.
+//
+// Another program's write is read only once it has settled: the file
+// stays the same, with no change event, for 500 ms. Some writers rewrite
+// the file in place, truncating it and then appending a line at a time
+// (busybox udhcpc's script, `cat >` in dhcpcd's hooks); the first close
+// wakes the watch, and taking the file then would rename the managed file
+// over a half-written one, so the writer's later appends would land in
+// the managed file, outside its original, and its servers would be lost.
+// An Update during a settle only records the configuration, and the
+// watch applies it with the settled file. The other way to settle, taking
+// lines appended to the managed file as a new original, was weighed: it
+// still reads the truncated file first, so it would tell and record an
+// empty original before the real one, and it would mistake anything
+// appended by hand for a rewrite. A quiet period misses only a writer
+// that pauses longer than it mid-write (RESIDUAL-RISKS.md RR5).
+//
+// An empty /etc/resolv.conf can be a valid configuration (the resolver
+// then asks the local host), so one that stays empty through the settle
+// is the new original: it names no server, keeps the previous upstreams
+// ([ErrNoSystemUpstream]), and Restore puts it back empty. That differs
+// from resolved's uplink, which is never written empty. While the first
+// read is owed, a managed file whose original was a link reads the
+// link's target, and there an empty target is no read: the managed file
+// keeps an empty original and a missing one alike, so recording it would
+// end the retries for good.
 //
 // # macOS: configd's dynamic store
 //

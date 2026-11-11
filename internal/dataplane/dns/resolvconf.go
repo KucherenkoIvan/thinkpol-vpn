@@ -279,17 +279,36 @@ type resolvConf struct {
 	// noServer: the last good read named no server (with Upstreams set),
 	// so the previous upstreams are kept though the OS names none.
 	noServer bool
+	// written is what the last apply left at path: any other content is
+	// another program's write.
+	written []byte
+	// settling: the watch waits for another program's write to settle,
+	// and Update leaves the rewrite to it.
+	settling bool
 	stop     chan struct{}
 	stopped  chan struct{}
+
+	check  time.Duration // resolvConfCheck
+	settle time.Duration // resolvConfSettle
 }
 
 // resolvConfCheck is how often a managed resolv.conf is checked for
 // another program having rewritten it, besides the change notifications.
 const resolvConfCheck = 2 * time.Second
 
+// resolvConfSettle is how long another program's write must stay quiet
+// (no change event, the same content) before it is read: an in-place
+// writer truncates the file, then appends to it (the package doc's
+// "Linux: /etc/resolv.conf").
+const resolvConfSettle = 500 * time.Millisecond
+
 func setResolvConf(path string, uplink string, c SystemConfig) (*resolvConf, error) {
+	return startResolvConf(path, uplink, c, resolvConfCheck, resolvConfSettle)
+}
+
+func startResolvConf(path, uplink string, c SystemConfig, check, settle time.Duration) (*resolvConf, error) {
 	r := &resolvConf{path: path, uplink: uplink, cfg: c, stop: make(chan struct{}), stopped: make(chan struct{}),
-		untold: startsUntold(c)}
+		untold: startsUntold(c), check: check, settle: settle}
 	r.mu.Lock()
 	tell, err := r.apply()
 	r.mu.Unlock()
@@ -327,7 +346,11 @@ func (r *resolvConf) apply() (tell func(), err error) {
 	}
 	content := render(r.cfg, m.original, symlink)
 	tell = r.recordOriginal(m.original, read)
-	return tell, rewriteResolvConf(r.path, f, content)
+	if err := rewriteResolvConf(r.path, f, content); err != nil {
+		return tell, err
+	}
+	r.written = content
+	return tell, nil
 }
 
 // resolvConfFile is what is at a resolv.conf's path.
@@ -374,7 +397,9 @@ func readResolvConfFile(path string) (resolvConfFile, error) {
 // link whose target reads now (a dangling link's target may have
 // appeared since). A target that reads back as the node's own managed
 // file (a link to itself, directly or through another link) holds no
-// original. r.mu is held.
+// original, and an empty target is no read: the managed file can't tell
+// an empty original from a missing one, so taking it would end the
+// retries for good. r.mu is held.
 func (r *resolvConf) linkedOriginal(symlink string) ([]byte, bool) {
 	if !r.untold || symlink == "" {
 		return nil, false
@@ -384,7 +409,7 @@ func (r *resolvConf) linkedOriginal(symlink string) ([]byte, bool) {
 		target = filepath.Join(filepath.Dir(r.path), target)
 	}
 	b, err := os.ReadFile(target)
-	if err != nil || parseResolvConf(b).managed {
+	if err != nil || len(b) == 0 || parseResolvConf(b).managed {
 		return nil, false
 	}
 	return b, true
@@ -453,16 +478,40 @@ func (r *resolvConf) watch(first func()) {
 	}
 	changes, closeWatch := watchFile(r.path)
 	defer closeWatch()
-	t := time.NewTicker(resolvConfCheck)
+	t := time.NewTicker(r.check)
 	defer t.Stop()
+	settle := time.NewTimer(r.settle)
+	settle.Stop()
+	var pending string // another program's write, as read when its settle began
 	for {
+		event, settled := false, false
 		select {
 		case <-r.stop:
 			return
 		case <-changes:
+			event = true
 		case <-t.C:
+		case <-settle.C:
+			settled = true
 		}
+		// Read under r.mu: an apply on a bind mount rewrites in place, and
+		// its half-written file must not look like another program's.
 		r.mu.Lock()
+		f, ferr := readResolvConfFile(r.path)
+		now := fileState(f, ferr)
+		switch {
+		case ferr == nil && f.read && bytes.Equal(f.content, r.written):
+			settle.Stop()
+		case !r.settling || event || now != pending:
+			r.settling, pending = true, now
+			settle.Reset(r.settle)
+			r.mu.Unlock()
+			continue
+		case !settled:
+			r.mu.Unlock()
+			continue
+		}
+		r.settling = false
 		tell, _ := r.apply()
 		r.mu.Unlock()
 		if tell != nil {
@@ -471,9 +520,25 @@ func (r *resolvConf) watch(first func()) {
 	}
 }
 
+// fileState is what a read of a resolv.conf found, to tell whether a
+// write settled.
+func fileState(f resolvConfFile, err error) string {
+	switch {
+	case err != nil:
+		return "error " + err.Error()
+	case f.info == nil:
+		return "missing"
+	}
+	return fmt.Sprintf("%v %q %t %q", f.info.Mode().Type(), f.symlink, f.read, f.content)
+}
+
 func (r *resolvConf) Update(c SystemConfig) error {
 	r.mu.Lock()
 	r.cfg = c
+	if r.settling {
+		r.mu.Unlock()
+		return nil // the watch applies c once the write settles
+	}
 	tell, err := r.apply()
 	r.mu.Unlock()
 	if tell != nil {
@@ -510,6 +575,7 @@ func (r *resolvConf) Restore() error {
 	<-r.stopped
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.settling = false // no watch is left to apply what Update defers
 	return restoreResolvConf(r.path)
 }
 
