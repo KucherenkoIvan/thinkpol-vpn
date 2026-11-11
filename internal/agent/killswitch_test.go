@@ -257,7 +257,10 @@ func TestAFailingKillSwitchIsReportedAndRetried(t *testing.T) {
 	host.failWith(errors.New("nftables says no"))
 	b := startDevice(t, s, reg, true, withKillSwitch(host, func(c *Config) { c.KillSwitch = true }))
 	b.connection(t, Connected)
-	eventually(t, func() bool { st := b.node.Status().KillSwitch; return !st.Enforced && st.Error == KillSwitchApplyFailed })
+	eventually(t, func() bool {
+		st := b.node.Status().KillSwitch
+		return !st.Enforced && st.Error == KillSwitchApplyFailed
+	})
 	if h := b.node.Status().Health(); !slices.Contains(h.Problems, ProblemKillSwitch) {
 		t.Errorf("health %+v, want %s", h, ProblemKillSwitch)
 	}
