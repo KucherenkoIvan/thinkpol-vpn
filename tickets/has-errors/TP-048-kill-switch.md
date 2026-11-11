@@ -54,12 +54,14 @@ With the kill switch on, nothing leaves the device when the tunnel is down.
   ip daddr @allow4 accept
   ip6 daddr @allow6 accept
   meta nfproto ipv4 udp sport 68 udp dport 67 accept   (DHCPv4)
-  meta nfproto ipv6 udp sport 546 udp dport 547 accept (DHCPv6)
+  meta nfproto ipv6 udp sport 546 udp dport 547 ip6 daddr { ff02::1:2, fe80::/10 } accept (DHCPv6)
   icmpv6 type 133-137 ip6 hoplimit 255 accept          (neighbour discovery)
   icmpv6 type { 130-132, 143 } ip6 hoplimit 1 accept   (MLD)
   meta l4proto tcp reject with tcp reset
   reject with icmpx admin-prohibited
   ```
+
+  A second base chain, `forward` (hook forward, the same last priority, R1.1), confines what the device routes for others (container bridges, VM NAT, a hotspot), which never meets output: `oifname <TUN>` and `iifname <TUN>` accept (connected only), then daddr in the four sets, then their replies by saddr in conntrack's reply direction only, then the same two rejects. Not postrouting: reject is refused there.
 
   Replaced whole in one transaction, compared whole on a re-apply, as the guard's table is (shared helpers, not copies). Both tables must accept a packet: an accept ends only its own chain.
 - macOS: anchor `com.apple/001.thinkpol-killswitch` under Apple's hook, sorting after the guard's `000.thinkpol` (the guard counts any anchor before its own as a bypass), one table `<thinkpol_killswitch>` (both families), loaded with the rules in one `pfctl -f - -o none`, read back (rules checked for their words, table entry for entry) and compared exactly on every re-apply:
@@ -70,7 +72,7 @@ With the kill switch on, nothing leaves the device when the tunnel is down.
   pass out quick from any to <thinkpol_killswitch> no state
   pass out quick proto { tcp, udp } from any to <upstream> port <its port> no state (each direct DNS upstream, connected only)
   pass out quick inet proto udp from any port 68 to any port 67 no state            (DHCPv4)
-  pass out quick inet6 proto udp from any port 546 to any port 547 no state         (DHCPv6)
+  pass out quick inet6 proto udp from any port 546 to { ff02::1:2, fe80::/10 } port 547 no state (DHCPv6)
   pass out quick inet6 proto ipv6-icmp all icmp6-type { 133, 134, 135, 136, 137 } no state (ND)
   pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type { 130, 131, 132, 143 } no state (MLD)
   block return out quick all
@@ -95,7 +97,7 @@ Shapes: connected (the engine up) is the connected shape; anything else is the d
 
 **Crash posture.** The table and the anchor outlive the process. A crash (SIGKILL) leaves the shape in place (the connected shape: entries, direct destinations, LAN with allow-LAN; the TUN is gone with the process); the service restarts the agent within seconds, which applies the down shape at once and the connected shape once connected. On Linux the direct destinations are a dead-man's switch: they sit in their own sets (`direct4`, `direct6`, flags interval,timeout, 30 s), renewed by every apply (the agent re-applies every 10 s), so a dead agent's table lets out only the entries within 30 s (found in the lab: the M0 map has no rules, so everything is direct, and the first lab run showed a crashed agent's connected shape passing everything). pf can't expire a table entry: on macOS they stay until the restarted agent narrows them (RR18).
 
-**A stop is not a disconnect.** The node returning (SIGTERM, a service stop, an update replacing the binary) leaves what a crash would, in the down shape: an update that fails to start leaks nothing. Only a deliberate `thinkpol disconnect` with the toggle off, a start that comes up disconnected with the toggle off, or `thinkpol service uninstall` (`Platform.ClearHost`) removes it. To stop the service and get direct traffic, disconnect first.
+**A stop is not a disconnect.** The node returning (SIGTERM, a service stop, an update replacing the binary) leaves what a crash would, in the down shape: an update that fails to start leaks nothing. Only a deliberate `thinkpol disconnect` with the toggle off, a start that comes up disconnected with the toggle off, or `thinkpol service uninstall` (`Platform.ClearHost`) removes it. To stop the service and get direct traffic, disconnect first. Owner, 2026-11-09: kept; a stop fails closed like a crash. The agent warns as it stops with it in place, `kill-switch`'s help says so, and the documented way out is `sudo thinkpol rollback` (TP-134, not built yet; until then `thinkpol disconnect`, which is recorded even when the node can't act on it, R1.4).
 
 **Settings flow.** Device toggles (docs/design/configuration.md "Device level"): `kill_switch` and `allow_lan` in device.json, set through the local API (`SetKillSwitch`, `SetAllowLAN`, the access group), taking effect at once; written once a member set them, until then the node's defaults hold. Node defaults in node.json, as `up`'s flags in snake_case: `kill_switch` (-kill-switch, default false, PRD D4), `allow_lan` (-allow-lan, default false), `fail_closed_after_crash` (-fail-closed-after-crash, default true: the crash posture's opt-out, an operator's setting). CLI: `thinkpol kill-switch [on|off]` and `thinkpol allow-lan [on|off]` (no value shows it; a group prefix can't also be a command, so allow-LAN is its own). `SetKillSwitch` and `SetAllowLAN` return once the node acted on the change (as `SetRulePreset` does), so the status they return shows it. Health: `kill_switch_not_enforced`, `kill_switch_unsupported` (degraded). Status gets `kill_switch`, `allow_lan`, `kill_switch_enforced` (in place as wanted, or rightly absent) and `kill_switch_error`. TP-167 aligns exit codes later.
 
@@ -109,7 +111,7 @@ Run on the owner's Mac with thinkpol installed as the service (`sudo thinkpol se
 |---|---|---|
 | 0 | `sudo pfctl -s rules`; `sudo pfctl -s Interfaces -v` | `anchor "com.apple/*" all` is listed; note any interface but lo0 marked `(skip)` (RR57: it would carry everything past the kill switch) |
 | 1 | `thinkpol disconnect`; `thinkpol kill-switch on` | `kill switch: on, allow-LAN off (in place)` |
-| 2 | `sudo pfctl -a com.apple/001.thinkpol-killswitch -s rules`; `sudo pfctl -a com.apple/001.thinkpol-killswitch -t thinkpol_killswitch -T show`; `sudo pfctl -s References`; `sudo cat /private/var/db/thinkpol/pf-killswitch.token` | 14 rules, every pass `no state`, the last `block return out quick all`, no utun rule; the table lists the entries (IPv4 hosts without `/32`); References lists the record's token and pid. Record the listing: the IPv4 DHCP rule's and the ND rules' text are unrecorded so far |
+| 2 | `sudo pfctl -a com.apple/001.thinkpol-killswitch -s rules`; `sudo pfctl -a com.apple/001.thinkpol-killswitch -t thinkpol_killswitch -T show`; `sudo pfctl -s References`; `sudo cat /private/var/db/thinkpol/pf-killswitch.token` | 15 rules, every pass `no state`, the last `block return out quick all`, no utun rule; the table lists the entries (IPv4 hosts without `/32`); References lists the record's token and pid. Record the listing: the IPv4 DHCP rule's, the two DHCPv6 rules' (to ff02::1:2 and fe80::/10) and the ND rules' text are unrecorded so far |
 | 3 | `curl -m 5 https://example.net`; `curl -m 5 --interface en0 https://example.net`; `ping -c 1 <entry>`; `ping6 -c 1` a public IPv6 address | both curls fail at once (refused), the entry answers, the IPv6 ping fails |
 | 4 | `thinkpol allow-lan on`; `ping -c 1 <router>`; `thinkpol allow-lan off`; `ping -c 1 <router>` | answered with allow-LAN on, refused off |
 | 5 | `thinkpol connect`; browse; `sudo pfctl -a com.apple/001.thinkpol-killswitch -s rules`; `sudo pfctl -a com.apple -s Anchors`; `thinkpol status` | browsing works; the anchor passes the utun and DNS to the direct upstreams; Anchors lists `000.thinkpol` before `001.thinkpol-killswitch`; health has no `ipv6_guard_not_enforced` (the guard doesn't count the kill switch's anchor as a bypass) and no `kill_switch_not_enforced` |

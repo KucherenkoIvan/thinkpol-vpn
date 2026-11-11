@@ -33,16 +33,47 @@ type KillSwitchStatus struct {
 	// posture while the connection is meant up).
 	Active bool
 	// Enforced: the host holds what is meant (in place, or rightly not);
-	// Error says why not, a code: "apply_failed", "unsupported".
+	// Error says why not.
 	Enforced bool
-	Error    string
+	Error    KillSwitchError
 }
+
+// KillSwitchError is why a kill switch isn't enforced, a code the local
+// API passes on.
+type KillSwitchError string
+
+const (
+	// KillSwitchApplyFailed: putting it in place failed; retried.
+	KillSwitchApplyFailed KillSwitchError = "apply_failed"
+	// KillSwitchRemoveFailed: removing it failed; retried.
+	KillSwitchRemoveFailed KillSwitchError = "remove_failed"
+	// KillSwitchUnsupported: the OS can't hold it.
+	KillSwitchUnsupported KillSwitchError = "unsupported"
+)
 
 // killSwitchReapply is how often the kill switch in place is applied
 // again: a re-apply checks it is whole and puts back what someone
 // removed (`nft flush ruleset`, `pfctl -F`), and on Linux renews the
 // direct destinations (firewall.DirectTimeout).
 const killSwitchReapply = 10 * time.Second
+
+// killSwitchStopTimeout bounds the last apply as the node returns, its
+// own context done: a hung pfctl mustn't hold the stop.
+const killSwitchStopTimeout = 10 * time.Second
+
+// KillSwitchStopNote is what the agent warns as it stops with the kill
+// switch in place (the toggle, or the crash posture while meant up), and
+// what the kill-switch command's help says: a stop leaves it, as a crash
+// does (docs/design/security.md, "A stop is not a disconnect").
+const KillSwitchStopNote = "a stop leaves the kill switch in place, as a crash does: only the entries (and the LAN with allow-LAN) are reachable until the agent runs again; to stop with traffic going direct, run `thinkpol kill-switch off` and `thinkpol disconnect` first, or `thinkpol service uninstall`"
+
+// warnLeftInPlace warns, as the node returns, when it leaves the kill
+// switch in place.
+func (k *killSwitchKeeper) warnLeftInPlace() {
+	if k.applied != nil {
+		k.log.Warn("the agent stops; " + KillSwitchStopNote)
+	}
+}
 
 // crashPresets are the presets whose devices fail closed after a crash
 // with the kill switch off (PRD D4, "Crash posture").
@@ -201,9 +232,11 @@ func (k *killSwitchKeeper) status(s killSwitchSettings, active bool) KillSwitchS
 	switch {
 	case k.failed == nil:
 	case errors.Is(k.failed, firewall.ErrKillSwitchUnsupported):
-		st.Error = "unsupported"
+		st.Error = KillSwitchUnsupported
+	case errors.Is(k.failed, errKillSwitchRemove):
+		st.Error = KillSwitchRemoveFailed
 	default:
-		st.Error = "apply_failed"
+		st.Error = KillSwitchApplyFailed
 	}
 	return st
 }

@@ -305,7 +305,7 @@ func KillSwitchText(k *localapiv1.KillSwitch) string {
 	case !k.GetEnforced():
 		s += " (not enforced: " + k.GetError() + ", retrying)"
 	case k.GetActive() && !k.GetOn():
-		s += " (held by the crash posture while connecting or connected)"
+		s += " (held by the crash posture while the connection is meant up)"
 	case k.GetActive():
 		s += " (in place)"
 	}

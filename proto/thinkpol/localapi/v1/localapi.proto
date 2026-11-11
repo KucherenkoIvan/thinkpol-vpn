@@ -512,7 +512,7 @@ message KillSwitch {
   // preset (the crash posture).
   bool active = 3;
   // The host holds what is meant (in place, or rightly not); error says
-  // why not: "apply_failed", "unsupported".
+  // why not: "apply_failed", "remove_failed", "unsupported".
   bool enforced = 4;
   string error = 5;
 }

@@ -69,6 +69,8 @@ type Node struct {
 	// switch toggle stored (SetKillSwitch, SetAllowLAN); it closes the
 	// channel sent once it did.
 	killSwitchRequests chan chan struct{}
+	// rememberMu serializes remember's writes.
+	rememberMu sync.Mutex
 	// ks keeps a device's kill switch, on the node's goroutine.
 	ks killSwitchKeeper
 }
@@ -148,11 +150,15 @@ func startConnected(cfg Config, onBoot bool, rec ConnectRecord, logs Logs) (conn
 
 // remember records a connect choice (ConnectRecord), when the node keeps
 // it, before it is acted on; a failure is logged, and the node goes
-// ahead.
+// ahead. Disconnect calls it from the requester's goroutine too.
 func (n *Node) remember(connect bool) {
 	if !keepsConnect(n.cfg) {
 		return
 	}
+	// One writer at a time: the record is replaced through one temporary
+	// file name.
+	n.rememberMu.Lock()
+	defer n.rememberMu.Unlock()
 	if err := n.plat.ConnectRecord.Save(connect); err != nil {
 		n.logs.Error("recording the connect request failed: a restart in this boot starts as configured", "connect", connect, "err", err)
 	}
@@ -234,8 +240,18 @@ func (n *Node) Connect(ctx context.Context) error { return n.request(ctx, true) 
 
 // Disconnect takes a device's data plane down, leaving nothing of it on
 // the host, and returns once it is down. The device goes on following its
-// space's maps. ErrServerMode on a server.
-func (n *Node) Disconnect(ctx context.Context) error { return n.request(ctx, false) }
+// space's maps. ErrServerMode on a server. The choice is recorded for the
+// boot (ConnectRecord) before the node hears of it, so a node that can't
+// act on it (busy with a first start that fails, again at every restart
+// under the crash posture: ErrNotRunning) starts disconnected next time,
+// its kill switch removed unless toggled on.
+func (n *Node) Disconnect(ctx context.Context) error {
+	if n.Mode() == ModeServer {
+		return ErrServerMode
+	}
+	n.remember(false)
+	return n.request(ctx, false)
+}
 
 // SetRulePreset switches a device's rules to preset ("space",
 // "everything", "all-but-domestic"), keeping its own rules: the choice is
@@ -490,6 +506,7 @@ func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
 
 func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byte) error {
 	defer close(n.stopped)
+	defer n.ks.warnLeftInPlace()
 	h := n.state.Map.Header()
 	n.logs.Info("starting", "mode", n.Mode(), "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
 	if n.bootChoice && n.Mode() != ModeServer {
@@ -499,16 +516,19 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	// its mode) leaves the host alone: nothing is put back or taken over
 	// until a map makes the node a device.
 	mismatch := modeMismatch(n.Mode(), n.state)
+	// The kill switch is narrowed first: until then a crashed run's lets
+	// out what it let out connected (on macOS DNS to the direct upstreams
+	// from any socket), and restoring the host points the OS at them.
 	if !mismatch {
-		n.restoreHost()
 		n.startKillSwitch(ctx)
+		n.restoreHost()
 	}
 	if (n.state.Removed || mismatch) && !n.awaitSection(ctx, maps) {
 		return nil
 	}
 	if mismatch {
-		n.restoreHost()
 		n.startKillSwitch(ctx)
+		n.restoreHost()
 	}
 	if n.Mode() == ModeServer {
 		return n.runServer(ctx, reg, maps)
@@ -615,7 +635,9 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 		case <-ctx.Done():
 			// The node returns: its connection is down; its kill switch
 			// stays as a crash would leave it (runner.shutdown).
-			keepKillSwitch(context.Background(), n.dropConnection())
+			stopCtx, cancel := context.WithTimeout(context.Background(), killSwitchStopTimeout)
+			keepKillSwitch(stopCtx, n.dropConnection())
+			cancel()
 			publish()
 			return false
 		case <-reapply.C:

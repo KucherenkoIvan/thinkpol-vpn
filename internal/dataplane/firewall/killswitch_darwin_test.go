@@ -79,9 +79,10 @@ func TestKillSwitchLoadsItsAnchorAndHoldsPfOn(t *testing.T) {
 		"pass out quick on lo0 all no state",
 		"pass out quick from any to <thinkpol_killswitch> no state",
 		"pass out quick inet proto udp from any port = 68 to any port = 67 no state",
-		"pass out quick inet6 proto udp from any port = 546 to any port = 547 no state",
+		"pass out quick inet6 proto udp from any port = 546 to ff02::1:2 port = 547 no state",
+		"pass out quick inet6 proto udp from any port = 546 to fe80::/10 port = 547 no state",
 	}
-	if !slices.Equal(a.rules[:4], want) || a.rules[len(a.rules)-1] != "block return out quick all" || len(a.rules) != 4+5+4+1 {
+	if !slices.Equal(a.rules[:5], want) || a.rules[len(a.rules)-1] != "block return out quick all" || len(a.rules) != 5+5+4+1 {
 		t.Errorf("the anchor lists:\n%s", strings.Join(a.rules, "\n"))
 	}
 	if got := strings.Join(a.tables[killSwitchTable], " "); got != "203.0.113.50/32 2001:db8:e::50/128" {
@@ -222,8 +223,8 @@ func TestKillSwitchNeedsTheHookAndPfctl(t *testing.T) {
 		t.Errorf("Apply without the hook: %v, anchor %v", err, r.pf.anchors[KillSwitchAnchor])
 	}
 	none := newKillSwitch(execPfctl{path: "/nonexistent-tp048/pfctl", timeout: time.Second}, r.ksStore(), ownAddrs)
-	if err := none.Apply(context.Background(), downRules(t)); !errors.Is(err, ErrKillSwitchUnsupported) {
-		t.Errorf("Apply with no pfctl: %v, want ErrKillSwitchUnsupported", err)
+	if err := none.Apply(context.Background(), downRules(t)); !errors.Is(err, ErrKillSwitchUnsupported) || errors.Is(err, routetable.ErrGuardUnsupported) {
+		t.Errorf("Apply with no pfctl: %v, want ErrKillSwitchUnsupported alone", err)
 	}
 	if err := none.Close(); err != nil {
 		t.Errorf("Close with no pfctl: %v", err)

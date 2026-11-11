@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -199,6 +200,9 @@ func TestTheCrashPostureHoldsWhileMeantUp(t *testing.T) {
 	if r := host.rules(); r == nil || r.TUN != "" {
 		t.Errorf("a stop left %+v, want the down shape", r)
 	}
+	if !strings.Contains(b.log.String(), KillSwitchStopNote) {
+		t.Errorf("the stop left the kill switch in place without warning:\n%s", b.log)
+	}
 
 	out := &memKillSwitches{}
 	o := startDevice(t, s, reg, true, withKillSwitch(out, func(c *Config) { c.FailClosedAfterCrash = false }), withPreset(rules.PresetEverything))
@@ -253,7 +257,7 @@ func TestAFailingKillSwitchIsReportedAndRetried(t *testing.T) {
 	host.failWith(errors.New("nftables says no"))
 	b := startDevice(t, s, reg, true, withKillSwitch(host, func(c *Config) { c.KillSwitch = true }))
 	b.connection(t, Connected)
-	eventually(t, func() bool { st := b.node.Status().KillSwitch; return !st.Enforced && st.Error == "apply_failed" })
+	eventually(t, func() bool { st := b.node.Status().KillSwitch; return !st.Enforced && st.Error == KillSwitchApplyFailed })
 	if h := b.node.Status().Health(); !slices.Contains(h.Problems, ProblemKillSwitch) {
 		t.Errorf("health %+v, want %s", h, ProblemKillSwitch)
 	}
@@ -351,4 +355,79 @@ func TestTheKillSwitchIsReappliedAtEveryTick(t *testing.T) {
 	if firewall.DirectTimeout < 2*killSwitchReapply {
 		t.Errorf("firewall.DirectTimeout %v leaves no stall margin over a %v re-apply", firewall.DirectTimeout, killSwitchReapply)
 	}
+}
+
+// A start narrows a crashed run's kill switch before it restores the
+// host: once the OS's resolvers are back, the crashed run's connected
+// shape (on macOS, DNS to the direct upstreams from any socket) is gone.
+func TestAStartNarrowsTheKillSwitchBeforeRestoringTheHost(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	host := &memKillSwitches{}
+	host.put(&firewall.KillSwitchRules{TUN: "thinkpol0", Mark: routetable.Mark, Allow: mustSet(t, "0.0.0.0/0"),
+		Upstreams: []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53")}})
+	atRestore := make(chan *firewall.KillSwitchRules, 4)
+	b := startDevice(t, s, reg, true, withKillSwitch(host, nil), withPreset(rules.PresetEverything),
+		deviceOpt{prepare: func(_ *Config, p *Platform) {
+			p.RestoreDNS = func() error { atRestore <- host.rules(); return nil }
+		}})
+	select {
+	case r := <-atRestore:
+		if r == nil || r.TUN != "" || r.Upstreams != nil || r.Allow.Contains(netip.MustParseAddr("203.0.113.7")) {
+			t.Errorf("the OS's resolvers were restored with the kill switch holding %+v, want the down shape", r)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the start restored no resolver configuration")
+	}
+	b.connection(t, Connected)
+}
+
+// A first start that keeps failing under the crash posture (restarted
+// by the service each time) holds the kill switch; a disconnect the node
+// can't act on is still recorded, so the next start comes up
+// disconnected and removes it: the member isn't locked out.
+func TestADisconnectTheNodeCantTakeIsHonouredAtTheNextStart(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	host := &memKillSwitches{}
+	rec := &memConnectRecord{}
+	_ = rec.Save(true) // the member connected earlier in this boot
+	service := func(c *Config, p *Platform) { c.Service, p.ConnectRecord = true, rec }
+	inTUN, release := make(chan struct{}), make(chan struct{})
+	entered, released := sync.OnceFunc(func() { close(inTUN) }), sync.OnceFunc(func() { close(release) })
+	b := startDevice(t, s, reg, true, withKillSwitch(host, nil), withPreset(rules.PresetEverything),
+		deviceOpt{prepare: func(c *Config, p *Platform) {
+			service(c, p)
+			p.NewTUN = func(string, int) (wgtun.Device, error) {
+				entered()
+				<-release
+				return nil, errors.New("no TUN today")
+			}
+		}})
+	t.Cleanup(released) // before the node's cleanup waits for it
+	<-inTUN
+	inPlace(t, host, "down")
+	disconnected := make(chan error, 1)
+	go func() { disconnected <- b.node.Disconnect(context.Background()) }()
+	eventually(t, func() bool { c, ok, _ := rec.Load(); return ok && !c })
+	released()
+	select {
+	case err := <-b.done:
+		if err == nil {
+			t.Fatal("the start didn't fail")
+		}
+		b.done <- nil // for the cleanup
+	case <-time.After(10 * time.Second):
+		t.Fatal("the start didn't return")
+	}
+	if err := <-disconnected; !errors.Is(err, ErrNotRunning) {
+		t.Errorf("Disconnect: %v, want ErrNotRunning", err)
+	}
+	inPlace(t, host, "down") // the crash posture holds while the agent is down
+
+	next := startDevice(t, s, reg, true, withKillSwitch(host, nil), withPreset(rules.PresetEverything), deviceOpt{prepare: service})
+	next.connection(t, Disconnected)
+	inPlace(t, host, "none")
 }

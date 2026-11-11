@@ -507,8 +507,8 @@
 //
 // [KillSwitch] lets nothing out of any interface but loopback except
 // what [KillSwitchRules] allows, both families, a socket bound to an
-// interface or not: the entries and, with allow-LAN, the LAN ([LAN]) in
-// Allow; while connected the TUN, the direct destinations (Direct) and,
+// interface or not: the entries and, with allow-LAN, the LAN ([LAN], the
+// agent's definition, kept here) in Allow; while connected the TUN, the direct destinations (Direct) and,
 // on macOS, DNS to the direct upstreams; on Linux the links' marked
 // sockets; and always DHCP (v4 and v6) and the link's neighbour
 // discovery and MLD. Everything else is refused (a reset, an ICMP error).
@@ -532,7 +532,7 @@
 //	    oifname "lo" accept; oifname <TUN> accept (connected); meta mark <Mark> accept
 //	    ip daddr @allow4 accept; ip6 daddr @allow6 accept
 //	    ip daddr @direct4 accept; ip6 daddr @direct6 accept
-//	    udp 68 -> 67 accept (IPv4); udp 546 -> 547 accept (IPv6)
+//	    udp 68 -> 67 accept (IPv4); udp 546 -> 547 to ff02::1:2 or fe80::/10 accept (IPv6)
 //	    neighbour discovery (hop limit 255) and MLD (hop limit 1) accept, as the guard's
 //	    meta l4proto tcp reject with tcp reset; reject with icmpx admin-prohibited
 //	  }
@@ -573,7 +573,7 @@
 //	pass out quick from any to <thinkpol_killswitch> no state
 //	pass out quick proto { tcp, udp } from any to <upstream> port <its port> no state (each upstream, connected)
 //	pass out quick inet proto udp from any port 68 to any port 67 no state
-//	pass out quick inet6 proto udp from any port 546 to any port 547 no state
+//	pass out quick inet6 proto udp from any port 546 to { ff02::1:2, fe80::/10 } port 547 no state
 //	pass out quick inet6 proto ipv6-icmp all icmp6-type { 133, 134, 135, 136, 137 } no state
 //	pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type { 130, 131, 132, 143 } no state
 //	block return out quick all

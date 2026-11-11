@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
@@ -96,11 +95,7 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) (err error) {
 	if k.closed {
 		return errKillSwitchClosed
 	}
-	defer func() {
-		if errors.Is(err, routetable.ErrGuardUnsupported) {
-			err = fmt.Errorf("%w: %w", ErrKillSwitchUnsupported, err)
-		}
-	}()
+	defer func() { err = killSwitchUnsupported(err) }()
 	if _, err := checkHook(ctx, k.pf); err != nil {
 		k.killStates = true // pf may evaluate no anchor meanwhile
 		return err
@@ -141,7 +136,7 @@ func (k *KillSwitch) load(ctx context.Context, r KillSwitchRules) (*appliedKillS
 	if err := checkListed(listed, rules, "kill switch"); err != nil {
 		return nil, err
 	}
-	got, err := listTable(ctx, k.pf, KillSwitchAnchor, killSwitchTable, true)
+	got, err := listTable(ctx, k.pf, KillSwitchAnchor, killSwitchTable, true, "kill switch")
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +160,7 @@ func (k *KillSwitch) intact(ctx context.Context, a *appliedKillSwitch) bool {
 	if err != nil || !slices.Equal(listed, a.listed) {
 		return false
 	}
-	table, err := listTable(ctx, k.pf, KillSwitchAnchor, killSwitchTable, true)
+	table, err := listTable(ctx, k.pf, KillSwitchAnchor, killSwitchTable, true, "kill switch")
 	return err == nil && slices.Equal(table, a.table)
 }
 
@@ -184,16 +179,25 @@ func (k *KillSwitch) Close() error {
 	ctx := context.Background()
 	k.applied = nil
 	err := flushAnchor(ctx, k.pf, KillSwitchAnchor, killSwitchTable, true, "kill switch")
-	if errors.Is(err, routetable.ErrGuardUnsupported) {
+	if errors.Is(err, errNoPfctl) {
 		err = k.forget()
 	} else if err == nil {
 		err = k.releaseAll(ctx)
 	}
 	if err != nil {
-		return err
+		return killSwitchUnsupported(err)
 	}
 	k.closed = true
 	return nil
+}
+
+// killSwitchUnsupported is err, wrapping ErrKillSwitchUnsupported too
+// when there is no pfctl (errNoPfctl).
+func killSwitchUnsupported(err error) error {
+	if errors.Is(err, errNoPfctl) {
+		return fmt.Errorf("%w: %w", ErrKillSwitchUnsupported, err)
+	}
+	return err
 }
 
 // killSwitchUpstreams are the direct DNS upstreams the kill switch passes
@@ -218,7 +222,7 @@ func killSwitchUpstreams(ups []netip.AddrPort) []netip.AddrPort {
 //	pass out quick from any to <thinkpol_killswitch> no state
 //	pass out quick proto { tcp, udp } from any to <upstream> port <its port> no state (each upstream)
 //	pass out quick inet proto udp from any port 68 to any port 67 no state            (DHCPv4)
-//	pass out quick inet6 proto udp from any port 546 to any port 547 no state         (DHCPv6)
+//	pass out quick inet6 proto udp from any port 546 to { ff02::1:2, fe80::/10 } port 547 no state (DHCPv6, two rules)
 //	pass out quick inet6 proto ipv6-icmp all icmp6-type { 133, 134, 135, 136, 137 } no state
 //	pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type { 130, 131, 132, 143 } no state
 //	block return out quick all
@@ -240,7 +244,7 @@ func killSwitchRules(tun string, upstreams []netip.AddrPort) []guardRule {
 	}
 	return append(rules,
 		guardRule{"pass out quick inet proto udp from any port 68 to any port 67 no state", 1, pass("inet", "udp", "67")},
-		guardRule{"pass out quick inet6 proto udp from any port 546 to any port 547 no state", 1, pass("inet6", "udp", "547")},
+		guardRule{"pass out quick inet6 proto udp from any port 546 to { ff02::1:2, fe80::/10 } port 547 no state", 2, pass("inet6", "udp", "547")},
 		guardRule{"pass out quick inet6 proto ipv6-icmp all icmp6-type { 133, 134, 135, 136, 137 } no state", 5, pass("inet6", "icmp6-type")},
 		guardRule{"pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type { 130, 131, 132, 143 } no state", 4, pass("inet6", "ff00::/8", "icmp6-type")},
 		guardRule{"block return out quick all", 1, []string{"block", "return", "out", "quick"}},

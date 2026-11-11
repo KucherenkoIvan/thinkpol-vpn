@@ -515,7 +515,7 @@ func (s Status) Health() Health {
 	}
 	switch s.KillSwitch.Error {
 	case "":
-	case "unsupported":
+	case KillSwitchUnsupported:
 		add(HealthDegraded, ProblemKillSwitchUnsupported)
 	default:
 		add(HealthDegraded, ProblemKillSwitch)

@@ -41,7 +41,9 @@ func (r KillSwitchRules) Equal(o KillSwitchRules) bool {
 }
 
 // LAN is what allow-LAN lets out: private and link-local unicast, and
-// multicast and broadcast, of both families.
+// multicast and broadcast, of both families. It is the agent's
+// definition, which puts it in Allow; the firewall itself never reads
+// it.
 var LAN = []netip.Prefix{
 	netip.MustParsePrefix("10.0.0.0/8"),
 	netip.MustParsePrefix("172.16.0.0/12"),
@@ -55,8 +57,10 @@ var LAN = []netip.Prefix{
 }
 
 // DirectTimeout is how long, on Linux, Direct stays in place after the
-// last Apply: the agent applies the kill switch again well within it
-// while it runs (every 10 s), so only a dead agent lets it expire.
+// last Apply: the agent applies the kill switch again every 10 s while
+// it runs, so only a dead agent, or one whose node loop stalls for about
+// 20 s, lets it expire. Longer would leave a dead agent's direct
+// destinations open longer.
 const DirectTimeout = 30 * time.Second
 
 // ErrKillSwitchUnsupported: the OS can't hold the kill switch (no

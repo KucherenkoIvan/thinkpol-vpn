@@ -5,6 +5,7 @@ package firewall_test
 import (
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"os/exec"
 	"regexp"
@@ -140,6 +141,61 @@ func (p *pair) dhcp4(t *testing.T) bool {
 	return err == nil && string(buf[:n]) == "discover"
 }
 
+// dhcp6 says whether a UDP datagram from the device's port 546 to dst's
+// port 547, out of eth0, reaches the gateway (listening on gw0, joined to
+// ff02::1:2, with the link-local address fe80::1).
+func (p *pair) dhcp6(t *testing.T, dst string) bool {
+	t.Helper()
+	var rfd int
+	var err error
+	inNS(t, p.gw, func() {
+		var ifc *net.Interface
+		if ifc, err = net.InterfaceByName("gw0"); err != nil {
+			return
+		}
+		if rfd, err = unix.Socket(unix.AF_INET6, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0); err != nil {
+			return
+		}
+		tv := unix.NsecToTimeval((2 * time.Second).Nanoseconds())
+		_ = unix.SetsockoptTimeval(rfd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv)
+		if err = unix.Bind(rfd, &unix.SockaddrInet6{Port: 547}); err != nil {
+			return
+		}
+		mreq := &unix.IPv6Mreq{Multiaddr: netip.MustParseAddr("ff02::1:2").As16(), Interface: uint32(ifc.Index)}
+		err = unix.SetsockoptIPv6Mreq(rfd, unix.IPPROTO_IPV6, unix.IPV6_JOIN_GROUP, mreq)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Close(rfd) }()
+	inNS(t, p.dev, func() {
+		var ifc *net.Interface
+		if ifc, err = net.InterfaceByName("eth0"); err != nil {
+			return
+		}
+		var fd int
+		if fd, err = unix.Socket(unix.AF_INET6, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0); err != nil {
+			return
+		}
+		defer func() { _ = unix.Close(fd) }()
+		if err = unix.Bind(fd, &unix.SockaddrInet6{Port: 546}); err != nil {
+			return
+		}
+		to := &unix.SockaddrInet6{Port: 547, Addr: netip.MustParseAddr(dst).As16()}
+		if a := netip.MustParseAddr(dst); a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() {
+			to.ZoneId = uint32(ifc.Index)
+		}
+		err = unix.Sendto(fd, []byte("solicit"), 0, to)
+	})
+	if err != nil {
+		// A refusal by the kill switch shows as EPERM on the send.
+		return false
+	}
+	buf := make([]byte, 64)
+	n, _, err := unix.Recvfrom(rfd, buf, 0)
+	return err == nil && string(buf[:n]) == "solicit"
+}
+
 // ksHandles are the kill switch chain's rule handles, in order.
 func (p *pair) ksHandles(t *testing.T) string {
 	t.Helper()
@@ -157,7 +213,8 @@ func (p *pair) ksHandles(t *testing.T) string {
 // once. Connected, the TUN and the direct destinations pass too.
 func TestKillSwitchLetsOutOnlyEntriesWhileDown(t *testing.T) {
 	p := ksPair(t)
-	if !p.ping4(t, foreign4) || !p.ping(t, foreign6) {
+	p.ip(t, p.gw, "addr", "add", "fe80::1/64", "dev", "gw0", "nodad")
+	if !p.ping4(t, foreign4) || !p.ping(t, foreign6) || !p.dhcp6(t, "2001:db8:1::1") || !p.dhcp6(t, "fe80::1") || !p.dhcp6(t, "ff02::1:2") {
 		t.Fatal("the gateway doesn't answer without a kill switch: the test proves nothing")
 	}
 	k := p.killSwitch(t)
@@ -190,6 +247,9 @@ func TestKillSwitchLetsOutOnlyEntriesWhileDown(t *testing.T) {
 			{"ping foreign4 from a marked socket", func() bool { return p.ping4(t, foreign4, "-m", "29808") }, true},
 			{"ping foreign6 from a marked socket", func() bool { return p.ping(t, foreign6, "-m", "29808") }, true},
 			{"DHCPv4 to the gateway", func() bool { return p.dhcp4(t) }, true},
+			{"DHCPv6 to ff02::1:2", func() bool { return p.dhcp6(t, "ff02::1:2") }, true},
+			{"DHCPv6 to the gateway's link-local address", func() bool { return p.dhcp6(t, "fe80::1") }, true},
+			{"DHCPv6 to the gateway's global address", func() bool { return p.dhcp6(t, "2001:db8:1::1") }, false},
 			{"ping lan4", func() bool { return p.ping4(t, lan4) }, lan},
 			{"ping ff02::1 on eth0", func() bool { return p.ping(t, "ff02::1", "-I", "eth0") }, lan},
 		}

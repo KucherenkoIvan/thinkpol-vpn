@@ -24,7 +24,9 @@ import (
 // the restart held off) leaves it in place, the switch on, or off under
 // the "everything" preset (the crash posture, which node.json opts out
 // of), until the restarted agent is connected again; uninstall removes
-// it.
+// it. A stop leaves the down shape as a crash would; the live agent
+// renews the direct destinations and repairs its table within a re-apply
+// period.
 func TestKillSwitchUnderSystemd(t *testing.T) {
 	t.Parallel()
 	topo := lab.Topology{
@@ -237,6 +239,16 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	ping(t, dev, s4)
 	wantTable("on, restarted", true, true)
 
+	// A stop is not a disconnect: the stopped agent leaves the down shape,
+	// and the started one comes back connected.
+	dev.MustExec(t, "systemctl", "stop", "thinkpol.service")
+	wantTable("on, stopped", true, false)
+	confined("on, stopped", false)
+	dev.MustExec(t, "systemctl", "start", "thinkpol.service")
+	state("connected")
+	ping(t, dev, s4)
+	wantTable("on, started again", true, true)
+
 	// Off, connected: nothing under the space preset; a disconnect leaves
 	// traffic direct.
 	thinkpol("kill-switch", "off")
@@ -250,6 +262,38 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	thinkpol("connect")
 	ping(t, dev, s4)
 	wantTable("everything, connected", true, true)
+
+	// The live agent renews the direct destinations well within their
+	// timeout (firewall.DirectTimeout, 30 s): one bound to eth0 still
+	// answers after 45 s.
+	time.Sleep(45 * time.Second)
+	if !reaches(foreign[0], true) {
+		t.Errorf("everything, connected 45 s: the direct destination %v bound to %s unanswered: its renewal lapsed", foreign[0], eth)
+	}
+	// Removed from outside, the table is back by the next re-apply tick,
+	// 10 s apart. Removed again just after a re-apply put it back, it
+	// must be back within 11 s, not skip a tick. (The table alone, not
+	// `nft flush ruleset`, which would take the container's own rules
+	// with it.)
+	backIn := func() time.Duration {
+		t.Helper()
+		dev.MustExec(t, "nft", "delete", "table", "inet", "thinkpol-killswitch")
+		start := time.Now()
+		for p, _ := table(); !p; p, _ = table() {
+			if time.Since(start) > 30*time.Second {
+				t.Fatal("the kill switch's table removed from outside isn't back within 30 s")
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		return time.Since(start)
+	}
+	backIn()
+	for i := range 3 {
+		if d := backIn(); d > 11*time.Second {
+			t.Errorf("everything, connected: the table removed from outside (%d) was back after %v, want within 11 s", i, d)
+		}
+	}
+	wantTable("everything, re-applied", true, true)
 	crashHeld(func() {
 		wantTable("everything, crashed", true, true)
 		expired("everything, crashed")

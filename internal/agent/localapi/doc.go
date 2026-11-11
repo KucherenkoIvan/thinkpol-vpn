@@ -42,9 +42,13 @@
 //
 // SetKillSwitch and SetAllowLAN set a device's kill switch toggles
 // (`thinkpol kill-switch on|off`, `thinkpol allow-lan on|off`), stored in
-// its device file, and return once the node put the kill switch in place
-// or removed it; GetStatus shows them, and whether it is in place as
-// meant (Status.kill_switch).
+// its device file, and return once the node acted on them: the kill
+// switch put in place, changed or removed as the toggles and the crash
+// posture say, or the attempt failed (Status.kill_switch says which:
+// kill_switch_enforced false and the error's code). A node that isn't
+// running takes them at its next start; a device whose map makes it a
+// server (mode mismatch) stores them and leaves the host alone. GetStatus
+// shows the toggles and whether the kill switch is in place as meant.
 //
 // # Where the socket is
 //

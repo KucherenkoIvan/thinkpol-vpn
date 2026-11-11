@@ -444,7 +444,9 @@ func (r *runner) shutdown() {
 	// A stop is no deliberate disconnect: the kill switch is left as a
 	// crash would leave it, narrowed to the down shape (an update that
 	// fails to start leaks nothing). The node's context is done.
-	r.keepKillSwitch(context.Background(), meantUp)
+	ctx, cancel := context.WithTimeout(context.Background(), killSwitchStopTimeout)
+	defer cancel()
+	r.keepKillSwitch(ctx, meantUp)
 	r.publish()
 }
 

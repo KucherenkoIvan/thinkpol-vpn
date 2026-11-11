@@ -3301,7 +3301,7 @@ type KillSwitch struct {
 	// preset (the crash posture).
 	Active bool `protobuf:"varint,3,opt,name=active,proto3" json:"active,omitempty"`
 	// The host holds what is meant (in place, or rightly not); error says
-	// why not: "apply_failed", "unsupported".
+	// why not: "apply_failed", "remove_failed", "unsupported".
 	Enforced      bool   `protobuf:"varint,4,opt,name=enforced,proto3" json:"enforced,omitempty"`
 	Error         string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
 	unknownFields protoimpl.UnknownFields

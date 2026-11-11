@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net/netip"
 	"sync"
 
 	"github.com/google/nftables"
@@ -44,7 +45,8 @@ const (
 //	    meta nfproto ipv4 ip daddr @direct4 accept
 //	    meta nfproto ipv6 ip6 daddr @direct6 accept
 //	    meta nfproto ipv4 udp sport 68 udp dport 67 accept   (DHCPv4)
-//	    meta nfproto ipv6 udp sport 546 udp dport 547 accept (DHCPv6)
+//	    meta nfproto ipv6 udp sport 546 udp dport 547 ip6 daddr ff02::1:2 accept   (DHCPv6)
+//	    meta nfproto ipv6 udp sport 546 udp dport 547 ip6 daddr fe80::/10 accept
 //	    icmpv6 type 133-137 ip6 hoplimit 255 accept          (neighbour discovery)
 //	    icmpv6 type { 130-132, 143 } ip6 hoplimit 1 accept   (MLD)
 //	    meta l4proto tcp counter reject with tcp reset
@@ -356,7 +358,10 @@ func outputRules(r KillSwitchRules, ids [4]uint32) [][]expr.Any {
 	rules = append(rules, ksLookups(ids, daddr)...)
 	rules = append(rules,
 		append(udpPorts(unix.NFPROTO_IPV4, 68, 67), accept),
-		append(udpPorts(unix.NFPROTO_IPV6, 546, 547), accept),
+		append(udpPorts(unix.NFPROTO_IPV6, 546, 547), daddr(true),
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: allDHCPServers[:]}, accept),
+		append(udpPorts(unix.NFPROTO_IPV6, 546, 547), daddr(true),
+			&expr.Range{Op: expr.CmpOpEq, Register: 1, FromData: linkLocalFirst[:], ToData: linkLocalLast[:]}, accept),
 		append(append(icmpv6Type(), &expr.Range{Op: expr.CmpOpEq, Register: 1, FromData: []byte{133}, ToData: []byte{137}}), hopLimit(255, accept)...),
 		append(append(icmpv6Type(), &expr.Range{Op: expr.CmpOpEq, Register: 1, FromData: []byte{130}, ToData: []byte{132}}), hopLimit(1, accept)...),
 		append(append(icmpv6Type(), &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{143}}), hopLimit(1, accept)...),
@@ -384,6 +389,14 @@ func forwardRules(r KillSwitchRules, ids [4]uint32) [][]expr.Any {
 	}
 	return append(rules, refused()...)
 }
+
+// DHCPv6's destinations: All_DHCP_Relay_Agents_and_Servers, and the
+// link-local unicast range (fe80::/10) a server on the link answers from.
+var (
+	allDHCPServers = netip.MustParseAddr("ff02::1:2").As16()
+	linkLocalFirst = netip.MustParseAddr("fe80::").As16()
+	linkLocalLast  = netip.MustParseAddr("febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff").As16()
+)
 
 // nfproto is "meta nfproto == family".
 func nfproto(family byte) []expr.Any {

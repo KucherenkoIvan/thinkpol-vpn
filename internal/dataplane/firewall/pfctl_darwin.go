@@ -51,7 +51,7 @@ type pfOutput struct {
 }
 
 // pfctl runs pfctl with args, stdin (nil: none) as its input. A failure
-// that means there is no pfctl at all wraps routetable.ErrGuardUnsupported.
+// that means there is no pfctl at all wraps errNoPfctl.
 // A failed run's output is returned with the error.
 type pfctl interface {
 	run(ctx context.Context, stdin []byte, args ...string) (pfOutput, error)
@@ -77,7 +77,7 @@ func (x execPfctl) run(ctx context.Context, stdin []byte, args ...string) (pfOut
 	name := "pfctl " + strings.Join(args, " ")
 	if err := cmd.Start(); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return pfOutput{}, fmt.Errorf("%w: %s: %w", routetable.ErrGuardUnsupported, x.path, err)
+			return pfOutput{}, fmt.Errorf("%w: %s: %w", errNoPfctl, x.path, err)
 		}
 		return pfOutput{}, fmt.Errorf("firewall: %s: %w", name, err)
 	}
@@ -653,7 +653,7 @@ func parseTableOf(show []byte, both bool) ([]netip.Prefix, error) {
 			}
 		}
 		if err != nil || !p.IsValid() || !p.Addr().Is6() && !both || p.Addr().Is4In6() || p != p.Masked() {
-			return nil, fmt.Errorf("firewall: the guard's table holds %q", l)
+			return nil, fmt.Errorf("firewall: pf's table holds %q", l)
 		}
 		out = append(out, p)
 	}

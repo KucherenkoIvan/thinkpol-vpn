@@ -205,10 +205,12 @@
 //
 // Failing closed costs this: a device that crashed while connected and
 // comes back on a map that makes it a server keeps what the crashed run
-// left (its resolver configuration, the route table's rules) until a map
-// makes it a device again, or `thinkpol service uninstall` clears the
-// host ([Platform.ClearHost]); `thinkpol disconnect` in that state
-// clears neither. A mismatch is told to no subscriber: no event says it
+// left (its resolver configuration, the route table's rules, its kill
+// switch) until a map makes it a device again, or `thinkpol service
+// uninstall` clears the host ([Platform.ClearHost]); `thinkpol
+// disconnect` and `thinkpol kill-switch off` in that state clear none of
+// it, and report success: the toggle is stored and the connection down,
+// as asked, but the host is left alone. A mismatch is told to no subscriber: no event says it
 // starts or ends (nothing subscribes in production yet), only Status and
 // the log.
 //
@@ -331,22 +333,27 @@
 // and the direct destinations and upstreams the route table exempts
 // (routetable.GuardFor of the last Want) on top.
 //
-// When: at start, before connecting (a crashed or stopped run's rules are
-// narrowed to the down shape, or removed if not meant); at every turn of
-// the node's loop (a connect, a disconnect, a map, a preset, a retry);
-// every 10 s (a re-apply checks it is whole, and on Linux renews the
-// direct destinations, which expire 30 s after the last one); and when a
+// When: at start, before connecting and before the resolver configuration
+// a crash left is put back (a crashed or stopped run's rules are narrowed
+// to the down shape, or removed if not meant); at every turn of the
+// node's loop (a connect, a disconnect, a map, a preset, a retry); at
+// every 10 s tick (a re-apply checks it is whole, and on Linux renews the
+// direct destinations, which expire 30 s after the last one: a node loop
+// stalled for about 20 s lets them expire); and when a
 // member changes a toggle ([Node.SetKillSwitch], [Node.SetAllowLAN]),
 // which return once it was acted on. A stop is no deliberate disconnect:
 // the node returning leaves the down shape in place if it was meant up or
-// the toggle is on, as a crash would. Only a deliberate disconnect with
-// the toggle off (or no crash posture), a start that comes up so, or
-// `service uninstall` ([Platform.ClearHost]) removes it. A failure is
+// the toggle is on, as a crash would, and warns so ([KillSwitchStopNote]).
+// Only a deliberate disconnect with the toggle off (or no crash posture),
+// a start that comes up so, or `service uninstall` ([Platform.ClearHost])
+// removes it. A disconnect is recorded for the boot before the node hears
+// of it ([Node.Disconnect]), so one the node can't take (a first start
+// failing again at every restart) is honoured by the next start. A mode
+// mismatch leaves a previous run's kill switch alone (above). A failure is
 // logged, retried at the next turn or within 10 s, and in the status
 // ([KillSwitchStatus], health `kill_switch_not_enforced`, or
 // `kill_switch_unsupported` where the OS can't hold it); it never fails a
-// connect. A device whose map makes it a server leaves it alone, as it
-// leaves the rest of the host; a server has none.
+// connect. A server has none.
 //
 // # Events
 //
