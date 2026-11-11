@@ -44,6 +44,10 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - [x] R1.9 a dropped new-flow snapshot silently clears an entry of the tell: censorRun.healthy fails on any unnoticed snapshot
 - [x] R1.10 the OpenVPN probe keeps state in a package-level map keyed by a formatted pointer: read the node's state
 - [x] R1.11 nits: probe helpers into probe.go, parseTimeout placement, endpoints.go → blockedservers.go, Flow.initiator comment, slice expression, nginx packages in lab/Dockerfile, split TestProberSettings, JA3S GREASE comment
+- [ ] R2.1 (should-fix) the matrix reads only the module's first flag between device-a and server-1: check every flag the module raised there, at least one per address family the row uses; any "not compared", or a family with no flag, is an error
+- [ ] R2.2 (should-fix) RR31's added sentence defines the upstream tell wrongly: on every failed probe the entry dials the camouflage target, seen by a censor on the entry's uplink; reported by the lab, not gated, because REALITY's design can't avoid the dial; every mention consistent
+- [ ] R2.3 (should-fix) no way for a matrix row to run the prober with upstreamTell "report": build the mechanism (relay-tcp stays "flag"), test it, document in lab.md how a gate row asks for "report" and that every gate row must be listed in verdictSays
+- [ ] R2.4 (nits) (a) the "tagged on half a ClientHello" check reads the verdict log before a flush; (b) TestBlames doesn't cover blockedBy's per-family default, and the Log overstates it; (c) no unit test for the default upstreamTell ("" means flag); (d) a ClientHello longer than retainBytes gets the false reason "the connection doesn't start with a ClientHello"
 
 ## Log
 - 2026-10-10 created in backlog
@@ -77,3 +81,4 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - 2026-11-09 not verified: reality's own rows (TP-201) against these modules with upstreamTell "report"
 - 2026-11-09 has-errors → in-progress (R1.1–R1.11 fixed and ticked)
 - 2026-11-09 in-progress → review
+- 2026-11-12 review → has-errors (round 2 findings R2.x)
