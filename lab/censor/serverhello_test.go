@@ -60,6 +60,9 @@ func TestServerHelloFingerprints(t *testing.T) {
 		t.Errorf("JA3S %s, want %s", got, want)
 	}
 
+	// Servers don't send GREASE (RFC 8701 has clients send it), so the
+	// 0x1a1a extension here is defensive: JA3S drops one if a server ever
+	// does.
 	tls12 := buildServerHello(0x0303, 0xc02f, ext(0xff01, []byte{0}), ext(0, nil), alpnExt("h2"), ext(23, nil), ext(0x1a1a, nil))
 	h, err = serverHelloOf(tls12)
 	if err != nil {

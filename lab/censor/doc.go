@@ -307,8 +307,8 @@
 // REALITY does so by design, on every connection, so the check flags it.
 // The upstreamTell setting says what the tell does: "flag" (the default)
 // flags the server on the tell alone; "report" only says so in the
-// verdict, the server judged on the probes' answers, for a matrix row
-// meant to show those. The censor sees the entry's
+// verdict, the server judged on the probes' answers, as the M2 gate's
+// reality rows do: the tell is reported, not gated (owner, 2026-11-09). The censor sees the entry's
 // connection only from a vantage on the entry's uplink to the site. In
 // the lab that is lab.Upstream, the camouflage target behind the router,
 // where the entry's connection crosses the censor as a client's does; a

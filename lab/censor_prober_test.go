@@ -382,8 +382,11 @@ func (c *censorRun) settled(t *testing.T, l *lab.Lab) error {
 				}
 			}
 			switch {
-			case tags > 0 && waiting == 0, tags == 0 && time.Since(start) > settleQuiet:
+			case tags > 0 && waiting == 0:
 				t.Logf("settled after %s: %d tagged flows of server-1, all flagged", time.Since(start).Round(time.Second), tags)
+				return nil
+			case tags == 0 && time.Since(start) > settleQuiet:
+				t.Logf("settled after %s: no module tagged a flow of server-1", time.Since(start).Round(time.Second))
 				return nil
 			case time.Since(start) > settleWithin:
 				return fmt.Errorf("%d of %d flows of server-1 a module tagged have no flag after %s", waiting, tags, settleWithin)

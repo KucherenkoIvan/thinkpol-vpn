@@ -114,9 +114,9 @@ func TestCensorMatrix(t *testing.T) {
 			if why != "" {
 				cell.detail = strings.TrimPrefix(cell.detail+"; "+cc.report+": "+why, "; ")
 			}
-			if says, ok := cc.verdictSays[tr.name]; ok && !strings.Contains(why, says) {
-				cell.result, cell.detail = "error", fmt.Sprintf("%s's verdict doesn't say %q", cc.report, says)
-				t.Fatalf("%s against %s: %s's verdict %q doesn't say %q: it didn't compare what the cell is for", tr.name, cc.name, cc.report, why, says)
+			if err := cc.verdictMisses(tr.name, why); err != nil {
+				cell.result, cell.detail = "error", err.Error()
+				t.Fatalf("%s against %s: %v", tr.name, cc.name, err)
 			}
 		}
 		if cell.result != want {
@@ -260,6 +260,38 @@ type censorCase struct {
 	// the comparison the cell is for: a verdict without it ("not
 	// compared", or no flag at all) is an error, never a pass.
 	verdictSays map[string]string
+}
+
+// verdictMisses is an error when row's verdict from the report module,
+// why ("" for no flag), lacks what the case needs it to say: the module
+// didn't compare what the cell is for, which must not score as a pass.
+func (cc censorCase) verdictMisses(row, why string) error {
+	says, ok := cc.verdictSays[row]
+	if !ok || strings.Contains(why, says) {
+		return nil
+	}
+	if why == "" {
+		return fmt.Errorf("%s never flagged the row's connection, want a verdict saying %q", cc.report, says)
+	}
+	return fmt.Errorf("%s's verdict %q doesn't say %q", cc.report, why, says)
+}
+
+// TestVerdictMisses: a cell whose module didn't compare ("not compared",
+// or no flag at all) is an error, whatever the row's crossing scored.
+func TestVerdictMisses(t *testing.T) {
+	cc := censorCase{report: "server-hello", verdictSays: map[string]string{rowHTTPS: "server hello matches the site"}}
+	for why, wantErr := range map[string]bool{
+		"accept, server hello matches the site camouflage.example.net": false,
+		"accept, not compared: the site is unreachable":                true,
+		"": true,
+	} {
+		if err := cc.verdictMisses(rowHTTPS, why); (err != nil) != wantErr {
+			t.Errorf("verdict %q: %v, want an error: %v", why, err, wantErr)
+		}
+	}
+	if err := cc.verdictMisses(rowPlainTCP, ""); err != nil {
+		t.Errorf("a row the case doesn't check: %v", err)
+	}
 }
 
 func (cc censorCase) want(transport string) string {
