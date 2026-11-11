@@ -33,17 +33,17 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - Resolved (owner, 2026-11-09): the upstream tell is reported, not gated. The prober's `upstreamTell` setting is "flag" (default) or "report"; TP-201's reality rows use "report" (milestones.md, lab.md, RR31 say so).
 
 ## Review findings
-- [ ] R1.1 (blocker) the prober tags a flow on its first data segment, so a ClientHello spanning two segments (a post-quantum key share, ~1.8 KB) skips the TLS comparison with a false reason and the replay probe sends half a hello: wait for the whole hello (or not a hello, or retainBytes) before tagging; an incomplete hello gets its own reason
-- [ ] R1.2 server-hello's "not compared" (site unreachable, name not in sites, no ServerHello) scores pass: a cell whose case expects a comparison and gets "not compared" or no flag is an error
-- [ ] R1.3 a suspect whose server is the reference returns without a flag, breaking settled(): flag Accept "not probed: the reference itself"; settled() logs accurately when nothing was tagged
-- [ ] R1.4 the "varies" cell checks the blocker per server, not per family: check it per family
-- [ ] R1.5 connEnd compares err.Error() (with addresses and ports), so identical failures never compare alike: compare by errno
-- [ ] R1.6 the upstream tell can't be turned off: module setting upstreamTell "flag" (default) or "report", documented in doc.go
-- [ ] R1.7 "varies" docs (lab.md, results_test.go, RESULTS.md header) still say partial fails; a varies key on a non-"(reference)" row is fatal; doc.go: udp's exemption chance is per link-hour
-- [ ] R1.8 the matrix never shows the prober's TLS comparison or the upstream tell
-- [ ] R1.9 a dropped new-flow snapshot silently clears an entry of the tell: censorRun.healthy fails on any unnoticed snapshot
-- [ ] R1.10 the OpenVPN probe keeps state in a package-level map keyed by a formatted pointer: read the node's state
-- [ ] R1.11 nits: probe helpers into probe.go, parseTimeout placement, endpoints.go → blockedservers.go, Flow.initiator comment, slice expression, nginx packages in lab/Dockerfile, split TestProberSettings, JA3S GREASE comment
+- [x] R1.1 (blocker) the prober tags a flow on its first data segment, so a ClientHello spanning two segments (a post-quantum key share, ~1.8 KB) skips the TLS comparison with a false reason and the replay probe sends half a hello: wait for the whole hello (or not a hello, or retainBytes) before tagging; an incomplete hello gets its own reason
+- [x] R1.2 server-hello's "not compared" (site unreachable, name not in sites, no ServerHello) scores pass: a cell whose case expects a comparison and gets "not compared" or no flag is an error
+- [x] R1.3 a suspect whose server is the reference returns without a flag, breaking settled(): flag Accept "not probed: the reference itself"; settled() logs accurately when nothing was tagged
+- [x] R1.4 the "varies" cell checks the blocker per server, not per family: check it per family
+- [x] R1.5 connEnd compares err.Error() (with addresses and ports), so identical failures never compare alike: compare by errno
+- [x] R1.6 the upstream tell can't be turned off: module setting upstreamTell "flag" (default) or "report", documented in doc.go
+- [x] R1.7 "varies" docs (lab.md, results_test.go, RESULTS.md header) still say partial fails; a varies key on a non-"(reference)" row is fatal; doc.go: udp's exemption chance is per link-hour
+- [x] R1.8 the matrix never shows the prober's TLS comparison or the upstream tell
+- [x] R1.9 a dropped new-flow snapshot silently clears an entry of the tell: censorRun.healthy fails on any unnoticed snapshot
+- [x] R1.10 the OpenVPN probe keeps state in a package-level map keyed by a formatted pointer: read the node's state
+- [x] R1.11 nits: probe helpers into probe.go, parseTimeout placement, endpoints.go → blockedservers.go, Flow.initiator comment, slice expression, nginx packages in lab/Dockerfile, split TestProberSettings, JA3S GREASE comment
 
 ## Log
 - 2026-10-10 created in backlog
@@ -72,3 +72,7 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - 2026-11-09 owner decision (2026-11-09): the upstream tell is reported, not gated: milestones.md M2 row, lab.md's censor list and RR31 say so; TP-201's reality rows use upstreamTell "report"
 - 2026-11-09 tests: TestProberWaitsForTheWholeHello (a 1.8 KB ClientHello with an X25519MLKEM768 share split over two segments through the engine), TestConnEnd, TestProberReportsUpstreamTell, TestServerHelloSettings, TestBlames, TestVerdictMisses; TestProberTellsEchoFromWebServer gains the reference suspect, TestEngineSlowActiveNeverStalls the unnoticed log line
 - 2026-11-09 mutations, each killed by the test named: tag on the first segment (TestProberWaitsForTheWholeHello); no flag for a suspect to the reference (TestProberTellsEchoFromWebServer); connEnd compares err.Error() (TestConnEnd); upstreamTell report ignored (TestProberReportsUpstreamTell); unnoticed snapshot not logged (TestEngineSlowActiveNeverStalls); blame the whole server, not the family (TestBlames); verdictMisses never errs (TestVerdictMisses)
+- 2026-11-09 make test green on edb6453; make lint: vet and golangci-lint (darwin, linux, windows), the android build, nocgo and buf green, govulncheck fails on GO-2026-6859 (net/http, fixed in go1.26.11; go.mod's toolchain go1.26.10 is rewrite's too): out of scope, reported
+- 2026-11-09 lab commit edb6453: full make lab-test (GOFLAGS=-p=2 LAB_P=1, exclusive CPU lock): the lab/ phase passed, TestCensorMatrix complete with no error cell, lab/RESULTS.md regenerated (https × active prober runs the TLS comparison and passes; relay-tcp × active prober fails on the upstream tell, 7 of 7; https and relay-tcp × server-hello match the site; wireguard × fully-encrypted passed this run, labelled varies); the node phase failed only in TP-087's internal/dataplane/transport/reality TestConformanceShaped/random/ShapingRefused/6 ("reality: TLS handshake: EOF"), which failed again alone in 1 of 3 runs (make lab-gotest PKG=./internal/dataplane/transport/reality RUN=TestConformance COUNT=3, ShapingRefused/8): intermittent in code this branch doesn't touch, not fixed here
+- 2026-11-09 not verified: reality's own rows (TP-201) against these modules with upstreamTell "report"
+- 2026-11-09 has-errors → in-progress (R1.1–R1.11 fixed and ticked)
