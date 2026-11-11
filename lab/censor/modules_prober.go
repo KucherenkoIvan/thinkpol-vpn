@@ -398,8 +398,7 @@ func (m *prober) examine(ctx context.Context, server netip.AddrPort, first []byt
 	}
 	total := len(probes)
 	name, err := clientHelloServerName(first)
-	switch {
-	case err == nil && canonicalName(name) == canonicalName(m.refName):
+	if err == nil && canonicalName(name) == canonicalName(m.refName) {
 		start := time.Now()
 		var got, want handshakeResult
 		both(func() { got = m.handshake(ctx, server) }, func() { want = m.handshake(ctx, ref) })
@@ -409,25 +408,44 @@ func (m *prober) examine(ctx context.Context, server netip.AddrPort, first []byt
 		if d := got.differences(want); len(d) > 0 {
 			diffs = append(diffs, "TLS: "+strings.Join(d, "; "))
 		}
-	case err == nil:
-		report = append(report, fmt.Sprintf("TLS: not compared, the ClientHello names %q, not the reference", name))
-	case errors.Is(err, errIncomplete):
-		report = append(report, fmt.Sprintf("TLS: not compared, the ClientHello is incomplete in the %d bytes kept", len(first)))
-	default:
-		report = append(report, "TLS: not compared, the connection doesn't start with a ClientHello")
+	} else {
+		report = append(report, "TLS: not compared, "+notCompared(name, err, len(first)))
 	}
-	switch tell := fmt.Sprintf("upstream tell: a connection from %s to the reference during every probe (%d of %d)", server.Addr(), upstream, total); {
-	case total < 2 || upstream < total:
-		report = append(report, fmt.Sprintf("connections to the reference during %d of %d probes", upstream, total))
-	case m.reportTell:
-		report = append(report, tell+", reported, not flagged")
-	default:
-		diffs = append(diffs, tell)
+	if r, d := m.upstreamTell(server.Addr(), upstream, total); d != "" {
+		diffs = append(diffs, d)
+	} else {
+		report = append(report, r)
 	}
 	if len(diffs) == 0 {
 		return Accept, fmt.Sprintf("server %s answers like the reference %s: %s", server, ref, strings.Join(report, "; "))
 	}
 	return m.block.verdict, fmt.Sprintf("server %s unlike the reference %s: %s", server, ref, strings.Join(diffs, "; "))
+}
+
+// notCompared says why a suspect whose first bytes (kept of them) named
+// name, or failed to with err, gets no TLS comparison.
+func notCompared(name string, err error, kept int) string {
+	switch {
+	case err == nil:
+		return fmt.Sprintf("the ClientHello names %q, not the reference", name)
+	case errors.Is(err, errIncomplete):
+		return fmt.Sprintf("the ClientHello is incomplete in the %d bytes kept", kept)
+	}
+	return "the connection doesn't start with a ClientHello"
+}
+
+// upstreamTell judges the connections from server to the reference during
+// upstream of total probes: a line for the report, or a difference when
+// the tell flags.
+func (m *prober) upstreamTell(server netip.Addr, upstream, total int) (report, diff string) {
+	tell := fmt.Sprintf("upstream tell: a connection from %s to the reference during every probe (%d of %d)", server, upstream, total)
+	switch {
+	case total < 2 || upstream < total:
+		return fmt.Sprintf("connections to the reference during %d of %d probes", upstream, total), ""
+	case m.reportTell:
+		return tell + ", reported, not flagged", ""
+	}
+	return "", tell
 }
 
 // referenceFor picks a reference address of addr's family, if any.
