@@ -250,14 +250,25 @@ func (e *env) connect(pl Peer) (client, server *link) {
 
 // connectAdmitted is connect for a peer link a table change has just
 // admitted. Listeners may take the change in the background, and until
-// they have, a dial is camouflaged (and some transports decide that when
-// they dial), so it dials again until a link is accepted, waiting longer
-// each time.
+// they have, a dial is camouflaged: it gets a link that is never accepted,
+// or, where the transport decides when it dials (a stream transport whose
+// camouflage closes the connection mid-handshake), it fails. Either way
+// it dials again until a link is accepted, waiting longer each time.
 func (e *env) connectAdmitted(pl Peer) (client, server *link) {
 	e.t.Helper()
 	deadline := time.Now().Add(wait)
 	for patience := quiet; ; patience *= 2 {
-		client = e.dial(pl)
+		dialCtx, dialCancel := context.WithTimeout(context.Background(), wait)
+		dialed, err := e.h.Dialer.Dial(dialCtx, e.dialTo, e.dialConfig(pl))
+		dialCancel()
+		if err != nil {
+			if time.Now().After(deadline) {
+				e.t.Fatalf("dial %s: %v", pl.Peer, err)
+			}
+			time.Sleep(min(patience, time.Until(deadline)))
+			continue
+		}
+		client = watch(e.t, dialed)
 		client.write([]byte("hello"))
 		ctx, cancel := context.WithTimeout(context.Background(), min(patience, time.Until(deadline)))
 		l, id, err := e.listener.Accept(ctx)

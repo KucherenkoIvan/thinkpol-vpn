@@ -44,7 +44,11 @@
 // follows the dialer (datagram transports without a handshake). When the
 // table changes, links whose credential is gone are closed ([ErrRevoked]);
 // links whose credential stays pick up their new settings, or close with
-// [ErrSettingsRefused] if the transport refuses them. Accept may
+// [ErrSettingsRefused] if the transport refuses them. A listener may take
+// a change in the background: until it has, a credential the change added
+// fails authentication like any other (for reality, the dialer is spliced
+// to the target and its dial fails), so a dialer admitted by a new map
+// dials again. Accept may
 // return a link that is already closed. Closing a listener closes every link
 // it accepted; a dialer's link either carries on with a listener restarted
 // at the same endpoint or closes, so the layer above redials.
