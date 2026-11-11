@@ -48,6 +48,12 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - [x] R2.2 (should-fix) RR31's added sentence defines the upstream tell wrongly: on every failed probe the entry dials the camouflage target, seen by a censor on the entry's uplink; reported by the lab, not gated, because REALITY's design can't avoid the dial; every mention consistent
 - [x] R2.3 (should-fix) no way for a matrix row to run the prober with upstreamTell "report": build the mechanism (relay-tcp stays "flag"), test it, document in lab.md how a gate row asks for "report" and that every gate row must be listed in verdictSays
 - [x] R2.4 (nits) (a) the "tagged on half a ClientHello" check reads the verdict log before a flush; (b) TestBlames doesn't cover blockedBy's per-family default, and the Log overstates it; (c) no unit test for the default upstreamTell ("" means flag); (d) a ClientHello longer than retainBytes gets the false reason "the connection doesn't start with a ClientHello"
+- [ ] R3.1 (should-fix) the matrix reads the verdict log once right after the scored probe, but settled ran only after the first probe: a scored-probe connection whose server-hello comparison times out logs "not compared" after the read and the cell passes; wait for the scored probe's flows too and fix the comment that says the log holds every flag
+- [ ] R3.2 (should-fix) lab.md says every gate row must be in verdictSays, nothing enforces it and udp breaks it: scope the rule to TCP gate rows and enforce it (a TCP row that isn't " (control)" or " (reference)" and isn't in verdictSays fails the run); lab.md says exactly that
+- [ ] R3.3 (nit) TestVerdictMisses survives removing the explicit "not compared" check: add a reason with both the expected text and "not compared"
+- [ ] R3.4 (nit) no test covers the guard refusing tuned rows missing from verdictSays (nor R3.2's guard): test both
+- [ ] R3.5 (nit) a misspelt module name in moduleSettings is skipped silently and a misspelt setting is ignored: reject both, test both
+- [ ] R3.6 (nit) serverhello.go's doc still says errNotServerHello for anything else; a too-long ServerHello returns errHelloTooLong
 
 ## Log
 - 2026-10-10 created in backlog
@@ -91,3 +97,4 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - 2026-11-12 not verified: TP-201's reality rows with moduleSettings upstreamTell "report" (they don't exist yet; the mechanism is unit-tested and the relay-tcp row shows "flag"); govulncheck stays red on GO-2026-6859 until TP-202 lands on rewrite (rewrite hadn't moved at d752386)
 - 2026-11-12 has-errors → in-progress (R2.1–R2.4 fixed and ticked)
 - 2026-11-12 in-progress → review
+- 2026-11-12 review → has-errors (round 3 findings R3.x)
