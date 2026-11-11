@@ -9,8 +9,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -19,7 +17,7 @@ import (
 )
 
 // The renderers write what a Client returned, already sanitized, for a
-// person (or, WriteJSON, for a script).
+// person; json.go's write it for a script.
 
 // WriteStatus writes st as of now.
 func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
@@ -105,6 +103,9 @@ func writeDataPlane(line func(string, ...any), dp *localapiv1.DataPlane, now tim
 		if dp.GetIpv6Off() != "" {
 			ipv6 += " (" + dp.GetIpv6Off() + ")"
 		}
+	}
+	if name := dp.GetInterface(); name != "" {
+		line("interface:\t%s", name)
 	}
 	line("overlay:\tmtu %d, ipv6 %s, %d listeners", dp.GetMtu(), ipv6, dp.GetListeners())
 	if e := dp.GetLastApplyError(); e != "" {
@@ -247,39 +248,11 @@ func WriteLogLines(w io.Writer, lines []string, missed uint64) error {
 	return nil
 }
 
-// WriteJSON writes m as JSON, for scripts.
-func WriteJSON(w io.Writer, m proto.Message) error {
-	b, err := protojson.MarshalOptions{Multiline: true, EmitUnpopulated: false}.Marshal(m)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(w, "%s\n", b)
-	return err
-}
-
-// displayNames are what WriteStatus calls the status's enum values.
-var displayNames = map[protoreflect.Enum]string{
-	localapiv1.Connection_CONNECTION_UNSPECIFIED:    "unspecified",
-	localapiv1.Connection_CONNECTION_DISCONNECTED:   "disconnected",
-	localapiv1.Connection_CONNECTION_CONNECTING:     "connecting",
-	localapiv1.Connection_CONNECTION_CONNECTED:      "connected",
-	localapiv1.Connection_CONNECTION_SERVING:        "serving",
-	localapiv1.HealthLevel_HEALTH_LEVEL_UNSPECIFIED: "unspecified",
-	localapiv1.HealthLevel_HEALTH_LEVEL_OK:          "ok",
-	localapiv1.HealthLevel_HEALTH_LEVEL_DEGRADED:    "degraded",
-	localapiv1.HealthLevel_HEALTH_LEVEL_DOWN:        "down",
-	localapiv1.Mode_MODE_UNSPECIFIED:                "unspecified",
-	localapiv1.Mode_MODE_DEVICE:                     "device",
-	localapiv1.Mode_MODE_SERVER:                     "server",
-}
-
-// displayName is e's display name; a value the table doesn't know (a
-// newer service's) is "unknown".
+// displayName is e's name as WriteStatus prints it, the JSON's
+// spelling: a value the schema doesn't know (a newer service's) is
+// "unknown".
 func displayName(e protoreflect.Enum) string {
-	if name, ok := displayNames[e]; ok {
-		return name
-	}
-	return "unknown"
+	return enumValueName(e.Descriptor(), e.Number())
 }
 
 func ago(t *timestamppb.Timestamp, now time.Time) string {
