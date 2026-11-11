@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-087]
 refs: [C6, docs/design/transports.md#transports]
-owner: ""
-branch: ""
+owner: "agent-tp-203"
+branch: "tp-203-reality-conformance-shaping-refused-eof"
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ TP-087's reality conformance test passes every time, or the product bug it expos
 
 ## Log
 - 2026-11-12 created in backlog (the reality conformance flake blocks the full lab)
+- 2026-11-12 backlog → in-progress, owner: agent-tp-203
