@@ -23,7 +23,8 @@ const (
 // node: nginx as an ordinary HTTPS site, TLS 1.2 and 1.3 (nginx 1.22
 // leaves 1.3 out unless told), HTTP/2 and HTTP/1.1, Debian's default page,
 // with the image's certificate for CamouflageName, on CamouflagePort of
-// both its addresses. It returns them, IPv4 first, once both listen. It is
+// both its addresses, unless it runs already. It returns them, IPv4
+// first, once both listen. It is
 // the target a reality listener splices to, and what TP-026's prober and
 // server-hello comparison compare servers with.
 func StartCamouflage(t testing.TB, l *Lab) []netip.AddrPort {
@@ -34,6 +35,17 @@ func StartCamouflage(t testing.TB, l *Lab) []netip.AddrPort {
 		netip.AddrPortFrom(node.IPv6(NetWorld), CamouflagePort),
 	}
 	const dir = "/tmp/camouflage"
+	// A matrix row and its censor case may both start the site: the second
+	// gets the running one.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	res, err := node.Exec(ctx, "test", "-e", dir+"/nginx.conf")
+	cancel()
+	switch {
+	case err == nil:
+		return addrs
+	case res.ExitCode != 1:
+		t.Fatalf("camouflage: %v", err)
+	}
 	var listen strings.Builder
 	for _, a := range addrs {
 		fmt.Fprintf(&listen, "    listen %s ssl http2;\n", a)
