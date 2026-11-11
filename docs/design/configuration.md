@@ -89,7 +89,7 @@ The levels then combine by narrowing:
 | rule preset | device | at once (as today) |
 | connect-on-boot | device | at the next boot; a start later in the same boot, and the running node, are left as they are |
 | kill switch, allow-LAN | device | at once: the call returns once the node put the kill switch in place or removed it (TP-048) |
-| pause | device | not built (proposed as its own ticket) |
+| pause | device | not built (a separate M2 ticket, owner, 2026-11-09) |
 | node file settings | node | at the next start of `up` (TP-166: none is reloaded while running; SIGHUP re-reads only the map) |
 | capability ceiling lowered under a running map | node | refused and reported, as TP-183 handles a map asking for more |
 

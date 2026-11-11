@@ -40,7 +40,8 @@ type KillSwitchStatus struct {
 
 // killSwitchReapply is how often the kill switch in place is applied
 // again: a re-apply checks it is whole and puts back what someone
-// removed (`nft flush ruleset`, `pfctl -F`).
+// removed (`nft flush ruleset`, `pfctl -F`), and on Linux renews the
+// direct destinations (firewall.DirectTimeout).
 const killSwitchReapply = 10 * time.Second
 
 // crashPresets are the presets whose devices fail closed after a crash
@@ -123,16 +124,21 @@ type killSwitchKeeper struct {
 	// place are applied again.
 	failed    error
 	reapplyAt time.Time
+	// now is the clock; nil is time.Now.
+	now func() time.Time
 }
 
 // keep puts r in place (want), or removes what any run left (!want).
-// Applying what is in place again is due only every killSwitchReapply,
-// or after a failure.
+// Applying what is in place again is due at the next killSwitchReapply
+// tick, or after a failure.
 func (k *killSwitchKeeper) keep(ctx context.Context, want bool, r firewall.KillSwitchRules) {
 	if k.newKS == nil {
 		return
 	}
 	now := time.Now()
+	if k.now != nil {
+		now = k.now()
+	}
 	if !want {
 		if k.removed && k.failed == nil {
 			return
@@ -170,7 +176,10 @@ func (k *killSwitchKeeper) keep(ctx context.Context, want bool, r firewall.KillS
 		k.fail(err)
 		return
 	}
-	k.applied, k.removed, k.failed, k.reapplyAt = &r, false, nil, now.Add(killSwitchReapply)
+	// Half a period: the ticker's next tick comes a period after the one
+	// handled here, which is earlier than a period after now; due at a
+	// whole period, every other tick would be skipped (20 s, not 10 s).
+	k.applied, k.removed, k.failed, k.reapplyAt = &r, false, nil, now.Add(killSwitchReapply/2)
 	if first {
 		k.log.Info("kill switch in place", "tunnel", onOff(r.TUN != ""), "allowed_ranges", len(r.Allow.Ranges()))
 	}

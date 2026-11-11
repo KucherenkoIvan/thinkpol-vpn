@@ -223,7 +223,7 @@ The node file `node.json` and the device file `device.json` exist, `rules.local`
 | `status`, `Status.kill_switch` | `kill switch: on, allow-LAN off (in place)`, or `(held by the crash posture while connecting or connected)`, or `(not enforced: apply_failed, retrying)`; JSON `on`, `allow_lan`, `active`, `enforced`, `error` |
 | health | `kill_switch_not_enforced` (degraded): putting it in place or removing it failed, retried every 10 s; `kill_switch_unsupported` (degraded): the OS can't hold it while it should be in |
 
-The captive-portal pause is not built: proposed as its own ticket. TP-167 aligns the exit codes.
+The captive-portal pause is not built: a separate M2 ticket (owner, 2026-11-09). TP-167 aligns the exit codes.
 ### TP-141: a device's crash trace
 
 | Surface | Behaviour |

@@ -32,9 +32,13 @@
 // main table's default route unless the kill switch is in place, a
 // separate owner with its own table or anchor (below). The guard is the
 // connection's, in place while a device is connected, not the kill
-// switch (docs/design/security.md "Kill switch"). Forwarded traffic isn't its business:
-// nothing forwarded is bound to an interface, and routing (rule 5301 on
-// Linux) keeps it in the tunnel.
+// switch (docs/design/security.md "Kill switch"). Forwarded traffic isn't
+// the guard's: nothing forwarded is bound to an interface, and while
+// connected routing (rule 5301 on Linux) sends it into the tunnel. While
+// the tunnel is down (disconnected, after a crash) routing lets what the
+// device forwards (containers, VMs, a hotspot's clients) out direct, and
+// only the kill switch holds it: its forward chain on Linux, its anchor
+// on macOS (pf filters a forwarded packet on its way out too).
 //
 // When the guard goes in, how it is kept for routes whose re-apply fails,
 // and when it is removed (under the route table's owner lock, also by
@@ -518,7 +522,7 @@
 //
 // On Linux it is the table `inet thinkpol-killswitch` ([KillSwitchTable]),
 // built, replaced and compared the way the guard's is (one transaction;
-// a re-apply compares flags, the one chain, every rule and every set
+// a re-apply compares flags, both chains, every rule and every set
 // element, and rebuilds what differs):
 //
 //	table inet thinkpol-killswitch {
@@ -532,10 +536,25 @@
 //	    neighbour discovery (hop limit 255) and MLD (hop limit 1) accept, as the guard's
 //	    meta l4proto tcp reject with tcp reset; reject with icmpx admin-prohibited
 //	  }
+//	  chain forward { type filter hook forward priority 2147483647; policy accept;
+//	    oifname <TUN> accept; iifname <TUN> accept (connected)
+//	    ip daddr @allow4, @direct4 accept; ip6 daddr @allow6, @direct6 accept
+//	    ct direction reply: ip saddr @allow4, @direct4 accept; ip6 saddr @allow6, @direct6 accept
+//	    meta l4proto tcp reject with tcp reset; reject with icmpx admin-prohibited
+//	  }
 //	}
 //
-// Hooked last at output, as the guard's; both chains must accept a
-// packet. Direct's elements expire [DirectTimeout] after they were put
+// Both chains are hooked last, as the guard's; a packet must pass every
+// table's chain at its hook. The forward chain confines what the device
+// routes for others (container bridges, VM NAT, a hotspot), which never
+// meets output: into and out of the TUN, to the allowed and direct
+// destinations, and their replies (by source, in conntrack's reply
+// direction only, so a client can't spoof its way out). A forward
+// chain, not postrouting: reject is refused at postrouting, and output
+// already holds what the device sends itself. What it refuses, a
+// published container port reached from the LAN without allow-LAN
+// included, is the kill switch working: everything not allowed is
+// refused, whoever routes it. Direct's elements expire [DirectTimeout] after they were put
 // in, and every Apply, a re-apply of what is in place included, puts them
 // in again (flush and add, one transaction): the agent re-applies every
 // 10 s, so only a dead agent lets them go, leaving the entries and the
