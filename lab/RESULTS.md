@@ -6,17 +6,17 @@ Did a transport's data cross the censor in the lab router, device-a to server-1:
 
 | transport | censor | result | detail |
 |---|---|---|---|
-| https (control) | active prober | pass | prober: accept, server 172.16.109.4:443 answers like the reference 172.16.51.2:443: replay: answered a TLS handshake (829 bytes, first after 400µs), open; random 3: answered an HTTP response (309 bytes, first after 600µs), closed; random 16: answered an HTTP response (309 bytes, first after 800µs), closed; random 49: answered an HTTP response (309 bytes, first after 200µs), closed; random 221: answered an HTTP response (309 bytes, first after 500µs), closed; random 1000: answered an HTTP response (309 bytes, first after 800µs), closed; TLS: the server JA4S t130200_1301_a56c5b993250, JA3S f4febc55ea12b31ae17cfb7e614afda8 (771,4865,43-51), extensions [43 51], ALPN none, negotiated ALPN "h2"; the reference JA4S t130200_1301_a56c5b993250, JA3S f4febc55ea12b31ae17cfb7e614afda8 (771,4865,43-51), extensions [43 51], ALPN none, negotiated ALPN "h2"; connections to the reference during 0 of 7 probes |
+| https (control) | active prober | pass | prober: accept, server 172.16.246.4:443 answers like the reference 172.16.92.2:443: replay: answered a TLS handshake (831 bytes, first after 500µs), open; random 3: answered an HTTP response (309 bytes, first after 200µs), closed; random 16: answered nothing, closed; random 49: answered nothing, closed; random 221: answered nothing, closed; random 1000: answered nothing, closed; TLS: the server JA4S t130200_1301_a56c5b993250, JA3S f4febc55ea12b31ae17cfb7e614afda8 (771,4865,43-51), extensions [43 51], ALPN none, negotiated ALPN "h2"; the reference JA4S t130200_1301_a56c5b993250, JA3S f4febc55ea12b31ae17cfb7e614afda8 (771,4865,43-51), extensions [43 51], ALPN none, negotiated ALPN "h2"; connections to the reference during 0 of 7 probes |
 | https (control) | blocklists (elsewhere) | pass |  |
 | https (control) | fully-encrypted | pass |  |
 | https (control) | ip-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
 | https (control) | off | pass |  |
 | https (control) | openvpn-fingerprint | pass |  |
-| https (control) | server-hello | pass | server-hello: accept, server hello matches the site 172.16.57.2:443's for camouflage.example.net: JA4S t130200_1302_a56c5b993250, JA3S 15af977ce25de452b96affa2addb1036 (771,4866,43-51), extensions [43 51], ALPN none |
+| https (control) | server-hello | pass | server-hello: accept, server hello matches the site 172.16.35.2:443's for camouflage.example.net: JA4S t130200_1302_a56c5b993250, JA3S 15af977ce25de452b96affa2addb1036 (771,4866,43-51), extensions [43 51], ALPN none |
 | https (control) | sni-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor reset them |
 | https (control) | wireguard-fingerprint | pass |  |
 | https (control) | wireguard-rhythm | pass |  |
-| openvpn-tcp (reference) | active prober | fail | neither IPv4 nor IPv6 crossed; the censor dropped them; prober: drop, server [fdf2:58d4:648d:1::2]:9443 unlike the reference [fdf2:58d4:648d:2::2]:443: replay: the server answered nothing, reset, the reference answered an HTTP response (309 bytes, first after 1.1ms), closed; random 3: the server answered nothing, no connection, the reference answered an HTTP response (309 bytes, first after 500µs), closed; random 16: the server answered nothing, no connection, the reference answered an HTTP response (309 bytes, first after 300µs), closed; random 49: the server answered nothing, no connection, the reference answered nothing, closed; random 221: the server answered nothing, no connection, the reference answered nothing, closed; random 1000: the server answered nothing, no connection, the reference answered an HTTP response (309 bytes, first after 400µs), closed |
+| openvpn-tcp (reference) | active prober | fail | neither IPv4 nor IPv6 crossed; the censor dropped them; prober: drop, server 172.16.157.3:8443 unlike the reference 172.16.174.2:443: replay: the server answered nothing, reset, the reference answered an HTTP response (309 bytes, first after 1.3ms), closed; random 3: the server answered nothing, no connection, the reference answered nothing, open; random 16: the server answered nothing, no connection, the reference answered nothing, closed; random 49: the server answered nothing, no connection, the reference answered nothing, closed; random 221: the server answered nothing, no connection, the reference answered an HTTP response (309 bytes, first after 300µs), closed; random 1000: the server answered nothing, no connection, the reference answered nothing, closed |
 | openvpn-tcp (reference) | blocklists (elsewhere) | pass |  |
 | openvpn-tcp (reference) | fully-encrypted | pass |  |
 | openvpn-tcp (reference) | ip-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
@@ -46,7 +46,7 @@ Did a transport's data cross the censor in the lab router, device-a to server-1:
 | plain-tcp (control) | sni-blocklist (entry) | pass |  |
 | plain-tcp (control) | wireguard-fingerprint | pass |  |
 | plain-tcp (control) | wireguard-rhythm | pass |  |
-| random-tcp (reference) | active prober | fail | neither IPv4 nor IPv6 crossed; the censor dropped them; prober: drop, server 172.16.151.2:8388 unlike the reference 172.16.226.2:443: replay: the server answered an echo (256 bytes, first after 2.4ms), open, the reference answered nothing, closed; random 3: the server answered an echo (3 bytes, first after 1.3ms), open, the reference answered an HTTP response (309 bytes, first after 900µs), closed; random 16: the server answered an echo (16 bytes, first after 900µs), open, the reference answered an HTTP response (309 bytes, first after 300µs), closed; random 49: the server answered an echo (49 bytes, first after 700µs), open, the reference answered nothing, closed; random 221: the server answered an echo (221 bytes, first after 900µs), open, the reference answered an HTTP response (309 bytes, first after 300µs), closed; random 1000: the server answered an echo (1000 bytes, first after 3ms), open, the reference answered an HTTP response (309 bytes, first after 300µs), closed |
+| random-tcp (reference) | active prober | fail | neither IPv4 nor IPv6 crossed; the censor dropped them; prober: drop, server 172.16.52.2:8388 unlike the reference 172.16.90.2:443: replay: the server answered an echo (256 bytes, first after 600µs), open, the reference answered nothing, closed; random 3: the server answered an echo (3 bytes, first after 1.5ms), open, the reference answered an HTTP response (309 bytes, first after 400µs), closed; random 16: the server answered an echo (16 bytes, first after 5.5ms), open, the reference answered an HTTP response (309 bytes, first after 700µs), closed; random 49: the server answered an echo (49 bytes, first after 1.7ms), open, the reference answered an HTTP response (309 bytes, first after 700µs), closed; random 221: the server answered an echo (221 bytes, first after 800µs), open, the reference answered nothing, closed; random 1000: the server answered an echo (1000 bytes, first after 3.2ms), open, the reference answered nothing, closed |
 | random-tcp (reference) | blocklists (elsewhere) | pass |  |
 | random-tcp (reference) | fully-encrypted | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
 | random-tcp (reference) | ip-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
@@ -56,13 +56,13 @@ Did a transport's data cross the censor in the lab router, device-a to server-1:
 | random-tcp (reference) | sni-blocklist (entry) | pass |  |
 | random-tcp (reference) | wireguard-fingerprint | pass |  |
 | random-tcp (reference) | wireguard-rhythm | pass |  |
-| relay-tcp (reference) | active prober | fail | neither IPv4 nor IPv6 crossed; the censor dropped them; prober: drop, server 172.16.21.4:9443 unlike the reference 172.16.46.2:443: upstream tell: a connection from 172.16.21.4 to the reference during every probe (7 of 7) |
+| relay-tcp (reference) | active prober | fail | neither IPv4 nor IPv6 crossed; the censor dropped them; prober: drop, server 172.16.169.4:9443 unlike the reference 172.16.120.3:443: upstream tell: a connection from 172.16.169.4 to the reference during every probe (7 of 7) |
 | relay-tcp (reference) | blocklists (elsewhere) | pass |  |
 | relay-tcp (reference) | fully-encrypted | pass |  |
 | relay-tcp (reference) | ip-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
 | relay-tcp (reference) | off | pass |  |
 | relay-tcp (reference) | openvpn-fingerprint | pass |  |
-| relay-tcp (reference) | server-hello | pass | server-hello: accept, server hello matches the site 172.16.174.2:443's for camouflage.example.net: JA4S t130200_1302_a56c5b993250, JA3S 15af977ce25de452b96affa2addb1036 (771,4866,43-51), extensions [43 51], ALPN none |
+| relay-tcp (reference) | server-hello | pass | server-hello: accept, server hello matches the site 172.16.22.2:443's for camouflage.example.net: JA4S t130200_1302_a56c5b993250, JA3S 15af977ce25de452b96affa2addb1036 (771,4866,43-51), extensions [43 51], ALPN none |
 | relay-tcp (reference) | sni-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor reset them |
 | relay-tcp (reference) | wireguard-fingerprint | pass |  |
 | relay-tcp (reference) | wireguard-rhythm | pass |  |
@@ -78,7 +78,7 @@ Did a transport's data cross the censor in the lab router, device-a to server-1:
 | udp | wireguard-rhythm | pass |  |
 | wireguard (reference) | active prober | pass | prober: accept, not probed: the prober probes TCP servers |
 | wireguard (reference) | blocklists (elsewhere) | pass |  |
-| wireguard (reference) | fully-encrypted | pass | varies: a WireGuard initiation (mac2's 16 zero bytes) averages about 3.47 set bits per byte, and Wu et al.'s first exemption (3.4 or fewer) passes about one in four, its tunnel with it |
+| wireguard (reference) | fully-encrypted | fail | neither IPv4 nor IPv6 crossed; the censor dropped them; varies: a WireGuard initiation (mac2's 16 zero bytes) averages about 3.47 set bits per byte, and Wu et al.'s first exemption (3.4 or fewer) passes about one in four, its tunnel with it |
 | wireguard (reference) | ip-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
 | wireguard (reference) | off | pass |  |
 | wireguard (reference) | openvpn-fingerprint | pass |  |
