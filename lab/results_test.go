@@ -85,7 +85,7 @@ func TestCensorMatrix(t *testing.T) {
 			if how, err := blockedBy(t, l, c, cc.watch); err == nil {
 				cell.result, cell.detail = "fail", fmt.Sprintf("the censor %s the connection held for %v", how, cc.hold)
 			} else if cell.result == "pass" {
-				cell.detail += fmt.Sprintf("; held %v first", cc.hold)
+				cell.detail = strings.TrimPrefix(fmt.Sprintf("%s; held %v first", cell.detail, cc.hold), "; ")
 			}
 			if err := judgedFromTheStart(t, l, c, cc.watch); err != nil {
 				cell.result, cell.detail = "error", "the censor didn't frame the held connection"
