@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-202"
+branch: "tp-202-go-toolchain-1-26-11"
 ---
 
 ## Goal
@@ -27,3 +27,4 @@ branch: ""
 
 ## Log
 - 2026-11-12 created (TP-026's lint run)
+- 2026-11-12 backlog → in-progress, owner: agent-tp-202
