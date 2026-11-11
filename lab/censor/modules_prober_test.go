@@ -282,11 +282,16 @@ func TestProberComparesTLS(t *testing.T) {
 // TestProberUpstreamTell: an entry that relays each probe to the
 // reference answers like the reference, and is flagged only for the
 // connection it opens to the reference on every probe, which the censor
-// sees only from a vantage on the entry's uplink.
+// sees only from a vantage on the entry's uplink. upstreamTell "flag" is
+// the default.
 func TestProberUpstreamTell(t *testing.T) {
 	ref := webServer(t, webTLS(t, siteName))
-	for _, seen := range []bool{true, false} {
-		p := newTestProber(t, ref, `, "upstreamTell": "flag"`)
+	for _, c := range []struct {
+		seen     bool
+		settings string
+	}{{true, `, "upstreamTell": "flag"`}, {true, ""}, {false, `, "upstreamTell": "flag"`}} {
+		seen := c.seen
+		p := newTestProber(t, ref, c.settings)
 		flows, flags := runProber(t, p)
 		var entry netip.AddrPort
 		entry = listen(t, relay(ref, func() {
@@ -304,7 +309,7 @@ func TestProberUpstreamTell(t *testing.T) {
 		switch {
 		case seen && (f.verdict != Drop || !strings.Contains(f.why, "upstream tell: a connection") ||
 			strings.Contains(f.why, ": the server ") || strings.Contains(f.why, "TLS:")):
-			t.Errorf("a relay whose uplink the censor sees: %+v", f)
+			t.Errorf("a relay whose uplink the censor sees, settings %q: %+v", c.settings, f)
 		case !seen && f.verdict != Accept:
 			t.Errorf("a relay whose uplink the censor doesn't see: %+v", f)
 		}
@@ -375,6 +380,10 @@ func TestProberWaitsForTheWholeHello(t *testing.T) {
 	eng.Handle(tcpPacket(srv, client, port, 40000, 5000, 1001, Syn|Ack, nil))
 	split := 1000
 	eng.Handle(tcpPacket(client, srv, 40000, port, 1001, 5001, Ack|Psh, hello[:split]))
+	// The log is buffered: once a later flow's first decision is in it,
+	// so is any tag of the half hello.
+	eng.Handle(tcpPacket(client, srv, 40001, port, 1000, 0, Syn, nil))
+	waitLog(t, &log, fmt.Sprintf(`"flow":"tcp %s:40001->`, client))
 	if strings.Contains(log.String(), `"event":"tag"`) {
 		t.Fatalf("tagged on half a ClientHello:\n%s", log.String())
 	}
@@ -383,6 +392,28 @@ func TestProberWaitsForTheWholeHello(t *testing.T) {
 	for _, want := range []string{"answers like the reference", "TLS: the server", "replay: answered a TLS handshake"} {
 		if !strings.Contains(log.String(), want) {
 			t.Errorf("the verdict doesn't say %q:\n%s", want, log.String())
+		}
+	}
+}
+
+// TestNotCompared: the verdict says truly why a suspect's first bytes got
+// no TLS comparison, read by the censor's own parser.
+func TestNotCompared(t *testing.T) {
+	hello := helloFor(t, siteName)
+	long := []byte{tlsHandshake, 3, 1, 0x40, 0, tlsClientHello, 0, 0x40, 0x01} // a 16385-byte ClientHello's start
+	for _, c := range []struct {
+		name  string
+		first []byte
+		want  string
+	}{
+		{"another name", helloFor(t, "other.example.net"), `names "other.example.net", not the reference`},
+		{"half a hello", hello[:100], "incomplete in the 100 bytes kept"},
+		{"longer than kept", long, fmt.Sprintf("longer than the %d bytes the censor keeps", retainBytes)},
+		{"no hello", []byte("GET / HTTP/1.1\r\n"), "doesn't start with a ClientHello"},
+	} {
+		name, err := clientHelloServerName(c.first)
+		if got := notCompared(name, err, len(c.first)); !strings.Contains(got, c.want) {
+			t.Errorf("%s: %q, want it to say %q", c.name, got, c.want)
 		}
 	}
 }

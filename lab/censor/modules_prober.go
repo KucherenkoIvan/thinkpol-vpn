@@ -430,6 +430,8 @@ func notCompared(name string, err error, kept int) string {
 		return fmt.Sprintf("the ClientHello names %q, not the reference", name)
 	case errors.Is(err, errIncomplete):
 		return fmt.Sprintf("the ClientHello is incomplete in the %d bytes kept", kept)
+	case errors.Is(err, errHelloTooLong):
+		return fmt.Sprintf("the ClientHello is longer than the %d bytes the censor keeps", retainBytes)
 	}
 	return "the connection doesn't start with a ClientHello"
 }

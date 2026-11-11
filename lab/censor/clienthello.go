@@ -28,13 +28,18 @@ var (
 // it yet.
 var errIncomplete = errors.New("hello incomplete")
 
+// errHelloTooLong says the stream starts with a hello whose handshake
+// message is longer than retainBytes: the censor never holds all of it.
+var errHelloTooLong = errors.New("hello longer than the censor keeps")
+
 // clientHelloServerName reads the server name a stream's ClientHello asks
 // for, "" when it names none, from the stream's first bytes. The message
 // may be split over any number of handshake records (a record-fragmenting
 // client, or one evading a censor that reads only the first record) and
 // those over any number of segments, which the stream has put in order:
-// until all of it is there, errIncomplete. Anything else at the stream's
-// start is errNotClientHello.
+// until all of it is there, errIncomplete. A ClientHello longer than
+// retainBytes is errHelloTooLong; anything else at the stream's start is
+// errNotClientHello.
 func clientHelloServerName(b []byte) (string, error) {
 	msg, _, err := helloMessage(b, tlsClientHello)
 	if err != nil {
@@ -67,15 +72,15 @@ func helloMessage(b []byte, typ byte) (body []byte, used int, err error) {
 		}
 		if len(b) < tlsRecordHeader+rec {
 			msg = append(msg, b[tlsRecordHeader:]...)
-			if !plausibleHello(msg, typ) {
-				return nil, 0, notIt
+			if err := plausibleHello(msg, typ, notIt); err != nil {
+				return nil, 0, err
 			}
 			return nil, 0, errIncomplete
 		}
 		msg = append(msg, b[tlsRecordHeader:tlsRecordHeader+rec]...)
 		b = b[tlsRecordHeader+rec:]
-		if !plausibleHello(msg, typ) {
-			return nil, 0, notIt
+		if err := plausibleHello(msg, typ, notIt); err != nil {
+			return nil, 0, err
 		}
 		if len(msg) >= tlsHandshakeHeader {
 			want := tlsHandshakeHeader + uint24(msg[1:])
@@ -87,9 +92,18 @@ func helloMessage(b []byte, typ byte) (body []byte, used int, err error) {
 }
 
 // plausibleHello rejects a handshake message that can't be a hello of
-// type typ a stream prefix could hold, before waiting for the rest of it.
-func plausibleHello(msg []byte, typ byte) bool {
-	return len(msg) < tlsHandshakeHeader || msg[0] == typ && uint24(msg[1:]) <= retainBytes
+// type typ (notIt) or that a stream prefix can't hold (errHelloTooLong),
+// before waiting for the rest of it.
+func plausibleHello(msg []byte, typ byte, notIt error) error {
+	switch {
+	case len(msg) < tlsHandshakeHeader:
+		return nil
+	case msg[0] != typ:
+		return notIt
+	case uint24(msg[1:]) > retainBytes:
+		return errHelloTooLong
+	}
+	return nil
 }
 
 func uint24(b []byte) int { return int(b[0])<<16 | int(b[1])<<8 | int(b[2]) }

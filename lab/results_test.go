@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -70,7 +71,12 @@ func TestCensorMatrix(t *testing.T) {
 		}
 		var c *censorRun
 		if cc.modules != nil {
-			c = startCensor(t, l, cc.modules(t, l))
+			modules, err := withRowSettings(cc.modules(t, l), tr.moduleSettings)
+			if err != nil {
+				cell.detail = "bad module settings"
+				t.Fatal(err)
+			}
+			c = startCensor(t, l, modules)
 		}
 
 		want := cc.want(tr.name)
@@ -110,11 +116,11 @@ func TestCensorMatrix(t *testing.T) {
 			want = cell.result
 		}
 		if cc.report != "" {
-			why := c.judged(t, l, cc.report)
-			if why != "" {
-				cell.detail = strings.TrimPrefix(cell.detail+"; "+cc.report+": "+why, "; ")
+			flags := c.judged(t, l, cc.report)
+			if len(flags) > 0 {
+				cell.detail = strings.TrimPrefix(cell.detail+"; "+cc.report+": "+flags[0].why, "; ")
 			}
-			if err := cc.verdictMisses(tr.name, why); err != nil {
+			if err := cc.verdictMisses(tr.name, flags, tr.oneUnderlay); err != nil {
 				cell.result, cell.detail = "error", err.Error()
 				t.Fatalf("%s against %s: %v", tr.name, cc.name, err)
 			}
@@ -148,6 +154,11 @@ func TestCensorMatrix(t *testing.T) {
 		}
 		if len(cc.verdictSays) > 0 && cc.report == "" {
 			t.Fatalf("censor case %q checks verdicts but names no module to report", cc.name)
+		}
+		for _, tr := range transports {
+			if _, tuned := tr.moduleSettings[cc.report]; tuned && cc.report != "" && cc.verdictSays[tr.name] == "" {
+				t.Fatalf("%s sets %s's settings, but censor case %q doesn't say what its verdict must say (verdictSays)", tr.name, cc.report, cc.name)
+			}
 		}
 	}
 	for _, tr := range transports {
@@ -253,43 +264,82 @@ type censorCase struct {
 	// settle probes twice, the cell scoring the second, once the active
 	// modules have flagged every flow of server-1 a module tagged.
 	settle bool
-	// report names the module whose first flag of a connection from
-	// device-a to server-1 the cell's detail quotes.
+	// report names the module whose flags of connections between device-a
+	// and server-1 the cell checks (verdictSays), its detail quoting the
+	// first.
 	report string
-	// verdictSays holds the rows whose report verdict must say something,
-	// the comparison the cell is for: a verdict without it ("not
-	// compared", or no flag at all) is an error, never a pass.
+	// verdictSays holds the rows whose report verdicts must say something,
+	// the comparison the cell is for: every flag the module raised on the
+	// row's connections must say it, and each family the row's probe uses
+	// needs one. A verdict without it ("not compared", another reason) or
+	// a family with no flag is an error, never a pass: the IPv4
+	// connection's match says nothing of the IPv6 one's.
 	verdictSays map[string]string
 }
 
-// verdictMisses is an error when row's verdict from the report module,
-// why ("" for no flag), lacks what the case needs it to say: the module
-// didn't compare what the cell is for, which must not score as a pass.
-func (cc censorCase) verdictMisses(row, why string) error {
-	says, ok := cc.verdictSays[row]
-	if !ok || strings.Contains(why, says) {
-		return nil
-	}
-	if why == "" {
-		return fmt.Errorf("%s never flagged the row's connection, want a verdict saying %q", cc.report, says)
-	}
-	return fmt.Errorf("%s's verdict %q doesn't say %q", cc.report, why, says)
+// judgment is a flag of the report module on a connection between
+// device-a and server-1: its family, and "<verdict>, <reason>".
+type judgment struct {
+	v4  bool
+	why string
 }
 
-// TestVerdictMisses: a cell whose module didn't compare ("not compared",
-// or no flag at all) is an error, whatever the row's crossing scored.
+// verdictMisses is an error when row's flags from the report module lack
+// what the case needs them to say: a flag that doesn't say it, or says
+// "not compared", or a family with no flag (either family will do for a
+// row whose tunnels share one underlay family). The module didn't compare
+// what the cell is for, which must not score as a pass.
+func (cc censorCase) verdictMisses(row string, flags []judgment, oneUnderlay bool) error {
+	says, ok := cc.verdictSays[row]
+	if !ok {
+		return nil
+	}
+	flagged := map[bool]bool{}
+	for _, f := range flags {
+		if strings.Contains(f.why, "not compared") || !strings.Contains(f.why, says) {
+			return fmt.Errorf("%s's verdict %q doesn't say %q", cc.report, f.why, says)
+		}
+		flagged[f.v4] = true
+	}
+	switch {
+	case len(flagged) == 0:
+		return fmt.Errorf("%s never flagged the row's connections, want verdicts saying %q", cc.report, says)
+	case oneUnderlay:
+		return nil
+	case !flagged[true]:
+		return fmt.Errorf("%s flagged no IPv4 connection of the row, want a verdict saying %q", cc.report, says)
+	case !flagged[false]:
+		return fmt.Errorf("%s flagged no IPv6 connection of the row, want a verdict saying %q", cc.report, says)
+	}
+	return nil
+}
+
+// TestVerdictMisses: a cell whose module didn't compare, on any of the
+// row's connections ("not compared", or no flag in a family), is an
+// error, whatever the row's crossing scored.
 func TestVerdictMisses(t *testing.T) {
+	const match, unreachable = "accept, server hello matches the site camouflage.example.net", "accept, not compared: the site is unreachable"
 	cc := censorCase{report: "server-hello", verdictSays: map[string]string{rowHTTPS: "server hello matches the site"}}
-	for why, wantErr := range map[string]bool{
-		"accept, server hello matches the site camouflage.example.net": false,
-		"accept, not compared: the site is unreachable":                true,
-		"": true,
+	for _, c := range []struct {
+		name        string
+		flags       []judgment
+		oneUnderlay bool
+		wantErr     bool
+	}{
+		{"both families match", []judgment{{true, match}, {false, match}, {true, match}}, false, false},
+		{"no flag", nil, false, true},
+		{"IPv6 not compared after IPv4 matched", []judgment{{true, match}, {false, unreachable}}, false, true},
+		{"IPv6 compared later, once not", []judgment{{true, match}, {false, match}, {false, unreachable}}, false, true},
+		{"another reason", []judgment{{true, match}, {false, "drop, server hello unlike the site"}}, false, true},
+		{"no IPv6 flag", []judgment{{true, match}, {true, match}}, false, true},
+		{"no IPv4 flag", []judgment{{false, match}}, false, true},
+		{"one underlay, one family", []judgment{{false, match}}, true, false},
 	} {
-		if err := cc.verdictMisses(rowHTTPS, why); (err != nil) != wantErr {
-			t.Errorf("verdict %q: %v, want an error: %v", why, err, wantErr)
+		if err := cc.verdictMisses(rowHTTPS, c.flags, c.oneUnderlay); (err != nil) != c.wantErr {
+			t.Errorf("%s: %v, want an error: %v", c.name, err, c.wantErr)
 		}
 	}
-	if err := cc.verdictMisses(rowPlainTCP, ""); err != nil {
+	if err := cc.verdictMisses(rowPlainTCP, nil, false); err != nil {
 		t.Errorf("a row the case doesn't check: %v", err)
 	}
 }
@@ -439,6 +489,87 @@ type transport struct {
 	// oneUnderlay: both overlay families ride one underlay family, so a
 	// blocked cell may blame either family's underlay.
 	oneUnderlay bool
+	// moduleSettings overrides, by module name, settings of the censor
+	// modules a case runs, in every cell of the row: a key set here
+	// replaces the case's. A gate row whose entry relays what it doesn't
+	// recognize to the camouflage site (REALITY) asks for the prober's
+	// upstreamTell "report" here; such a row must be in the case's
+	// verdictSays.
+	moduleSettings map[string]map[string]any
+}
+
+// withRowSettings is the case's module configs with a row's overrides
+// (transport.moduleSettings) merged in.
+func withRowSettings(configs []censor.ModuleConfig, overrides map[string]map[string]any) ([]censor.ModuleConfig, error) {
+	out := slices.Clone(configs)
+	for i, mc := range out {
+		o, ok := overrides[mc.Name]
+		if !ok {
+			continue
+		}
+		settings := map[string]any{}
+		if len(mc.Settings) > 0 {
+			if err := json.Unmarshal(mc.Settings, &settings); err != nil {
+				return nil, fmt.Errorf("%s's settings: %w", mc.Name, err)
+			}
+		}
+		maps.Copy(settings, o)
+		b, err := json.Marshal(settings)
+		if err != nil {
+			return nil, fmt.Errorf("%s's settings: %w", mc.Name, err)
+		}
+		out[i].Settings = b
+	}
+	return out, nil
+}
+
+// TestWithRowSettings: a row's override reaches the module it names, and
+// only that one; a row without one (relay-tcp, whose cell fails on the
+// upstream tell) runs the case's settings.
+func TestWithRowSettings(t *testing.T) {
+	proberSettings := `{"reference": {"name": "camouflage.example.net", "addresses": ["198.51.100.10:443"]}, "destinations": ["192.0.2.9"]}`
+	configs := []censor.ModuleConfig{
+		{Name: "fully-encrypted", Settings: json.RawMessage(`{"tagOnly": true}`)},
+		{Name: "prober", Settings: json.RawMessage(proberSettings)},
+	}
+	got, err := withRowSettings(configs, map[string]map[string]any{"prober": {"upstreamTell": "report"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prober struct {
+		Reference    struct{ Name string } `json:"reference"`
+		Destinations []string              `json:"destinations"`
+		UpstreamTell string                `json:"upstreamTell"`
+	}
+	if err := json.Unmarshal(got[1].Settings, &prober); err != nil {
+		t.Fatal(err)
+	}
+	if prober.UpstreamTell != "report" || prober.Reference.Name != "camouflage.example.net" || len(prober.Destinations) != 1 {
+		t.Errorf("the prober's settings with the row's override: %s", got[1].Settings)
+	}
+	if string(got[0].Settings) != `{"tagOnly": true}` || string(configs[1].Settings) != proberSettings {
+		t.Errorf("touched what the override doesn't name: %s, the case's own %s", got[0].Settings, configs[1].Settings)
+	}
+	if _, _, err := censor.Build(censor.Config{Modules: got}); err != nil {
+		t.Errorf("the merged settings: %v", err)
+	}
+	// The override is what the module parses: a value it refuses fails.
+	bad, err := withRowSettings(configs, map[string]map[string]any{"prober": {"upstreamTell": "ignore"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := censor.Build(censor.Config{Modules: bad}); err == nil {
+		t.Error("the module accepted upstreamTell \"ignore\": the override didn't reach it")
+	}
+	unchanged, err := withRowSettings(configs, nil)
+	if err != nil || string(unchanged[1].Settings) != proberSettings {
+		t.Errorf("a row without overrides: %s, %v", unchanged[1].Settings, err)
+	}
+	for _, tr := range transports {
+		if _, ok := tr.moduleSettings["prober"]["upstreamTell"]; ok && tr.name == rowRelayTCP {
+			t.Errorf("%s sets the prober's upstreamTell: its cell must fail on the tell", tr.name)
+		}
+	}
 }
 
 var transports = []transport{
@@ -545,20 +676,8 @@ func blockedBy(t *testing.T, l *lab.Lab, c *censorRun, blocker string, got cross
 		return "", fmt.Errorf("a blocking cell without a censor")
 	}
 	server := l.Node(lab.Server1)
-	var families [][]netip.Addr
-	switch {
-	case oneUnderlay:
-		families = append(families, serverAddrs(server))
-	default:
-		if !got.v4 {
-			families = append(families, []netip.Addr{server.IPv4(lab.NetServers)})
-		}
-		if !got.v6 {
-			families = append(families, []netip.Addr{server.IPv6(lab.NetServers)})
-		}
-	}
 	found := map[censor.Verdict]bool{}
-	for _, addrs := range families {
+	for _, addrs := range blockedFamilies(server.IPv4(lab.NetServers), server.IPv6(lab.NetServers), got, oneUnderlay) {
 		blocked := false
 		for _, v := range []censor.Verdict{censor.Drop, censor.Reset} {
 			if c.logged(t, blames(blocker, v, addrs)) {
@@ -576,6 +695,45 @@ func blockedBy(t *testing.T, l *lab.Lab, c *censorRun, blocker string, got cross
 		}
 	}
 	return strings.Join(verdicts, " and "), nil
+}
+
+// blockedFamilies is what blockedBy needs a blocker's verdict on, one
+// entry each: server-1's address of each family that didn't cross, or
+// either address once for a row whose tunnels share one underlay family.
+func blockedFamilies(v4, v6 netip.Addr, got crossed, oneUnderlay bool) [][]netip.Addr {
+	if oneUnderlay {
+		return [][]netip.Addr{{v4, v6}}
+	}
+	var families [][]netip.Addr
+	if !got.v4 {
+		families = append(families, []netip.Addr{v4})
+	}
+	if !got.v6 {
+		families = append(families, []netip.Addr{v6})
+	}
+	return families
+}
+
+// TestBlockedFamilies: a family that didn't cross needs the blocker's
+// verdict on its own address, not on either of the server's.
+func TestBlockedFamilies(t *testing.T) {
+	v4, v6 := netip.MustParseAddr("192.0.2.9"), netip.MustParseAddr("2001:db8::9")
+	for _, c := range []struct {
+		got         crossed
+		oneUnderlay bool
+		want        [][]netip.Addr
+	}{
+		{crossed{}, false, [][]netip.Addr{{v4}, {v6}}},
+		{crossed{v6: true}, false, [][]netip.Addr{{v4}}},
+		{crossed{v4: true}, false, [][]netip.Addr{{v6}}},
+		{crossed{v4: true, v6: true}, false, nil},
+		{crossed{}, true, [][]netip.Addr{{v4, v6}}},
+	} {
+		got := blockedFamilies(v4, v6, c.got, c.oneUnderlay)
+		if !slices.EqualFunc(got, c.want, slices.Equal[[]netip.Addr]) {
+			t.Errorf("%+v, one underlay %v: %v, want %v", c.got, c.oneUnderlay, got, c.want)
+		}
+	}
 }
 
 // blames matches a verdict log entry of blocker's verdict v on traffic to

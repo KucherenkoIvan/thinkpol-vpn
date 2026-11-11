@@ -398,21 +398,35 @@ func (c *censorRun) settled(t *testing.T, l *lab.Lab) error {
 	}
 }
 
-// judged is module's first flag of a flow between device-a and server-1,
-// its reason, "" for none: not of server-1's own connections (a relay's
-// to the site, which the prober's probes cause too).
-func (c *censorRun) judged(t *testing.T, l *lab.Lab, module string) string {
+// judged is every flag of module on a flow between device-a and server-1,
+// once there is one: not of server-1's own connections (a relay's to the
+// site, which the prober's probes cause too). Read after settled, the log
+// holds every flag of the flows the module tagged.
+func (c *censorRun) judged(t *testing.T, l *lab.Lab, module string) []judgment {
 	t.Helper()
 	isServer, dev := isServer1(l), l.Node(lab.DeviceA)
 	isDevice := func(a netip.Addr) bool { return a == dev.IPv4(lab.NetDevices) || a == dev.IPv6(lab.NetDevices) }
-	var why string
-	c.logged(t, func(e verdictLine) bool {
-		if e.Event == censor.EventFlag && e.Module == module &&
-			(isServer(e.Key.Src) && isDevice(e.Key.Dst) || isDevice(e.Key.Src) && isServer(e.Key.Dst)) {
-			why = fmt.Sprintf("%s, %s", e.Verdict, e.Reason)
-			return true
+	match := func(e verdictLine) bool {
+		return e.Event == censor.EventFlag && e.Module == module &&
+			(isServer(e.Key.Src) && isDevice(e.Key.Dst) || isDevice(e.Key.Src) && isServer(e.Key.Dst))
+	}
+	if !c.logged(t, match) {
+		return nil
+	}
+	var flags []judgment
+	lab.Eventually(t, 30*time.Second, func() error {
+		log, err := execRead(c.router, pollTimeout, "cat", censorLogPath)
+		if err != nil {
+			return err
 		}
-		return false
+		flags = nil
+		_, err = matchVerdicts(completeLines(log), func(e verdictLine) bool {
+			if match(e) {
+				flags = append(flags, judgment{v4: e.Key.Src.Is4(), why: fmt.Sprintf("%s, %s", e.Verdict, e.Reason)})
+			}
+			return false
+		})
+		return err
 	})
-	return why
+	return flags
 }
