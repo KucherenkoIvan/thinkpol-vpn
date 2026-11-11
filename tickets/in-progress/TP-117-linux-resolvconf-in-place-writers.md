@@ -21,7 +21,7 @@ A DHCP client that rewrites `/etc/resolv.conf` in place while the node manages i
 - Decide how to settle a write (for example a short quiet period after the last event before reading, or lines appended to the managed file taken as a new original), and test it with a fake writer that truncates then appends.
 
 ## Acceptance
-- [ ] a unit test with a truncate-then-append writer: the node ends with the writer's servers as the original and tells them
+- [x] a unit test with a truncate-then-append writer: the node ends with the writer's servers as the original and tells them
 - [ ] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
@@ -36,3 +36,8 @@ A DHCP client that rewrites `/etc/resolv.conf` in place while the node manages i
 - 2026-10-21 created in backlog (TP-115 review round 1)
 - 2026-10-22 docs (TP-128 review): the empty-read cases, Restore putting back an empty file, and RR5
 - 2026-11-09 backlog → in-progress, owner: agent-tp-117
+- 2026-11-12 continued from the stopped run's draft (kept after review, two fixes: the watch reads the file under the lock so its own in-place write on a bind mount never looks foreign; Restore clears the settle so a later Update applies; the test helper waited for a tell that never comes)
+- 2026-11-12 decided: a 500 ms quiet period (no change event, same file state) before another program's write is read, and an Update during it is applied by the watch with the settled file; lines appended to the managed file as a new original rejected (it still reads the truncated file first, and would take a hand edit for a rewrite). An empty /etc/resolv.conf that stays empty through the settle is the new original (ErrNoSystemUpstream, Restore puts it back empty); an empty link target while the first read is owed is no read. Reasons in the dns package doc; RR5 names losing the original and is decided
+- 2026-11-12 tests (resolvconf_settle_test.go): the inotify truncate-then-append writer (runs in the lab node, skips on macOS), the poll reading the file empty mid-write, an Update during a settle, an empty file that stays, an empty link target. Mutations, each failing its test: the settle switched off (`… && false`; the poll and Update tests on macOS, the inotify test in the lab node); Update ignoring the settle; linkedOriginal taking an empty target; an empty file never settling
+- 2026-11-12 lab: no separate lab test; the dns package's unit tests run in a lab node under make lab-test, where the inotify test drives real inotify with a real truncate-then-append writer, which is what a busybox udhcpc script does to the file
+- 2026-11-12 make test green; make lint green except vulncheck, which fails on every branch: GO-2026-6859 in net/http@go1.26.10 (fixed in go1.26.11, the toolchain in go.mod is go1.26.10), out of scope
