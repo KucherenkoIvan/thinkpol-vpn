@@ -60,3 +60,4 @@ Round 1 (2026-11-12):
 - 2026-11-12 merged origin/rewrite (TP-202's toolchain go1.26.11): make lint fully green, vulncheck included; make test green; make lab-gotest of the dns package green; full make lab-test green on 5af7492 (the lab phase and 38 packages in lab nodes)
 - 2026-11-12 not verified: a real busybox udhcpc or dhcpcd run against the node (the tests' writers do what their scripts do to the file). Out of scope: when the original was a symlink, lines appended to the managed file are told and kept while the node runs, but Restore puts back the link, so they are not kept after it
 - 2026-11-12 has-errors → in-progress — owner: agent-tp-117, branch: tp-117-linux-resolvconf-in-place-writers
+- 2026-11-12 in-progress → review
