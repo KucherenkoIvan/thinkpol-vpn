@@ -214,6 +214,10 @@ func (r *runner) pointSystem() {
 		}
 		return
 	}
+	if dns.Deferred(sys) {
+		r.dp.Log.Info("DNS: the system's new configuration waits for another program's write of it to settle", "servers", want.Servers)
+		return
+	}
 	r.dp.Log.Info("DNS: the system resolves through the node", "servers", want.Servers)
 }
 

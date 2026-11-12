@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -269,12 +270,93 @@ func TestResolvConfProblemReportsAWriteThatDoesNotSettle(t *testing.T) {
 	checkInPlaceRenewal(t, path, r, told)
 }
 
-// A file renamed into place is complete at its first sight: it is taken
-// at once, with no settle.
+// A file renamed into place is complete at its first sight: the rename's
+// change event takes it at once, with no settle.
 func TestResolvConfAFileRenamedInIsTakenAtOnce(t *testing.T) {
-	path, r, told := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: time.Hour, settleMax: time.Hour})
+	hasChangeEvents(t)
+	path, r, told := startInPlace(t, resolvConfTiming{check: time.Hour, settle: time.Hour, settleMax: time.Hour})
 	writeFileAtomic(t, path, renewedInPlace)
 	checkInPlaceRenewal(t, path, r, told)
+}
+
+// A file created at the path is another file than the node's before its
+// first byte is written (rm then `cat >`, an editor writing a new file,
+// install): the change event of its creation and the poll find it new
+// and empty, and it settles like a write in place. With the file removed
+// a while first, the settle that begins with no file isn't cut short by
+// the creation either.
+func TestResolvConfAFileCreatedAtThePathSettles(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		events  bool
+		removed time.Duration // how long there is no file
+	}{
+		{"change events", true, 0},
+		{"change events, removed a while", true, 150 * time.Millisecond},
+		{"poll", false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			check := 20 * time.Millisecond
+			if tc.events {
+				hasChangeEvents(t)
+				check = time.Hour
+			}
+			path, r, told := startInPlace(t, resolvConfTiming{check: check, settle: 300 * time.Millisecond, settleMax: 10 * time.Second})
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(tc.removed)
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+			if err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(100 * time.Millisecond) // the creation is seen, empty
+			_, err = f.WriteString(renewedInPlace)
+			if cerr := f.Close(); err == nil {
+				err = cerr
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkInPlaceRenewal(t, path, r, told)
+		})
+	}
+}
+
+// A program that rewrites the file in place again and again is taken back
+// at each settle's cap; between those, Problem keeps saying unprotected,
+// not only once each new settle is older than the settle period. Once the
+// writer stops, its last file settles and Problem clears.
+func TestResolvConfAWriterThatKeepsRewritingStaysUnprotected(t *testing.T) {
+	timing := resolvConfTiming{check: 20 * time.Millisecond, settle: 300 * time.Millisecond, settleMax: 600 * time.Millisecond}
+	path, r, told := startInPlace(t, timing)
+	start := time.Now()
+	for i := 0; time.Since(start) < 3*time.Second; i++ {
+		overwriteInPlace(t, path, fmt.Sprintf("nameserver 192.0.2.%d\n", 10+i%200))
+		for range 10 {
+			time.Sleep(10 * time.Millisecond)
+			// Past the first cap, a take-back has been forced.
+			if time.Since(start) > timing.settleMax+timing.settle {
+				if p := r.Problem(); !Unprotected(p) {
+					t.Fatalf("problem %v at %v while the writer goes on, want unprotected", p, time.Since(start).Round(time.Millisecond))
+				}
+			}
+		}
+	}
+	overwriteInPlace(t, path, renewedInPlace)
+	takenBackWith(t, path, renewedInPlace)
+	if got := lastTold(t, told); !slices.Equal(got, renewedInPlaceServers) {
+		t.Errorf("told %v last, want %v", got, renewedInPlaceServers)
+	}
+	// The last take-back may have been at a cap: the node's file stands
+	// for a settle before Problem clears.
+	deadline := time.Now().Add(timing.settle + time.Second)
+	for p := r.Problem(); p != nil; p = r.Problem() {
+		if time.Now().After(deadline) {
+			t.Fatalf("problem %v after the writer stopped", p)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // An Update the watch hasn't seen a write before (no poll, and an open
@@ -309,8 +391,14 @@ func TestResolvConfAnUpdateWhileAWriteSettlesWaitsForIt(t *testing.T) {
 	writeThroughOneOpen(t, path, func() {
 		time.Sleep(100 * time.Millisecond) // polls read the file empty: a settle begins
 		updateSearch(t, r, told)
+		if !Deferred(r) {
+			t.Error("an Update during a settle is not reported deferred")
+		}
 	})
 	checkUpdatedRenewal(t, path, r, told)
+	if Deferred(r) {
+		t.Error("still deferred after the settle")
+	}
 }
 
 // writeThroughOneOpen writes renewedInPlace the way `cat > file` does,
@@ -423,6 +511,53 @@ func TestResolvConfADeferredUpdateThatFailsShowsInProblem(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// A rewrite that fails partway (a bind mount's write in place: the file
+// truncated, then part of the new content) leaves a file that starts
+// with what the node wrote before: the rest is the node's own lines, not
+// another program's appended ones, and never joins the original.
+func TestResolvConfAPartialRewriteIsNotTakenAsAppendedLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf") // no file: the original is empty
+	c := testSystem
+	c.Search = nil
+	r, err := setResolvConfTimed(path, "", c, resolvConfTiming{check: 20 * time.Millisecond, settle: 50 * time.Millisecond, settleMax: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	r.mu.Lock()
+	failed := false
+	r.rewrite = func(path string, f resolvConfFile, content []byte) error {
+		if failed {
+			return rewriteResolvConf(path, f, content)
+		}
+		failed = true
+		// The node's servers, then the write fails before the search line.
+		end := bytes.Index(content, []byte("search "))
+		if err := os.WriteFile(path, content[:end], 0o644); err != nil {
+			return err
+		}
+		return errors.New("injected: write failed partway")
+	}
+	r.mu.Unlock()
+	next := c
+	next.Servers = append(slices.Clone(c.Servers), netip.MustParseAddr("100.64.0.3"))
+	next.Search = []string{"home.internal"}
+	if err := r.Update(next); err == nil {
+		t.Fatal("the injected failure is lost")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for r.Problem() != nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("not rewritten after the failure: problem %v", r.Problem())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if m := parseResolvConf([]byte(readString(t, path))); len(m.original) != 0 {
+		t.Errorf("the node's own lines joined the original: %q", m.original)
+	}
+	restoredTo(t, path, r, "")
 }
 
 // Restore ends the management: an Update after it fails and leaves the

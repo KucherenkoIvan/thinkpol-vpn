@@ -62,7 +62,7 @@ func TestResolvConfOwnInPlaceWritesOnABindMountStartNoSettle(t *testing.T) {
 	if p := r.Problem(); p != nil {
 		t.Errorf("problem %v", p)
 	}
-	if strings.Contains(log.String(), "writing resolv.conf in place") {
+	if strings.Contains(log.String(), "once the write settles") {
 		t.Errorf("the node's own write began a settle:\n%s", log.String())
 	}
 	if err := r.Restore(); err != nil {

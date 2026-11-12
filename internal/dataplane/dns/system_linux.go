@@ -85,6 +85,10 @@ func (s systems) Problem() error {
 	return errors.Join(errs...)
 }
 
+func (s systems) deferred() bool {
+	return slices.ContainsFunc(s, Deferred)
+}
+
 func (s systems) Restore() error {
 	var errs []error
 	for _, p := range s {

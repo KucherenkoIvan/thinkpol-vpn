@@ -230,13 +230,17 @@
 // unprotected) until a read names one again.
 //
 // How another program's write is taken back depends on how it was
-// written. A file swapped in whole (a new file renamed over the path, as
-// an atomic writer, dhclient-script's mv or NetworkManager do) is
-// complete at its first event and is taken at once. A write into the
-// file in place is read only once it has settled: the file stays the
-// same, with no change event, for 500 ms, and a settle never runs past
-// 2 s from its start, so a writer that never goes quiet (another program
-// fighting over the file) is taken back anyway. Some writers truncate
+// written. A file renamed over the path (as an atomic writer,
+// dhclient-script's mv or NetworkManager do) was complete before it got
+// the name: when the change events since the last read are renames into
+// the path only, it is taken at once. Any other write is read only once
+// it has settled: the file stays the same, with no change event, for
+// 500 ms, and a settle never runs past 2 s from its start, so a writer
+// that never goes quiet (another program fighting over the file) is
+// taken back anyway. That covers a write into the file in place, and a
+// new file created at the path (`rm` then `cat >`, an editor or install
+// writing a new file): it is created at the open, before its first byte,
+// and the creation's event comes then. Some writers truncate
 // the file and then append a line at a time (the example script of
 // busybox udhcpc before 1.22, which later versions replaced with a
 // temporary file and a mv, and copies of it that distributions still
@@ -245,23 +249,31 @@
 // Taking a file before its writer is done would rename the managed file
 // over a half-written one, and the writer's later lines would land in
 // the managed file, outside its original. Where it can't be told which
-// way a file was written (no file at all; a bind mount, where every
-// write is in place, the node's own too), the write settles. Problem
-// reports [ErrUnprotected] while another program's file has been in
-// place longer than the settle.
+// way a file was written (no file at all; the poll, which has no event;
+// a bind mount, where every write is in place, the node's own too), the
+// write settles. Problem reports [ErrUnprotected] while another
+// program's file has been in place longer than the settle, and, once a
+// settle's cap forced the file back, until the node's file has stood for
+// a settle: a writer that rewrites the file every few hundred
+// milliseconds is reported for as long as it goes on.
 //
 // Lines appended to the managed file are taken as another program's and
 // join the original: an in-place writer that paused past the settle or
 // the cap appends its later lines to the file that replaced its own, and
-// a line appended by hand is kept for Restore. That is the backstop
-// behind the settle, not a replacement for it: on its own it would read
-// the truncated file first, telling and recording an empty original
-// before the real one.
+// a line appended by hand is kept for Restore, unless the original was a
+// symlink: Restore puts the link back, and the appended lines go with
+// the managed file. That is the backstop behind the settle, not a
+// replacement for it: on its own it would read the truncated file first,
+// telling and recording an empty original before the real one. After a
+// rewrite of the node's own fails (in place on a bind mount, it may
+// stop partway), nothing is taken as appended until a rewrite succeeds:
+// the file may hold part of the node's own new content after what it
+// wrote before.
 //
 // Update reads the file under the same lock: over another program's
-// write in place it only records the configuration, and the watch
-// applies it with the settled file (a failure then shows in Problem, not
-// in Update's error). The first take-over, when the node starts, reads
+// write that may still be going on it only records the configuration,
+// and the watch applies it with the settled file (a failure then shows
+// in Problem, not in Update's error; [Deferred] says it waits). The first take-over, when the node starts, reads
 // the file as it is, since nothing it wrote yet tells a write in
 // progress from a finished one; the lines a writer appends after it are
 // caught by the backstop, but a writer that writes through one open

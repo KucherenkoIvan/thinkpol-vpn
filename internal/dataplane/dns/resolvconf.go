@@ -62,6 +62,14 @@ type System interface {
 	Restore() error
 }
 
+// Deferred says s holds a configuration it hasn't applied yet: its last
+// Update waits for another program's write of the OS's configuration to
+// settle (System.Update). Problem may be nil meanwhile.
+func Deferred(s System) bool {
+	d, ok := s.(interface{ deferred() bool })
+	return ok && d.deferred()
+}
+
 // ErrUnprotected marks the Problems where the OS doesn't resolve only
 // through the node's resolver. A System's Problem may instead report
 // ErrUpstreamsStale, which is not unprotected; Unprotected tells the
@@ -287,14 +295,26 @@ type resolvConf struct {
 	// file it left it in: any other content is another program's write.
 	written     []byte
 	writtenInfo fs.FileInfo
-	// foreign is another program's write into the file in place, while
-	// the watch waits for it to settle; nil when there is none. Update
+	// writeFailed: the last rewrite failed, so what is at path may be part
+	// of it, not written followed by another program's lines; no appended
+	// lines are taken until a rewrite succeeds.
+	writeFailed bool
+	// rewrite puts content at path (rewriteResolvConf; a field so tests can
+	// make a write fail partway).
+	rewrite func(path string, f resolvConfFile, content []byte) error
+	// foreign is another program's write that may still be going on,
+	// while the watch waits for it to settle; nil when there is none. Update
 	// leaves the rewrite to the watch meanwhile.
-	foreign  *foreignWrite
-	restored bool          // Restore ran: there is no watch any more
-	wake     chan struct{} // Update began a settle the watch must time
-	stop     chan struct{}
-	stopped  chan struct{}
+	foreign *foreignWrite
+	// contended: a settle's cap forced the file back at takenBack, so
+	// another program may be writing it again and again; Problem reports
+	// unprotected until the node's file has stood for a settle.
+	contended bool
+	takenBack time.Time
+	restored  bool          // Restore ran: there is no watch any more
+	wake      chan struct{} // Update began a settle the watch must time
+	stop      chan struct{}
+	stopped   chan struct{}
 }
 
 // foreignWrite is another program's write being settled.
@@ -334,7 +354,7 @@ func setResolvConf(path string, uplink string, c SystemConfig) (*resolvConf, err
 // no telling another program's write in progress from a finished one
 // (RESIDUAL-RISKS.md RR5).
 func setResolvConfTimed(path, uplink string, c SystemConfig, timing resolvConfTiming) (*resolvConf, error) {
-	r := &resolvConf{path: path, uplink: uplink, timing: timing, cfg: c, untold: startsUntold(c),
+	r := &resolvConf{path: path, uplink: uplink, timing: timing, cfg: c, untold: startsUntold(c), rewrite: rewriteResolvConf,
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), stopped: make(chan struct{})}
 	r.mu.Lock()
 	tell, err := r.apply(readResolvConfFile(r.path))
@@ -350,7 +370,8 @@ func setResolvConfTimed(path, uplink string, c SystemConfig, timing resolvConfTi
 // (ferr its error), keeping f as the original unless it is the node's
 // own (left by a crash). Lines appended to the node's own file are
 // another program's (an in-place writer still appending after its settle
-// ended, or a hand edit) and join the original. It returns what to tell
+// ended, or a hand edit) and join the original, unless the node's last
+// rewrite failed (writeFailed). It returns what to tell
 // the caller, run after unlocking, or nil. r.mu is held.
 func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error) {
 	defer func() { r.err = err }()
@@ -359,7 +380,7 @@ func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error
 	}
 	m := parseResolvConf(f.content)
 	symlink, read := f.symlink, f.read
-	if appended, ok := bytes.CutPrefix(f.content, r.written); ok && len(r.written) > 0 && len(appended) > 0 {
+	if appended, ok := bytes.CutPrefix(f.content, r.written); ok && !r.writeFailed && len(r.written) > 0 && len(appended) > 0 {
 		m = parseResolvConf(r.written)
 		m.original = append(slices.Clip(m.original), appended...)
 	}
@@ -378,10 +399,11 @@ func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error
 	}
 	content := render(r.cfg, m.original, symlink)
 	tell = r.recordOriginal(m.original, read)
-	if err := rewriteResolvConf(r.path, f, content); err != nil {
+	if err := r.rewrite(r.path, f, content); err != nil {
+		r.writeFailed = true
 		return tell, err
 	}
-	r.written = content
+	r.written, r.writeFailed = content, false
 	if fi, err := os.Lstat(r.path); err == nil {
 		r.writtenInfo = fi
 	}
@@ -507,8 +529,8 @@ func rewriteResolvConf(path string, f resolvConfFile, content []byte) error {
 }
 
 // watch takes the file back whenever another program writes it: a file
-// swapped in whole at once, a write into the file in place once it
-// settles (resolvConfTiming).
+// renamed into the path at once, any other write once it settles
+// (resolvConfTiming).
 func (r *resolvConf) watch(first func()) {
 	defer close(r.stopped)
 	if first != nil {
@@ -523,11 +545,11 @@ func (r *resolvConf) watch(first func()) {
 	quiet := time.NewTimer(r.timing.settle)
 	quiet.Stop()
 	for {
-		changed, quietEnded := false, false
+		changed, renamed, quietEnded := false, false, false
 		select {
 		case <-r.stop:
 			return
-		case <-changes:
+		case renamed = <-changes:
 			changed = true
 		case <-r.wake:
 			changed = true
@@ -539,7 +561,7 @@ func (r *resolvConf) watch(first func()) {
 		// its half-written file must not look like another program's.
 		r.mu.Lock()
 		f, ferr := readResolvConfFile(r.path)
-		if !r.decide(f, ferr, changed, quietEnded, quiet) {
+		if !r.decide(f, ferr, event{changed: changed, renamed: renamed, quietEnded: quietEnded}, quiet) {
 			r.mu.Unlock()
 			continue
 		}
@@ -558,13 +580,18 @@ func (r *resolvConf) watch(first func()) {
 	}
 }
 
-// decide says whether the watch takes the file back now: changed is a
-// change event (or Update's wake), quietEnded the quiet timer firing. It
-// starts or moves the quiet timer of a write still settling. r.mu is
-// held.
-func (r *resolvConf) decide(f resolvConfFile, ferr error, changed, quietEnded bool, quiet *time.Timer) bool {
+// event is what woke the watch.
+type event struct {
+	changed    bool // a change event, or Update's wake
+	renamed    bool // the change events were renames into the path only
+	quietEnded bool // the quiet timer fired
+}
+
+// decide says whether the watch takes the file back now. It starts or
+// moves the quiet timer of a write still settling. r.mu is held.
+func (r *resolvConf) decide(f resolvConfFile, ferr error, ev event, quiet *time.Timer) bool {
 	now := stateOf(f, ferr)
-	switch kind := r.classify(f, ferr); {
+	switch kind := r.classify(f, ferr, ev.renamed); {
 	case kind == ownFile:
 		// Applied again all the same: it writes nothing unless a settle
 		// that ends this way held an Update's configuration, and it
@@ -572,23 +599,35 @@ func (r *resolvConf) decide(f resolvConfFile, ferr error, changed, quietEnded bo
 		return true
 	case kind == wholeWrite:
 		return true
-	case r.foreign == nil: // an in-place write begins
-		r.foreign = &foreignWrite{began: time.Now(), last: now}
+	case r.foreign == nil: // a write begins
+		r.beginForeign(now)
 		quiet.Reset(r.quietFor())
 		if log := r.cfg.Log; log != nil {
-			log.Debug("DNS: another program is writing resolv.conf in place; taking it back once the write settles", "path", r.path)
+			log.Debug("DNS: another program is writing resolv.conf; taking it back once the write settles", "path", r.path)
 		}
 		return false
 	case time.Since(r.foreign.began) >= r.timing.settleMax: // past the cap
+		r.contended, r.takenBack = true, time.Now()
 		return true
-	case changed || now != r.foreign.last: // still being written
+	case ev.changed || now != r.foreign.last: // still being written
 		r.foreign.last = now
 		quiet.Reset(r.quietFor())
 		return false
-	case !quietEnded: // a poll during a quiet settle
+	case !ev.quietEnded: // a poll during a quiet settle
 		return false
 	}
+	r.contended = false
 	return true // settled
+}
+
+// beginForeign begins settling another program's write, found as now. A
+// writer the cap forced back is still contending if it began again
+// within a settle of being taken back. r.mu is held.
+func (r *resolvConf) beginForeign(now fileState) {
+	if time.Since(r.takenBack) >= r.timing.settle {
+		r.contended = false
+	}
+	r.foreign = &foreignWrite{began: time.Now(), last: now}
 }
 
 // fileKind is whose write a read of the managed path found.
@@ -597,25 +636,27 @@ type fileKind int
 const (
 	// ownFile is what the node last wrote.
 	ownFile fileKind = iota
-	// wholeWrite is another program's file, complete: one swapped in whole
-	// (a rename or a new file, not the file the node wrote), or one that
-	// can't be read, which gives nothing to wait for.
+	// wholeWrite is another program's file, complete: one renamed into
+	// the path (a change event says so), or one that can't be read, which
+	// gives nothing to wait for.
 	wholeWrite
-	// inPlaceWrite is another program's write into the file the node
-	// wrote, or where that can't be told (there is no file): it may still
-	// be going on.
+	// inPlaceWrite is another program's write that may still be going on:
+	// into the file the node wrote, or into a file created at the path
+	// (created at the open, before its first write), or one whose kind
+	// can't be told (the poll and Update have no event; no file).
 	inPlaceWrite
 )
 
-// classify says whose write f is. On a bind mount every write is in
-// place, so every write there settles. r.mu is held.
-func (r *resolvConf) classify(f resolvConfFile, ferr error) fileKind {
+// classify says whose write f is; renamed says the change events since
+// the last read were renames into the path only. On a bind mount every
+// write is in place, so every write there settles. r.mu is held.
+func (r *resolvConf) classify(f resolvConfFile, ferr error, renamed bool) fileKind {
 	switch {
 	case ferr != nil:
 		return wholeWrite
 	case f.read && bytes.Equal(f.content, r.written):
 		return ownFile
-	case f.info != nil && r.writtenInfo != nil && !os.SameFile(f.info, r.writtenInfo):
+	case renamed && f.info != nil && r.writtenInfo != nil && !os.SameFile(f.info, r.writtenInfo):
 		return wholeWrite
 	}
 	return inPlaceWrite
@@ -648,9 +689,9 @@ func stateOf(f resolvConfFile, err error) fileState {
 	return fileState{exists: true, mode: f.info.Mode().Type(), symlink: f.symlink, read: f.read, content: string(f.content)}
 }
 
-// Update writes c over the managed file, unless another program is
-// writing the file in place: then c is written once that write settles,
-// and a failure then shows in Problem, not here.
+// Update writes c over the managed file, unless another program may be
+// writing the file: then c is written once that write settles, and a
+// failure then shows in Problem, not here.
 func (r *resolvConf) Update(c SystemConfig) error {
 	r.mu.Lock()
 	if r.restored {
@@ -659,8 +700,8 @@ func (r *resolvConf) Update(c SystemConfig) error {
 	}
 	r.cfg = c
 	f, ferr := readResolvConfFile(r.path)
-	if r.foreign == nil && r.classify(f, ferr) == inPlaceWrite {
-		r.foreign = &foreignWrite{began: time.Now(), last: stateOf(f, ferr)}
+	if r.foreign == nil && r.classify(f, ferr, false) == inPlaceWrite {
+		r.beginForeign(stateOf(f, ferr))
 		select {
 		case r.wake <- struct{}{}:
 		default:
@@ -678,6 +719,14 @@ func (r *resolvConf) Update(c SystemConfig) error {
 	return err
 }
 
+// deferred says r holds a configuration it hasn't written yet: Update
+// left it to the watch while another program's write settles.
+func (r *resolvConf) deferred() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.foreign != nil
+}
+
 func (r *resolvConf) Problem() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -685,10 +734,11 @@ func (r *resolvConf) Problem() error {
 	if r.err != nil {
 		errs = append(errs, fmt.Errorf("%w: rewriting %s: %v", ErrUnprotected, r.path, r.err))
 	}
-	if r.foreign != nil {
-		if d := time.Since(r.foreign.began); d > r.timing.settle {
-			errs = append(errs, fmt.Errorf("%w: another program's write of %s has not settled in %v", ErrUnprotected, r.path, d.Round(time.Millisecond)))
-		}
+	switch {
+	case r.contended && (r.foreign != nil || time.Since(r.takenBack) < r.timing.settle):
+		errs = append(errs, fmt.Errorf("%w: another program keeps writing %s; taken back only at the settle's cap", ErrUnprotected, r.path))
+	case r.foreign != nil && time.Since(r.foreign.began) > r.timing.settle:
+		errs = append(errs, fmt.Errorf("%w: another program's write of %s has not settled in %v", ErrUnprotected, r.path, time.Since(r.foreign.began).Round(time.Millisecond)))
 	}
 	if err := staleUpstreams(r.untold || r.owed); err != nil {
 		errs = append(errs, err)
