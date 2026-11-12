@@ -532,12 +532,17 @@ var censorCases = []censorCase{
 	// against nginx on the camouflage node: the https row's nginx answers
 	// every probe and the TLS handshake as it does; the echo server and
 	// OpenVPN don't; the relay answers as the site does, the site's own
-	// answers, and shows the upstream tell; so does reality, which splices
-	// every probe to its target, and whose tell is reported, not flagged
-	// (owner, 2026-11-09: REALITY's design can't avoid it).
+	// answers, and shows the upstream tell. So does reality, which splices
+	// every probe to its target; its tell is reported, not flagged (owner,
+	// 2026-11-09: REALITY's design can't avoid it), and its verdict must
+	// show the tell was looked for. The prober counts the tell by the
+	// probed address: reality's target is one IPv4 address, so a link over
+	// IPv6 dials it from server-1's IPv4 address and the report reads
+	// "connections to the reference during 0 of n probes"; a censor that
+	// knows both addresses are one host sees it anyway (RR31).
 	{name: "active prober", expect: map[string]string{rowRandomTCP: "fail", rowOpenVPNTCP: "fail", rowRelayTCP: "fail"}, blocker: "prober",
 		upstream: true, settle: true, report: "prober",
-		verdictSays: map[string]string{rowHTTPS: "TLS: the server", rowRelayTCP: "upstream tell: a connection", rowReality: "reported, not flagged"},
+		verdictSays: map[string]string{rowHTTPS: "TLS: the server", rowRelayTCP: "upstream tell: a connection", rowReality: "to the reference during"},
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			camouflage := lab.StartCamouflage(t, l)
 			return []censor.ModuleConfig{
