@@ -189,6 +189,13 @@
 //     its lines up to the hook, every skipped interface and the anchors
 //     before the guard's, and the guard's `pfctl -E` reference and whether
 //     pf still holds it;
+//   - the kill switch as the host holds it, on or off, whatever left it
+//     ([firewall.InspectKillSwitch]): on Linux the nftables table's flags,
+//     chains, rules (rendered nft-like) with their counters, and each
+//     set's size; on macOS the pf anchor's rules with their counters, its
+//     tables' sizes, pf's enabled state, and the kill switch's own
+//     `pfctl -E` reference and whether pf still holds it. Sizes only: the
+//     entries are public addresses, the direct ones possibly thousands;
 //   - the resolvers the host uses, for the overlay's names and the rest
 //     ([dns.Inspect]): resolv.conf and systemd-resolved's links on Linux,
 //     `scutil --dns` on macOS;
@@ -207,10 +214,11 @@
 //     and `last_run_unreadable` that there was a file it didn't read
 //     (`unreadable` says why, to root).
 //
-// The routes, rules, guard and resolvers are read from the host whatever
-// the data plane's state, so a snapshot after a crash or a stop shows
-// what was left. They name public addresses (the entries', the direct
-// destinations', the gateway's, the upstreams'), so they are root's: the
+// The routes, rules, guard, kill switch and resolvers are read from the
+// host whatever the data plane's state, so a snapshot after a crash or a
+// stop shows what was left. They name public addresses (the entries', the
+// direct destinations', the gateway's, the upstreams'), so they are
+// root's: the
 // group's snapshot has each of them unreadable, "root only", and the
 // agent doesn't read them for it.
 //

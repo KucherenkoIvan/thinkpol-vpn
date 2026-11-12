@@ -18,3 +18,6 @@ func newKillSwitch() agent.KillSwitch { return firewall.NewKillSwitch() }
 
 // inspectGuard reads the host's leak guard as the host holds it.
 var inspectGuard = firewall.InspectIPv6Guard
+
+// inspectKillSwitch reads the host's kill switch as the host holds it.
+var inspectKillSwitch = firewall.InspectKillSwitch

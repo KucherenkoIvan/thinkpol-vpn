@@ -793,4 +793,4 @@ Nothing in it is a public address, a key or a secret. Nodes and spaces are opaqu
 
 ### `Diagnostics`
 
-`schema_version` (2, the service's; `diag`'s JSON says the CLI's), `taken_at`, `os`, `agent_version`, `host_parts`, `status`, `tun`, `last_apply`, `routes`, `policy_rules`, `guard`, `dns`. The last four are host parts: root's only, because they name public addresses. The schema version is bumped when a field is removed or renamed or changes type or meaning. An added field doesn't bump it.
+`schema_version` (2, the service's; `diag`'s JSON says the CLI's), `taken_at`, `os`, `agent_version`, `host_parts`, `status`, `tun`, `last_apply`, `routes`, `policy_rules`, `guard`, `kill_switch`, `dns`, `service_drop_ins`, `last_run`. `routes`, `policy_rules`, `guard`, `kill_switch` and `dns` are host parts: root's only, because they name public addresses (`kill_switch` gives its sets' sizes, not their entries); `last_run` is root's too. The schema version is bumped when a field is removed or renamed or changes type or meaning. An added field doesn't bump it.

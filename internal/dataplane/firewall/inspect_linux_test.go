@@ -155,7 +155,7 @@ func TestInspectReadsTheKillSwitchAsTheKernelHoldsIt(t *testing.T) {
 		}
 	}
 	for _, chain := range []string{"output", "forward"} {
-		if n := strings.Count(p.nft(t, "-a", "list", "chain", "inet", firewall.KillSwitchTable, chain), "# handle"); perChain[chain] != n || n < 5 {
+		if n := ruleLines(p.nft(t, "-a", "list", "chain", "inet", firewall.KillSwitchTable, chain)); perChain[chain] != n || n < 5 {
 			t.Errorf("chain %s: %d rules, nft lists %d", chain, perChain[chain], n)
 		}
 	}
@@ -222,4 +222,17 @@ func setSizes(sets []firewall.KillSwitchSetReport) string {
 	}
 	slices.Sort(out)
 	return strings.Join(out, " ")
+}
+
+// ruleLines counts the rules in `nft -a list chain`'s output: the lines
+// with a handle that open no block (the table's and the chain's lines
+// have one too).
+func ruleLines(listed string) int {
+	n := 0
+	for _, l := range strings.Split(listed, "\n") {
+		if strings.Contains(l, "# handle") && !strings.Contains(l, "{") {
+			n++
+		}
+	}
+	return n
 }

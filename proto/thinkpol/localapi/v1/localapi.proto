@@ -169,7 +169,8 @@ message Diagnostics {
   // The agent's OS ("linux", "darwin") and version.
   string os = 3;
   string agent_version = 4;
-  // The caller got the host parts (routes, policy_rules, guard, dns):
+  // The caller got the host parts (routes, policy_rules, guard,
+  // kill_switch, dns):
   // root and the service's user do; the group's snapshot has them
   // unreadable.
   bool host_parts = 5;
@@ -201,6 +202,9 @@ message Diagnostics {
   // Root only, like the host parts: the group's snapshot has it
   // unreadable when there is one.
   DiagLastRun last_run = 14;
+  // The kill switch as the host holds it, on or off, whatever left it
+  // (a crashed or stopped run's included). A host part.
+  DiagKillSwitch kill_switch = 15;
 }
 
 // The head of the previous run's stderr, line by line.
@@ -325,6 +329,47 @@ message DiagGuard {
   DiagPf pf = 7;
 }
 
+// The kill switch as the host holds it: Linux's nftables table, macOS's
+// pf anchor and its tables.
+message DiagKillSwitch {
+  string unreadable = 1;
+  // "nftables table inet thinkpol-killswitch", "pf anchor
+  // com.apple/001.thinkpol-killswitch".
+  string where = 2;
+  // The host holds it (the table exists; the anchor lists rules). Unset,
+  // and left out of the JSON, when that couldn't be told (the anchor's
+  // rules unreadable).
+  optional bool present = 3;
+  // Its rules in order with their counters, as the guard's are.
+  DiagGuardRules rules = 4;
+  // Its nftables sets or pf tables, by name, each with its size; their
+  // entries (public addresses) are left out.
+  DiagKillSwitchSets sets = 5;
+  DiagNftables nftables = 6;
+  DiagKillSwitchPf pf = 7;
+}
+
+message DiagKillSwitchSets {
+  string unreadable = 1;
+  repeated DiagKillSwitchSet sets = 2;
+}
+
+message DiagKillSwitchSet {
+  // "allow4", "direct6", "thinkpol_killswitch"...
+  string name = 1;
+  string unreadable = 2;
+  // Linux: the intervals the set holds (a prefix or a range each);
+  // macOS: the addresses and prefixes `pfctl -T show` lists.
+  uint32 entries = 3;
+}
+
+// pf's state as it concerns the kill switch (macOS).
+message DiagKillSwitchPf {
+  DiagPfEnabled enabled = 1;
+  // The kill switch's own `pfctl -E` reference, apart from the guard's.
+  DiagPfReference reference = 2;
+}
+
 message DiagGuardRules {
   string unreadable = 1;
   repeated DiagGuardRule rules = 2;
@@ -352,9 +397,9 @@ message DiagPrefixes {
   repeated string prefixes = 2;
 }
 
-// The guard table's own state (Linux).
+// The guard's or the kill switch's table's own state (Linux).
 message DiagNftables {
-  // The table's chains are unhooked: it guards nothing.
+  // The table's chains are unhooked: it enforces nothing.
   bool dormant = 1;
   string chains_unreadable = 2;
   repeated DiagNftChain chains = 3;
@@ -396,10 +441,11 @@ message DiagPfGuardCheck {
   repeated string anchors_before = 5;
 }
 
-// The guard's `pfctl -E` reference, by the pid of the pfctl that took it.
+// The guard's or the kill switch's `pfctl -E` reference, by the pid of
+// the pfctl that took it.
 message DiagPfReference {
   string unreadable = 1;
-  // The guard's record names a reference.
+  // Its owner's record names a reference.
   bool recorded = 2;
   // A record of another boot session: it holds nothing now.
   bool stale = 3;

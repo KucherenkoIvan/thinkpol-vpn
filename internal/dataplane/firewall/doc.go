@@ -646,4 +646,23 @@
 // nothing, any other carries everything past the kill switch, and pfctl
 // never showed the skip on a device (TP-143), so it isn't read. With no
 // pfctl at all it is unsupported. The device checks are in TP-048's Notes.
+//
+// # The kill switch: reading it back
+//
+// [InspectKillSwitch] reads the kill switch as the host holds it, for
+// diagnostics, whether or not one runs (a crashed or stopped run's
+// shows), in the guard's readers' terms ([KillSwitchReport]). On Linux:
+// the table's flags, both chains as hooked, every rule rendered as the
+// guard's are (a conntrack key too: `ct direction reply`) with its
+// counter's values, and each set by name with its size, the intervals it
+// holds (a direct set's expired ones gone). On macOS, listings only (`-s
+// rules -v`, `-T show`, `-s info`, `-s References`) and the record read
+// without making its directory: the anchor's rules with their counters,
+// each table's size (`-T show`'s lines; a table pf doesn't hold is left
+// out), pf's enabled state, and the kill switch's own `pfctl -E`
+// reference with whether pf lists it as held, the guard's apart. Only
+// the sizes of the sets and tables: their entries are public addresses,
+// and the direct ones may run to thousands. No table, or an anchor
+// listing no rules, is no kill switch, not an unreadable one; a part that
+// can't be read says why, as the guard's report does.
 package firewall
