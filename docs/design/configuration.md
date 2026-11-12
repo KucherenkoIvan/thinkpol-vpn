@@ -44,7 +44,7 @@ What says where the node's files are (`-state`, `-map`, `-api-socket`, `-api-gro
 
 ### Device level
 
-The member's toggles on a device-type node (owner, 2026-11-07): connect-on-boot, the kill switch, allow-LAN, pause and the rule preset. A member of the access group changes them through the local API, from the tray or the CLI, and the service stores them in a small file next to the node file. That file replaced `rules.local` (TP-166), and the first start after the change carries the stored preset over.
+The member's toggles on a device-type node (owner, 2026-11-07): connect-on-boot, the kill switch, allow-LAN and the rule preset (no captive-portal pause, owner, 2026-11-12). A member of the access group changes them through the local API, from the tray or the CLI, and the service stores them in a small file next to the node file. That file replaced `rules.local` (TP-166), and the first start after the change carries the stored preset over.
 
 **Connect-on-boot is a member's toggle** (owner, 2026-11-07). The service always starts at boot, and the stored toggle decides whether it connects. Changing it needs no root, and no longer rewrites the service definition.
 
@@ -89,7 +89,6 @@ The levels then combine by narrowing:
 | rule preset | device | at once (as today) |
 | connect-on-boot | device | at the next boot; a start later in the same boot, and the running node, are left as they are |
 | kill switch, allow-LAN | device | at once: the call returns once the node put the kill switch in place or removed it (TP-048) |
-| pause | device | not built (a separate M2 ticket, owner, 2026-11-09) |
 | node file settings | node | at the next start of `up` (TP-166: none is reloaded while running; SIGHUP re-reads only the map) |
 | capability ceiling lowered under a running map | node | refused and reported, as TP-183 handles a map asking for more |
 
