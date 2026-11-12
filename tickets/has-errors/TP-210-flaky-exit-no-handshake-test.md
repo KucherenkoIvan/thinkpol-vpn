@@ -48,6 +48,10 @@ branch: "tp-210-flaky-exit-no-handshake-test"
 - **Fix (test only, the grading unchanged).** The wait step waits for the exit's completed handshake (`LastHandshake` set, nothing pending) as well as ok. The steady step asserts what it is about, no `exit_no_handshake` and no exit unanswered, not every health problem: once a handshake completed nothing is pending, and under steady traffic WireGuard initiates again only to rekey (120 s) or 15 s after it stops hearing back, so a re-dial there can only raise `no_link_up`.
 - **Not fixed: a re-dial storm.** With freezes up to 1 s (the links' DeadAfter), the link closed every 2 s or so, and each WireGuard retry fired at the same resume instant the link was declared dead ("Failed to send handshake initiation: path: no path to the peer"), so no initiation reached the exit for 15 s and the wait step failed (1 of 20). That is fastPaths' 1 s DeadAfter on a machine stalled for whole seconds, a harsher regime than the ticket's failures, which never showed it.
 
+## Review findings
+- [ ] R1.1 (should-fix) internal/agent/status_test.go:1098-1102: the steady step ignores every problem except the exit one, so it passes real regressions. A data plane restarted every few seconds after map 2 puts health at starting or retrying, which the old step failed on; each restarted engine's first initiation is answered inside 1 s, so the new step passes, and with st.DataPlane nil between restarts ExitsUnanswered is 0 (the same for disconnected, apply_failed and so on). Fix: require st.Connection == Connected and st.DataPlane != nil, and fail on any problem other than no_link_up and neighbor_down (the ones load causes here), besides the exit check. Mutation: health reporting retrying or apply_failed during the steady step must fail it; keep the freeze evidence (the fixed test under the same SIGSTOP freezes).
+- [ ] R1.2 (nit) status_test.go:1092: the failure message reads st.DataPlane.Peers and panics if the data plane is nil when the 15 s run out. Guard it.
+
 ## Log
 - 2026-11-12 created in backlog (from TP-048's full labs)
 - 2026-11-12 backlog → in-progress, owner: agent-tp-210
@@ -60,3 +64,5 @@ branch: "tp-210-flaky-exit-no-handshake-test"
 - 2026-11-12 full `make lab-test` green on ae1db8f (GOFLAGS=-p=2, LAB_P=1, under the full-lab lock): lab phase and 39 packages
 - 2026-11-12 not verified: the 1.3 s failures and TP-048's 3.3 s one (no logs kept; Notes). For the board, out of scope: the production edge in Notes (an exit pending across a re-dial, idle past the deadline, is `down` from its first new initiation until it answers; api-overview's health row says the 15 s start over), and the re-dial storm under whole-second stalls
 - 2026-11-12 in-progress → review
+- 2026-11-12 review round 1: R1.1–R1.2
+- 2026-11-12 review → has-errors
