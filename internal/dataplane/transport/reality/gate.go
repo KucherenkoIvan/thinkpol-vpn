@@ -109,8 +109,8 @@ type gate struct {
 	writeTimeout time.Duration
 	helloTimeout time.Duration
 	mirrors      chan struct{}
-	splices chan struct{}
-	live    *liveSet
+	splices      chan struct{}
+	live         *liveSet
 }
 
 func newGate(t *Transport, target netip.AddrPort) *gate {
