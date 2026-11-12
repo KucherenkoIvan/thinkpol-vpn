@@ -213,12 +213,12 @@
 // is left alone.
 //
 // The file is watched (inotify on its directory, and polled every 2 s as
-// a backstop) and taken back if another program rewrites it; what that
-// program wrote becomes the new original, and the resolvers it names the
-// domestic upstream. resolved's stubs (127.0.0.53, 127.0.0.54) are never
-// used as a direct upstream: a file naming only them falls back to
-// resolved's uplink file, and if that yields nothing the previous
-// upstreams are kept (and the log says to set `-dns-upstream`). Behind
+// a backstop) and taken back if another program rewrites it, at once or
+// once the write settles (below); what that program wrote becomes the
+// new original, and the resolvers it names the domestic upstream.
+// resolved's stubs (127.0.0.53, 127.0.0.54) are never used as a direct
+// upstream: a file naming only them falls back to resolved's uplink
+// file, and if that yields nothing the previous upstreams are kept (and the log says to set `-dns-upstream`). Behind
 // the stub, a read of the OS's resolvers is a read of the uplink file;
 // a missing uplink file, a dangling link or an empty file is a failed
 // read. A rewrite whose read fails is still the new original, so no
@@ -229,20 +229,43 @@
 // `-dns-upstream`, and Problem reports [ErrNoSystemUpstream] (not
 // unprotected) until a read names one again.
 //
-// Another program's write is read only once it has settled: the file
-// stays the same, with no change event, for 500 ms. Some writers rewrite
-// the file in place, truncating it and then appending a line at a time
-// (busybox udhcpc's script, `cat >` in dhcpcd's hooks); the first close
-// wakes the watch, and taking the file then would rename the managed file
-// over a half-written one, so the writer's later appends would land in
-// the managed file, outside its original, and its servers would be lost.
-// An Update during a settle only records the configuration, and the
-// watch applies it with the settled file. The other way to settle, taking
-// lines appended to the managed file as a new original, was weighed: it
-// still reads the truncated file first, so it would tell and record an
-// empty original before the real one, and it would mistake anything
-// appended by hand for a rewrite. A quiet period misses only a writer
-// that pauses longer than it mid-write (RESIDUAL-RISKS.md RR5).
+// How another program's write is taken back depends on how it was
+// written. A file swapped in whole (a new file renamed over the path, as
+// an atomic writer, dhclient-script's mv or NetworkManager do) is
+// complete at its first event and is taken at once. A write into the
+// file in place is read only once it has settled: the file stays the
+// same, with no change event, for 500 ms, and a settle never runs past
+// 2 s from its start, so a writer that never goes quiet (another program
+// fighting over the file) is taken back anyway. Some writers truncate
+// the file and then append a line at a time (the example script of
+// busybox udhcpc before 1.22, which later versions replaced with a
+// temporary file and a mv, and copies of it that distributions still
+// ship); `cat >` in dhcpcd's hooks truncates and writes through one
+// open, with one close, so only the poll can catch that file empty.
+// Taking a file before its writer is done would rename the managed file
+// over a half-written one, and the writer's later lines would land in
+// the managed file, outside its original. Where it can't be told which
+// way a file was written (no file at all; a bind mount, where every
+// write is in place, the node's own too), the write settles. Problem
+// reports [ErrUnprotected] while another program's file has been in
+// place longer than the settle.
+//
+// Lines appended to the managed file are taken as another program's and
+// join the original: an in-place writer that paused past the settle or
+// the cap appends its later lines to the file that replaced its own, and
+// a line appended by hand is kept for Restore. That is the backstop
+// behind the settle, not a replacement for it: on its own it would read
+// the truncated file first, telling and recording an empty original
+// before the real one.
+//
+// Update reads the file under the same lock: over another program's
+// write in place it only records the configuration, and the watch
+// applies it with the settled file (a failure then shows in Problem, not
+// in Update's error). The first take-over, when the node starts, reads
+// the file as it is, since nothing it wrote yet tells a write in
+// progress from a finished one; the lines a writer appends after it are
+// caught by the backstop, but a writer that writes through one open
+// file loses what it writes after the take-over (RESIDUAL-RISKS.md RR5).
 //
 // An empty /etc/resolv.conf can be a valid configuration (the resolver
 // then asks the local host), so one that stays empty through the settle
