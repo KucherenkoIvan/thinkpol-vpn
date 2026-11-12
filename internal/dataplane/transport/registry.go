@@ -127,6 +127,10 @@ const (
 	StreamReplayed
 	// StreamRouted authenticated, fresh and new: handed over.
 	StreamRouted
+	// StreamBoundClosed was closed past the listener's own bounds (on
+	// connections being decided, or kept spliced to its camouflage),
+	// whatever it authenticated as: a flood, or connections pinned open.
+	StreamBoundClosed
 )
 
 // StreamHandoff is a connection a stream listener authenticated, on its
@@ -171,8 +175,8 @@ type StreamListener interface {
 	// without terminating anything, and decides it. Only StreamRouted
 	// comes back with connections, for the worker of the handoff's
 	// space; anything else the listener turned away itself, to its
-	// Camouflage, and the handoff carries only the identity it
-	// authenticated as (none for StreamUnknown). serves is asked while the
+	// Camouflage or closed, and the handoff carries only the identity it
+	// authenticated as (none for StreamUnknown and StreamBoundClosed). serves is asked while the
 	// connection is decided, so a link of a space that isn't served is
 	// turned away like a stranger (StreamUnserved). waiting, if set, is
 	// called at most once, when conn needs no more routing work, only its

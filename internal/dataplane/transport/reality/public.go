@@ -40,7 +40,7 @@ func (t *Transport) ListenStream(ctx context.Context, cfg transport.ListenConfig
 		_ = ln.Close()
 		return nil, fmt.Errorf("reality: handoff settings: %w", err)
 	}
-	return &publicListener{Listener: ln, r: r, settings: ls, handoff: handoff, gate: newGate(t, ls.target, maxMirrors, maxSplices)}, nil
+	return &publicListener{Listener: ln, r: r, settings: ls, handoff: handoff, gate: newGate(t, ls.target)}, nil
 }
 
 // handoffSettings is what a worker's Handoff gets from the supervisor's
@@ -110,11 +110,14 @@ func (pl *publicListener) RouteStream(conn net.Conn, serves func(transport.Ident
 		peer    transport.Identity
 		verdict = transport.StreamUnknown
 	)
-	p, ok := pl.gate.decide(conn, func(record []byte) bool {
+	p, d := pl.gate.decide(conn, func(record []byte) bool {
 		_, peer, verdict = pl.r.check.check(pl.settings, record, pl.r.lookup, serves)
 		return verdict == transport.StreamRouted
 	}, waiting)
-	if !ok {
+	switch d {
+	case boundClosed:
+		return transport.StreamHandoff{}, transport.StreamBoundClosed
+	case turnedAway:
 		return transport.StreamHandoff{Peer: peer}, verdict
 	}
 	pl.gate.live.untrack(conn, p.target)

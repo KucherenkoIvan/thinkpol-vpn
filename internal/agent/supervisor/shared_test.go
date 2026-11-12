@@ -41,6 +41,8 @@ type fakeWorker struct {
 	// streams gets the connections handed over, rebuilt from the passed
 	// descriptor as the real worker does.
 	streams chan handedStream
+	// onListeners, if set, is called with each Listeners message sent.
+	onListeners func([]ipc.Listener)
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -104,6 +106,13 @@ func (w *fakeWorker) TrySendDatagram(h ipc.DatagramHeader, d []byte) error {
 }
 
 func (w *fakeWorker) TrySend(m ipc.Message) error {
+	if m.Kind == ipc.KindListeners {
+		ls, err := ipc.DecodeListeners(m)
+		if err == nil && w.onListeners != nil {
+			w.onListeners(ls)
+		}
+		return err
+	}
 	st, f, tf, err := ipc.DecodeStream(m)
 	if err != nil {
 		return err
@@ -1433,6 +1442,36 @@ func TestAStreamListenersSettingsGoOnlyToSpacesWithItsLinks(t *testing.T) {
 	}
 	if got := transports(b); got["line"].Handoff == nil {
 		t.Errorf("space B, given line links, is told %v", got)
+	}
+}
+
+// A running worker whose space gains a stream transport is sent the
+// transport's listener before the space's new links route: a member
+// routed first would reach a worker that doesn't know the listener and
+// be closed.
+func TestASpaceGainingATransportIsToldItsListenerBeforeItsLinksRoute(t *testing.T) {
+	s := newTestShared(t, nil, lineTransport{}, udp.New(udp.Options{}))
+	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}, {Transport: udp.Name, Address: "127.0.0.1:0"}}); err != nil {
+		t.Fatal(err)
+	}
+	a := randomSpace()
+	p := transporttest.SymmetricPeer()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{a: {udp.Name: {p.PeerLink}}})
+	w := newFakeWorker(s, a)
+	var told []string
+	w.onListeners = func(ls []ipc.Listener) {
+		listed := slices.ContainsFunc(ls, func(l ipc.Listener) bool { return l.Transport == "line" })
+		routed, _ := s.table("line").Snapshot() // setSpaces holds s.mu, on this goroutine
+		told = append(told, fmt.Sprintf("line listed %v, %d line links routed", listed, len(routed)))
+	}
+	s.attach(a, w.sockets())
+	line := transport.PeerLink{Peer: transport.Identity{Node: transport.NodeID{1}}, Verifier: []byte("alpha")}
+	changed := s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{a: {udp.Name: {p.PeerLink}, "line": {line}}})
+	if want := []string{"line listed true, 0 line links routed"}; !slices.Equal(told, want) {
+		t.Errorf("the worker was told %q, want %q", told, want)
+	}
+	if !slices.Equal(changed, []transport.SpaceID{a}) {
+		t.Errorf("changed %v, want space A (its session sends the final listing)", changed)
 	}
 }
 

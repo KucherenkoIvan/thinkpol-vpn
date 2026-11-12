@@ -323,10 +323,14 @@
 // reality's listener holds at most 1024 connections whose hello is
 // being decided and 1024 spliced to its target, closing what comes past
 // either, each costing two descriptors (package reality), so one listener
-// holds at most about 4096 descriptors whatever arrives. None of these
+// holds at most about 4096 descriptors whatever arrives. What those
+// bounds close is counted apart (bound-closed in `thinkpol status`), so
+// the node owner sees a flood or splices pinned open. None of these
 // tells members from strangers before the hello: a sustained flood of
-// new connections that send nothing still closes a listener's members
-// (RESIDUAL-RISKS.md RR38).
+// new connections that send nothing still closes a listener's members,
+// and strangers filling the splice bound make the listener close new
+// strangers the site would answer, a camouflage tell (RESIDUAL-RISKS.md
+// RR38).
 //
 // # Fair share
 //

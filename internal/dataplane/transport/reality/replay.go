@@ -33,15 +33,18 @@ func newReplays(window time.Duration) *replays {
 	return &replays{window: window, bySpace: map[transport.SpaceID]*replayCache{}}
 }
 
-// admit is replayCache.admit in space's cache.
+// admit is replayCache.admit in space's cache. It holds r.mu throughout,
+// so prune can't drop the cache between the lookup and the insert,
+// leaving the hello in a cache nothing reads (and free to replay once if
+// the space came back).
 func (r *replays) admit(space transport.SpaceID, id shortID, sessionID []byte, sent uint32, now time.Time) bool {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	c := r.bySpace[space]
 	if c == nil {
 		c = newReplayCache(r.window)
 		r.bySpace[space] = c
 	}
-	r.mu.Unlock()
 	return c.admit(id, sessionID, sent, now)
 }
 

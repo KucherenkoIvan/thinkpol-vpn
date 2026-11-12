@@ -393,8 +393,9 @@ func TestARoutingDeadlineLeavesTheConnectionToTheTarget(t *testing.T) {
 }
 
 // Past the listener's bound on live splices a stranger is closed, as an
-// overloaded site would close it, while those spliced stay with the
-// target; a member's hello still gets its own slot and is handed over.
+// overloaded site would close it, and reported bound-closed, while those
+// spliced stay with the target; a member's hello still gets its own slot
+// and is handed over.
 func TestPastTheSpliceBoundAStrangerIsClosedAndMembersAreRouted(t *testing.T) {
 	tr := newTransport(Options{})
 	k := newKeys(t)
@@ -414,6 +415,9 @@ func TestPastTheSpliceBoundAStrangerIsClosedAndMembersAreRouted(t *testing.T) {
 	stranger := probe(t, n.addr(), []byte("GET / HTTP/1.1\r\n\r\n"))
 	if d := closedWithin(t, stranger, 5*time.Second); d > 2*time.Second {
 		t.Fatalf("the stranger past the bound was closed after %v", d)
+	}
+	if v := n.verdict(t); v != transport.StreamBoundClosed {
+		t.Fatalf("the stranger past the bound: verdict %d, want %d (bound-closed)", v, transport.StreamBoundClosed)
 	}
 	if _, err := dial(t, tr, n.addr(), k, id); err != nil {
 		t.Fatalf("a member past the bound: %v", err)

@@ -637,4 +637,8 @@ message PublicListener {
   uint64 streams_overloaded = 5;
   // Peer links the transport refused to route.
   uint32 rejected = 6;
+  // Connections the transport closed past its own bounds (reality's
+  // connections being decided or spliced): a flood, or splices pinned
+  // open.
+  uint64 streams_bound_closed = 7;
 }

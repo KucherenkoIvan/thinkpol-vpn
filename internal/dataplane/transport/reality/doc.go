@@ -43,17 +43,26 @@
 //
 // A target that can't be reached closes the connection. The target's FIN,
 // even before it sent anything, reaches the client as a half-close and
-// what the client still sends goes on to the target, as the site's own
-// lingering close reads on: a prober still sending gets the site's FIN,
-// not a reset, where REALITY's server closes both (a difference the lab's
-// prober caught under load). The client's FIN before its hello was whole
-// closes both. Once spliced, each side's FIN is passed on as a
-// half-close, and the other direction ends once it was idle for 5 s,
-// which REALITY's server doesn't do (a client that stays silent after the
-// site closed would hold both connections for good; an answer that keeps
-// flowing isn't cut). Closing
+// what the client still sends goes on to the target, whose reset (a site
+// that closed whole, or ended its lingering close) resets the client at
+// once: the listener keeps watching the target after its FIN, so a
+// prober writing after the FIN gets the reset at the write the site's own
+// would draw, and a site still reading gets everything, where REALITY's
+// server closes both (a difference the lab's prober caught under load).
+// The target's reset at any time, or a write to it failing on one,
+// resets the client. The client's FIN before its hello was whole closes
+// both. Once spliced, each side's FIN is passed on as a half-close, and
+// the other direction ends once it was idle for 5 s, which REALITY's
+// server doesn't do (a client that stays silent after the site closed
+// would hold both connections for good; an answer that keeps flowing
+// isn't cut). Every write of a splice is bounded to 60 s, nginx's
+// send_timeout: a client that stops reading is cut then, both
+// connections closed, rather than holding its splice for good. Closing
 // the listener ends its splices, cancels its dials to the target and
-// waits for both. With an Admission.Camouflage, the hello is read whole
+// waits for both. A standalone listener (a device-mode node's) gives the
+// hello at most 10 s from accept, as the supervisor's routing deadline
+// does behind a shared listener: what isn't whole by then stays spliced
+// to the target. With an Admission.Camouflage, the hello is read whole
 // (for at most 10 s) before anything is dialled, and what fails goes to
 // the camouflage.
 //
@@ -61,13 +70,16 @@
 // connection costing it two descriptors (the client's and the target's):
 // at most 1024 connections whose hello is being decided (from before the
 // target is dialled until the decision) and, apart from those, at most
-// 1024 spliced to the target, for as long as the target keeps each open.
-// Past either, a new connection is closed, as an overloaded site would
-// close it. Kept apart, strangers holding splices open through the site
-// (an HTTP keep-alive a minute) close only other strangers, never a
-// member's hello; what still starves members is a sustained flood of new
-// connections each sending nothing until the deadline of whoever routes
-// it (RESIDUAL-RISKS.md RR38).
+// 1024 spliced to the target, each for as long as both ends keep it going
+// (the write and idle bounds above). Past either, a new connection is
+// closed, and the caller told so (StreamBoundClosed). Kept apart,
+// strangers holding splices open (an HTTP keep-alive a minute, or
+// readers stalled up to the write bound) close only other strangers,
+// never a member's hello; but a stranger closed right after its hello
+// where the site would answer is a camouflage tell, so filling the splice
+// bound is one, not only unfairness. What still starves members is a
+// sustained flood of new connections each sending nothing until the
+// hello deadline (RESIDUAL-RISKS.md RR38).
 //
 // Replays are remembered by sealed session id while their sealed time is
 // in the window, in memory per listener, so the start rule above is what

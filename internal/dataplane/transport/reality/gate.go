@@ -16,11 +16,17 @@ const (
 	// closed, as an overloaded site would close them.
 	maxMirrors = 1024
 	// maxSplices bounds the connections one listener keeps spliced to its
-	// target at once, for as long as the target keeps each open; more are
-	// closed. Apart from maxMirrors, so strangers holding splices open
-	// through the site never stop a member's hello being decided.
+	// target at once, each for as long as both ends keep it going (a
+	// write stalled past spliceWriteTimeout, or one side idle past
+	// spliceLinger once the other ended, closes it); more are closed.
+	// Apart from maxMirrors, so strangers holding splices open never stop
+	// a member's hello being decided.
 	maxSplices = 1024
 )
+
+// gateBounds are the bounds a listener opened now gets: maxMirrors and
+// maxSplices, smaller in tests.
+var gateBounds = struct{ mirrors, splices int }{maxMirrors, maxSplices}
 
 // liveSet is what a listener holds that isn't a link (connections being
 // decided, spliced to the target or in REALITY's handshake) and the
@@ -97,16 +103,21 @@ func (s *liveSet) close() {
 // slots bound the connections being decided (mirrors) and spliced
 // (splices) apart; each costs two descriptors.
 type gate struct {
-	t       *Transport
-	target  netip.AddrPort
-	linger  time.Duration
-	mirrors chan struct{}
+	t            *Transport
+	target       netip.AddrPort
+	linger       time.Duration
+	writeTimeout time.Duration
+	helloTimeout time.Duration
+	mirrors      chan struct{}
 	splices chan struct{}
 	live    *liveSet
 }
 
-func newGate(t *Transport, target netip.AddrPort, mirrors, splices int) *gate {
-	return &gate{t: t, target: target, linger: spliceLinger, mirrors: make(chan struct{}, mirrors), splices: make(chan struct{}, splices), live: newLiveSet()}
+func newGate(t *Transport, target netip.AddrPort) *gate {
+	return &gate{
+		t: t, target: target, linger: spliceLinger, writeTimeout: spliceWriteTimeout, helloTimeout: helloTimeout,
+		mirrors: make(chan struct{}, gateBounds.mirrors), splices: make(chan struct{}, gateBounds.splices), live: newLiveSet(),
+	}
 }
 
 func take(slots chan struct{}) bool {
@@ -132,46 +143,57 @@ type passed struct {
 	held   []byte
 }
 
+// decision is what the gate did with a connection.
+type decision uint8
+
+const (
+	turnedAway  decision = iota // spliced to the target, or closed with it unreachable
+	passedOn                    // auth let it through
+	boundClosed                 // closed past the gate's bounds
+)
+
 // decide dials the target for conn and mirrors conn's hello to it, as
 // REALITY's own server does, calling waiting (if set) once the mirror is
 // up, and asks auth once the hello is whole. What auth lets through comes
 // back with conn and its target still tracked, for the caller to untrack
 // once it hands them on or is done with them. Anything else is spliced
-// to the target, raw and whole, on a goroutine of the gate's, and decide
-// reports false; past the gate's bounds, or with the target unreachable,
-// conn is closed.
-func (g *gate) decide(conn net.Conn, auth func(record []byte) bool, waiting func()) (passed, bool) {
+// to the target, raw and whole, on a goroutine of the gate's; with the
+// target unreachable conn is closed; past the gate's bounds too, and
+// decide says so.
+func (g *gate) decide(conn net.Conn, auth func(record []byte) bool, waiting func()) (passed, decision) {
 	if !take(g.mirrors) {
 		_ = conn.Close()
-		return passed{}, false
+		return passed{}, boundClosed
 	}
 	defer func() { <-g.mirrors }()
 	if !g.live.track(conn) {
 		_ = conn.Close()
-		return passed{}, false
+		return passed{}, turnedAway
 	}
 	target, err := g.dialTarget()
 	if err != nil {
 		g.live.untrack(conn)
 		_ = conn.Close()
-		return passed{}, false
+		return passed{}, turnedAway
 	}
 	if !g.live.track(target) {
 		_ = target.Close()
-		return passed{}, false // close closed conn
+		return passed{}, turnedAway // close closed conn
 	}
-	m := newMirror(conn, target, g.linger)
+	m := newMirror(conn, target, g.linger, g.writeTimeout)
 	if waiting != nil {
 		waiting()
 	}
 	record, ok, rerr := m.gather(auth)
 	if ok {
 		raw, held := m.stop()
-		return passed{record: record, target: raw, held: held}, true
+		return passed{record: record, target: raw, held: held}, passedOn
 	}
 	_ = conn.SetReadDeadline(time.Time{})
-	g.keepSpliced(conn, target, func() { m.splice(rerr) }, m.closeBoth)
-	return passed{}, false
+	if !g.keepSpliced(conn, target, func() { m.splice(rerr) }, m.closeBoth) {
+		return passed{}, boundClosed
+	}
+	return passed{}, turnedAway
 }
 
 // turnAway splices conn to a target dialled now, consumed sent to it
@@ -199,7 +221,7 @@ func (g *gate) turnAway(conn net.Conn, consumed []byte) {
 			return // close closed conn
 		}
 		defer g.live.untrack(conn, target)
-		spliceJoined(conn, target, g.linger, consumed, nil)
+		spliceJoined(conn, target, g.linger, g.writeTimeout, consumed, nil)
 	}) {
 		<-g.splices
 		_ = conn.Close()
@@ -216,7 +238,7 @@ func (g *gate) splice(conn, target net.Conn, toTarget, toClient []byte) {
 		_ = target.Close()
 		return
 	}
-	g.keepSpliced(conn, target, func() { spliceJoined(conn, target, g.linger, toTarget, toClient) }, func() {
+	g.keepSpliced(conn, target, func() { spliceJoined(conn, target, g.linger, g.writeTimeout, toTarget, toClient) }, func() {
 		_ = conn.Close()
 		_ = target.Close()
 	})
@@ -225,19 +247,23 @@ func (g *gate) splice(conn, target net.Conn, toTarget, toClient []byte) {
 // keepSpliced runs splice, which returns once conn and target (both
 // tracked) are closed, on a goroutine of the gate's under a splice slot;
 // without a free slot, or once the gate is closed, it runs drop instead.
-func (g *gate) keepSpliced(conn, target net.Conn, splice, drop func()) {
-	if take(g.splices) {
-		if g.live.spawn(func() {
-			defer func() { <-g.splices }()
-			defer g.live.untrack(conn, target)
-			splice()
-		}) {
-			return
-		}
-		<-g.splices
+// It reports false when it found no free slot.
+func (g *gate) keepSpliced(conn, target net.Conn, splice, drop func()) bool {
+	if !take(g.splices) {
+		drop()
+		g.live.untrack(conn, target)
+		return false
 	}
-	drop()
-	g.live.untrack(conn, target)
+	if !g.live.spawn(func() {
+		defer func() { <-g.splices }()
+		defer g.live.untrack(conn, target)
+		splice()
+	}) {
+		<-g.splices
+		drop()
+		g.live.untrack(conn, target)
+	}
+	return true
 }
 
 // close closes everything the gate holds and waits for its splices.

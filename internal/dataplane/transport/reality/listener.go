@@ -23,11 +23,6 @@ const (
 	// targetDialTimeout bounds the dial to the target at accept. A target
 	// that can't be reached closes the connection.
 	targetDialTimeout = 10 * time.Second
-	// helloTimeout bounds reading the ClientHello when an
-	// Admission.Camouflage takes what fails: what doesn't arrive in time
-	// goes to it with whatever did. With reality's own splice, the target's
-	// timeouts are the only ones.
-	helloTimeout = 10 * time.Second
 	// handshakeTimeout bounds REALITY's handshake, which has no deadline
 	// of its own, once the ClientHello authenticated: a dialer holding a
 	// credential that stalls there would hold the connection for good.
@@ -37,6 +32,13 @@ const (
 	// records.
 	detectWait = 10 * time.Second
 )
+
+// helloTimeout bounds reading the ClientHello, from accept: what doesn't
+// arrive in time stays spliced to the target, whose own timeouts end it
+// (no timer of the listener's shows), and frees its slot among the
+// connections being decided; with an Admission.Camouflage it goes there
+// with whatever did arrive. A listener reads it at Listen.
+var helloTimeout = 10 * time.Second
 
 // Listen implements transport.Transport. Whatever fails authentication
 // goes to the admission's camouflage; without one, the connection is
@@ -90,7 +92,7 @@ func newListener(t *Transport, ln net.Listener, addr net.Addr, ls listenSettings
 		peers:    admission.Peers,
 		camo:     admission.Camouflage,
 		check:    check,
-		gate:     newGate(t, ls.target, maxMirrors, maxSplices),
+		gate:     newGate(t, ls.target),
 		accepted: make(chan accepted),
 		closed:   make(chan struct{}),
 		links:    map[shortID]*link{},
@@ -243,12 +245,13 @@ func (l *listener) serve(conn net.Conn) {
 	}
 	var id shortID
 	var peer transport.Identity
-	p, ok := l.gate.decide(conn, func(record []byte) bool {
+	_ = conn.SetReadDeadline(time.Now().Add(l.gate.helloTimeout))
+	p, d := l.gate.decide(conn, func(record []byte) bool {
 		var ok bool
 		id, peer, ok = l.authenticate(record)
 		return ok
 	}, nil)
-	if !ok {
+	if d != passedOn {
 		return
 	}
 	defer l.gate.live.untrack(conn, p.target)
@@ -271,7 +274,7 @@ func (l *listener) serveCamouflaged(conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(helloTimeout))
+	_ = conn.SetReadDeadline(time.Now().Add(l.gate.helloTimeout))
 	record, err := readRecord(conn)
 	_ = conn.SetReadDeadline(time.Time{})
 	var (

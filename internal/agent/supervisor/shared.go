@@ -71,8 +71,10 @@ type ListenerInfo struct {
 	Routed, Unauthenticated, NoSpace uint64
 	// StreamsOverloaded counts connections that arrived while
 	// maxRoutingStreams were in their routing work: they went to the
-	// camouflage. (A transport's own bounds count as Unauthenticated.)
-	StreamsOverloaded uint64
+	// camouflage. StreamsBoundClosed counts those the transport closed
+	// past its own bounds (reality's connections being decided or
+	// spliced): a flood, or splices pinned open.
+	StreamsOverloaded, StreamsBoundClosed uint64
 	// Rejected lists the peer links the transport's router can't use, e.g.
 	// two links (of the same space or of two) sharing a secret: both are
 	// dropped rather than one guessed.
@@ -188,7 +190,7 @@ type publicListener struct {
 	wg      sync.WaitGroup
 	routing chan struct{} // a token per stream being routed
 
-	routed, unauthenticated, noSpace, streamsOverloaded atomic.Uint64
+	routed, unauthenticated, noSpace, streamsOverloaded, streamsBoundClosed atomic.Uint64
 }
 
 func listenerKey(l Listener) string { return l.Transport + " " + l.Address }
@@ -223,6 +225,7 @@ func (s *shared) setSpaces(inbound map[transport.SpaceID]map[string][]transport.
 			listenersChanged = append(listenersChanged, space)
 		}
 	}
+	s.announceGained(oldTransports, transports, listenersChanged)
 	// Routes before tables: a link that authenticates has a route.
 	old := *s.routes.Load()
 	routes := make(map[transport.SpaceID]*route, len(inbound))
@@ -253,6 +256,44 @@ func (s *shared) setSpaces(inbound map[transport.SpaceID]map[string][]transport.
 	}
 	s.inboundTransports.Store(&transports)
 	return listenersChanged
+}
+
+// announceGained sends the running worker of each changed space that
+// gains a transport its Listeners, old and new transports listed, before
+// setSpaces routes the new links: a member routed first would reach a
+// worker that doesn't know the listener and be closed. The send doesn't
+// block; the caller signals every changed space anyway, which sends the
+// final listing, and a dialer routed while a full socket delayed it
+// retries. s.mu held.
+func (s *shared) announceGained(old, now map[transport.SpaceID]map[string]bool, changed []transport.SpaceID) {
+	var gaining []transport.SpaceID
+	transition := maps.Clone(old)
+	for _, space := range changed {
+		union := maps.Clone(old[space])
+		maps.Copy(union, now[space])
+		if len(union) > len(old[space]) {
+			transition[space] = union
+			gaining = append(gaining, space)
+		}
+	}
+	if len(gaining) == 0 {
+		return
+	}
+	s.inboundTransports.Store(&transition)
+	routes := *s.routes.Load()
+	for _, space := range gaining {
+		r := routes[space]
+		if r == nil {
+			continue
+		}
+		ws := r.end.Load()
+		if ws == nil {
+			continue
+		}
+		if m, err := ipc.ListenersMessage(s.ipcListeners(space)); err == nil {
+			_ = ws.control.TrySend(m)
+		}
+	}
 }
 
 // table is a transport's merged credential table; s.mu held.
@@ -431,8 +472,8 @@ func (pl *publicListener) info() ListenerInfo {
 	return ListenerInfo{
 		ID: pl.id, Transport: pl.cfg.Transport, Address: pl.cfg.Address,
 		Routed: pl.routed.Load(), Unauthenticated: pl.unauthenticated.Load(), NoSpace: pl.noSpace.Load(),
-		StreamsOverloaded: pl.streamsOverloaded.Load(),
-		Rejected:          pl.rejected(),
+		StreamsOverloaded: pl.streamsOverloaded.Load(), StreamsBoundClosed: pl.streamsBoundClosed.Load(),
+		Rejected: pl.rejected(),
 	}
 }
 
@@ -629,12 +670,15 @@ func (s *shared) routeStream(pl *publicListener, conn net.Conn, waiting func()) 
 	h, verdict := pl.ln.RouteStream(conn, serves, waiting)
 	stop()
 	var r *route
-	if verdict != transport.StreamUnknown {
+	if verdict != transport.StreamUnknown && verdict != transport.StreamBoundClosed {
 		r = (*s.routes.Load())[h.Peer.Space]
 	}
 	switch {
 	case verdict == transport.StreamUnknown:
 		pl.unauthenticated.Add(1)
+		return
+	case verdict == transport.StreamBoundClosed:
+		pl.streamsBoundClosed.Add(1)
 		return
 	case verdict == transport.StreamUnserved || r == nil:
 		pl.noSpace.Add(1)
