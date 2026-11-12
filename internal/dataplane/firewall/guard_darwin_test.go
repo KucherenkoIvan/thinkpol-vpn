@@ -1930,14 +1930,19 @@ func TestExecPfctl(t *testing.T) {
 		t.Errorf("sleep: %v after %v", err, time.Since(start))
 	}
 	out, err = execPfctl{path: "/bin/ls", timeout: 5 * time.Second}.run(context.Background(), nil, "/nonexistent-tp078")
-	if err == nil || errors.Is(err, routetable.ErrGuardUnsupported) || len(out.stderr) == 0 {
+	if err == nil || errors.Is(err, errNoPfctl) || len(out.stderr) == 0 {
 		t.Errorf("a failing run: %v, stderr %q", err, out.stderr)
 	}
 	_, err = execPfctl{path: "/nonexistent-tp078/pfctl", timeout: time.Second}.run(context.Background(), nil, "-s", "info")
-	if !errors.Is(err, routetable.ErrGuardUnsupported) {
-		t.Errorf("no pfctl: %v, want unsupported", err)
+	if !errors.Is(err, errNoPfctl) || errors.Is(err, routetable.ErrGuardUnsupported) {
+		t.Errorf("no pfctl: %v, want errNoPfctl, no owner's", err)
 	}
+	// Each owner says it in its own words: the guard's unsupported error,
+	// not the kill switch's.
 	g := newIPv6Guard(execPfctl{path: "/nonexistent-tp078/pfctl", timeout: time.Second}, newRig(t).store(), time.Hour, ownAddrs)
+	if err := g.Apply(context.Background(), exempt(t)); !errors.Is(err, routetable.ErrGuardUnsupported) || errors.Is(err, ErrKillSwitchUnsupported) {
+		t.Errorf("Apply without pfctl: %v, want the guard's unsupported error", err)
+	}
 	if err := g.Close(); err != nil {
 		t.Errorf("Close without pfctl: %v", err)
 	}

@@ -84,6 +84,15 @@ type Config struct {
 	// otherwise refuses (supervisor.Options.EgressAllowed): a network that
 	// is this node's internet.
 	EgressAllowed string `env:"THINKPOL_EGRESS_ALLOWED" flag:"egress-allowed" help:"comma-separated private prefixes an exit's spaces may still reach"`
+	// KillSwitch and AllowLAN are a device's kill switch toggles until a
+	// member sets them through the local API (DeviceFile); their defaults
+	// (PRD D4: off).
+	KillSwitch bool `env:"THINKPOL_KILL_SWITCH" flag:"kill-switch" help:"a device's kill switch until a member sets it (thinkpol kill-switch): nothing but the entries leaves while the tunnel is down"`
+	AllowLAN   bool `env:"THINKPOL_ALLOW_LAN" flag:"allow-lan" help:"whether a device's kill switch lets the LAN out, until a member sets it (thinkpol allow-lan)"`
+	// FailClosedAfterCrash keeps the kill switch's rules in place after a
+	// crash under the "everything" and "all but domestic" presets with the
+	// toggle off (PRD D4, "Crash posture"); false is the opt-out.
+	FailClosedAfterCrash bool `env:"THINKPOL_FAIL_CLOSED_AFTER_CRASH" default:"true" flag:"fail-closed-after-crash" help:"under the everything and all-but-domestic presets, a device whose agent dies connected lets nothing but the entries out until it connects again, kill switch off or on"`
 }
 
 // EgressAllowedPrefixes parses EgressAllowed.

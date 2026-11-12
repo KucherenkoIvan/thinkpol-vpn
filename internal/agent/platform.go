@@ -62,6 +62,9 @@ type DeviceHost struct {
 	// SystemUpstreams are the resolvers the OS used before the node
 	// pointed it at its own (dns.SystemUpstreams).
 	SystemUpstreams func(exclude []netip.Addr) ([]netip.Addr, error)
+	// NewKillSwitch returns the host's kill switch, or nil where the host
+	// has none yet (Windows: TP-076).
+	NewKillSwitch func() KillSwitch
 }
 
 // RouteEnforcer is route-table enforcement on the host
@@ -94,7 +97,8 @@ type Platform struct {
 
 // ClearHost undoes what a crashed run left on the host: a device's, as a
 // start that doesn't connect does (the routing, clearNetwork, and the OS's
-// resolver configuration), and a server's, as its supervisor's next start
+// resolver configuration), and its kill switch, which nothing else but a
+// deliberate disconnect removes; and a server's, as its supervisor's next start
 // would (supervisor.ClearLeftovers: the spaces' veths, the root's
 // forwarding it turned on, its tables and routes). The three are each
 // tried, though a step that fails within the server's stops the server's
@@ -105,7 +109,24 @@ func (p Platform) ClearHost() ([]string, error) {
 	undone, err := supervisor.ClearLeftovers(supervisor.Options{
 		NewRoot: func() (netcfg.Configurator, error) { return p.NewConfigurator(netcfg.OwnerSupervisor) },
 	})
-	return undone, errors.Join(p.clearRouting(), p.RestoreDNS(), err)
+	return undone, errors.Join(p.clearRouting(), p.RestoreDNS(), p.removeKillSwitch(), err)
+}
+
+// removeKillSwitch removes what any run left of the kill switch: a
+// device's survives a crash and a stop on purpose, and only a deliberate
+// disconnect or this (service uninstall) removes it.
+func (h DeviceHost) removeKillSwitch() error {
+	if h.NewKillSwitch == nil {
+		return nil
+	}
+	ks := h.NewKillSwitch()
+	if ks == nil {
+		return nil
+	}
+	if err := ks.Close(); err != nil {
+		return fmt.Errorf("kill switch: %w", err)
+	}
+	return nil
 }
 
 // clearNetwork removes what a crashed run left in the host's routing

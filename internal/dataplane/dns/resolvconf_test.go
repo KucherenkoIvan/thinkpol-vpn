@@ -65,6 +65,15 @@ var testSystem = SystemConfig{
 
 const isp = "# from DHCP\nnameserver 192.0.2.53\nnameserver 2001:db8::53\nsearch lan\noptions timeout:1 attempts:2\n"
 
+// manageResolvConf manages the resolv.conf at path with the product's
+// timings but no hold after a take-back: the tests here check what a
+// read tells and reports; the hold is resolvconf_settle_test.go's.
+func manageResolvConf(path, uplink string, c SystemConfig) (*resolvConf, error) {
+	timing := resolvConfTimes
+	timing.hold = 0
+	return setResolvConfTimed(path, uplink, c, timing)
+}
+
 func readString(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -92,7 +101,7 @@ func TestResolvConfIsReplacedAndRestored(t *testing.T) {
 	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, "", testSystem)
+	r, err := manageResolvConf(path, "", testSystem)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +145,7 @@ func TestALeftoverResolvConfKeepsItsOriginal(t *testing.T) {
 	}
 	next := testSystem
 	next.Servers = next.Servers[:1]
-	r, err := setResolvConf(path, "", next)
+	r, err := manageResolvConf(path, "", next)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +170,7 @@ func TestASymlinkedResolvConfComesBackAsTheLink(t *testing.T) {
 	if err := os.Symlink(target, path); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, "", testSystem)
+	r, err := manageResolvConf(path, "", testSystem)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +196,7 @@ func TestAResolvConfRewrittenMeanwhileIsTakenBack(t *testing.T) {
 	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, "", testSystem)
+	r, err := manageResolvConf(path, "", testSystem)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +207,7 @@ func TestAResolvConfRewrittenMeanwhileIsTakenBack(t *testing.T) {
 	r.mu.Unlock()
 	renewed := "nameserver 192.0.2.99\n"
 	writeFileAtomic(t, path, renewed)
-	deadline := time.Now().Add(3 * resolvConfCheck)
+	deadline := time.Now().Add(3 * resolvConfTimes.check)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
 			t.Fatalf("not taken back:\n%s", readString(t, path))
@@ -231,7 +240,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, uplink, testSystem)
+	r, err := manageResolvConf(path, uplink, testSystem)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +256,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 
 	mixed := "nameserver 127.0.0.53\nnameserver 192.0.2.88\n"
 	writeFileAtomic(t, path, mixed)
-	deadline := time.Now().Add(3 * resolvConfCheck)
+	deadline := time.Now().Add(3 * resolvConfTimes.check)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
 			t.Fatalf("not taken back:\n%s", readString(t, path))
@@ -267,7 +276,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 	writeFileAtomic(t, uplink, "nameserver 198.51.100.53\n")
 	stubOnly := "nameserver 127.0.0.53\n"
 	writeFileAtomic(t, path, stubOnly)
-	deadline = time.Now().Add(3 * resolvConfCheck)
+	deadline = time.Now().Add(3 * resolvConfTimes.check)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
 			t.Fatalf("stub-only rewrite not taken back:\n%s", readString(t, path))
@@ -289,7 +298,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 	}
 	stubOnlyOther := "nameserver 127.0.0.54\noptions edns0\n"
 	writeFileAtomic(t, path, stubOnlyOther)
-	deadline = time.Now().Add(3 * resolvConfCheck)
+	deadline = time.Now().Add(3 * resolvConfTimes.check)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
 			t.Fatalf("stub-only without uplink not taken back:\n%s", readString(t, path))
@@ -318,7 +327,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 		if !slices.Equal(got, want) {
 			t.Errorf("uplink back: upstreams %v, want %v", got, want)
 		}
-	case <-time.After(3 * resolvConfCheck):
+	case <-time.After(3 * resolvConfTimes.check):
 		t.Fatal("uplink back: never told the owed read")
 	}
 	if p := r.Problem(); p != nil {
@@ -342,7 +351,7 @@ func TestResolvConfAnOwedReadThatNamesNoServerKeepsTheUpstreams(t *testing.T) {
 	c := testSystem
 	c.Upstreams = func(a []netip.Addr) { told <- a }
 	c.Log = slog.New(slog.NewTextHandler(&log, nil))
-	r, err := setResolvConf(path, uplink, c)
+	r, err := manageResolvConf(path, uplink, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +383,7 @@ func TestResolvConfARewriteNamingNoServerIsNoSystemUpstream(t *testing.T) {
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams = func(a []netip.Addr) { told <- a }
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +444,7 @@ func TestResolvConfAFailedFirstReadBehindTheStubWaitsForTheUplink(t *testing.T) 
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r, err := setResolvConf(path, uplink, c)
+	r, err := manageResolvConf(path, uplink, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +486,7 @@ func TestResolvConfAFailedFirstReadOverADanglingLinkReadsItsTargetWhenItAppears(
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +551,7 @@ func TestResolvConfALinkToTheManagedFileItselfIsNotAGoodRead(t *testing.T) {
 			told := make(chan []netip.Addr, 8)
 			c := testSystem
 			c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-			r, err := setResolvConf(path, "", c)
+			r, err := manageResolvConf(path, "", c)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -576,7 +585,7 @@ func TestResolvConfWhileUntoldAStubTargetWithoutUplinkWarnsNothing(t *testing.T)
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
 	c.Log = slog.New(slog.NewTextHandler(&log, nil))
 	uplink := filepath.Join(dir, "uplink.conf") // missing until the last phase
-	r, err := setResolvConf(path, uplink, c)
+	r, err := manageResolvConf(path, uplink, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -624,7 +633,7 @@ func TestResolvConfAnEmptyUplinkFileIsAFailedRead(t *testing.T) {
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r, err := setResolvConf(path, uplink, c)
+	r, err := manageResolvConf(path, uplink, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -669,7 +678,7 @@ func TestResolvConfTheDefaultPathTellsNothingUntilAChange(t *testing.T) {
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams = func(a []netip.Addr) { told <- a }
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -705,7 +714,7 @@ func TestResolvConfAnOriginalWithoutATrailingNewlineIsNotAChange(t *testing.T) {
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams = func(a []netip.Addr) { told <- a }
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,7 +781,7 @@ func TestResolvConfUpdatesInPlace(t *testing.T) {
 	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, "", testSystem)
+	r, err := manageResolvConf(path, "", testSystem)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -830,7 +839,7 @@ func (e taggedUnprotected) Is(target error) bool { return target == ErrUnprotect
 func applyOnce(t *testing.T, r *resolvConf) {
 	t.Helper()
 	r.mu.Lock()
-	tell, _ := r.apply()
+	tell, _ := r.apply(readResolvConfFile(r.path))
 	r.mu.Unlock()
 	if tell != nil {
 		tell()
@@ -858,7 +867,7 @@ func TestResolvConfAFailedFirstReadIsStaleUntilAGoodReadTellsIt(t *testing.T) {
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -900,7 +909,7 @@ func TestResolvConfAFailedFirstReadThenEmptyTellsAnEmptyAnswer(t *testing.T) {
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -933,7 +942,7 @@ func TestResolvConfTheFirstGoodReadAtSetupIsToldAtOnce(t *testing.T) {
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -958,7 +967,7 @@ func TestResolvConfUpstreamsUnknownWithoutUpstreamsIsNeverStale(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "resolv.conf") // missing: the read fails
 	c := testSystem
 	c.UpstreamsUnknown = true
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -976,7 +985,7 @@ func TestResolvConfAFailedReadOnAChangeWithoutUpstreamsIsNeverStale(t *testing.T
 	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, filepath.Join(dir, "uplink.conf"), testSystem) // the uplink stays missing
+	r, err := manageResolvConf(path, filepath.Join(dir, "uplink.conf"), testSystem) // the uplink stays missing
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1000,7 +1009,7 @@ func TestResolvConfAFailedFirstReadOverADanglingSymlinkStaysStale(t *testing.T) 
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}

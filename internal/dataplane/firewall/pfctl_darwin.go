@@ -51,7 +51,7 @@ type pfOutput struct {
 }
 
 // pfctl runs pfctl with args, stdin (nil: none) as its input. A failure
-// that means there is no pfctl at all wraps routetable.ErrGuardUnsupported.
+// that means there is no pfctl at all wraps errNoPfctl.
 // A failed run's output is returned with the error.
 type pfctl interface {
 	run(ctx context.Context, stdin []byte, args ...string) (pfOutput, error)
@@ -77,7 +77,7 @@ func (x execPfctl) run(ctx context.Context, stdin []byte, args ...string) (pfOut
 	name := "pfctl " + strings.Join(args, " ")
 	if err := cmd.Start(); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return pfOutput{}, fmt.Errorf("%w: %s: %w", routetable.ErrGuardUnsupported, x.path, err)
+			return pfOutput{}, fmt.Errorf("%w: %s: %w", errNoPfctl, x.path, err)
 		}
 		return pfOutput{}, fmt.Errorf("firewall: %s: %w", name, err)
 	}
@@ -631,7 +631,11 @@ func byPid(refs []pfReference, pid int) (uint64, bool) {
 // line (a host without its /128). Anything else, a negated entry
 // included, is an error: what the guard can't read isn't what it put
 // there.
-func parseTable(show []byte) ([]netip.Prefix, error) {
+func parseTable(show []byte) ([]netip.Prefix, error) { return parseTableOf(show, false) }
+
+// parseTableOf is parseTable for a table of IPv6 only, or (both) of
+// either family (an IPv4 host without its /32).
+func parseTableOf(show []byte, both bool) ([]netip.Prefix, error) {
 	var out []netip.Prefix
 	ls, err := readLines(show)
 	if err != nil {
@@ -648,8 +652,8 @@ func parseTable(show []byte) ([]netip.Prefix, error) {
 				p = netip.PrefixFrom(a, a.BitLen())
 			}
 		}
-		if err != nil || !p.IsValid() || !p.Addr().Is6() || p.Addr().Is4In6() || p != p.Masked() {
-			return nil, fmt.Errorf("firewall: the guard's table holds %q", l)
+		if err != nil || !p.IsValid() || !p.Addr().Is6() && !both || p.Addr().Is4In6() || p != p.Masked() {
+			return nil, fmt.Errorf("firewall: pf's table holds %q", l)
 		}
 		out = append(out, p)
 	}
@@ -670,7 +674,11 @@ func sortedPrefixes(ps []netip.Prefix) []netip.Prefix {
 // 2001:db8::10[51000] -> 2001:db8:ab::7[443]  ESTABLISHED:ESTABLISHED"),
 // as the IPv6 addresses each line names (its ends, and a translation's in
 // parentheses), whatever their order. Lines naming none are skipped.
-func parseStateAddrs(states []byte) ([][]netip.Addr, error) {
+func parseStateAddrs(states []byte) ([][]netip.Addr, error) { return parseStatesOf(states, false) }
+
+// parseStatesOf is parseStateAddrs for IPv6 only, or (both) for either
+// family: an IPv4 end reads "192.0.2.2:51000".
+func parseStatesOf(states []byte, both bool) ([][]netip.Addr, error) {
 	ls, err := readLines(states)
 	if err != nil {
 		return nil, err
@@ -682,8 +690,10 @@ func parseStateAddrs(states []byte) ([][]netip.Addr, error) {
 			f = strings.Trim(f, "(),")
 			if i := strings.IndexByte(f, '['); i > 0 {
 				f = f[:i]
+			} else if i := strings.IndexByte(f, ':'); both && i > 0 && strings.Count(f, ":") == 1 {
+				f = f[:i]
 			}
-			if a, err := netip.ParseAddr(f); err == nil && a.Is6() && !a.Is4In6() {
+			if a, err := netip.ParseAddr(f); err == nil && (a.Is6() || both) && !a.Is4In6() {
 				addrs = append(addrs, a.WithZone(""))
 			}
 		}
@@ -799,18 +809,30 @@ func guardRules(tun string, upstreams []netip.AddrPort) []guardRule {
 // that can't replace it would leave a wider exempt set behind; the
 // guard's poll undoes a `-T add` instead.
 func anchorText(tun string, exempt []netip.Prefix, upstreams []netip.AddrPort) string {
+	return tableText(exemptTable, exempt, guardRules(tun, upstreams))
+}
+
+// tableText is an anchor's load: table name holding prefixes, then rules.
+func tableText(name string, prefixes []netip.Prefix, rules []guardRule) string {
 	var b strings.Builder
-	b.WriteString("table <" + exemptTable + "> persist {")
-	for i, p := range exempt {
+	b.WriteString(tableDef(name, prefixes))
+	for _, r := range rules {
+		b.WriteString(r.text + "\n")
+	}
+	return b.String()
+}
+
+// tableDef is a persist table's definition, a line of pf.conf.
+func tableDef(name string, prefixes []netip.Prefix) string {
+	var b strings.Builder
+	b.WriteString("table <" + name + "> persist {")
+	for i, p := range prefixes {
 		if i > 0 {
 			b.WriteString(",")
 		}
 		b.WriteString(" \\\n\t" + p.String())
 	}
 	b.WriteString(" }\n")
-	for _, r := range guardRules(tun, upstreams) {
-		b.WriteString(r.text + "\n")
-	}
 	return b.String()
 }
 
@@ -825,26 +847,32 @@ func anchorText(tun string, exempt []netip.Prefix, upstreams []netip.AddrPort) s
 // rules). It can name an upstream's address: whoever logs this error must
 // redact its addresses.
 func saneRules(listed []string, tun string, upstreams []netip.AddrPort) error {
+	return checkListed(listed, guardRules(tun, upstreams), "guard")
+}
+
+// checkListed is saneRules for the rules of owner's anchor ("guard",
+// "kill switch").
+func checkListed(listed []string, rules []guardRule, owner string) error {
 	i := 0
-	for _, r := range guardRules(tun, upstreams) {
+	for _, r := range rules {
 		for range r.n {
 			if i >= len(listed) {
-				return fmt.Errorf("firewall: pf lists %d rules in the guard's anchor, want more", len(listed))
+				return fmt.Errorf("firewall: pf lists %d rules in the %s's anchor, want more", len(listed), owner)
 			}
 			f := strings.Fields(listed[i])
 			for _, w := range r.words {
 				if !slices.Contains(f, w) {
-					return fmt.Errorf("firewall: pf lists the guard's rule %d as %q, without %q", i+1, listed[i], w)
+					return fmt.Errorf("firewall: pf lists the %s's rule %d as %q, without %q", owner, i+1, listed[i], w)
 				}
 			}
 			if f[0] == "pass" && !strings.Contains(" "+listed[i]+" ", " no state ") {
-				return fmt.Errorf("firewall: pf lists the guard's rule %d as %q, not stateless", i+1, listed[i])
+				return fmt.Errorf("firewall: pf lists the %s's rule %d as %q, not stateless", owner, i+1, listed[i])
 			}
 			i++
 		}
 	}
 	if i != len(listed) {
-		return fmt.Errorf("firewall: pf lists %d rules in the guard's anchor, want %d", len(listed), i)
+		return fmt.Errorf("firewall: pf lists %d rules in the %s's anchor, want %d", len(listed), owner, i)
 	}
 	return nil
 }

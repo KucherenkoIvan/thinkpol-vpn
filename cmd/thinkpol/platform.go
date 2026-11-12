@@ -29,6 +29,7 @@ func platform() agent.Platform {
 				ClearRouteTable: routetable.Clear,
 				SetSystemDNS:    dns.SetSystem,
 				SystemUpstreams: dns.SystemUpstreams,
+				NewKillSwitch:   newKillSwitch,
 			},
 		},
 		LockHost:      agent.HostLock,

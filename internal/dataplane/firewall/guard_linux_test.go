@@ -12,14 +12,12 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
@@ -134,23 +132,7 @@ func (p *pair) table(t *testing.T) string {
 // opens stay there).
 func (p *pair) inNamespace(t *testing.T, f func()) {
 	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		runtime.LockOSThread() // never unlocked: the thread ends with the goroutine
-		ns, err := netns.GetFromName(p.dev)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer func() { _ = ns.Close() }()
-		if err := netns.Set(ns); err != nil {
-			t.Error(err)
-			return
-		}
-		f()
-	}()
-	<-done
+	inNS(t, p.dev, f)
 }
 
 // dialBound connects a TCP socket bound to eth0 (SO_BINDTODEVICE) to

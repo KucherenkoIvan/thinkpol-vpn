@@ -29,6 +29,10 @@ func statusProto(st agent.Status) *localapiv1.Status {
 		RulePreset: st.RulePreset, RulesEnforced: st.RulesEnforced, RulePresetUnavailable: st.PresetUnavailable,
 		ConnectOnBoot: st.ConnectOnBoot, LastRunCrashed: st.LastRunCrashed, LastRunUnreadable: st.LastRunUnreadable,
 	}
+	if st.Mode != agent.ModeServer {
+		k := st.KillSwitch
+		out.KillSwitch = &localapiv1.KillSwitch{On: k.On, AllowLan: k.AllowLAN, Active: k.Active, Enforced: k.Enforced, Error: string(k.Error)}
+	}
 	if dp := st.DataPlane; dp != nil {
 		out.DataPlane = dataPlaneProto(dp, st.Listeners, st.Interface)
 	}

@@ -6,7 +6,7 @@ area: lab
 stream: verification
 repo: thinkpol-vpn
 size: S
-depends_on: [TP-025, TP-026, TP-087, TP-188, TP-201]
+depends_on: [TP-025, TP-026, TP-087, TP-188, TP-201, TP-204]
 refs: [C1, C2, C4]
 owner: ""
 branch: ""
@@ -37,3 +37,4 @@ M2's "done when": the matrix shows `udp` getting caught and `reality` passing.
 - 2026-11-07 Notes probe length aligned with its acceptance box
 - 2026-11-08 deps: TP-201 (reality behind the shared listener and in the matrix, split from TP-087). Owner, 2026-11-08: the Mac device session runs as part of this acceptance run, one runbook: reality on the Mac, TP-085's DNS-leak capture, the macOS kill switch if TP-048 has merged, and TP-144's checklist unless it ran earlier (timing open with the owner).
 - 2026-11-09 notes: all device-test work in the acceptance session (owner)
+- 2026-11-12 depends on TP-204 (captive-portal pause, owner 2026-11-09)

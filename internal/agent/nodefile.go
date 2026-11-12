@@ -37,6 +37,10 @@ type NodeSettings struct {
 	DNS           *bool     `json:"dns"`
 	DNSUpstream   *[]string `json:"dns_upstream"`
 	EgressAllowed *[]string `json:"egress_allowed"`
+	KillSwitch    *bool     `json:"kill_switch"`
+	AllowLAN      *bool     `json:"allow_lan"`
+	// FailClosedAfterCrash is the crash posture's opt-out (false).
+	FailClosedAfterCrash *bool `json:"fail_closed_after_crash"`
 }
 
 // ConfigError is a configuration `thinkpol up` can't run with: the node
@@ -96,6 +100,15 @@ func ApplyNodeFile(cfg *Config, flags *flag.FlagSet) error {
 	}
 	if s.EgressAllowed != nil && !given("EgressAllowed") {
 		cfg.EgressAllowed = strings.Join(*s.EgressAllowed, ",")
+	}
+	if s.KillSwitch != nil && !given("KillSwitch") {
+		cfg.KillSwitch = *s.KillSwitch
+	}
+	if s.AllowLAN != nil && !given("AllowLAN") {
+		cfg.AllowLAN = *s.AllowLAN
+	}
+	if s.FailClosedAfterCrash != nil && !given("FailClosedAfterCrash") {
+		cfg.FailClosedAfterCrash = *s.FailClosedAfterCrash
 	}
 	return nil
 }

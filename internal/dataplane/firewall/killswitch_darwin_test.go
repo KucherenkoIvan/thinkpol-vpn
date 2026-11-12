@@ -1,0 +1,398 @@
+package firewall
+
+import (
+	"context"
+	"errors"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
+)
+
+func (r *rig) ksStore() tokenStore {
+	s := r.store()
+	s.record, s.header = killSwitchRecord, killSwitchHeader
+	return s
+}
+
+func (r *rig) killSwitch() *KillSwitch { return newKillSwitch(r.pf, r.ksStore(), ownAddrs) }
+
+func (r *rig) ksRecord(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(r.dir, killSwitchRecord))
+	if errors.Is(err, os.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// downRules are the kill switch's rules while the tunnel is down: an
+// entry of each family.
+func downRules(t *testing.T) KillSwitchRules {
+	return KillSwitchRules{Mark: routetable.Mark, Allow: set(t, "203.0.113.50/32", "2001:db8:e::50/128")}
+}
+
+// upRules are the connected shape: the utun, a direct range of each
+// family and the upstreams.
+func upRules(t *testing.T) KillSwitchRules {
+	return KillSwitchRules{
+		TUN: "utun7", Mark: routetable.Mark,
+		Allow:     set(t, "203.0.113.50/32", "2001:db8:e::50/128"),
+		Direct:    set(t, "198.51.100.0/24", "2001:db8:d0::/48"),
+		Upstreams: aps("[2001:db8:53::1]:53", "192.0.2.53:53", "[fe80::1%en0]:53"),
+	}
+}
+
+// The kill switch loads its anchor (after the guard's, both families,
+// stateless), holds pf on by a reference of its own, recorded apart from
+// the guard's, and kills the states, of either family, its table
+// doesn't allow.
+func TestKillSwitchLoadsItsAnchorAndHoldsPfOn(t *testing.T) {
+	r := newRig(t)
+	entry4 := netip.MustParseAddrPort("203.0.113.50:443")
+	r.pf.states = []fakeState{
+		{"tcp", netip.AddrPortFrom(ownV4, 50000), netip.MustParseAddrPort("203.0.113.7:443"), true},
+		{"tcp", netip.AddrPortFrom(ownV4, 50001), entry4, true},
+		{"udp", netip.AddrPortFrom(ownV6, 50002), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true},
+		{"tcp", netip.MustParseAddrPort("[::1]:50003"), netip.MustParseAddrPort("[::1]:8080"), true},
+	}
+	k := r.killSwitch()
+	if err := k.Apply(context.Background(), downRules(t)); err != nil {
+		t.Fatal(err)
+	}
+	a := r.pf.anchors[KillSwitchAnchor]
+	if a == nil {
+		t.Fatal("no anchor loaded")
+	}
+	if KillSwitchAnchor <= GuardAnchor {
+		t.Errorf("the kill switch's anchor %s sorts before the guard's %s: the guard would count it as a bypass", KillSwitchAnchor, GuardAnchor)
+	}
+	want := []string{
+		"pass out quick on lo0 all no state",
+		"block return out quick proto tcp from any to <thinkpol_killswitch_nodns> port = 53",
+		"block return out quick proto udp from any to <thinkpol_killswitch_nodns> port = 53",
+		"block return out quick proto tcp from any to <thinkpol_killswitch_nodns> port = 853",
+		"block return out quick proto udp from any to <thinkpol_killswitch_nodns> port = 853",
+		"pass out quick from any to <thinkpol_killswitch> no state",
+		"pass out quick inet proto udp from any port = 68 to any port = 67 no state",
+		"pass out quick inet6 proto udp from any port = 546 to ff02::1:2 port = 547 no state",
+		"pass out quick inet6 proto udp from any port = 546 to fe80::/10 port = 547 no state",
+	}
+	if !slices.Equal(a.rules[:9], want) || a.rules[len(a.rules)-1] != "block return out quick all" || len(a.rules) != 9+5+4+1 {
+		t.Errorf("the anchor lists:\n%s", strings.Join(a.rules, "\n"))
+	}
+	if got := strings.Join(a.tables[killSwitchTable], " "); got != "203.0.113.50/32 2001:db8:e::50/128" {
+		t.Errorf("the table holds %s", got)
+	}
+	if !r.pf.isOn() || len(r.pf.references()) != 1 {
+		t.Errorf("pf on %v with references %v, want on by one", r.pf.isOn(), r.pf.references())
+	}
+	if !strings.Contains(r.ksRecord(t), "token ") || r.record(t) != "" {
+		t.Errorf("records: kill switch %q, guard %q; want the kill switch's alone", r.ksRecord(t), r.record(t))
+	}
+	var left []netip.AddrPort
+	for _, s := range r.pf.stateList() {
+		left = append(left, s.remote)
+	}
+	if !slices.Equal(left, []netip.AddrPort{entry4, netip.MustParseAddrPort("[::1]:8080")}) {
+		t.Errorf("states left %v, want the entry's and loopback's", left)
+	}
+
+	// The same again reads it back and loads nothing; changed from
+	// outside, it is loaded again.
+	loads := r.pf.ran("-f -")
+	if err := k.Apply(context.Background(), downRules(t)); err != nil {
+		t.Fatal(err)
+	}
+	if r.pf.ran("-f -") != loads {
+		t.Error("the same rules were loaded again")
+	}
+	r.pf.set(func(f *fakePF) {
+		a := f.anchors[KillSwitchAnchor]
+		a.tables[killSwitchTable] = append(a.tables[killSwitchTable], "192.0.2.0/24")
+	})
+	if err := k.Apply(context.Background(), downRules(t)); err != nil {
+		t.Fatal(err)
+	}
+	if r.pf.ran("-f -") != loads+1 || slices.Contains(r.pf.anchors[KillSwitchAnchor].tables[killSwitchTable], "192.0.2.0/24") {
+		t.Error("an entry added from outside wasn't undone")
+	}
+}
+
+// Connected, the utun and DNS to the direct upstreams pass too (a
+// link-local upstream is the LAN's: pf can't name it without its
+// interface).
+func TestKillSwitchConnectedShape(t *testing.T) {
+	r := newRig(t)
+	k := r.killSwitch()
+	if err := k.Apply(context.Background(), upRules(t)); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(r.pf.anchors[KillSwitchAnchor].tables[killSwitchTable], " "); got != "198.51.100.0/24 203.0.113.50/32 2001:db8:e::50/128 2001:db8:d0::/48" {
+		t.Errorf("the table holds %s, want the entries and the direct destinations", got)
+	}
+	rules := strings.Join(r.pf.anchors[KillSwitchAnchor].rules, "\n")
+	for _, w := range []string{
+		"pass out quick on utun7 all no state",
+		"pass out quick proto tcp from any to 192.0.2.53 port = 53 no state",
+		"pass out quick proto udp from any to 2001:db8:53::1 port = 53 no state",
+	} {
+		if !strings.Contains(rules, w) {
+			t.Errorf("no %q in:\n%s", w, rules)
+		}
+	}
+	if strings.Contains(rules, "fe80::1") {
+		t.Errorf("a link-local upstream has a rule:\n%s", rules)
+	}
+	// Down again: the utun's pass goes.
+	if err := k.Apply(context.Background(), downRules(t)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(r.pf.anchors[KillSwitchAnchor].rules, "\n"), "utun7") {
+		t.Error("the down shape still passes the utun")
+	}
+}
+
+// The kill switch's reference is its own: the guard closing (a
+// disconnect) leaves pf on, and the kill switch closing leaves the
+// guard's.
+func TestKillSwitchAndGuardHoldTheirOwnReferences(t *testing.T) {
+	r := newRig(t)
+	g, k := r.guard(), r.killSwitch()
+	ctx := context.Background()
+	if err := g.Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Apply(ctx, upRules(t)); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(r.pf.references()); n != 2 {
+		t.Fatalf("%d references, want the guard's and the kill switch's", n)
+	}
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !r.pf.isOn() || r.pf.anchors[KillSwitchAnchor] == nil || r.ksRecord(t) == "" {
+		t.Error("closing the guard turned pf off or took the kill switch with it")
+	}
+	if err := k.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if r.pf.isOn() || r.pf.anchors[KillSwitchAnchor] != nil || r.ksRecord(t) != "" {
+		t.Errorf("after Close: pf on %v, anchor %v, record %q", r.pf.isOn(), r.pf.anchors[KillSwitchAnchor], r.ksRecord(t))
+	}
+}
+
+// What a run left (a crash, a stop) stays until a fresh kill switch's
+// Close, which removes the anchor and releases the recorded reference; or
+// a fresh one's Apply, which takes the reference over.
+func TestKillSwitchOutlivesItsRun(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	if err := r.killSwitch().Apply(ctx, downRules(t)); err != nil {
+		t.Fatal(err)
+	}
+	// The process died: nothing closed it.
+	next := r.killSwitch()
+	if err := next.Apply(ctx, downRules(t)); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(r.pf.references()); n != 1 {
+		t.Errorf("%d references after the next run's Apply, want the one taken over", n)
+	}
+	if err := r.killSwitch().Close(); err != nil {
+		t.Fatal(err)
+	}
+	if r.pf.isOn() || r.pf.anchors[KillSwitchAnchor] != nil || r.ksRecord(t) != "" {
+		t.Errorf("a fresh Close left: pf on %v, anchor %v, record %q", r.pf.isOn(), r.pf.anchors[KillSwitchAnchor], r.ksRecord(t))
+	}
+}
+
+// Without Apple's hook nothing evaluates the anchor: Apply fails (retried
+// by the agent) and loads nothing; with no pfctl the kill switch is
+// unsupported, and Close has nothing to remove.
+func TestKillSwitchNeedsTheHookAndPfctl(t *testing.T) {
+	r := newRig(t)
+	r.pf.main = []string{`scrub-anchor "com.apple/*" all fragment reassemble`}
+	k := r.killSwitch()
+	if err := k.Apply(context.Background(), downRules(t)); err == nil || r.pf.anchors[KillSwitchAnchor] != nil {
+		t.Errorf("Apply without the hook: %v, anchor %v", err, r.pf.anchors[KillSwitchAnchor])
+	}
+	none := newKillSwitch(execPfctl{path: "/nonexistent-tp048/pfctl", timeout: time.Second}, r.ksStore(), ownAddrs)
+	if err := none.Apply(context.Background(), downRules(t)); !errors.Is(err, ErrKillSwitchUnsupported) || errors.Is(err, routetable.ErrGuardUnsupported) {
+		t.Errorf("Apply with no pfctl: %v, want ErrKillSwitchUnsupported alone", err)
+	}
+	if err := none.Close(); err != nil {
+		t.Errorf("Close with no pfctl: %v", err)
+	}
+}
+
+// A load pfctl lists otherwise than written (a pass with state) is
+// refused, and Apply fails.
+func TestKillSwitchRefusesAListingWithState(t *testing.T) {
+	r := newRig(t)
+	r.pf.loadHook = func(a *fakeAnchor) {
+		a.rules[5] = strings.Replace(a.rules[5], "no state", "keep state", 1)
+	}
+	err := r.killSwitch().Apply(context.Background(), downRules(t))
+	if err == nil || !strings.Contains(err.Error(), "kill switch's rule 6") {
+		t.Errorf("Apply: %v, want the listing refused", err)
+	}
+}
+
+// IPv4 ends read "addr:port" in `pfctl -s states` (built, not recorded:
+// TP-048's device checks), IPv6 ends "addr[port]"; a table lists either
+// family, an IPv4 host without /32.
+func TestKillSwitchReadsBothFamilies(t *testing.T) {
+	states, err := parseStatesOf([]byte(altq+"ALL tcp 192.0.2.10:50000 -> 203.0.113.7:443       ESTABLISHED:ESTABLISHED\nALL udp 2001:db8:1::10[5353] -> 2001:db8:ab::7[53]       MULTIPLE:SINGLE\n"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 2 || states[0][1] != netip.MustParseAddr("203.0.113.7") || states[1][1] != netip.MustParseAddr("2001:db8:ab::7") {
+		t.Errorf("states %v", states)
+	}
+	if v6, _ := parseStatesOf([]byte("ALL tcp 192.0.2.10:50000 -> 203.0.113.7:443 X\n"), false); len(v6) != 0 {
+		t.Errorf("the guard's reading took IPv4: %v", v6)
+	}
+	table, err := parseTableOf([]byte("   198.51.100.0/24\n   203.0.113.50\n   2001:db8:e::50\n"), true)
+	if err != nil || len(table) != 3 || table[1] != netip.MustParsePrefix("203.0.113.50/32") {
+		t.Errorf("table %v, %v", table, err)
+	}
+	if _, err := parseTable([]byte("   203.0.113.50\n")); err == nil {
+		t.Error("the guard's table reading took IPv4")
+	}
+}
+
+// While down with allow-LAN, DNS to NoDNS (the LAN but the entries) is
+// refused before the table passes the LAN: blocks on UDP and TCP port
+// 53 and TCP port 853 to a table of their own, read back and kept whole
+// as the other.
+func TestKillSwitchRefusesDNSToNoDNS(t *testing.T) {
+	r := newRig(t)
+	k := r.killSwitch()
+	lan := downRules(t)
+	lan.Allow = set(t, "203.0.113.50/32", "2001:db8:e::50/128", "192.168.0.0/16", "fe80::/10")
+	lan.NoDNS = set(t, "192.168.0.0/16", "fe80::/10")
+	if err := k.Apply(context.Background(), lan); err != nil {
+		t.Fatal(err)
+	}
+	a := r.pf.anchors[KillSwitchAnchor]
+	if got := strings.Join(a.tables[killSwitchNoDNS], " "); got != "192.168.0.0/16 fe80::/10" {
+		t.Errorf("the NoDNS table holds %s", got)
+	}
+	blocks := slices.IndexFunc(a.rules, func(l string) bool { return strings.Contains(l, "<thinkpol_killswitch_nodns> port = 53") })
+	pass := slices.IndexFunc(a.rules, func(l string) bool { return strings.Contains(l, "<thinkpol_killswitch>") })
+	if blocks < 0 || pass < blocks || !strings.HasPrefix(a.rules[blocks], "block return out quick") ||
+		!slices.Contains(a.rules, "block return out quick proto tcp from any to <thinkpol_killswitch_nodns> port = 853") ||
+		!slices.Contains(a.rules, "block return out quick proto udp from any to <thinkpol_killswitch_nodns> port = 853") {
+		t.Errorf("DNS to the NoDNS table isn't refused before the table's pass:\n%s", strings.Join(a.rules, "\n"))
+	}
+	// Changed from outside: loaded again.
+	loads := r.pf.ran("-f -")
+	r.pf.set(func(f *fakePF) { f.anchors[KillSwitchAnchor].tables[killSwitchNoDNS] = nil })
+	if err := k.Apply(context.Background(), lan); err != nil {
+		t.Fatal(err)
+	}
+	if r.pf.ran("-f -") != loads+1 || len(r.pf.anchors[KillSwitchAnchor].tables[killSwitchNoDNS]) != 2 {
+		t.Error("the NoDNS table emptied from outside wasn't put back")
+	}
+	if err := k.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.pf.anchors[KillSwitchAnchor]; ok {
+		t.Errorf("Close left the anchor: %+v", r.pf.anchors[KillSwitchAnchor])
+	}
+}
+
+// A load pf took whose read-back fails is still enabled: with pf off (a
+// stock Mac) its rules would be evaluated not at all; and the states its
+// table refuses are killed, as after a good load, or pf would go on
+// passing them while the read-back keeps failing. Apply reports the
+// failure.
+func TestKillSwitchEnablesALoadItCantReadBack(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		spoil func(f *fakePF)
+	}{
+		{"a listing unlike the load", func(f *fakePF) {
+			f.loadHook = func(a *fakeAnchor) { a.rules[0] = strings.Replace(a.rules[0], "no state", "keep state", 1) }
+		}},
+		{"a table it can't read", func(f *fakePF) { f.fail["-T show"] = errFake }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			if r.pf.isOn() {
+				t.Fatal("pf is on before the kill switch: the test proves nothing")
+			}
+			entry4 := netip.MustParseAddrPort("203.0.113.50:443")
+			r.pf.states = []fakeState{
+				{"tcp", netip.AddrPortFrom(ownV4, 50000), netip.MustParseAddrPort("203.0.113.7:443"), true},
+				{"tcp", netip.AddrPortFrom(ownV4, 50001), entry4, true},
+				{"udp", netip.AddrPortFrom(ownV6, 50002), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true},
+			}
+			r.pf.set(tc.spoil)
+			k := r.killSwitch()
+			for range 2 {
+				err := k.Apply(context.Background(), downRules(t))
+				if err == nil {
+					t.Error("Apply succeeded")
+				}
+			}
+			if r.pf.anchors[KillSwitchAnchor] == nil || !r.pf.isOn() {
+				t.Errorf("anchor loaded %v, pf on %v: want the load enabled", r.pf.anchors[KillSwitchAnchor] != nil, r.pf.isOn())
+			}
+			var left []netip.AddrPort
+			for _, s := range r.pf.stateList() {
+				left = append(left, s.remote)
+			}
+			if !slices.Equal(left, []netip.AddrPort{entry4}) {
+				t.Errorf("states left %v, want the entry's alone", left)
+			}
+		})
+	}
+}
+
+// While the read-back keeps failing, the states are killed once per text
+// loaded, not at every Apply: connected, the TUN's flows to foreign
+// addresses aren't in the table, and killing them every 10 s would cut
+// every tunnelled connection. Apply says the rules are in place.
+func TestKillSwitchKillsOncePerLoadItCantReadBack(t *testing.T) {
+	r := newRig(t)
+	r.pf.set(func(f *fakePF) { f.fail["-T show"] = errFake })
+	foreign := fakeState{"tcp", netip.AddrPortFrom(ownV4, 50000), netip.MustParseAddrPort("203.0.113.7:443"), true}
+	r.pf.states = []fakeState{foreign}
+	k := r.killSwitch()
+	ctx := context.Background()
+	if err := k.Apply(ctx, upRules(t)); !errors.Is(err, ErrKillSwitchInPlace) {
+		t.Fatalf("Apply: %v, want the rules in place", err)
+	}
+	if len(r.pf.stateList()) != 0 {
+		t.Fatalf("states left %v after the first load", r.pf.stateList())
+	}
+
+	r.pf.set(func(f *fakePF) { f.states = []fakeState{foreign} }) // a flow through the TUN
+	r.pf.forget()
+	for range 3 {
+		if err := k.Apply(ctx, upRules(t)); !errors.Is(err, ErrKillSwitchInPlace) {
+			t.Fatalf("Apply again: %v, want the rules in place", err)
+		}
+	}
+	if n := r.pf.ran("-k"); n != 0 || len(r.pf.stateList()) != 1 {
+		t.Errorf("the same text loaded again: %d kills, states %v; want none killed", n, r.pf.stateList())
+	}
+
+	if err := k.Apply(ctx, downRules(t)); !errors.Is(err, ErrKillSwitchInPlace) {
+		t.Fatalf("Apply down: %v, want the rules in place", err)
+	}
+	if len(r.pf.stateList()) != 0 {
+		t.Errorf("another text loaded: states left %v", r.pf.stateList())
+	}
+}
