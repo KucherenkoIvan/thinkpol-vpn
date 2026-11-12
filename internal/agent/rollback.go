@@ -53,8 +53,12 @@ func Rollback(p Platform) (RollbackReport, error) {
 	return r, nil
 }
 
-// Write prints the report, one line per part, and what comes next.
+// Write prints the report, one line per part, and what comes next;
+// nothing for a rollback that never ran (refused).
 func (r RollbackReport) Write(w io.Writer) error {
+	if len(r.Parts) == 0 {
+		return nil
+	}
 	var lines []string
 	for _, p := range r.Parts {
 		for _, u := range p.Undone {

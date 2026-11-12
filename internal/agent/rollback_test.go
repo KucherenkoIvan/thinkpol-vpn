@@ -100,6 +100,10 @@ func TestRollbackIsRefusedWhileAnAgentRuns(t *testing.T) {
 	if h.ks.rules() == nil {
 		t.Error("refused, it removed the running agent's kill switch")
 	}
+	var out bytes.Buffer
+	if err := r.Write(&out); err != nil || out.Len() > 0 {
+		t.Errorf("refused, the report says %q (%v), want nothing", out.String(), err)
+	}
 	if connect, ok, _ := h.rec.Load(); !connect || !ok {
 		t.Errorf("refused, the connect choice is %v (recorded %v), want up as the running agent left it", connect, ok)
 	}

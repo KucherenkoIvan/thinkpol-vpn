@@ -129,8 +129,8 @@ The operator creates it, or the dev runbook does. It must be owned by root or th
 | File | Written by | Mode (lab) | Read by |
 |---|---|---|---|
 | directory | node | 0700 root | — |
-| `agent.lock` | node: one agent per host | 0600 root | node, `service install`, `service uninstall` |
-| `connect` | node, only with connect-on-boot set: the boot's connect choice | 0600 | node at start |
+| `agent.lock` | node: one agent per host | 0600 root | node, `service install`, `service uninstall`, `rollback` |
+| `connect` | node, only with connect-on-boot set: the boot's connect choice; `rollback`, recording it down | 0600 | node at start |
 | `netcfg/<dev>-<ino>.<owner>.lock` (Linux) | node: one configurator per owner and namespace | 0600 | node |
 | `netcfg/` lock and route record per owner (macOS) | node | — | node; `diag` |
 | `forwarding.json` | a server's supervisor, only when it turned forwarding on | 0600 | the next supervisor, after a crash |

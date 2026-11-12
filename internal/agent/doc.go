@@ -206,8 +206,9 @@
 // Failing closed costs this: a device that crashed while connected and
 // comes back on a map that makes it a server keeps what the crashed run
 // left (its resolver configuration, the route table's rules, its kill
-// switch) until a map makes it a device again, or `thinkpol service
-// uninstall` clears the host ([Platform.ClearHost]); `thinkpol
+// switch) until a map makes it a device again, or `thinkpol rollback`
+// ([Rollback]) or `thinkpol service uninstall` clears the host
+// ([Platform.ClearHost]) while no agent runs; `thinkpol
 // disconnect` and `thinkpol kill-switch off` in that state clear none of
 // it, and report success: the toggle is stored and the connection down,
 // as asked, but the host is left alone. A mismatch is told to no subscriber: no event says it
@@ -354,14 +355,17 @@
 // whenever rules are in place, an apply that put them there but failed
 // ([firewall.ErrKillSwitchInPlace]) included.
 // Only a deliberate disconnect with the toggle off (or no crash posture),
-// a start that comes up so, or `service uninstall` ([Platform.ClearHost])
-// removes it. A disconnect is recorded for the boot before the node hears
+// a start that comes up so, `rollback` ([Rollback]) or `service
+// uninstall` ([Platform.ClearHost]) removes it. A disconnect is recorded for the boot before the node hears
 // of it ([Node.Disconnect]), so one sent while a slow first start hangs,
 // and waited on until it fails, is honoured by the next start; one whose
 // caller gives up while the node runs puts the node's own choice back. A
 // start that fails at once serves the local API for milliseconds, so
-// there the way out is `sudo thinkpol rollback` (TP-134) or `service
-// uninstall`. A mode mismatch leaves a previous run's kill switch alone
+// there the way out is `sudo thinkpol rollback` ([Rollback]: the
+// agent's start-time cleanup, the kill switch with it, under the host
+// lock, and the boot's connect choice recorded down, so the service's
+// next start comes up disconnected; the member choosing no tunnel over
+// failing closed) or `service uninstall`. A mode mismatch leaves a previous run's kill switch alone
 // (above); until the node applies it, the status says it isn't applied
 // yet (`not_applied`, which the health leaves to the start). A failure is
 // logged, retried at the next turn or within 10 s, and in the status
