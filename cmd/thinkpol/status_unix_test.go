@@ -55,6 +55,14 @@ func (n *statusNode) SetConnectOnBoot(bool) error {
 	n.t.Error("status called SetConnectOnBoot")
 	return nil
 }
+func (n *statusNode) SetKillSwitch(context.Context, bool) error {
+	n.t.Error("status called SetKillSwitch")
+	return nil
+}
+func (n *statusNode) SetAllowLAN(context.Context, bool) error {
+	n.t.Error("status called SetAllowLAN")
+	return nil
+}
 func (n *statusNode) Diagnose(context.Context, bool) agent.Diagnostics {
 	n.t.Error("status called Diagnose, which reads the host")
 	return agent.Diagnostics{}

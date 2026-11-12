@@ -1,6 +1,6 @@
 # thinkpol-vpn — Configuration design
 
-Where a setting lives, who may change it, and which value wins. Decided in the owner's session on the API overview's findings F1, F2 and F8 ([verdicts](api-overview.md#verdicts-owner-2026-11-07)). TP-166 built the node file and the device file; the capability ceiling (TP-183) and the kill switch's toggles (TP-048) are still to come. The mechanism is in the `agent` package doc ("Configuration and logs", "A device's connection"). The entry point is [DESIGN.md](../../DESIGN.md); `RRn` are rows of [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md).
+Where a setting lives, who may change it, and which value wins. Decided in the owner's session on the API overview's findings F1, F2 and F8 ([verdicts](api-overview.md#verdicts-owner-2026-11-07)). TP-166 built the node file and the device file, TP-048 the kill switch's toggles; the capability ceiling (TP-183) is still to come. The mechanism is in the `agent` package doc ("Configuration and logs", "A device's connection"). The entry point is [DESIGN.md](../../DESIGN.md); `RRn` are rows of [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md).
 
 ## Three levels
 
@@ -36,6 +36,9 @@ The file is root-owned, 0600, in the 0700 state directory; `up` refuses (exit 78
 | `dns` | true or false | `-dns` | true |
 | `dns_upstream` | list of `"IP"` or `"IP:port"` | `-dns-upstream` | a device: what the OS used; an exit: public resolvers |
 | `egress_allowed` | list of prefixes | `-egress-allowed` | none |
+| `kill_switch` | true or false: the device's kill switch until a member sets it | `-kill-switch` | false (PRD D4) |
+| `allow_lan` | true or false: whether the kill switch lets the LAN out, until a member sets it | `-allow-lan` | false |
+| `fail_closed_after_crash` | true or false: the crash posture (under the "everything" and "all but domestic" presets the kill switch's rules are in place while the connection is meant up, the toggle off, so a crash leaves them); false opts out | `-fail-closed-after-crash` | true |
 
 What says where the node's files are (`-state`, `-map`, `-api-socket`, `-api-group`) or how it is run (`-service`, `-connect`) is not in the file.
 
@@ -45,13 +48,15 @@ The member's toggles on a device-type node (owner, 2026-11-07): connect-on-boot,
 
 **Connect-on-boot is a member's toggle** (owner, 2026-11-07). The service always starts at boot, and the stored toggle decides whether it connects. Changing it needs no root, and no longer rewrites the service definition.
 
-The file is **`device.json`** in the state directory (TP-166), 0600, written atomically by the service with every key, and by nothing else:
+The file is **`device.json`** in the state directory (TP-166), 0600, written atomically by the service with every key (the kill switch's once a member set them), and by nothing else:
 
 | Key | Type | Set by | Default |
 |---|---|---|---|
 | `connect_on_boot` | true or false | `thinkpol connect-on-boot on\|off` (local API `SetConnectOnBoot`) | false (PRD D5) |
 | `rule_preset` | `"space"`, `"everything"` or `"all-but-domestic"` | `thinkpol rules preset` (`SetRulePreset`) | `"space"` |
 | `rules` | list of the device's own rules, `"match -> action"` | not yet settable through the API | none |
+| `kill_switch` | true or false; written once a member set it, until then the node's `kill_switch` holds | `thinkpol kill-switch on\|off` (`SetKillSwitch`) | the node's (false) |
+| `allow_lan` | true or false; written once a member set it, until then the node's `allow_lan` holds | `thinkpol allow-lan on\|off` (`SetAllowLAN`) | the node's (false) |
 
 The service definition runs `thinkpol up -service` and carries no setting. `service connect-on-boot` and `service install -connect-on-boot` are refused with a message naming `thinkpol connect-on-boot`; an install over a definition that still carries `THINKPOL_CONNECT_ON_BOOT` says the setting moved and is off until a member turns it on: an old definition's "on" is not carried over (owner, 2026-11-07); turn it on again with `thinkpol connect-on-boot on`. `up` refuses to start (exit 78) while `THINKPOL_CONNECT_ON_BOOT` is in its environment, which only an older definition sets: run `thinkpol service install` to replace it. The first start that finds a `rules.local` (and no `device.json`) writes its preset and rules into `device.json`, removes `rules.local` and logs it. A `device.json` that can't be read or parsed stops the node from starting, as `rules.local` did; so an older binary refuses a `device.json` holding keys it doesn't know, and a rollback needs the file removed (or the newer binary installed again).
 
@@ -83,7 +88,8 @@ The levels then combine by narrowing:
 |---|---|---|
 | rule preset | device | at once (as today) |
 | connect-on-boot | device | at the next boot; a start later in the same boot, and the running node, are left as they are |
-| kill switch, allow-LAN, pause | device | to be decided per setting (TP-048) |
+| kill switch, allow-LAN | device | at once: the call returns once the node put the kill switch in place or removed it (TP-048) |
+| pause | device | not built (a separate M2 ticket, owner, 2026-11-09) |
 | node file settings | node | at the next start of `up` (TP-166: none is reloaded while running; SIGHUP re-reads only the map) |
 | capability ceiling lowered under a running map | node | refused and reported, as TP-183 handles a map asking for more |
 

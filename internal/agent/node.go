@@ -65,6 +65,17 @@ type Node struct {
 	// takes settingsMu before it reads rulesRequests.
 	presetMu      sync.Mutex
 	rulesRequests chan rulesRequest
+	// killSwitchRequests asks the node's goroutine to act on a kill
+	// switch toggle stored (SetKillSwitch, SetAllowLAN); it closes the
+	// channel sent once it did.
+	killSwitchRequests chan chan struct{}
+	// rememberMu serializes the record's writes; choice is the connect
+	// choice the node last took (remember), which a Disconnect that never
+	// reached it writes back.
+	rememberMu sync.Mutex
+	choice     bool
+	// ks keeps a device's kill switch, on the node's goroutine.
+	ks killSwitchKeeper
 }
 
 // Prepare reads and checks what a node runs from (LoadState): a node
@@ -101,13 +112,19 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	n := &Node{
 		cfg: cfg, state: st, logs: logs, plat: plat, dnsUpstreams: upstreams,
 		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
+		killSwitchRequests: make(chan chan struct{}),
+		ks:                 killSwitchKeeper{newKS: plat.NewKillSwitch, log: logs.Logger},
 	}
 	connect, recorded := startConnected(cfg, st.Device.ConnectOnBoot, plat.ConnectRecord, logs)
 	mismatch := modeMismatch(cfg.Mode, st)
 	n.conn, n.bootChoice = newConnection(connect, st.Removed || mismatch), !recorded && keepsConnect(cfg)
+	n.choice = !n.conn.disconnected()
 	n.device = st.Device
 	n.report = report{mode: cfg.Mode, space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed,
 		mismatch: mismatch, conn: n.conn.state, preset: n.device.Rules.Preset.String(), connectOnBoot: n.device.ConnectOnBoot}
+	if ks := n.killSwitchSettings(); cfg.Mode != ModeServer {
+		n.report.killSwitch = KillSwitchStatus{On: ks.on, AllowLAN: ks.allowLAN, Error: KillSwitchNotApplied}
+	}
 	return n, nil
 }
 
@@ -135,13 +152,24 @@ func startConnected(cfg Config, onBoot bool, rec ConnectRecord, logs Logs) (conn
 	return connect, true
 }
 
-// remember records a connect choice (ConnectRecord), when the node keeps
-// it, before it is acted on; a failure is logged, and the node goes
-// ahead.
+// remember records a connect choice the node takes (ConnectRecord), when
+// the node keeps it, before it is acted on; a failure is logged, and the
+// node goes ahead.
 func (n *Node) remember(connect bool) {
+	n.record(func() bool { n.choice = connect; return connect })
+}
+
+// record writes what pick returns to the record, under rememberMu: one
+// writer at a time (the record is replaced through one temporary file
+// name), and the node's choice read and written in the same order as
+// the writes.
+func (n *Node) record(pick func() bool) {
 	if !keepsConnect(n.cfg) {
 		return
 	}
+	n.rememberMu.Lock()
+	defer n.rememberMu.Unlock()
+	connect := pick()
 	if err := n.plat.ConnectRecord.Save(connect); err != nil {
 		n.logs.Error("recording the connect request failed: a restart in this boot starts as configured", "connect", connect, "err", err)
 	}
@@ -223,8 +251,30 @@ func (n *Node) Connect(ctx context.Context) error { return n.request(ctx, true) 
 
 // Disconnect takes a device's data plane down, leaving nothing of it on
 // the host, and returns once it is down. The device goes on following its
-// space's maps. ErrServerMode on a server.
-func (n *Node) Disconnect(ctx context.Context) error { return n.request(ctx, false) }
+// space's maps. ErrServerMode on a server. The choice is recorded for the
+// boot (ConnectRecord) before the node hears of it, so a node that can't
+// act on it, busy with a first start that fails and returns while the
+// caller waits (ErrNotRunning), starts disconnected next time, its kill
+// switch removed unless toggled on. A caller that gives up first (its
+// ctx ends) while the node still runs puts the node's own choice back in
+// the record: the node goes on as it was, and so does its next start.
+func (n *Node) Disconnect(ctx context.Context) error {
+	if n.Mode() == ModeServer {
+		return ErrServerMode
+	}
+	n.record(func() bool { return false })
+	taken, err := n.ask(ctx, false)
+	if !taken {
+		select {
+		case <-n.stopped:
+		default:
+			// The caller gave up before the running node took it: the
+			// record says what the node does.
+			n.record(func() bool { return n.choice })
+		}
+	}
+	return err
+}
 
 // SetRulePreset switches a device's rules to preset ("space",
 // "everything", "all-but-domestic"), keeping its own rules: the choice is
@@ -340,22 +390,29 @@ func (n *Node) carryLocalRules() error {
 }
 
 func (n *Node) request(ctx context.Context, connect bool) error {
+	_, err := n.ask(ctx, connect)
+	return err
+}
+
+// ask has the node's goroutine take a connect request and waits for its
+// answer; taken says the goroutine took it.
+func (n *Node) ask(ctx context.Context, connect bool) (taken bool, err error) {
 	if n.Mode() == ModeServer {
-		return ErrServerMode
+		return false, ErrServerMode
 	}
 	done := make(chan error, 1)
 	select {
 	case n.requests <- connectRequest{connect: connect, done: done}:
 	case <-n.stopped:
-		return ErrNotRunning
+		return false, ErrNotRunning
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	}
 	select {
 	case err := <-done:
-		return err
+		return true, err
 	case <-ctx.Done():
-		return ctx.Err()
+		return true, ctx.Err()
 	}
 }
 
@@ -479,6 +536,7 @@ func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
 
 func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byte) error {
 	defer close(n.stopped)
+	defer n.ks.warnLeftInPlace()
 	h := n.state.Map.Header()
 	n.logs.Info("starting", "mode", n.Mode(), "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
 	if n.bootChoice && n.Mode() != ModeServer {
@@ -488,13 +546,18 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 	// its mode) leaves the host alone: nothing is put back or taken over
 	// until a map makes the node a device.
 	mismatch := modeMismatch(n.Mode(), n.state)
+	// The kill switch is narrowed first: until then a crashed run's lets
+	// out what it let out connected (on macOS DNS to the direct upstreams
+	// from any socket), and restoring the host points the OS at them.
 	if !mismatch {
+		n.startKillSwitch(ctx)
 		n.restoreHost()
 	}
 	if (n.state.Removed || mismatch) && !n.awaitSection(ctx, maps) {
 		return nil
 	}
 	if mismatch {
+		n.startKillSwitch(ctx)
 		n.restoreHost()
 	}
 	if n.Mode() == ModeServer {
@@ -523,12 +586,47 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		remember:      n.remember,
 		events:        n.emit,
 		rulesRequests: n.rulesRequests,
+
+		killSwitch:         n.enforceKillSwitch,
+		killSwitchRequests: n.killSwitchRequests,
 	}
 	n.settingsMu.Lock()
 	dp.Rules = n.device.Rules
 	n.settingsMu.Unlock()
 	dp.tuning = n.tuning
 	return RunDataPlane(ctx, dp)
+}
+
+// startKillSwitch puts a device's kill switch as it starts: a crashed or
+// stopped run's is narrowed to the down shape (or removed, if not meant)
+// before anything connects. A server removes what a device run on the
+// host left: it would refuse the server's traffic but to the entries.
+func (n *Node) startKillSwitch(ctx context.Context) {
+	if n.Mode() == ModeServer {
+		n.removeDeviceKillSwitch()
+		return
+	}
+	v := killSwitchView{meantUp: !n.conn.disconnected()}
+	if !n.state.Removed {
+		v.entries = entries(n.state.Section)
+	}
+	n.enforceKillSwitch(ctx, v)
+}
+
+// removeDeviceKillSwitch removes, on a server, the kill switch a device
+// run on the host left; a failure is logged and left for `thinkpol
+// service uninstall`.
+func (n *Node) removeDeviceKillSwitch() {
+	if n.plat.NewKillSwitch == nil {
+		return
+	}
+	ks := n.plat.NewKillSwitch()
+	if ks == nil {
+		return
+	}
+	if err := ks.Close(); err != nil {
+		n.logs.Error("a device run's kill switch is still in place and refuses the server's traffic; thinkpol service uninstall removes it", "err", err)
+	}
 }
 
 // restoreHost puts back what a crashed run left on the host.
@@ -569,6 +667,9 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			p.version, p.removed, p.mismatch, p.conn = f.cur.Header().Version, f.removed, f.mismatch, n.conn.state
 		})
 	}
+	keepKillSwitch := func(ctx context.Context, meantUp bool) { n.keepRemovedKillSwitch(ctx, f.mismatch, meantUp) }
+	reapply := time.NewTicker(killSwitchReapply)
+	defer reapply.Stop()
 	publish()
 	if f.removed {
 		emitter(n.emit).emit(EventRemovedFromSpace, f.cur.Header().Version)
@@ -580,14 +681,22 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 	for {
 		select {
 		case <-ctx.Done():
-			// The node returns: its connection is down.
-			if !n.conn.disconnected() {
-				logRefused(n.logs.Logger, n.conn.disconnect())
-			}
+			// The node returns: its connection is down; its kill switch
+			// stays as a crash would leave it (runner.shutdown).
+			stopCtx, cancel := context.WithTimeout(context.Background(), killSwitchStopTimeout)
+			keepKillSwitch(stopCtx, n.dropConnection())
+			cancel()
 			publish()
 			return false
+		case <-reapply.C:
+			keepKillSwitch(ctx, !n.conn.disconnected())
+		case done := <-n.killSwitchRequests:
+			keepKillSwitch(ctx, !n.conn.disconnected())
+			publish()
+			close(done)
 		case req := <-n.rulesRequests:
 			// Stored already: the data plane starts with them.
+			keepKillSwitch(ctx, !n.conn.disconnected())
 			req.done <- nil
 		case req := <-n.requests:
 			// Kept for when the node runs its section.
@@ -600,6 +709,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 				err = n.conn.disconnect()
 			}
 			logRefused(n.logs.Logger, err)
+			keepKillSwitch(ctx, !n.conn.disconnected())
 			publish()
 			req.done <- err
 		case env, ok := <-maps:
@@ -629,6 +739,25 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			return true
 		}
 	}
+}
+
+// keepRemovedKillSwitch keeps a device's kill switch while it waits for a
+// section (awaitSection): removed, it lets out no entry, as the device has
+// none; made a server by its map (mismatch), the host is left alone.
+func (n *Node) keepRemovedKillSwitch(ctx context.Context, mismatch, meantUp bool) {
+	if n.Mode() == ModeDevice && !mismatch {
+		n.enforceKillSwitch(ctx, killSwitchView{meantUp: meantUp})
+	}
+}
+
+// dropConnection takes a waiting node's connection down as it returns,
+// and says whether it was meant up.
+func (n *Node) dropConnection() bool {
+	meantUp := !n.conn.disconnected()
+	if meantUp {
+		logRefused(n.logs.Logger, n.conn.disconnect())
+	}
+	return meantUp
 }
 
 // serverRemovedMsg completes the removal warning for a server's spaces:

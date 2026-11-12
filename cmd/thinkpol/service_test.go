@@ -23,11 +23,13 @@ func TestTheServicesConnectOnBootSaysWhatReplacedIt(t *testing.T) {
 // The member's connect-on-boot takes on or off, nothing else, before the
 // local API is dialed.
 func TestConnectOnBootIsOnOrOff(t *testing.T) {
-	for _, values := range [][]string{{"yes"}, {"true"}, {"on", "off"}} {
-		args := append([]string{"connect-on-boot", "-socket", "/nonexistent/api.sock"}, values...)
-		code, _, stderr := runCLI(t, args...)
-		if code != 2 || !strings.Contains(stderr, "[on|off]") {
-			t.Errorf("%v: exit %d\n%s", args, code, stderr)
+	for _, cmd := range []string{"connect-on-boot", "kill-switch", "allow-lan"} {
+		for _, values := range [][]string{{"yes"}, {"true"}, {"on", "off"}} {
+			args := append([]string{cmd, "-socket", "/nonexistent/api.sock"}, values...)
+			code, _, stderr := runCLI(t, args...)
+			if code != 2 || !strings.Contains(stderr, "[on|off]") {
+				t.Errorf("%v: exit %d\n%s", args, code, stderr)
+			}
 		}
 	}
 }

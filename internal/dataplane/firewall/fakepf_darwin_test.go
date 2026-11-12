@@ -461,7 +461,7 @@ func (f *fakePF) run(ctx context.Context, stdin []byte, args ...string) (pfOutpu
 			return fail("pfctl: Table does not exist.")
 		}
 		for _, e := range entries {
-			b.WriteString("   " + strings.TrimSuffix(e, "/128") + "\n")
+			b.WriteString("   " + strings.TrimSuffix(strings.TrimSuffix(e, "/128"), "/32") + "\n")
 		}
 	default:
 		return fail(fmt.Sprintf("fake pfctl: unexpected %q", args))

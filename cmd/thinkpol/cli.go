@@ -122,6 +122,11 @@ func (c apiCommand) dial(e env, args []string, argsOK func(*flag.FlagSet) bool) 
 func noArgs(fs *flag.FlagSet) bool { return fs.NArg() == 0 }
 func oneArg(fs *flag.FlagSet) bool { return fs.NArg() == 1 }
 
+// onOffArgs takes no argument or one, on or off: a toggle's command.
+func onOffArgs(fs *flag.FlagSet) bool {
+	return fs.NArg() == 0 || fs.NArg() == 1 && (fs.Arg(0) == "on" || fs.Arg(0) == "off")
+}
+
 // commandWords counts args' leading words: the command path's candidate
 // words. Flags and arguments with spaces end a path.
 func commandWords(args []string) int {

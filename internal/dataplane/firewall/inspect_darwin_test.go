@@ -354,7 +354,7 @@ func TestInspectMakesNoRecordDirectory(t *testing.T) {
 type noPfctl struct{}
 
 func (noPfctl) run(context.Context, []byte, ...string) (pfOutput, error) {
-	return pfOutput{}, fmt.Errorf("%w: /sbin/pfctl: no such file", routetable.ErrGuardUnsupported)
+	return pfOutput{}, fmt.Errorf("%w: /sbin/pfctl: no such file", errNoPfctl)
 }
 
 func TestInspectWithoutPfctlSaysSo(t *testing.T) {
