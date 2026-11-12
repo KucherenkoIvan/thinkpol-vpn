@@ -13,6 +13,7 @@ import (
 	"errors"
 	"math/big"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -137,7 +138,7 @@ func TestReplayIsSplicedToTheTarget(t *testing.T) {
 func TestAHelloSealedOutsideTheTimeWindowIsRefused(t *testing.T) {
 	k := newKeys(t)
 	id, _ := shortIDs()
-	l := listenFor(t, newTransport(Options{}), k, 60, peerLink(id))
+	l := listenFor(t, startedLongAgo(newTransport(Options{})), k, 60, peerLink(id))
 	skewed := func(d time.Duration) *Transport {
 		return newTransport(Options{Now: func() time.Time { return time.Now().Add(d) }})
 	}
@@ -365,6 +366,92 @@ func TestASealAheadOfTheClockHoldsOnlyItself(t *testing.T) {
 	}
 }
 
+// One space filling its replay cache, with as many credentials as it
+// takes, never refuses another space's hello: each space has a cache of
+// its own.
+func TestOneSpaceFillingItsReplayCacheDoesntRefuseAnothers(t *testing.T) {
+	r := newReplays(time.Minute)
+	at := time.Unix(1_800_000_000, 0)
+	sent := uint32(at.Unix())
+	guest, owner := randomSpace(), randomSpace()
+	for n := range maxRemembered / replayShare {
+		id := shortID{byte(n), byte(n >> 8), 1}
+		for i := range replayShare {
+			r.admit(guest, id, sessionIDOf(i), sent, at)
+		}
+	}
+	if r.admit(guest, shortID{9}, sessionIDOf(0), sent, at) {
+		t.Fatal("the guest space's full cache admitted")
+	}
+	if !r.admit(owner, shortID{9}, sessionIDOf(0), sent, at) {
+		t.Error("another space's fresh hello refused while the guest's cache is full")
+	}
+}
+
+// A space's cache outlives its leaving the table while it remembers
+// anything fresh, so a space that comes back still refuses its replays.
+func TestASpacesReplayCacheIsDroppedOnlyOnceItLeftTheWindow(t *testing.T) {
+	r := newReplays(time.Minute)
+	at := time.Unix(1_800_000_000, 0)
+	space := randomSpace()
+	if !r.admit(space, shortID{1}, sessionIDOf(0), uint32(at.Unix()), at) {
+		t.Fatal("a fresh hello refused")
+	}
+	r.prune(nil, at)
+	if r.admit(space, shortID{1}, sessionIDOf(0), uint32(at.Unix()), at) {
+		t.Fatal("a replay admitted after its space left the table")
+	}
+	later := at.Add(time.Minute + time.Second)
+	r.prune(nil, later)
+	if len(r.bySpace) != 0 {
+		t.Errorf("%d caches kept once all they remembered left the window", len(r.bySpace))
+	}
+}
+
+// Two links of different spaces sharing a short id: the one already in
+// the table stays and the newcomer is rejected, so one space's map can't
+// knock out another's link by listing its short id; with neither in the
+// table, both are rejected, as are two of one space, and another space's
+// refused entry doesn't close the incumbent.
+func TestASharedShortIDAcrossSpacesRejectsTheNewcomer(t *testing.T) {
+	tr := newTransport(Options{})
+	id, _ := shortIDs()
+	link := func(space transport.SpaceID) transport.PeerLink {
+		pl := peerLink(id)
+		pl.Peer.Space = space
+		return pl
+	}
+	owner, guest := link(randomSpace()), link(randomSpace())
+	sid := shortID(id)
+	rejected := func(tab table) []transport.Identity {
+		var out []transport.Identity
+		for _, e := range tab.rejected {
+			out = append(out, e.Peer)
+		}
+		return out
+	}
+
+	first := newTable(tr, []transport.PeerLink{owner}, nil)
+	tab := newTable(tr, []transport.PeerLink{guest, owner}, first.links)
+	if got := tab.links[sid]; got.Peer != owner.Peer || !slices.Equal(rejected(tab), []transport.Identity{guest.Peer}) {
+		t.Errorf("the incumbent's short id listed by a newcomer: kept %v, rejected %v", got.Peer, rejected(tab))
+	}
+	if both := newTable(tr, []transport.PeerLink{guest, owner}, nil); len(both.links) != 0 || len(both.rejected) != 2 {
+		t.Errorf("neither in the table before: kept %v, rejected %v", both.links, rejected(both))
+	}
+	twice := link(owner.Peer.Space)
+	twice.Peer.Node[0]++
+	if same := newTable(tr, []transport.PeerLink{owner, twice}, first.links); len(same.links) != 0 || len(same.rejected) != 2 {
+		t.Errorf("two of one space: kept %v, rejected %v", same.links, rejected(same))
+	}
+	bad := guest
+	bad.Settings = []byte{0xff}
+	refused := newTable(tr, []transport.PeerLink{bad, owner}, first.links)
+	if got := refused.links[sid]; got.Peer != owner.Peer || refused.refused[sid] != nil {
+		t.Errorf("another space's refused entry: kept %v, refused %v", got.Peer, refused.refused[sid])
+	}
+}
+
 // Only a certificate whose signature is the HMAC of its key under the auth
 // key proves the listener's key; a real certificate never does.
 func TestOnlyREALITYsCertificateProvesTheKey(t *testing.T) {
@@ -397,20 +484,22 @@ func TestOnlyREALITYsCertificateProvesTheKey(t *testing.T) {
 }
 
 // A link whose shaping asks for no padding pads every record to MinRecord,
-// as a capture of what the dialer sends shows: no record of
-// application data after the handshake is smaller. One the map pads to
-// buckets is padded as it says.
+// both ways, as a capture of what the dialer and the listener send shows:
+// no record of application data after the handshake is smaller. One the
+// map pads to buckets is padded as it says.
 func TestRecordsArePaddedToMinRecordByDefault(t *testing.T) {
 	tr := newTransport(Options{})
 	k := newKeys(t)
 	id, _ := shortIDs()
-	l := listenFor(t, tr, k, 0, peerLink(id))
 	for _, c := range []struct {
 		name    string
 		shaping transport.Shaping
 		want    int
 	}{{"no shaping", transport.Shaping{}, MinRecord}, {"buckets", transport.Shaping{Padding: transporttest.Buckets(1024)}, 1024}} {
 		t.Run(c.name, func(t *testing.T) {
+			pl := peerLink(id)
+			pl.Shaping = c.shaping
+			l := listenFor(t, tr, k, 0, pl)
 			tp := newTap(t, l.Addr().String())
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -432,27 +521,44 @@ func TestRecordsArePaddedToMinRecordByDefault(t *testing.T) {
 				if _, err := server.ReadPacket(make([]byte, 64)); err != nil {
 					t.Fatal(err)
 				}
-			}
-			stream := tp.captured()[0]
-			var sizes []int
-			for len(stream) >= recordHeaderSize {
-				size := recordHeaderSize + (int(stream[3])<<8 | int(stream[4]))
-				if size > len(stream) {
-					break
+				if err := server.WritePacket([]byte("pong")); err != nil {
+					t.Fatal(err)
 				}
-				if stream[0] == 23 { // application data
-					sizes = append(sizes, size)
+				if _, err := client.ReadPacket(make([]byte, 64)); err != nil {
+					t.Fatal(err)
 				}
-				stream = stream[size:]
 			}
-			if len(sizes) < packets {
-				t.Fatalf("records %v", sizes)
-			}
-			for _, size := range sizes[len(sizes)-packets:] {
-				if size != c.want {
-					t.Errorf("a packet's record of %d bytes, want %d (records %v)", size, c.want, sizes)
+			for _, way := range []struct {
+				name   string
+				stream []byte
+			}{{"dialer → listener", tp.captured()[0]}, {"listener → dialer", tp.answered()[0]}} {
+				sizes := appDataRecords(way.stream)
+				if len(sizes) < packets {
+					t.Fatalf("%s: records %v", way.name, sizes)
+				}
+				for _, size := range sizes[len(sizes)-packets:] {
+					if size != c.want {
+						t.Errorf("%s: a packet's record of %d bytes, want %d (records %v)", way.name, size, c.want, sizes)
+					}
 				}
 			}
 		})
 	}
+}
+
+// appDataRecords is the sizes of the application-data records of stream,
+// headers included.
+func appDataRecords(stream []byte) []int {
+	var sizes []int
+	for len(stream) >= recordHeaderSize {
+		size := recordHeaderSize + (int(stream[3])<<8 | int(stream[4]))
+		if size > len(stream) {
+			break
+		}
+		if stream[0] == 23 {
+			sizes = append(sizes, size)
+		}
+		stream = stream[size:]
+	}
+	return sizes
 }

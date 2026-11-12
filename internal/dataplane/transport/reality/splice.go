@@ -219,11 +219,26 @@ func (m *mirror) closeBoth() {
 	_ = m.target.Close()
 }
 
-// handOff stops the target → client direction for a hello that
-// authenticated and returns the target as REALITY must see it.
-func (m *mirror) handOff(hello []byte) *handedTarget {
-	target, held := m.stop()
-	return &handedTarget{Conn: target, held: held, skip: len(hello) - heldBack}
+// spliceJoined joins client and target both ways, toTarget sent to the
+// target and toClient to the client first, and returns once both
+// directions ended and both connections are closed: a pair decided
+// elsewhere, spliced as a mirror that became a splice is.
+func spliceJoined(client, target net.Conn, linger time.Duration, toTarget, toClient []byte) {
+	m := &mirror{client: &idleConn{Conn: client}, target: &idleConn{Conn: target}, linger: linger, fromTarget: make(chan struct{}), state: spliced}
+	if _, err := target.Write(toTarget); err != nil {
+		m.closeBoth()
+		return
+	}
+	if _, err := client.Write(toClient); err != nil {
+		m.closeBoth()
+		return
+	}
+	go func() {
+		defer close(m.fromTarget)
+		_, err := io.Copy(m.client, m.target)
+		m.endDirection(m.client, err)
+	}()
+	m.splice(nil)
 }
 
 // stop stops the target → client direction for a hello that

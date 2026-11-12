@@ -591,12 +591,12 @@ func TestARefusedEntryDropsItsShortID(t *testing.T) {
 func TestTheListenersClockRefusesAStaleSealBeforeREALITY(t *testing.T) {
 	k := newKeys(t)
 	id, _ := shortIDs()
-	ahead := newTransport(Options{Now: func() time.Time { return time.Now().Add(2 * time.Minute) }})
+	ahead := startedLongAgo(newTransport(Options{Now: func() time.Time { return time.Now().Add(2 * time.Minute) }}))
 	l := listenFor(t, ahead, k, 60, peerLink(id))
 	if _, err := dial(t, newTransport(Options{}), l.Addr().String(), k, id); !errors.Is(err, ErrNotAuthenticated) {
 		t.Errorf("dial sealed now through a 1-minute window 2 minutes ahead: %v, want %v", err, ErrNotAuthenticated)
 	}
-	ok := newTransport(Options{Now: func() time.Time { return time.Now().Add(30 * time.Second) }})
+	ok := startedLongAgo(newTransport(Options{Now: func() time.Time { return time.Now().Add(30 * time.Second) }}))
 	l = listenFor(t, ok, k, 60, peerLink(id))
 	if _, err := dial(t, newTransport(Options{}), l.Addr().String(), k, id); err != nil {
 		t.Errorf("dial sealed now through a 1-minute window 30 s ahead: %v", err)

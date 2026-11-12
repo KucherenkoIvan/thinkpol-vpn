@@ -126,20 +126,26 @@
 // # Shared listeners
 //
 // On a server node the supervisor owns the public address for every space
-// (docs/design/server-agent.md "Server agent: one worker per space"). A transport that can
-// sit behind it gives it a router ([PacketRouter], [StreamRouter]), which
-// authenticates each datagram or the start of each connection and says
-// which space's worker it belongs to. A [PacketRoutable] datagram
-// transport opens the public socket for the supervisor (ListenPacket) and
+// (docs/design/server-agent.md "Server agent: one worker per space"). A
+// transport that can sit behind it gives it a router ([PacketRouter],
+// [StreamRouter]), the state shared by all its listeners (the merged
+// table, replay memory), with which each datagram or the start of each
+// connection is authenticated and given to its space's worker. A
+// [PacketRoutable] datagram transport opens the public socket for the
+// supervisor (ListenPacket), its router decides each datagram, and it
 // listens, in the worker, on what the supervisor forwards
-// (ListenForwarded); a [StreamRoutable] stream transport opens the public
-// listener (ListenStream, a [StreamListener] whose handoff settings go to
-// the workers as they are) and gives the worker a [HandoffListener] for
-// the connections passed to it ([StreamHandoff]: the connection, what the
-// router read, and a connection the router opened for it, reality's
-// target). A stream router turns away what it doesn't hand over itself,
-// to the supervisor's camouflage or its transport's own (reality splices
-// to its target), so the timing a prober meets is the transport's.
+// (ListenForwarded). A [StreamRoutable] stream transport opens the public
+// listener bound to its router (ListenStream, a [StreamListener] whose
+// handoff settings go to the workers as they are), which decides each
+// connection (RouteStream, a [StreamVerdict]), and gives the worker a
+// [HandoffListener] for the connections passed to it ([StreamHandoff]:
+// the connection, what the router read, and a connection the router
+// opened for it, reality's target). A stream listener turns away what it
+// doesn't hand over itself, always to its transport's own camouflage
+// (reality splices to its target), so the timing a prober meets is the
+// transport's; it tells the supervisor when a connection needs no more
+// routing work, only its dialer's bytes, so the supervisor's bound on
+// routing work isn't held by connections that only wait.
 //
 // # Stream transports
 //
@@ -169,11 +175,14 @@
 // uTLS. For `tls` the token is an HMAC of the credential and a coarse
 // timestamp, checked by peeking at the ClientHello without terminating
 // TLS, against a replay cache; for `reality` it is the short id and the
-// time sealed to the listener's key, and the connection is handed over
-// once its TLS session is established. An authenticated connection's file
-// descriptor and the bytes already read go to the space's worker (over its
-// Unix socket, package supervisor); with `tls` the worker terminates TLS
-// with its own certificate, self-signed and pinned by the client. Anything
+// time sealed to the listener's key, opened in the supervisor before any
+// TLS is terminated, and the connection is handed over with the
+// connection to the target the supervisor dialled at accept (which has
+// the hello but its last byte); the worker's REALITY server completes the
+// handshake on them. An authenticated connection's file descriptor and
+// the bytes already read go to the space's worker (over its Unix socket,
+// package supervisor); with `tls` the worker terminates TLS with its own
+// certificate, self-signed and pinned by the client. Anything
 // else is proxied as a whole to the camouflage target, so a probe
 // completes a handshake with the real site and sees its certificate.
 //

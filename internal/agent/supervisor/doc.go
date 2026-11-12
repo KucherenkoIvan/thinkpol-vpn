@@ -245,13 +245,16 @@
 // routable once its worker is ready.
 //
 // Whatever fails authentication, is stale or replayed, or authenticates as
-// a space no longer served goes to the listener's [Listener.Camouflage],
-// and never reaches a worker. On a node with ingress off,
+// a space no longer served goes to the listener's camouflage, and never
+// reaches a worker. On a node with ingress off,
 // dataplane.AcceptedInbound keeps only other servers' links, so a
 // device's credential is unauthenticated there and gets the camouflage,
-// whatever inbound links the section lists. The node agent passes no
-// Camouflage, so each transport's own default takes it: udp drops it
-// ([transport.Drop]), reality splices it to its target.
+// whatever inbound links the section lists. A datagram listener's
+// camouflage is its [Listener.Camouflage], nil dropping it
+// ([transport.Drop]: udp's own default, and what the node agent passes);
+// a stream listener's is always its transport's own (reality splices to
+// its target), and SetListeners refuses a stream listener given a
+// Camouflage.
 //
 // # Datagrams
 //
@@ -289,22 +292,37 @@
 //
 // # Streams
 //
-// A stream transport's Router reads the start of each connection and
-// decides it, asking the supervisor whether the credential's space is
-// served; an authenticated one's descriptor, the bytes already read and,
+// A stream transport's public listener, bound to its Router, reads the
+// start of each connection and decides it, asking the supervisor whether
+// the credential's space is served, and says what it decided (a
+// [transport.StreamVerdict]: unknown, a space not served, stale and
+// replayed are counted like a datagram's); an authenticated one's
+// descriptor, the bytes already read and,
 // for reality, the descriptor of the target connection the router dialled
 // at accept (with what it read from it) go to the space's worker over its
 // control socket, without blocking (a full socket refuses the
-// connection). What the Router doesn't hand over it turns away itself, to
-// the listener's camouflage or, without one, to its transport's own
-// (reality splices it to its target from the first byte, so a prober
-// meets the target's timing). The public listener's handoff settings (for
-// reality: its settings and the target's records, learned here) reach the
-// workers with the Listeners message. A listener routes at most 1024
-// connections at a time, each given at most 10 s of reads to show who it
-// is (reality's Router then leaves an undecided connection spliced to its
-// target); past the bound a connection goes straight to the camouflage,
-// the transport's own without one.
+// connection). What it doesn't hand over it turns away itself, to its
+// transport's camouflage (reality splices it to its target from the
+// first byte, so a prober meets the target's timing). The public
+// listener's handoff settings (for reality: its settings and the
+// target's records, learned here) reach the workers with the Listeners
+// message.
+//
+// The bounds on what a stream listener costs the supervisor are two
+// layers. The supervisor's: at most 1024 connections per listener in
+// their routing work at once, until the listener says the connection
+// only waits for its dialer's bytes (reality: once the target is dialled
+// and the mirror is up), so idle connections don't hold these; past it a
+// connection goes straight to the camouflage. Each connection is given
+// at most 10 s of reads to show who it is (reality then leaves an
+// undecided connection spliced to its target). The transport's own:
+// reality's listener holds at most 1024 connections whose hello is
+// being decided and 1024 spliced to its target, closing what comes past
+// either, each costing two descriptors (package reality), so one listener
+// holds at most about 4096 descriptors whatever arrives. None of these
+// tells members from strangers before the hello: a sustained flood of
+// new connections that send nothing still closes a listener's members
+// (RESIDUAL-RISKS.md RR38).
 //
 // # Fair share
 //

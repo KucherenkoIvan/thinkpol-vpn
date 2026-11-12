@@ -57,7 +57,7 @@ func (l SharedListener) Listen(reg *transport.Registry, admission transport.Admi
 	if !ok {
 		return nil, fmt.Errorf("worker: shared listener %d: %s isn't a stream transport behind a shared listener", l.ID, l.Transport)
 	}
-	hl, err := st.Handoff(l.Handoff, admission)
+	hl, err := st.Handoff(l.Address, l.Handoff, admission)
 	if err != nil {
 		return nil, err
 	}

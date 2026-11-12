@@ -138,7 +138,7 @@ func (t *Transport) ListenPacket(ctx context.Context, cfg transport.ListenConfig
 // dialer whose clock runs behind, after every worker restart or listener
 // reopen, and the datagrams the Router queued for it before it started.
 func (t *Transport) ListenForwarded(pc net.PacketConn, admission transport.Admission) (transport.Listener, error) {
-	return newListener(t, pc, admission.Peers, admission.Camouflage, startRule{}), nil
+	return newListener(t, pc, admission.Peers, admission.Camouflage, transport.StartRule{}), nil
 }
 
 // listenNetwork binds one address family, as the map's listeners mean it:

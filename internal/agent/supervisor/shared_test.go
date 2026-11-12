@@ -1176,8 +1176,15 @@ func (c *closingWorker) Close() error {
 // lineTransport is a stream transport for the handoff's tests: a
 // connection starts with its credential and a newline. With a target, an
 // authenticated connection is handed over with a connection to it, as
-// reality hands over its target, and "early" as read from it.
-type lineTransport struct{ target string }
+// reality hands over its target, and "early" as read from it. What it
+// turns away goes to camo. With waits, a connection waits on its dialer
+// outside the routing work (RouteStream calls waiting before reading), as
+// reality's does once its mirror is up.
+type lineTransport struct {
+	target string
+	camo   transport.Camouflage
+	waits  bool
+}
 
 func (lineTransport) Name() string                                     { return "line" }
 func (lineTransport) Dialer() transport.Dialer                         { return nil }
@@ -1188,62 +1195,76 @@ func (lineTransport) CheckInbound(transport.PeerLink) error            { return 
 func (lineTransport) Listen(context.Context, transport.ListenConfig, transport.Admission) (transport.Listener, error) {
 	return nil, errors.ErrUnsupported
 }
-func (lineTransport) ListenStream(ctx context.Context, cfg transport.ListenConfig) (transport.StreamListener, error) {
+func (lt lineTransport) ListenStream(ctx context.Context, cfg transport.ListenConfig, r transport.StreamRouter) (transport.StreamListener, error) {
+	lr, ok := r.(lineRouter)
+	if !ok {
+		return nil, fmt.Errorf("a %T", r)
+	}
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.Address)
-	return lineListener{ln}, err
+	return lineListener{Listener: ln, lt: lt, peers: lr.peers}, err
 }
-func (lineTransport) Handoff([]byte, transport.Admission) (transport.HandoffListener, error) {
+func (lineTransport) Handoff(string, []byte, transport.Admission) (transport.HandoffListener, error) {
 	return nil, errors.ErrUnsupported
 }
-
-type lineListener struct{ net.Listener }
-
-func (lineListener) HandoffSettings() []byte          { return []byte("line settings") }
-func (lineListener) Camouflage() transport.Camouflage { return transport.Drop{} }
 func (lt lineTransport) StreamRouter(peers transport.Peers) transport.StreamRouter {
-	return lineRouter{peers, lt.target}
+	return lineRouter{peers}
 }
 
-type lineRouter struct {
-	peers  transport.Peers
-	target string
-}
+type lineRouter struct{ peers transport.Peers }
 
 func (lineRouter) Rejected() []transport.PeerError { return nil }
 
-func (r lineRouter) RouteStream(ln transport.StreamListener, conn net.Conn, serves func(transport.Identity) bool, camo transport.Camouflage) (transport.StreamHandoff, bool) {
-	turnAway := func(line []byte) (transport.StreamHandoff, bool) {
-		if camo == nil {
-			camo = ln.Camouflage()
-		}
-		camo.Stream(conn, line)
-		return transport.StreamHandoff{}, false
+type lineListener struct {
+	net.Listener
+	lt    lineTransport
+	peers transport.Peers
+}
+
+func (lineListener) HandoffSettings() []byte { return []byte("line settings") }
+func (l lineListener) Camouflage() transport.Camouflage {
+	if l.lt.camo == nil {
+		return transport.Drop{}
+	}
+	return l.lt.camo
+}
+
+func (l lineListener) RouteStream(conn net.Conn, serves func(transport.Identity) bool, waiting func()) (transport.StreamHandoff, transport.StreamVerdict) {
+	if l.lt.waits {
+		waiting()
 	}
 	// Byte by byte: whatever is read is consumed and must be reported.
 	var line []byte
 	b := make([]byte, 1)
 	for len(line) < 64 && !bytes.HasSuffix(line, []byte("\n")) {
 		if _, err := conn.Read(b); err != nil {
-			return turnAway(line)
+			l.Camouflage().Stream(conn, line)
+			return transport.StreamHandoff{}, transport.StreamUnknown
 		}
 		line = append(line, b[0])
 	}
-	links, _ := r.peers.Snapshot()
+	links, _ := l.peers.Snapshot()
 	for _, pl := range links {
-		if bytes.Equal(pl.Verifier, bytes.TrimSuffix(line, []byte("\n"))) && serves(pl.Peer) {
-			h := transport.StreamHandoff{Peer: pl.Peer, Conn: conn, Consumed: line}
-			if r.target != "" {
-				var err error
-				if h.Target, err = net.Dial("tcp", r.target); err != nil {
-					return turnAway(line)
-				}
-				h.TargetRead = []byte("early")
-			}
-			return h, true
+		if !bytes.Equal(pl.Verifier, bytes.TrimSuffix(line, []byte("\n"))) {
+			continue
 		}
+		if !serves(pl.Peer) {
+			l.Camouflage().Stream(conn, line)
+			return transport.StreamHandoff{Peer: pl.Peer}, transport.StreamUnserved
+		}
+		h := transport.StreamHandoff{Peer: pl.Peer, Conn: conn, Consumed: line}
+		if l.lt.target != "" {
+			var err error
+			if h.Target, err = net.Dial("tcp", l.lt.target); err != nil {
+				l.Camouflage().Stream(conn, line)
+				return transport.StreamHandoff{}, transport.StreamUnknown
+			}
+			h.TargetRead = []byte("early")
+		}
+		return h, transport.StreamRouted
 	}
-	return turnAway(line)
+	l.Camouflage().Stream(conn, line)
+	return transport.StreamHandoff{}, transport.StreamUnknown
 }
 
 type streamCamouflage struct {
@@ -1256,25 +1277,31 @@ func (c streamCamouflage) Stream(conn net.Conn, consumed []byte) {
 	c.got <- consumed
 }
 
+// lineAddress is the shared's one listener's address.
+func lineAddress(s *shared) string {
+	for _, pl := range *s.byID.Load() {
+		return pl.ln.Addr().String()
+	}
+	return ""
+}
+
 // A stream connection goes, descriptor and consumed bytes, to its space's
 // worker, which talks to the dialer on it, with the target connection its
 // router opened (descriptor and what it read) and the listener's handoff
-// settings; an unauthenticated one goes whole to the camouflage.
+// settings; an unauthenticated one goes whole to the listener's
+// camouflage.
 func TestStreamsAreHandedOver(t *testing.T) {
 	target, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = target.Close() }()
-	s := newTestShared(t, nil, lineTransport{target: target.Addr().String()})
 	camo := streamCamouflage{got: make(chan []byte, 4)}
-	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0", Camouflage: camo}}); err != nil {
+	s := newTestShared(t, nil, lineTransport{target: target.Addr().String(), camo: camo})
+	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
 		t.Fatal(err)
 	}
-	var address string
-	for _, pl := range *s.byID.Load() {
-		address = pl.ln.Addr().String()
-	}
+	address := lineAddress(s)
 	a, b := randomSpace(), randomSpace()
 	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{
 		a: {"line": {{Peer: transport.Identity{Node: transport.NodeID{1}}, Verifier: []byte("alpha")}}},
@@ -1301,10 +1328,11 @@ func TestStreamsAreHandedOver(t *testing.T) {
 		t.Fatal("no handoff")
 	}
 	defer func() { _ = hs.conn.Close() }()
-	if string(hs.consumed) != "bravo\n" || hs.listener != s.ipcListeners()[0].ID {
+	listeners := s.ipcListeners()
+	if string(hs.consumed) != "bravo\n" || hs.listener != listeners[0].ID {
 		t.Fatalf("handed over listener %d with %q", hs.listener, hs.consumed)
 	}
-	if got := string(s.ipcListeners()[0].Handoff); got != "line settings" {
+	if got := string(listeners[0].Handoff); got != "line settings" {
 		t.Fatalf("the workers are told handoff settings %q", got)
 	}
 	if hs.target == nil || string(hs.targetRead) != "early" {
@@ -1367,19 +1395,29 @@ func TestStreamsAreHandedOver(t *testing.T) {
 	}
 }
 
-// A listener routes at most so many connections at once; the rest go
-// straight to the camouflage, counted.
-func TestStreamRoutingIsBounded(t *testing.T) {
+// A stream listener turns away to its transport's own camouflage:
+// SetListeners refuses one configured with a camouflage of its own.
+func TestAStreamListenerTakesNoCamouflage(t *testing.T) {
 	s := newTestShared(t, nil, lineTransport{})
-	s.routingLimit = 2
+	camo := streamCamouflage{got: make(chan []byte, 1)}
+	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0", Camouflage: camo}}); err == nil {
+		t.Fatal("a stream listener with a camouflage was opened")
+	}
+	if len(s.infos()) != 0 {
+		t.Fatalf("listeners %+v", s.infos())
+	}
+}
+
+// A listener has at most so many connections in their routing work at
+// once; the rest go straight to the camouflage, counted.
+func TestStreamRoutingIsBounded(t *testing.T) {
 	camo := streamCamouflage{got: make(chan []byte, 4)}
-	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0", Camouflage: camo}}); err != nil {
+	s := newTestShared(t, nil, lineTransport{camo: camo})
+	s.routingLimit = 2
+	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
 		t.Fatal(err)
 	}
-	var address string
-	for _, pl := range *s.byID.Load() {
-		address = pl.ln.Addr().String()
-	}
+	address := lineAddress(s)
 	for range 3 { // silent: they hold their routing slots
 		c, err := net.Dial("tcp", address)
 		if err != nil {
@@ -1396,6 +1434,51 @@ func TestStreamRoutingIsBounded(t *testing.T) {
 		t.Fatal("the third connection wasn't turned away")
 	}
 	if li := s.infos(); li[0].StreamsOverloaded != 1 {
+		t.Fatalf("listener %+v", li[0])
+	}
+}
+
+// Connections waiting on their dialer's bytes don't hold routing slots:
+// once RouteStream says a connection waits, its slot is free, so idle
+// connections, more than the bound, don't keep a member's from being
+// routed.
+func TestIdleStreamsDontStarveRouting(t *testing.T) {
+	camo := streamCamouflage{got: make(chan []byte, 8)}
+	s := newTestShared(t, nil, lineTransport{camo: camo, waits: true})
+	s.routingLimit = 2
+	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
+		t.Fatal(err)
+	}
+	address := lineAddress(s)
+	a := randomSpace()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{
+		a: {"line": {{Peer: transport.Identity{Node: transport.NodeID{1}}, Verifier: []byte("alpha")}}},
+	})
+	w := newFakeWorker(s, a)
+	s.attach(a, w.sockets())
+	for range 4 { // idle, waiting on their dialers
+		c, err := net.Dial("tcp", address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = c.Close() }()
+	}
+	time.Sleep(quiet) // all four accepted and routing
+	member, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = member.Close() }()
+	if _, err := member.Write([]byte("alpha\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case hs := <-w.streams:
+		_ = hs.conn.Close()
+	case <-time.After(wait):
+		t.Fatal("the member was never handed over")
+	}
+	if li := s.infos(); li[0].StreamsOverloaded != 0 {
 		t.Fatalf("listener %+v", li[0])
 	}
 }

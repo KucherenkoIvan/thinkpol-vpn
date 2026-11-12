@@ -24,7 +24,9 @@
 // TLS 1.3, whose seal opens under the listener's key, names a short id in
 // the table, was sealed within the time window (five minutes by default,
 // transport.MaxClockSkew, never more) on the listener's clock
-// (Options.Now) and wasn't seen before.
+// (Options.Now), not before the second the listener started in (udp's
+// start rule, transport.StartRule: its replay memory starts empty), and
+// wasn't seen before.
 //
 // Without an Admission.Camouflage, what fails is spliced to the target, raw
 // and whole, so a prober completes a handshake with the real site and sees
@@ -47,18 +49,43 @@
 // direction ends once it was idle for 5 s, which REALITY's server doesn't
 // do (a client that stays silent after the site closed would hold both
 // connections for good; an answer that keeps flowing isn't cut). Closing
-// the listener ends its splices. With an Admission.Camouflage, the hello
-// is read whole (for at most 10 s) before anything is dialled, and what
-// fails goes to the camouflage.
+// the listener ends its splices, cancels its dials to the target and
+// waits for both. With an Admission.Camouflage, the hello is read whole
+// (for at most 10 s) before anything is dialled, and what fails goes to
+// the camouflage.
+//
+// A listener bounds what it holds before and instead of a link, each
+// connection costing it two descriptors (the client's and the target's):
+// at most 1024 connections whose hello is being decided (from before the
+// target is dialled until the decision) and, apart from those, at most
+// 1024 spliced to the target, for as long as the target keeps each open.
+// Past either, a new connection is closed, as an overloaded site would
+// close it. Kept apart, strangers holding splices open through the site
+// (an HTTP keep-alive a minute) close only other strangers, never a
+// member's hello; what still starves members is a sustained flood of new
+// connections each sending nothing until the deadline of whoever routes
+// it (RESIDUAL-RISKS.md RR38).
 //
 // Replays are remembered by sealed session id while their sealed time is
-// in the window, in memory per listener (a capture replayed after a
-// restart, within its window, is authenticated again). Each short id has a
-// share of at most 1024 at once, the cache at most 65536 (past either, a
-// new hello is spliced too), so a credential dialling faster than any
-// device would fills its own share only; each entry is forgotten when its
-// own sealed time leaves the window. A replayed hello is spliced like any
-// failed authentication.
+// in the window, in memory per listener, so the start rule above is what
+// refuses a capture replayed after a restart (what it still lets in is
+// RESIDUAL-RISKS.md RR34's). The memory is a cache per space: within a
+// space each short id has a share of at most 1024 at once and the cache
+// at most 65536 (past either, a new hello is spliced too), so a
+// credential dialling faster than any device would fills its own share
+// only, and a space's map listing enough credentials to fill its cache
+// refuses its own hellos, never another space's, and learns nothing of
+// another space's traffic. Each entry is forgotten when its own sealed
+// time leaves the window; a space's cache once it left the table and
+// remembers nothing fresh. A replayed hello is spliced like any failed
+// authentication.
+//
+// Two peer links sharing a short id are both rejected, not one guessed,
+// with one exception for links of different spaces (a shared listener's
+// merged table): one that was in the table before, alone in its space,
+// stays and only the newcomers are rejected, so one space's map can't
+// knock out another's link by listing its short id. With neither in the
+// table before (both new, or a fresh start), both are rejected.
 //
 // An authenticated connection's TLS handshake is REALITY's server
 // (github.com/xtls/reality, an unmodified MPL-2.0 module dependency, see
@@ -156,29 +183,38 @@
 // # Behind a shared listener
 //
 // On a server node the supervisor owns the public address
-// (transport.StreamRoutable). ListenStream opens it after the same checks
-// as Listen (the target's certificate, then REALITY's detection of its
+// (transport.StreamRoutable). One StreamRouter serves every reality
+// listener of the supervisor, over the merged table of every space
+// served: it holds the table and the replay cache (per space, remembered
+// for five minutes whatever each listener's window) and the start rule,
+// taken when it was made. ListenStream binds a public listener to it
+// (another transport's router is an error), after the same checks as
+// Listen (the target's certificate, then REALITY's detection of its
 // records), and reads what REALITY learned of the records out of its
-// per-process store into the listener's handoff settings (its address,
-// its settings and the records, JSON: the supervisor and its workers are
-// one binary). One StreamRouter serves every reality listener of the
-// supervisor, over the merged table of every space served: it holds the
-// replay cache (per short id, remembered for five minutes whatever each
-// listener's window), and decides each connection as a standalone
-// listener does up to the decision: the target dialled at accept, the
-// hello mirrored to it but its last byte, the seal opened with the
-// listener's key, the short id found in the table, its space served (the
-// supervisor's callback), the time within the listener's window, the hello
-// admitted once. What fails is spliced to the target there, on a goroutine
-// the public listener's Close ends, or goes to the supervisor's
-// camouflage when it has one (the hello then read whole first). The
-// supervisor's routing deadline (10 s) passing before the hello was whole
-// ends the routing, not the connection: it stays spliced to the target,
-// whose own timeouts end it, as a standalone listener's would. What
-// authenticates is handed over with the target connection, which has all
-// of the hello but its last byte, and anything the target sent before the
-// mirror stopped (the supervisor passes both descriptors to the space's
-// worker).
+// per-process store into the listener's handoff settings (its settings
+// and the records, JSON: the supervisor and its workers are one binary).
+//
+// The public listener's RouteStream decides each connection exactly as a
+// standalone listener does up to the decision, with the same code (a
+// gate, its bounds included): the target dialled at accept, the hello
+// mirrored to it but its last byte, the seal opened with the listener's
+// key, the short id found in the merged table, its space served (the
+// supervisor's callback), the time within the listener's window and not
+// before the router's start, the hello admitted once in its space's
+// cache. It calls waiting once the mirror is up: from then on the
+// connection only waits for its dialer, under the listener's bounds,
+// and the supervisor's bound on routing work lets go of it. What fails
+// is spliced to the target there, and the verdict says why (unknown, a
+// space not served, stale, replayed), the space included where the hello
+// authenticated. The supervisor's routing deadline (10 s) passing before
+// the hello was whole ends the routing, not the connection: it stays
+// spliced to the target, whose own timeouts end it, as a standalone
+// listener's would. The listener's Camouflage, where the supervisor
+// sends what it turns away before routing, is the same splice to the
+// target, under the same splice bound. What authenticates is handed over
+// with the target connection, which has all of the hello but its last
+// byte, and anything the target sent before the mirror stopped (the
+// supervisor passes both descriptors to the space's worker).
 //
 // The worker's Handoff first puts the records from the handoff settings
 // into its own process's store, where REALITY's server reads them: the
@@ -187,10 +223,10 @@
 // node owner's target at all. Then each connection is served as a
 // standalone listener serves one that authenticated: the seal opened
 // again and the short id looked up in the worker's own table (not the
-// replay cache: the router admitted the hello once), and REALITY's
-// handshake run on the handed-over target connection (it never dials).
-// A hello the worker's table doesn't list (its map changed in between) is
-// spliced to the target, the held-back byte sent then. Every worker behind
-// a listener holds its private key, which REALITY's server needs
-// (RESIDUAL-RISKS.md RR57).
+// replay cache or the start rule: the router admitted the hello once),
+// and REALITY's handshake run on the handed-over target connection (it
+// never dials). A hello the worker's table doesn't list (its map changed
+// in between) is spliced to the target, the held-back byte sent then.
+// Every worker given the listener's handoff settings holds its private
+// key, which REALITY's server needs (RESIDUAL-RISKS.md RR57).
 package reality

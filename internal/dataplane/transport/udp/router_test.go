@@ -362,7 +362,7 @@ func TestARouterTakesTheSecondItStartedIn(t *testing.T) {
 	tr := New(Options{Now: c.now})
 	p := transporttest.SymmetricPeer()
 	r := tr.PacketRouter(transport.NewPeerTable(p.PeerLink)).(*Router)
-	second := r.start.at.Truncate(time.Second)
+	second := r.start.At().Truncate(time.Second)
 	for _, tc := range []struct {
 		at   time.Time
 		want transport.Verdict
@@ -372,7 +372,7 @@ func TestARouterTakesTheSecondItStartedIn(t *testing.T) {
 	} {
 		d := seal(nil, newAEAD(p.Credential, toListener), connIDFor(p.Credential, toListener, epochOf(tc.at)), newSenderID(tc.at), tc.at, 0, []byte("packet"), transport.Padding{})
 		if _, v := r.RouteDatagram(d); v != tc.want {
-			t.Errorf("sealed %v from the start: %v, want %v", tc.at.Sub(r.start.at), v, tc.want)
+			t.Errorf("sealed %v from the start: %v, want %v", tc.at.Sub(r.start.At()), v, tc.want)
 		}
 	}
 }

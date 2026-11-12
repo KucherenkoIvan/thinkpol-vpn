@@ -34,10 +34,12 @@ type Listener struct {
 	Address string
 	// Settings is the transport's own settings message for the listener.
 	Settings []byte
-	// Camouflage gets whatever fails authentication, or is too old or
-	// replayed; nil is the transport's own default (udp drops it, reality
-	// splices it to its target). It must not block for long: a datagram
-	// listener reads on only after it returns.
+	// Camouflage, for a datagram listener only, gets whatever fails
+	// authentication, or is too old or replayed; nil drops it (udp's own
+	// default). It must not block for long: the listener reads on only
+	// after it returns. A stream listener always turns away to its
+	// transport's own (reality splices to its target): SetListeners
+	// refuses one with a Camouflage.
 	Camouflage transport.Camouflage
 }
 
@@ -68,7 +70,8 @@ type ListenerInfo struct {
 	// not served any more (to the camouflage too).
 	Routed, Unauthenticated, NoSpace uint64
 	// StreamsOverloaded counts connections that arrived while
-	// maxRoutingStreams were being routed: they went to the camouflage.
+	// maxRoutingStreams were in their routing work: they went to the
+	// camouflage. (A transport's own bounds count as Unauthenticated.)
 	StreamsOverloaded uint64
 	// Rejected lists the peer links the transport's router can't use, e.g.
 	// two links (of the same space or of two) sharing a secret: both are
@@ -84,8 +87,10 @@ const (
 	// streamRouteTimeout bounds how long a new connection may take to show
 	// the router who it is.
 	streamRouteTimeout = 10 * time.Second
-	// maxRoutingStreams bounds the connections one listener routes at
-	// once; more go straight to the camouflage.
+	// maxRoutingStreams bounds the connections one listener has in their
+	// routing work at once (until RouteStream's waiting: for reality, the
+	// dial to the target); more go straight to the camouflage. Connections
+	// waiting on their dialer's bytes are the transport's own bound.
 	maxRoutingStreams = 1024
 	// maxDatagramRead is a public socket's read buffer: anything longer
 	// than the transport's largest datagram fails authentication anyway.
@@ -171,7 +176,7 @@ type publicListener struct {
 	packets transport.PacketRouter
 	ln      transport.StreamListener
 	streams transport.StreamRouter
-	camo    atomic.Pointer[transport.Camouflage] // as configured: nil is the transport's default
+	camo    atomic.Pointer[transport.Camouflage] // a datagram listener's, as configured: nil drops
 	ctx     context.Context                      // ends when the listener closes
 	cancel  context.CancelFunc
 	closing sync.Once
@@ -273,10 +278,17 @@ func (s *shared) setListeners(ctx context.Context, ls []Listener) (bool, error) 
 		return false, errors.New("supervisor: closed")
 	}
 	want := make(map[string]Listener, len(ls))
+	var errs []error
 	for _, l := range ls {
 		k := listenerKey(l)
 		if _, dup := want[k]; dup {
 			return false, fmt.Errorf("supervisor: listener %s listed twice", k)
+		}
+		if t, ok := s.transport(l.Transport); ok && l.Camouflage != nil {
+			if _, stream := t.(transport.StreamRoutable); stream {
+				errs = append(errs, fmt.Errorf("supervisor: listener %s: a stream listener turns away to its transport's own camouflage", k))
+				continue
+			}
 		}
 		want[k] = l
 	}
@@ -290,11 +302,13 @@ func (s *shared) setListeners(ctx context.Context, ls []Listener) (bool, error) 
 		delete(s.listeners, k)
 		changed = true
 	}
-	var errs []error
 	for _, l := range ls {
 		k := listenerKey(l)
 		if _, ok := s.listeners[k]; ok {
 			continue
+		}
+		if _, ok := want[k]; !ok {
+			continue // refused above
 		}
 		pl, err := s.open(ctx, l)
 		if err != nil {
@@ -310,6 +324,14 @@ func (s *shared) setListeners(ctx context.Context, ls []Listener) (bool, error) 
 	}
 	s.byID.Store(&byID)
 	return changed, errors.Join(errs...)
+}
+
+// transport is the registry's transport called name.
+func (s *shared) transport(name string) (transport.Transport, bool) {
+	if s.reg == nil {
+		return nil, false
+	}
+	return s.reg.Get(name)
 }
 
 // open opens one public listener and starts serving it; s.mu held.
@@ -333,12 +355,13 @@ func (s *shared) open(ctx context.Context, l Listener) (*publicListener, error) 
 		pl.udp = pc
 		pl.packets = s.packetRouter(l.Transport, t)
 	case transport.StreamRoutable:
-		ln, err := t.ListenStream(ctx, cfg)
+		r := s.streamRouter(l.Transport, t)
+		ln, err := t.ListenStream(ctx, cfg, r)
 		if err != nil {
 			return nil, err
 		}
 		pl.ln = ln
-		pl.streams = s.streamRouter(l.Transport, t)
+		pl.streams = r
 	default:
 		return nil, errors.New("the transport can't sit behind a shared listener")
 	}
@@ -356,21 +379,14 @@ func (s *shared) open(ctx context.Context, l Listener) (*publicListener, error) 
 
 func (pl *publicListener) setCamouflage(c transport.Camouflage) { pl.camo.Store(&c) }
 
-// configuredCamouflage is the listener's camouflage, nil for the
-// transport's own default.
-func (pl *publicListener) configuredCamouflage() transport.Camouflage { return *pl.camo.Load() }
-
-// camouflage is where the listener sends what it turns away itself: the
-// configured camouflage, else the transport's default (a stream
-// listener's own, silence for datagrams).
+// camouflage is where the listener sends what it turns away itself: a
+// stream listener's transport's own, a datagram listener's configured
+// one (nil drops).
 func (pl *publicListener) camouflage() transport.Camouflage {
-	if c := pl.configuredCamouflage(); c != nil {
-		return c
-	}
 	if pl.ln != nil {
-		return transport.OrDrop(pl.ln.Camouflage())
+		return pl.ln.Camouflage()
 	}
-	return transport.Drop{}
+	return transport.OrDrop(*pl.camo.Load())
 }
 
 // close stops the listener and waits for its goroutines.
@@ -562,33 +578,40 @@ func (s *shared) serveStreams(pl *publicListener) {
 		pl.wg.Add(1)
 		go func() {
 			defer pl.wg.Done()
-			defer func() { <-pl.routing }()
-			s.routeStream(pl, conn)
+			done := sync.OnceFunc(func() { <-pl.routing })
+			defer done()
+			s.routeStream(pl, conn, done)
 		}()
 	}
 }
 
-// routeStream lets the router read the start of conn and decide it: what
-// it hands over (descriptors and the bytes it read) goes to its space's
-// worker; what it turns away it sends to the camouflage itself.
-func (s *shared) routeStream(pl *publicListener, conn net.Conn) {
+// routeStream lets the listener read the start of conn and decide it:
+// what it hands over (descriptors and the bytes it read) goes to its
+// space's worker; what it turns away it sends to its camouflage itself.
+// waiting lets go of the connection's routing slot.
+func (s *shared) routeStream(pl *publicListener, conn net.Conn, waiting func()) {
 	_ = conn.SetReadDeadline(s.now().Add(streamRouteTimeout))
 	stop := context.AfterFunc(pl.ctx, func() { _ = conn.SetReadDeadline(time.Unix(1, 0)) })
-	var r *route
-	unserved := false
-	serves := func(peer transport.Identity) bool {
-		r = (*s.routes.Load())[peer.Space]
-		unserved = r == nil
-		return r != nil
-	}
-	h, ok := pl.streams.RouteStream(pl.ln, conn, serves, pl.configuredCamouflage())
+	serves := func(peer transport.Identity) bool { return (*s.routes.Load())[peer.Space] != nil }
+	h, verdict := pl.ln.RouteStream(conn, serves, waiting)
 	stop()
+	var r *route
+	if verdict != transport.StreamUnknown {
+		r = (*s.routes.Load())[h.Peer.Space]
+	}
 	switch {
-	case !ok && unserved:
-		pl.noSpace.Add(1)
-		return
-	case !ok:
+	case verdict == transport.StreamUnknown:
 		pl.unauthenticated.Add(1)
+		return
+	case verdict == transport.StreamUnserved || r == nil:
+		pl.noSpace.Add(1)
+		h.Close() // a space dropped since it was asked
+		return
+	case verdict == transport.StreamStale:
+		r.counters.stale.Add(1)
+		return
+	case verdict == transport.StreamReplayed:
+		r.counters.replayed.Add(1)
 		return
 	}
 	_ = h.Conn.SetReadDeadline(time.Time{})
