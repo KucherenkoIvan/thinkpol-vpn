@@ -22,10 +22,14 @@ A user (or the device-test harness) whose agent crashed can put the host back wi
 - TP-132 (uninstall after a server crash) may share it: say which owns the supervisor's cleanup.
 
 ## Acceptance
-- [ ] lab: SIGKILL a connected device's agent, `thinkpol rollback` leaves the host as before `up` (routes, nft table, resolver configuration)
-- [ ] refused while an agent runs (a test)
-- [ ] `make lint`, `make test`, `make lab-test` pass
+- [x] lab: SIGKILL a connected device's agent, `thinkpol rollback` leaves the host as before `up` (routes, nft table, resolver configuration)
+  - `lab/rollback_test.go` `TestRollbackAfterACrash` (service device, "everything" preset, connected, SIGKILL with the restart held off): resolv.conf, rules and routes of both families, `nft list ruleset` and links equal to before `service install`; traffic direct; the restarted agent comes up disconnected with no kill switch. Passed alone on f82eb3c+fix and in the full lab on 7721f0c
+- [x] refused while an agent runs (a test)
+  - unit `TestRollbackIsRefusedWhileAnAgentRuns` (nothing cleared, kill switch and record kept, nothing printed); lab: the refusal step in `TestRollbackAfterACrash` (exit 1, empty stdout, host unchanged) and `TestASecondAgentChangesNothing` runs `thinkpol rollback` beside a connected agent (exit 1, no route/rule/link/resolv.conf change)
+- [x] `make lint`, `make test`, `make lab-test` pass
+  - on 7721f0c (merge of origin/rewrite 5742584): lint and test green; full `make lab-test` (LAB_P=1) exit 0, lab/ ok, gotest ok for 39 packages
 - [ ] macOS: device checklist step (pf anchor, reference and token record gone, routes and DNS back)
+  - checklist in Notes ("Device checklist (macOS, for the owner)"); waits on the owner's device run
 
 ## Notes
 - Owner's answer to the device-harness questions (2026-10-23, TP-082 question 4).
@@ -50,3 +54,8 @@ Run on the Mac with thinkpol installed as the service, in a space with an entry.
 ## Log
 - 2026-10-23 created in backlog (TP-082 design answers)
 - 2026-11-12 backlog → in-progress, owner: agent-tp-134
+- 2026-11-12 built: `agent.Rollback` (internal/agent/rollback.go) and `thinkpol rollback` (cmd/thinkpol/rollback.go); `Platform.clearHost` returns one `HostPart` per part (platform.go), `ClearHost` flattens it for uninstall (output unchanged); the kill switch's place named per OS (supported_*.go); docs: security.md's way out, agent doc.go, `KillSwitchStopNote`, api-overview-reference.md (`rollback` section), api-overview.md (on-disk table), runbook-pre-controller.md; TP-132 Notes: it owns the supervisor's cleanup
+- 2026-11-12 tests: unit TestRollbackIsRefusedWhileAnAgentRuns, TestRollbackClearsWhatADeadAgentLeftAndRecordsDown, TestRollbackTriesEveryPartWhateverFails, cmd TestRollbackNeedsRootAndNoArguments; lab TestRollbackAfterACrash, rollback added to TestASecondAgentChangesNothing. Mutations, each caught then restored: clear before the lock (refused test), no record saved (clear and every-part tests; lab: the restarted agent came back connected), kill switch part dropped (unit; lab: host differs from before), DNS part dropped, a failed part not an error, an empty report printing its record line (refused test; the first lab run found that bug)
+- 2026-11-12 merged origin/rewrite 5742584 as 7721f0c; make lint, make test green; full make lab-test on 7721f0c exit 0 (LAB_P=1, GOFLAGS=-p=2)
+- 2026-11-12 not verified: macOS (pf anchor, reference and record removal, routes, scutil DNS) has no lab: the device checklist in Notes is the owner's; box 4 stays open. Out of scope, seen: api-overview.md's `connect` row still says "only with connect-on-boot set"; the CLI reference's command list lacks kill-switch, allow-lan and connect-on-boot; TP-082's harness restore can call rollback now (TP-082's change)
+- 2026-11-12 in-progress → review
