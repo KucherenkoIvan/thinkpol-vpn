@@ -302,6 +302,8 @@ func KillSwitchText(k *localapiv1.KillSwitch) string {
 		s += ", allow-LAN off"
 	}
 	switch {
+	case k.GetError() == "not_applied":
+		s += " (not applied yet)"
 	case !k.GetEnforced():
 		s += " (not enforced: " + k.GetError() + ", retrying)"
 	case k.GetActive() && !k.GetOn():

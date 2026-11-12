@@ -49,6 +49,10 @@ const (
 	KillSwitchRemoveFailed KillSwitchError = "remove_failed"
 	// KillSwitchUnsupported: the OS can't hold it.
 	KillSwitchUnsupported KillSwitchError = "unsupported"
+	// KillSwitchNotApplied: the node hasn't put it as meant yet (it
+	// hasn't started, or waits as a server's section in device mode,
+	// leaving the host as it is).
+	KillSwitchNotApplied KillSwitchError = "not_applied"
 )
 
 // killSwitchReapply is how often the kill switch in place is applied
@@ -106,19 +110,29 @@ func (s killSwitchSettings) active(meantUp bool) bool {
 
 // rules are the kill switch's rules for v: the down shape (the entries)
 // or, connected, the connected one (the TUN, the direct destinations and
-// the direct upstreams too), with the LAN when allowed.
+// the direct upstreams too), with the LAN when allowed. Down, DNS to the
+// LAN but the entries is refused even with allow-LAN (owner,
+// 2026-11-12): the OS is back on its own resolvers, a home router that
+// forwards lookups in the clear.
 func (s killSwitchSettings) rules(v killSwitchView) firewall.KillSwitchRules {
-	var b lists.Builder
+	var eb, lb, ab lists.Builder
 	for _, a := range v.entries {
-		_ = b.AddPrefix(netip.PrefixFrom(a, a.BitLen())) // unmapped, valid
+		_ = eb.AddPrefix(netip.PrefixFrom(a, a.BitLen())) // unmapped, valid
 	}
+	for _, p := range firewall.LAN {
+		_ = lb.AddPrefix(p)
+	}
+	ents, _ := eb.Build()
+	r := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: ents}
 	if s.allowLAN {
-		for _, p := range firewall.LAN {
-			_ = b.AddPrefix(p)
+		lan, _ := lb.Build()
+		ab.AddSet(ents)
+		ab.AddSet(lan)
+		r.Allow, _ = ab.Build()
+		if v.connected == nil {
+			r.NoDNS = lan.Minus(ents)
 		}
 	}
-	r := firewall.KillSwitchRules{Mark: routetable.Mark}
-	r.Allow, _ = b.Build()
 	if v.connected != nil {
 		r.TUN, r.Direct, r.Upstreams = v.tun, v.connected.Direct, slices.Clone(v.connected.Upstreams)
 	}

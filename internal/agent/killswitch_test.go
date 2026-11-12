@@ -64,6 +64,31 @@ func TestKillSwitchSettingsDecide(t *testing.T) {
 	if conn.Allow.Contains(netip.MustParseAddr("203.0.113.7")) || conn.TUN != "thinkpol0" || len(conn.Upstreams) != 1 {
 		t.Errorf("connected shape %+v %v", conn, conn.Allow.Prefixes())
 	}
+	// Multicast of link-local and site-local scope only: mDNS and SSDP,
+	// not what may be routed beyond the LAN.
+	for a, want := range map[string]bool{
+		"224.0.0.251": true, "239.255.255.250": true, "255.255.255.255": true, "ff02::fb": true, "ff02::c": true, "ff05::c": true,
+		"224.0.1.1": false, "233.252.0.1": false, "239.1.2.3": false, "ff0e::1": false, "ff08::1": false, "ff15::1": false,
+	} {
+		if got := conn.Allow.Contains(netip.MustParseAddr(a)); got != want {
+			t.Errorf("allow-LAN lets %s out: %v, want %v", a, got, want)
+		}
+	}
+	if !conn.NoDNS.IsEmpty() || !down.NoDNS.IsEmpty() {
+		t.Errorf("DNS refused connected (%v) or down without allow-LAN (%v)", conn.NoDNS.Prefixes(), down.NoDNS.Prefixes())
+	}
+	// Down with allow-LAN, DNS to the LAN is refused, but to an entry on
+	// it (its transport may use port 53).
+	lanEntry := netip.MustParseAddr("192.168.1.10")
+	downLAN := killSwitchSettings{allowLAN: true}.rules(killSwitchView{entries: []netip.Addr{entry, lanEntry}})
+	for a, want := range map[string]bool{"10.1.2.3": true, "192.168.1.11": true, "fe80::1": true, "fd00::53": true, "192.168.1.10": false, "203.0.113.50": false} {
+		if got := downLAN.NoDNS.Contains(netip.MustParseAddr(a)); got != want {
+			t.Errorf("down with allow-LAN: DNS to %s refused %v, want %v", a, got, want)
+		}
+	}
+	if !downLAN.Allow.Contains(lanEntry) || !downLAN.Allow.Contains(netip.MustParseAddr("10.1.2.3")) {
+		t.Errorf("down with allow-LAN lets out %v", downLAN.Allow.Prefixes())
+	}
 }
 
 func mustSet(t *testing.T, prefixes ...string) *lists.Set {
@@ -386,11 +411,14 @@ func TestAStartNarrowsTheKillSwitchBeforeRestoringTheHost(t *testing.T) {
 	b.connection(t, Connected)
 }
 
-// A first start that keeps failing under the crash posture (restarted
-// by the service each time) holds the kill switch; a disconnect the node
-// can't act on is still recorded, so the next start comes up
-// disconnected and removes it: the member isn't locked out.
-func TestADisconnectTheNodeCantTakeIsHonouredAtTheNextStart(t *testing.T) {
+// A slow first start (here a TUN that hangs, then fails) under the crash
+// posture holds the kill switch; a disconnect sent while it hangs, and
+// waited on until the start fails (ErrNotRunning), is still recorded, so
+// the next start comes up disconnected and removes it. Only the slow
+// case: a start that fails at once serves the local API for
+// milliseconds, so a disconnect almost never reaches it (`sudo thinkpol
+// rollback`, TP-134, or the uninstall is the way out then).
+func TestADisconnectWaitedOutThroughAFailingStartIsHonouredAtTheNextStart(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
@@ -433,4 +461,87 @@ func TestADisconnectTheNodeCantTakeIsHonouredAtTheNextStart(t *testing.T) {
 	next := startDevice(t, s, reg, true, withKillSwitch(host, nil), withPreset(rules.PresetEverything), deviceOpt{prepare: service})
 	next.connection(t, Disconnected)
 	inPlace(t, host, "none")
+}
+
+// A disconnect whose caller gives up (Ctrl-C) before the busy node took
+// it leaves the record as the node's own choice: the node goes on
+// connecting, and so would a restart in this boot.
+func TestADisconnectTheCallerAbandonsLeavesTheNodesChoiceRecorded(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	host := &memKillSwitches{}
+	rec := &memConnectRecord{}
+	_ = rec.Save(true) // the member connected earlier in this boot
+	inTUN, release := make(chan struct{}), make(chan struct{})
+	entered, released := sync.OnceFunc(func() { close(inTUN) }), sync.OnceFunc(func() { close(release) })
+	b := startDevice(t, s, reg, true, withKillSwitch(host, nil), withPreset(rules.PresetEverything),
+		deviceOpt{prepare: func(c *Config, p *Platform) {
+			c.Service, p.ConnectRecord = true, rec
+			virtual := p.NewTUN
+			p.NewTUN = func(name string, mtu int) (wgtun.Device, error) {
+				entered()
+				<-release
+				return virtual(name, mtu)
+			}
+		}})
+	t.Cleanup(released) // before the node's cleanup waits for it
+	<-inTUN
+	ctx, cancel := context.WithCancel(context.Background())
+	disconnected := make(chan error, 1)
+	go func() { disconnected <- b.node.Disconnect(ctx) }()
+	eventually(t, func() bool { c, ok, _ := rec.Load(); return ok && !c })
+	cancel()
+	if err := <-disconnected; !errors.Is(err, context.Canceled) {
+		t.Errorf("Disconnect: %v, want context.Canceled", err)
+	}
+	if c, ok, _ := rec.Load(); !ok || !c {
+		t.Error("the record says disconnected while the node goes on connecting")
+	}
+	released()
+	b.connection(t, Connected)
+	if c, _, _ := rec.Load(); !c {
+		t.Error("the record says disconnected with the node connected")
+	}
+	inPlace(t, host, "up")
+}
+
+// A server starting on a host a device run left its kill switch on
+// removes it: it would refuse the server's traffic.
+func TestAServerStartRemovesADeviceRunsKillSwitch(t *testing.T) {
+	s := newTestSpace(t)
+	host := &memKillSwitches{}
+	host.put(&firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")})
+	plat := testPlatform()
+	plat.NewKillSwitch = host.new
+	n, err := Prepare(serverConfig(s.stateDir(t, s.a, 1)), Logs{}, plat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.startKillSwitch(context.Background())
+	if r := host.rules(); r != nil {
+		t.Errorf("the device run's kill switch is still in place: %+v", r)
+	}
+}
+
+// Before the node runs, the kill switch is reported not applied yet, not
+// enforced: nothing has been put as meant; the health leaves that to the
+// start.
+func TestAKillSwitchNotAppliedYetIsSaidSo(t *testing.T) {
+	s := newTestSpace(t)
+	plat := testPlatform()
+	plat.NewKillSwitch = (&memKillSwitches{}).new
+	cfg := testConfig(s.stateDir(t, s.b, 1))
+	cfg.KillSwitch = true
+	n, err := Prepare(cfg, Logs{}, plat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := n.Status()
+	if k := st.KillSwitch; k.Enforced || k.Error != KillSwitchNotApplied || !k.On {
+		t.Errorf("kill switch before the start: %+v, want on, not applied", k)
+	}
+	if slices.Contains(st.Health().Problems, ProblemKillSwitch) {
+		t.Errorf("health %+v counts a kill switch not applied yet as failed", st.Health())
+	}
 }

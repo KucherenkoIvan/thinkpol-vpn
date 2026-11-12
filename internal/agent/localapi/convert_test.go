@@ -202,3 +202,21 @@ func TestACorruptRecordReachesStatusAndCLI(t *testing.T) {
 		}
 	}
 }
+
+// The kill switch's line says what it does now: not applied yet before
+// the agent's first apply, not enforced after a failure, in place.
+func TestKillSwitchText(t *testing.T) {
+	for _, c := range []struct {
+		k    agent.KillSwitchStatus
+		want string
+	}{
+		{agent.KillSwitchStatus{On: true, Error: agent.KillSwitchNotApplied}, "on, allow-LAN off (not applied yet)"},
+		{agent.KillSwitchStatus{On: true, Active: true, Error: agent.KillSwitchApplyFailed}, "on, allow-LAN off (not enforced: apply_failed, retrying)"},
+		{agent.KillSwitchStatus{On: true, AllowLAN: true, Active: true, Enforced: true}, "on, allow-LAN on (in place)"},
+	} {
+		got := KillSwitchText(statusProto(agent.Status{Mode: agent.ModeDevice, KillSwitch: c.k}).GetKillSwitch())
+		if got != c.want {
+			t.Errorf("%+v: %q, want %q", c.k, got, c.want)
+		}
+	}
+}

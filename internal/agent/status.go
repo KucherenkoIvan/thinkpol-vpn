@@ -514,7 +514,7 @@ func (s Status) Health() Health {
 		s.dataPlaneProblems(add)
 	}
 	switch s.KillSwitch.Error {
-	case "":
+	case "", KillSwitchNotApplied:
 	case KillSwitchUnsupported:
 		add(HealthDegraded, ProblemKillSwitchUnsupported)
 	default:

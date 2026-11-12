@@ -69,8 +69,11 @@ type Node struct {
 	// switch toggle stored (SetKillSwitch, SetAllowLAN); it closes the
 	// channel sent once it did.
 	killSwitchRequests chan chan struct{}
-	// rememberMu serializes remember's writes.
+	// rememberMu serializes the record's writes; choice is the connect
+	// choice the node last took (remember), which a Disconnect that never
+	// reached it writes back.
 	rememberMu sync.Mutex
+	choice     bool
 	// ks keeps a device's kill switch, on the node's goroutine.
 	ks killSwitchKeeper
 }
@@ -115,11 +118,12 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	connect, recorded := startConnected(cfg, st.Device.ConnectOnBoot, plat.ConnectRecord, logs)
 	mismatch := modeMismatch(cfg.Mode, st)
 	n.conn, n.bootChoice = newConnection(connect, st.Removed || mismatch), !recorded && keepsConnect(cfg)
+	n.choice = !n.conn.disconnected()
 	n.device = st.Device
 	n.report = report{mode: cfg.Mode, space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed,
 		mismatch: mismatch, conn: n.conn.state, preset: n.device.Rules.Preset.String(), connectOnBoot: n.device.ConnectOnBoot}
 	if ks := n.killSwitchSettings(); cfg.Mode != ModeServer {
-		n.report.killSwitch = KillSwitchStatus{On: ks.on, AllowLAN: ks.allowLAN, Enforced: true}
+		n.report.killSwitch = KillSwitchStatus{On: ks.on, AllowLAN: ks.allowLAN, Error: KillSwitchNotApplied}
 	}
 	return n, nil
 }
@@ -148,17 +152,24 @@ func startConnected(cfg Config, onBoot bool, rec ConnectRecord, logs Logs) (conn
 	return connect, true
 }
 
-// remember records a connect choice (ConnectRecord), when the node keeps
-// it, before it is acted on; a failure is logged, and the node goes
-// ahead. Disconnect calls it from the requester's goroutine too.
+// remember records a connect choice the node takes (ConnectRecord), when
+// the node keeps it, before it is acted on; a failure is logged, and the
+// node goes ahead.
 func (n *Node) remember(connect bool) {
+	n.record(func() bool { n.choice = connect; return connect })
+}
+
+// record writes what pick returns to the record, under rememberMu: one
+// writer at a time (the record is replaced through one temporary file
+// name), and the node's choice read and written in the same order as
+// the writes.
+func (n *Node) record(pick func() bool) {
 	if !keepsConnect(n.cfg) {
 		return
 	}
-	// One writer at a time: the record is replaced through one temporary
-	// file name.
 	n.rememberMu.Lock()
 	defer n.rememberMu.Unlock()
+	connect := pick()
 	if err := n.plat.ConnectRecord.Save(connect); err != nil {
 		n.logs.Error("recording the connect request failed: a restart in this boot starts as configured", "connect", connect, "err", err)
 	}
@@ -242,15 +253,27 @@ func (n *Node) Connect(ctx context.Context) error { return n.request(ctx, true) 
 // the host, and returns once it is down. The device goes on following its
 // space's maps. ErrServerMode on a server. The choice is recorded for the
 // boot (ConnectRecord) before the node hears of it, so a node that can't
-// act on it (busy with a first start that fails, again at every restart
-// under the crash posture: ErrNotRunning) starts disconnected next time,
-// its kill switch removed unless toggled on.
+// act on it, busy with a first start that fails and returns while the
+// caller waits (ErrNotRunning), starts disconnected next time, its kill
+// switch removed unless toggled on. A caller that gives up first (its
+// ctx ends) while the node still runs puts the node's own choice back in
+// the record: the node goes on as it was, and so does its next start.
 func (n *Node) Disconnect(ctx context.Context) error {
 	if n.Mode() == ModeServer {
 		return ErrServerMode
 	}
-	n.remember(false)
-	return n.request(ctx, false)
+	n.record(func() bool { return false })
+	taken, err := n.ask(ctx, false)
+	if !taken {
+		select {
+		case <-n.stopped:
+		default:
+			// The caller gave up before the running node took it: the
+			// record says what the node does.
+			n.record(func() bool { return n.choice })
+		}
+	}
+	return err
 }
 
 // SetRulePreset switches a device's rules to preset ("space",
@@ -367,22 +390,29 @@ func (n *Node) carryLocalRules() error {
 }
 
 func (n *Node) request(ctx context.Context, connect bool) error {
+	_, err := n.ask(ctx, connect)
+	return err
+}
+
+// ask has the node's goroutine take a connect request and waits for its
+// answer; taken says the goroutine took it.
+func (n *Node) ask(ctx context.Context, connect bool) (taken bool, err error) {
 	if n.Mode() == ModeServer {
-		return ErrServerMode
+		return false, ErrServerMode
 	}
 	done := make(chan error, 1)
 	select {
 	case n.requests <- connectRequest{connect: connect, done: done}:
 	case <-n.stopped:
-		return ErrNotRunning
+		return false, ErrNotRunning
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	}
 	select {
 	case err := <-done:
-		return err
+		return true, err
 	case <-ctx.Done():
-		return ctx.Err()
+		return true, ctx.Err()
 	}
 }
 
@@ -569,9 +599,11 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 
 // startKillSwitch puts a device's kill switch as it starts: a crashed or
 // stopped run's is narrowed to the down shape (or removed, if not meant)
-// before anything connects.
+// before anything connects. A server removes what a device run on the
+// host left: it would refuse the server's traffic but to the entries.
 func (n *Node) startKillSwitch(ctx context.Context) {
 	if n.Mode() == ModeServer {
+		n.removeDeviceKillSwitch()
 		return
 	}
 	v := killSwitchView{meantUp: !n.conn.disconnected()}
@@ -579,6 +611,22 @@ func (n *Node) startKillSwitch(ctx context.Context) {
 		v.entries = entries(n.state.Section)
 	}
 	n.enforceKillSwitch(ctx, v)
+}
+
+// removeDeviceKillSwitch removes, on a server, the kill switch a device
+// run on the host left; a failure is logged and left for `thinkpol
+// service uninstall`.
+func (n *Node) removeDeviceKillSwitch() {
+	if n.plat.NewKillSwitch == nil {
+		return
+	}
+	ks := n.plat.NewKillSwitch()
+	if ks == nil {
+		return
+	}
+	if err := ks.Close(); err != nil {
+		n.logs.Error("a device run's kill switch is still in place and refuses the server's traffic; thinkpol service uninstall removes it", "err", err)
+	}
 }
 
 // restoreHost puts back what a crashed run left on the host.
