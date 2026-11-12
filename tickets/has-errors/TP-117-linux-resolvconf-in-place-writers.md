@@ -24,6 +24,16 @@ A DHCP client that rewrites `/etc/resolv.conf` in place while the node manages i
 - [x] a unit test with a truncate-then-append writer: the node ends with the writer's servers as the original and tells them
 - [ ] `make lint`, `make test`, `make lab-test` pass
 
+## Review findings
+Round 1 (2026-11-12):
+- [ ] R1.1 (blocker) the settle has no upper bound: a writer rewriting resolv.conf every <500 ms keeps the host on its resolver indefinitely while Problem says protected. Cap the settle at a deadline set when it begins; Problem reports ErrUnprotected while a foreign file has been in place longer than the settle; a file swapped in whole (another inode) is taken at once
+- [ ] R1.2 (should-fix) Update applies over a half-written foreign file the watch hasn't noticed yet: Update reads the file under the lock and leaves an in-place write to the watch; the initial take-over's race named in RR5 and the package doc
+- [ ] R1.3 (should-fix) a deferred Update's apply error disappears: the watch logs apply errors, System.Update documents the deferral, a later failure reaches Problem; Update after Restore returns an error, and Restore no longer resets the settle
+- [ ] R1.4 (should-fix, design) the watch's state machine: explicit cases, the quiet timer, correct comments; fileState a comparable struct; apply takes the read the watch judged
+- [ ] R1.5 (should-fix, design) adopt lines appended to the managed file as part of the original, as a backstop with the settle; tests for a slow writer past the cap and a hand append; doc.go rewritten
+- [ ] R1.6 (should-fix, tests) the poll test's writer outlasts the settle; an identical-content writer; the Update test by timing, not private state; the inotify test's margin; a lab-gated bind-mount test of the node's own in-place write
+- [ ] R1.7 (should-fix, docs and ticket) RR4's timing; RR5's reporting; the decision in Notes; doc.go's writers cited accurately; comments; the Log's counts and the branch; writeInPlaceSlowly's first pause
+
 ## Notes
 - Found by TP-115's round-1 correctness review (2026-10-21). The loss predates TP-115.
 - From TP-128's round-1 review (2026-10-22), more cases with the same cause:
@@ -43,3 +53,4 @@ A DHCP client that rewrites `/etc/resolv.conf` in place while the node manages i
 - 2026-11-12 make test green; make lint green except vulncheck, which fails on every branch: GO-2026-6859 in net/http@go1.26.10 (fixed in go1.26.11, the toolchain in go.mod is go1.26.10), out of scope
 - 2026-11-12 make lab-test green on cf24133 (38 packages in lab nodes plus the lab phase); the lint box stays open only for the vulncheck finding above (toolchain bump, out of scope)
 - 2026-11-12 in-progress → review
+- 2026-11-12 review → has-errors (round 1 findings R1.x)
