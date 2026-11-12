@@ -91,3 +91,4 @@ Round 3 (2026-11-12):
 - 2026-11-12 not verified: a write into a file renamed into the path that is still open when the node reads it (its close event comes after the read) is still taken at once, half-written; named in RR5. Out of scope: after a partial rewrite that left no managed header (cut before the header line ends, or 0 bytes), the file is taken as another program's write and its content as the original; adding IN_MODIFY to the watch would make a truncating open and every write raise an event, closing most of the R3.3 window
 - 2026-11-12 full make lab-test green on e10c28e (the lab phase and 39 packages in lab nodes); lab/RESULTS.md left as on rewrite
 - 2026-11-12 has-errors → in-progress — owner: agent-tp-117, branch: tp-117-linux-resolvconf-in-place-writers
+- 2026-11-12 in-progress → review
