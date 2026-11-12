@@ -39,7 +39,7 @@ func SetSystem(c SystemConfig) (System, error) {
 		parts = append(parts, r)
 	}
 	if !stub || len(parts) == 0 {
-		rc, err := setResolvConf(etcResolvConf, resolvedUplink, c)
+		rc, err := setResolvConfTimed(etcResolvConf, resolvedUplink, c, resolvConfTimes)
 		if err != nil {
 			_ = parts.Restore()
 			return nil, err
@@ -83,6 +83,10 @@ func (s systems) Problem() error {
 		errs = append(errs, p.Problem())
 	}
 	return errors.Join(errs...)
+}
+
+func (s systems) deferred() bool {
+	return slices.ContainsFunc(s, Deferred)
 }
 
 func (s systems) Restore() error {
