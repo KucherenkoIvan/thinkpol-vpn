@@ -139,10 +139,10 @@ type DialConfig struct {
 func ParseEndpoint(endpoint string) (netip.AddrPort, error) {
 	ap, err := netip.ParseAddrPort(endpoint)
 	if err != nil {
-		return ap, fmt.Errorf("endpoint %q is not an IP literal and port: %w", endpoint, err)
+		return ap, fmt.Errorf("%q is not an IP literal and port: %w", endpoint, err)
 	}
 	if ap.Port() == 0 || ap.Addr().IsUnspecified() {
-		return ap, fmt.Errorf("endpoint %q: no address or port", endpoint)
+		return ap, fmt.Errorf("%q: no address or port", endpoint)
 	}
 	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()), nil
 }

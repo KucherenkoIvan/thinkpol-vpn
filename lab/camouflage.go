@@ -24,9 +24,9 @@ const (
 // leaves 1.3 out unless told), HTTP/2 and HTTP/1.1, Debian's default page,
 // with the image's certificate for CamouflageName, on CamouflagePort of
 // both its addresses, unless it runs already. It returns them, IPv4
-// first, once both listen. It is
-// the target a reality listener splices to, and what TP-026's prober and
-// server-hello comparison compare servers with.
+// first, once both listen. It is the target a reality listener splices
+// to, and the site TP-026's prober and server-hello comparison, not built
+// yet, are to compare servers with.
 func StartCamouflage(t testing.TB, l *Lab) []netip.AddrPort {
 	t.Helper()
 	node := l.Node(Camouflage)

@@ -70,7 +70,7 @@ func (t *Transport) Overhead(s transport.Shaping) int { return Overhead + s.Padd
 // CheckEndpoint implements transport.Transport.
 func (t *Transport) CheckEndpoint(endpoint string, cfg transport.DialConfig) error {
 	if _, err := transport.ParseEndpoint(endpoint); err != nil {
-		return fmt.Errorf("udp: %w", err)
+		return fmt.Errorf("udp: endpoint: %w", err)
 	}
 	if len(cfg.Credential) < MinSecretSize {
 		return fmt.Errorf("udp: credential is %d bytes, need at least %d", len(cfg.Credential), MinSecretSize)
