@@ -23,10 +23,10 @@ TP-087's reality conformance test passes every time, or the product bug it expos
 - Anything beyond the reality package, its tests and the conformance suite they run (transporttest); reality behind the shared listener is TP-201.
 
 ## Acceptance
-- [ ] root cause named with evidence (a failing run explained, not guessed)
-- [ ] fix (test or product, whichever is wrong; if it's the product, what a real client would see is written down)
-- [ ] the package passes 20 consecutive runs in a lab node
-- [ ] every new or changed test mutation-checked
+- [x] root cause named with evidence (a failing run explained, not guessed)
+- [x] fix (test or product, whichever is wrong; if it's the product, what a real client would see is written down)
+- [x] the package passes 20 consecutive runs in a lab node
+- [x] every new or changed test mutation-checked
 
 ## Notes
 - **Root cause (2026-11-12): the suite, not the product.** The failing line, `transporttest.go:1235` on rewrite 567b481 (TP-201's full lab log: `TestConformanceShaped/random/ShapingRefused/5 (0.33s) transporttest.go:1235: dial …: reality: TLS handshake: EOF`), is `e.connectAdmitted(fixed)`: the test sets a table that admits `fixed`, then dials at once. Listeners take a table change in the background (reality's `watch` goroutine), which the suite allows. A hello that arrives before the listener has the new table fails authentication and goes to the suite's camouflage (the `Recorder`, which closes the connection), so reality's dial itself fails with EOF mid-handshake. `connectAdmitted` was written to dial again in that window, but only for a dial that returns a link the listener never accepts (udp); a failed dial went through `e.dial`, which fails the test. With a 0.33 s subtest the failure was the first dial after the table change.
@@ -43,3 +43,5 @@ TP-087's reality conformance test passes every time, or the product bug it expos
 - 2026-11-12 make test green; make lint green but for govulncheck: GO-2026-6859 in net/http of go1.26.10 (fixed in go1.26.11), on rewrite too, TP-202's toolchain bump
 - 2026-11-12 lab node, whole reality package -count 7 on b02a127: 6 of 7 iterations passed; iteration 4 failed TestListenFailsUnlessTheTargetsRecordsAreLearned/stalled (0.00 s), every ShapingRefused passed: a -count artifact (Notes, second flake)
 - 2026-11-12 fix: newFront listens through listenUnlearned. Mutation, with a temporary test that learns a target's records at an address, closes it and offers that address to a stalled front first: with the check, the front takes another address and detect fails as it should; check disabled: the front takes the learned address and detect returns in 0.01 s, "detected the records of a target that never answers" (the lab symptom). make test green; make lint green but for the same govulncheck finding
+- 2026-11-12 lab node, whole reality package on a9fd476: 21 consecutive runs pass (make lab-gotest COUNT=7, three invocations back to back, LAB_P=1; no failure in any)
+- 2026-11-12 acceptance boxes ticked: root cause and the second flake in Notes with their failing runs; fixes in transporttest's connectAdmitted and reality's test fixtures, no product change (a real client's view in Notes); 21 lab-node runs; mutations in the lines above
