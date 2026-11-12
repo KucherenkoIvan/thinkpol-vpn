@@ -53,13 +53,19 @@ func newLink(tlsConn, tcp net.Conn, s transport.Shaping, meter *transport.SendMe
 	return l
 }
 
-// setShaping takes the link's shaping, padding to MinRecord where it asks
-// for none.
 func (l *link) setShaping(s transport.Shaping) {
+	s = effectiveShaping(s)
+	l.shaping.Store(&s)
+}
+
+// effectiveShaping is the shaping a link with shaping s writes with: s,
+// but padded to MinRecord where it asks for no padding. A link never
+// writes unpadded records, so PadNone can't be asked for on reality.
+func effectiveShaping(s transport.Shaping) transport.Shaping {
 	if s.Padding.Mode == transport.PadNone {
 		s.Padding = defaultPadding
 	}
-	l.shaping.Store(&s)
+	return s
 }
 
 // MinRecord is the smallest record a link writes when its shaping asks for

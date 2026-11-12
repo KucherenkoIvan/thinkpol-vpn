@@ -121,7 +121,8 @@
 // the rest; the lab measures how much shaping is enough per transport and
 // tunes the defaults, which are no shaping until it says otherwise. It
 // has for reality: without padding of its own, a link pads every record
-// to at least 512 bytes (package reality).
+// to at least 512 bytes (package reality), so PadNone can't be asked for
+// there; what that floor still shows is RESIDUAL-RISKS.md RR58.
 //
 // # Shared listeners
 //

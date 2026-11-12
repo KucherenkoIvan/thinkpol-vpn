@@ -59,8 +59,10 @@ func (t *Transport) Network() string { return "tcp" }
 func (t *Transport) Dialer() transport.Dialer { return t }
 
 // Overhead implements transport.Transport: the fixed Overhead plus the most
-// random padding adds.
-func (t *Transport) Overhead(s transport.Shaping) int { return Overhead + s.Padding.Growth() }
+// random padding adds, for the shaping a link actually writes with.
+func (t *Transport) Overhead(s transport.Shaping) int {
+	return Overhead + effectiveShaping(s).Padding.Growth()
+}
 
 // SendStats is what this adapter's links put on the wire so far.
 func (t *Transport) SendStats() transport.SendStats { return t.sent.Stats() }

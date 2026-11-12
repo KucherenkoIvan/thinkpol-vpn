@@ -169,7 +169,9 @@
 // wireguard-rhythm censor watches, and it caught reality within two rekey
 // periods. The cost is up to 488 bytes on each small record (a TCP ACK
 // through the tunnel, a ping); a full record is unchanged. A map that
-// pads to buckets or at random gets what it asks for instead.
+// pads to buckets or at random gets what it asks for instead; it can't
+// ask for no padding at all. What the floor still shows (the rekeys'
+// timing, and the floor itself) is RESIDUAL-RISKS.md RR58.
 //
 // # Settings
 //
