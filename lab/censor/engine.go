@@ -81,6 +81,20 @@ func (e *Engine) summary(f *Flow, now time.Time) {
 	})
 }
 
+// publish hands snap to the active modules and logs each module that had
+// no room for it (EventUnnoticed): a module that misses a new flow or a
+// tag judges without it, so a test reading the log can tell.
+func (e *Engine) publish(snap FlowSnapshot, now time.Time) {
+	before := e.flows.unnoticed.Load()
+	e.flows.publish(snap)
+	if missed := e.flows.unnoticed.Load() - before; missed > 0 {
+		e.logEntry(LogEntry{
+			Time: now, Event: EventUnnoticed, Flow: snap.Key.String(), Packets: snap.Packets, Bytes: snap.Bytes,
+			Module: snap.Tagger, Reason: fmt.Sprintf("%d active modules had no room for the snapshot", missed),
+		})
+	}
+}
+
 // Unnoticed is how many times a snapshot (a new flow, a tag) was not
 // handed to an active module because the module's channel was full,
 // summed over the modules.
@@ -103,7 +117,7 @@ func (e *Engine) Handle(p *Packet) Action {
 		e.ignore(f, why, now)
 	}
 	if isNew && len(e.flows.events) > 0 {
-		e.flows.publish(f.snapshot("", ""))
+		e.publish(f.snapshot("", ""), now)
 	}
 	if isNew && f.reverse != nil && f.reverse.throttle != nil {
 		e.pin(f, reverseThrottle(*f.reverse.throttle))
@@ -186,7 +200,7 @@ func (e *Engine) restart(f *Flow, isNew bool, p *Packet, now time.Time) (*Flow, 
 		nc := e.startOver(c, now)
 		nc.Stream.add(c.offer, Syn, nil)
 		if len(e.flows.events) > 0 {
-			e.flows.publish(nc.snapshot("", ""))
+			e.publish(nc.snapshot("", ""), now)
 		}
 		if !isNew {
 			f, isNew = e.startOver(f, now), true
@@ -236,7 +250,7 @@ func (e *Engine) tag(f *Flow, module, why string, now time.Time) {
 		f.tagged = map[string]bool{}
 	}
 	f.tagged[module] = true
-	e.flows.publish(f.snapshot(module, why))
+	e.publish(f.snapshot(module, why), now)
 	e.logEntry(LogEntry{
 		Time: now, Event: EventTag, Flow: f.Key.String(), Packets: f.Packets, Bytes: f.Bytes,
 		Module: module, Verdict: f.last.verdict, Reason: why,

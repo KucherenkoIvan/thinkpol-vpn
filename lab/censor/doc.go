@@ -91,7 +91,8 @@
 //     module tags, with its retained payload, and may probe and flag flows
 //     ([FlagFunc]); a flag is pinned from the flow's next packet on.
 //     Feeding them never makes the queue wait: a snapshot an active module
-//     has no room for is counted ([Engine.Unnoticed]) and skipped.
+//     has no room for is counted ([Engine.Unnoticed]), logged
+//     ([EventUnnoticed]) and skipped.
 //   - both: a module built by [RegisterPassive] that also implements
 //     [Active] is run as both, one value, so its passive half can tag what
 //     its active half acts on.
@@ -235,6 +236,106 @@
 // "wireguard-rhythm: stream not framed", so a pass for that reason shows
 // in the verdict log.
 //
+// # Fully encrypted traffic, the prober and the server hello
+//
+// Three more of the M2 gate's checks judge what a disguised transport
+// looks like: its first bytes, how its server answers strangers, and its
+// server's hello. They tell a connection's client from its server by
+// [Flow.Initiator]: for TCP the side that sent the SYN, for UDP the
+// direction the censor saw first (the server's, for a flow already
+// running when the censor started).
+//
+// fully-encrypted is the Great Firewall's passive detector (Wu et al.,
+// USENIX Security 2023), on the first data a connection's client sends:
+// over TCP the stream's first bytes as the server reads them (the first
+// segment, with what an out-of-order segment joined to it), over UDP the
+// first datagram, which Wu et al. didn't see judged and the lab judges
+// anyway. It blocks (drop by default, pinned) unless an exemption applies:
+// at most 3.4 or at least 4.6 set bits per byte (random bytes average 4);
+// the first six bytes printable ASCII; more than half printable; a run of
+// more than 20 printable; a TLS record header (handshake or application
+// data) or an HTTP method. The server's direction and a connection joined
+// midstream are not judged. The Great Firewall blocks only a fraction of
+// such connections, to some address ranges; the lab blocks every one. A
+// client that sends a first segment an exemption passes (six printable
+// bytes, say) and the rest later passes too, as it does past the Great
+// Firewall. With tagOnly it tags instead of blocking, for the prober.
+// Random bytes are exempt only by chance, their first six bytes printable,
+// about one stream in 383. thinkpol's udp starts every datagram with its
+// connection id, fixed for a link's direction and hour and the same over
+// IPv4 and IPv6 (it doesn't depend on the address), so its chance is per
+// link and hour, not per datagram: the matrix, which expects udp to fail
+// fully-encrypted, shows an exempt hour as a failed run, never as a wrong
+// score. A WireGuard initiation, ending in 16 zero bytes
+// (mac2, without a cookie), averages about 3.47 set bits per byte and is
+// exempt about one in four, its tunnel with it, since a flow is judged
+// once.
+//
+// prober is the active prober: given a suspect TCP connection, it probes
+// the connection's server, once per server address and port, from the
+// router, and compares each answer with the reference's, the real site an
+// entry would pretend to be (the camouflage target, a setting so the
+// matrix can point it at any site). Suspects are what fully-encrypted
+// tags (tagOnly, before the prober in the config) and, with destinations
+// set, every TCP connection to one once its client sent data. The
+// prober's passive half tags each, a TCP one only once its client's first
+// bytes are settled: a whole ClientHello (one with a post-quantum key
+// share, as Chrome, uTLS and Go send, spans two segments), bytes that
+// can't start one, or retainBytes of one still unfinished; the replay
+// probe and the TLS comparison get the whole hello. A UDP suspect, and a
+// suspect connection to the reference itself, is flagged Accept, "not
+// probed". The
+// probes: the suspect's first bytes replayed, random bytes of 3, 16, 49,
+// 221 and 1000 bytes, and, when the suspect's ClientHello names the
+// reference, a TLS handshake of the censor's own that reads the server
+// hello's JA3S, JA4S, extensions in order and the negotiated ALPN (which
+// TLS 1.3 sends encrypted, out of the ServerHello). A reaction is what
+// came back (nothing, an echo, a TLS alert or handshake, an HTTP response,
+// other bytes) and how the connection ended (closed, reset, open at the
+// timeout, or failed, named by its errno alone); a server whose reaction to any probe differs from the
+// reference's, whose handshake differs, or that shows the upstream tell is
+// flagged, its suspect connections blocked both ways and every later
+// connection to or from it dropped, as the Great Firewall blocks a server
+// its prober confirmed. A clean server is flagged Accept, the probes'
+// results in the reason, so the verdict log says what was compared either
+// way. Timing is reported (when each first answer came) and not judged:
+// lab round trips are under a millisecond, too close for a relay's extra
+// hop to stand out from noise.
+//
+// The upstream tell: an entry that relays what it doesn't recognize to the
+// real site opens a connection of its own to the site for each probe.
+// REALITY does so by design, on every connection, so the check flags it.
+// The upstreamTell setting says what the tell does: "flag" (the default)
+// flags the server on the tell alone; "report" only says so in the
+// verdict, the server judged on the probes' answers, as the M2 gate's
+// reality rows do: the tell is reported, not gated (owner, 2026-11-09). The censor sees the entry's
+// connection only from a vantage on the entry's uplink to the site. In
+// the lab that is lab.Upstream, the camouflage target behind the router,
+// where the entry's connection crosses the censor as a client's does; a
+// real censor has it when the entry and the site are on different sides
+// of it, never when both are beyond it. The tell is a connection from the
+// probed address to a reference address starting during each probe, or
+// within half a second after it, every probe of at least two; the servers
+// of one address are probed one at a time so as not to blame one for
+// another's connections, but a connection the entry's real clients cause
+// during a probe still counts for it. An entry whose connection leaves
+// from another address than the one probed (an IPv4 uplink for an IPv6
+// probe) isn't matched.
+//
+// server-hello compares a real connection's server hello with the site's:
+// on a TCP connection whose ClientHello names a listed site (the sites
+// setting maps a name to the site's address, standing in for the DNS a
+// real censor resolves it with), it reads the server's ServerHello, then
+// sends the client's ClientHello, byte for byte, to the site and reads the
+// site's: JA3S, JA4S, version, cipher, extensions in order and the ALPN
+// the hello carries (TLS 1.2 and earlier). A difference flags the
+// connection, both ways, and blocks the server, by address and port; a
+// match is flagged Accept with both fingerprints. A server that relays a
+// stranger's ClientHello to the site answers with the site's own hello and
+// passes; this check is for the hello a server sends its own clients.
+// What follows the ServerHello is not compared (TLS 1.3 encrypts it), nor
+// is a server that answers with no ServerHello.
+//
 // # The verdict log
 //
 // One JSON [LogEntry] per line, buffered and flushed every 100 ms and when
@@ -263,19 +364,36 @@
 // bring the transport up between device-a and server-1 through the router,
 // and report whether data crossed over IPv4 and over IPv6. A cell passes
 // only when both did and fails only when neither did: one family alone is
-// partial, which no cell expects, so a blocking censor one family slips
-// past is caught. A transport's cell without a censor runs first, and its
+// partial, which fails the run unless the row varies (below), so a
+// blocking censor one family slips past is caught. A transport's cell without a censor runs first, and its
 // censored cells are judged only once that one passed. Every cell is
 // probed, and one whose censor can't be trusted (censord died, the kernel
 // dropped queued packets ([QueueStats]), the verdict log lacks the probe's
-// flows) is an error, which keeps lab/RESULTS.md from being written, and a
+// flows or logs a snapshot an active module missed ([EventUnnoticed]), a
+// case's module never compared what the cell needs compared) is an error, which keeps lab/RESULTS.md from being written, and a
 // blocked cell fails unless the verdict log blames the module its case
-// names. Control rows check that plain TCP and HTTPS to an unlisted site on
+// names, over each family that didn't cross. Control rows check that plain TCP and HTTPS to an unlisted site on
 // the underlay, what TLS-shaped transports ride, cross the censor and are
 // seen by it; reference rows run real WireGuard (kernel) and OpenVPN (UDP
 // and TCP), one tunnel per underlay family, on ports other than their
 // defaults, their handshakes starting once the censor is up, so the
-// fingerprint modules are judged on the real thing, on any port.
+// fingerprint modules are judged on the real thing, on any port, and
+// random-tcp, a naive echo server fed random bytes, is what a fully
+// encrypted proxy looks like to fully-encrypted and the prober, and
+// relay-tcp, an entry that splices every connection to the camouflage
+// site as REALITY does with what it doesn't recognize, run in
+// lab.Upstream in every cell, shows the prober's upstream tell. The https
+// row asks for the camouflage site's name, so the prober's TLS comparison
+// and server-hello compare it with the site. A case
+// with an active module probes twice and scores the second probe, once
+// every flow of server-1 a passive module tagged has a flag: the prober
+// judges a connection only after it crossed. Cases that compare with the
+// camouflage site run in lab.Upstream, nginx serving it, and quote the
+// module's verdict on the row's first connection in the cell. A cell
+// whose result is chance by nature (WireGuard against fully-encrypted)
+// varies: any result is accepted and shown, with why, and each family that
+// didn't cross must still be the module's doing. Only a reference row may
+// vary, so a gate row (a thinkpol transport) never does.
 //
 // # Limits
 //

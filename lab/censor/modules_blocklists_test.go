@@ -142,11 +142,14 @@ func TestClientHelloServerName(t *testing.T) {
 		"server hello":  serverHello,
 		"not handshake": appData,
 		"empty record":  {22, 3, 1, 0, 0},
-		"huge message":  {22, 3, 1, 0, 4, 1, 0xff, 0, 0},
 	} {
 		if _, err := clientHelloServerName(b); err != errNotClientHello {
 			t.Errorf("%s: %v, want not a ClientHello", name, err)
 		}
+	}
+	// A ClientHello longer than the censor keeps is one, never whole.
+	if _, err := clientHelloServerName([]byte{22, 3, 1, 0, 4, 1, 0xff, 0, 0}); err != errHelloTooLong {
+		t.Errorf("a ClientHello longer than retainBytes: %v, want too long", err)
 	}
 	// A record that ends mid-message waits for the next.
 	if _, err := clientHelloServerName(truncatedBody); err != errIncomplete {
