@@ -106,3 +106,5 @@ The lab catches traffic that looks like random bytes and servers that don't beha
 - 2026-11-12 not verified: the late "not compared" race in a real lab cell (timing; covered by TestAwaitJudgments); TP-201's reality rows against the new gate-row guard (they don't exist yet)
 - 2026-11-12 has-errors → in-progress (R3.1–R3.6 fixed and ticked)
 - 2026-11-12 in-progress → review
+- 2026-11-12 merged origin/rewrite (TP-202, toolchain go1.26.11) at 3422932: make lint fully green, govulncheck included (GO-2026-6859 gone; the ticket has no separate lint box to tick), make test green
+- 2026-11-12 lab commit 3422932: full make lab-test (GOFLAGS=-p=2 LAB_P=1, under the full-lab lock, the docker lock and 3 CPU slots) passed, both phases (lab/ and 38 packages in a lab node); TestCensorMatrix complete with no error cell, lab/RESULTS.md regenerated (lab addresses and timings changed; wireguard × fully-encrypted partial this run, labelled varies)
