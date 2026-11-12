@@ -708,7 +708,7 @@ func TestReplaysCostNothing(t *testing.T) {
 	if remotes := (*s.routes.Load())[space].remotesForTest(); len(remotes) != 1 {
 		t.Fatalf("remembered %v, want the first sender only", remotes)
 	}
-	listener := s.ipcListeners()[0].ID
+	listener := s.ipcListeners(space)[0].ID
 	for _, c := range senders[1:] {
 		s.reply(space, ipc.DatagramHeader{Listener: listener, Remote: netip.MustParseAddrPort(c.LocalAddr().String())}, []byte("x"))
 	}
@@ -790,7 +790,7 @@ func TestReplaysAfterARestartCostNothing(t *testing.T) {
 	if remotes := (*s.routes.Load())[space].remotesForTest(); len(remotes) != 0 {
 		t.Fatalf("remembered %v, want no address", remotes)
 	}
-	listener := s.ipcListeners()[0].ID
+	listener := s.ipcListeners(space)[0].ID
 	s.reply(space, ipc.DatagramHeader{Listener: listener, Remote: netip.MustParseAddrPort(replayer.LocalAddr().String())}, []byte("x"))
 	if c := s.counters(space); c.RepliesNotAllowed != 1 || c.Replies != 0 {
 		t.Fatalf("a reply to the replayer: %+v", c)
@@ -1072,11 +1072,11 @@ func TestSetListenersKeepsWhatStays(t *testing.T) {
 	if _, err := s.setListeners(context.Background(), []Listener{keep}); err != nil {
 		t.Fatal(err)
 	}
-	first := s.ipcListeners()
+	first := s.ipcListeners(transport.SpaceID{})
 	if changed, err := s.setListeners(context.Background(), []Listener{keep}); err != nil || changed {
 		t.Fatalf("the same set: changed %v, %v", changed, err)
 	}
-	if again := s.ipcListeners(); len(again) != 1 || !reflect.DeepEqual(again, first) {
+	if again := s.ipcListeners(transport.SpaceID{}); len(again) != 1 || !reflect.DeepEqual(again, first) {
 		t.Fatalf("listeners %v, then %v", first, again)
 	}
 	changed, err := s.setListeners(context.Background(), []Listener{keep, {Transport: "carrier-pigeon", Address: "127.0.0.1:0"}})
@@ -1086,8 +1086,8 @@ func TestSetListenersKeepsWhatStays(t *testing.T) {
 	if _, err := s.setListeners(context.Background(), []Listener{keep, keep}); err == nil {
 		t.Fatal("a listener listed twice")
 	}
-	if changed, err := s.setListeners(context.Background(), nil); err != nil || !changed || len(s.ipcListeners()) != 0 {
-		t.Fatalf("no listeners: changed %v, %v, %v", changed, err, s.ipcListeners())
+	if changed, err := s.setListeners(context.Background(), nil); err != nil || !changed || len(s.ipcListeners(transport.SpaceID{})) != 0 {
+		t.Fatalf("no listeners: changed %v, %v, %v", changed, err, s.ipcListeners(transport.SpaceID{}))
 	}
 }
 
@@ -1328,7 +1328,7 @@ func TestStreamsAreHandedOver(t *testing.T) {
 		t.Fatal("no handoff")
 	}
 	defer func() { _ = hs.conn.Close() }()
-	listeners := s.ipcListeners()
+	listeners := s.ipcListeners(b)
 	if string(hs.consumed) != "bravo\n" || hs.listener != listeners[0].ID {
 		t.Fatalf("handed over listener %d with %q", hs.listener, hs.consumed)
 	}
@@ -1392,6 +1392,47 @@ func TestStreamsAreHandedOver(t *testing.T) {
 	case <-wb.streams:
 		t.Fatal("a probe reached a worker")
 	case <-time.After(quiet):
+	}
+}
+
+// A stream listener's handoff settings (reality's private key and
+// target) go only to the workers of spaces whose inbound table has links
+// of its transport, and a space that gains or loses such links is
+// reported, for its worker's Listeners to be sent again. Every listener
+// is described with the address it is bound to.
+func TestAStreamListenersSettingsGoOnlyToSpacesWithItsLinks(t *testing.T) {
+	s := newTestShared(t, nil, lineTransport{}, udp.New(udp.Options{}))
+	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}, {Transport: udp.Name, Address: "127.0.0.1:0"}}); err != nil {
+		t.Fatal(err)
+	}
+	a, b := randomSpace(), randomSpace()
+	line := transport.PeerLink{Peer: transport.Identity{Node: transport.NodeID{1}}, Verifier: []byte("alpha")}
+	p := transporttest.SymmetricPeer()
+	if changed := s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{a: {"line": {line}}, b: {udp.Name: {p.PeerLink}}}); len(changed) != 0 {
+		t.Fatalf("new spaces reported as changed: %v", changed)
+	}
+	transports := func(space transport.SpaceID) map[string]ipc.Listener {
+		out := map[string]ipc.Listener{}
+		for _, l := range s.ipcListeners(space) {
+			out[l.Transport] = l
+			if ap, err := netip.ParseAddrPort(l.Address); err != nil || ap.Port() == 0 {
+				t.Errorf("%s listener described at %q, not where it is bound", l.Transport, l.Address)
+			}
+		}
+		return out
+	}
+	if got := transports(a); got["line"].Handoff == nil || len(got) != 2 {
+		t.Errorf("space A, with line links, is told %v", got)
+	}
+	if got := transports(b); len(got) != 1 || got[udp.Name].ID == 0 {
+		t.Errorf("space B, without line links, is told %v", got)
+	}
+	changed := s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{a: {"line": {line}}, b: {udp.Name: {p.PeerLink}, "line": {{Peer: transport.Identity{Node: transport.NodeID{2}}, Verifier: []byte("bravo")}}}})
+	if !slices.Equal(changed, []transport.SpaceID{b}) {
+		t.Fatalf("changed %v, want space B", changed)
+	}
+	if got := transports(b); got["line"].Handoff == nil {
+		t.Errorf("space B, given line links, is told %v", got)
 	}
 }
 

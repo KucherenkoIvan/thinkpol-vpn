@@ -304,9 +304,13 @@
 // connection). What it doesn't hand over it turns away itself, to its
 // transport's camouflage (reality splices it to its target from the
 // first byte, so a prober meets the target's timing). The public
-// listener's handoff settings (for reality: its settings and the
-// target's records, learned here) reach the workers with the Listeners
-// message.
+// listener's handoff settings (for reality: its settings, private key
+// and target included, and the target's records, learned here) reach,
+// with the Listeners message, only the workers of spaces whose inbound
+// table has links of its transport; a space's Listeners are sent again
+// when that changes. (A connection routed to a space in the moment
+// before its worker has the new Listeners is dropped by the worker.) Each
+// listener is described with the address it is bound to.
 //
 // The bounds on what a stream listener costs the supervisor are two
 // layers. The supervisor's: at most 1024 connections per listener in

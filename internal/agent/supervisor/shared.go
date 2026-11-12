@@ -134,6 +134,10 @@ type shared struct {
 	// Read on every datagram, so swapped as a whole.
 	routes atomic.Pointer[map[transport.SpaceID]*route]
 	byID   atomic.Pointer[map[uint32]*publicListener]
+	// inboundTransports is, per space, the transports its inbound table
+	// has links of: a stream listener's handoff settings go only to those
+	// spaces' workers.
+	inboundTransports atomic.Pointer[map[transport.SpaceID]map[string]bool]
 }
 
 func newShared(reg *transport.Registry, fair FairShare, log *slog.Logger, now func() time.Time) *shared {
@@ -144,6 +148,7 @@ func newShared(reg *transport.Registry, fair FairShare, log *slog.Logger, now fu
 	}
 	s.routes.Store(&map[transport.SpaceID]*route{})
 	s.byID.Store(&map[uint32]*publicListener{})
+	s.inboundTransports.Store(&map[transport.SpaceID]map[string]bool{})
 	return s
 }
 
@@ -199,10 +204,25 @@ func (pl *publicListener) rejected() []transport.PeerError {
 // setSpaces makes the merged credential tables and the routes those of
 // inbound: per space, the links each transport accepts, from the space's
 // own map. Every entry's Space is stamped with the space it is listed
-// under, whatever it said.
-func (s *shared) setSpaces(inbound map[transport.SpaceID]map[string][]transport.PeerLink) {
+// under, whatever it said. It returns the spaces served before and after
+// whose inbound transports changed: their workers' Listeners message
+// changes with them.
+func (s *shared) setSpaces(inbound map[transport.SpaceID]map[string][]transport.PeerLink) (listenersChanged []transport.SpaceID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	oldTransports := *s.inboundTransports.Load()
+	transports := make(map[transport.SpaceID]map[string]bool, len(inbound))
+	for space, byName := range inbound {
+		transports[space] = map[string]bool{}
+		for name, links := range byName {
+			if len(links) > 0 {
+				transports[space][name] = true
+			}
+		}
+		if old, ok := oldTransports[space]; ok && !maps.Equal(old, transports[space]) {
+			listenersChanged = append(listenersChanged, space)
+		}
+	}
 	// Routes before tables: a link that authenticates has a route.
 	old := *s.routes.Load()
 	routes := make(map[transport.SpaceID]*route, len(inbound))
@@ -231,6 +251,8 @@ func (s *shared) setSpaces(inbound map[transport.SpaceID]map[string][]transport.
 			t.Set(nil)
 		}
 	}
+	s.inboundTransports.Store(&transports)
+	return listenersChanged
 }
 
 // table is a transport's merged credential table; s.mu held.
@@ -414,14 +436,25 @@ func (pl *publicListener) info() ListenerInfo {
 	}
 }
 
-// ipcListeners is what the workers are told about the listeners.
-func (s *shared) ipcListeners() []ipc.Listener {
+// ipcListeners is what space's worker is told about the listeners: each
+// datagram listener, and each stream listener of a transport the space's
+// inbound table has links of, with its handoff settings (reality's
+// private key and target among them), so a space that can't be routed a
+// listener's connections never holds them.
+func (s *shared) ipcListeners(space transport.SpaceID) []ipc.Listener {
 	byID := *s.byID.Load()
+	transports := (*s.inboundTransports.Load())[space]
 	out := make([]ipc.Listener, 0, len(byID))
 	for _, pl := range byID {
-		l := ipc.Listener{ID: pl.id, Transport: pl.cfg.Transport, Stream: pl.ln != nil, Address: pl.cfg.Address}
+		l := ipc.Listener{ID: pl.id, Transport: pl.cfg.Transport, Stream: pl.ln != nil}
 		if pl.ln != nil {
+			if !transports[pl.cfg.Transport] {
+				continue
+			}
+			l.Address = pl.ln.Addr().String()
 			l.Handoff = pl.ln.HandoffSettings()
+		} else {
+			l.Address = pl.udp.LocalAddr().String()
 		}
 		out = append(out, l)
 	}
