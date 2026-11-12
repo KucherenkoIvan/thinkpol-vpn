@@ -51,6 +51,18 @@ Run on the Mac with thinkpol installed as the service, in a space with an entry.
 | 5 | `thinkpol status` (repeat until the service restarted the agent); `sudo pfctl -a com.apple/001.thinkpol-killswitch -s rules` | `state: disconnected`; the anchor still lists nothing: rollback's recorded disconnect kept the crash posture from coming back |
 | 6 | `thinkpol connect` (and `thinkpol rules preset` back to what you use) | connected again |
 
+## Review findings
+Round 1 (2026-11-12).
+- [ ] R1.1 (should-fix) the connect record is read outside the host lock (Prepare → startConnected → Load) while rollback writes it under the lock: an agent started by the service manager while rollback runs comes up connected (and, with no record, overwrites rollback's). Decide the connect choice under the host lock (right after LockHost in Adapters); unit test: Prepare with a record saying connect, Rollback, then Adapters: disconnected, no kill switch; Save happens while the lock is held
+- [ ] R1.2 (should-fix) save the record before clearHost, so an interrupted rollback still settles the outcome
+- [ ] R1.3 (should-fix) a failed record alone returns errRollbackLeft ("still on the host", false) and drops "traffic goes direct" (true): its own error (errRollbackNotRecorded), and "traffic goes direct" whenever no part is left
+- [ ] R1.4 (should-fix) exit codes: the refusal exits 75 (EX_TEMPFAIL, api-overview.md's verdict for "host lock held"), ErrAnotherAgent kept wrapped; both codes documented in the reference; the refusal worded for any holder of the host lock
+- [ ] R1.5 (should-fix, tests) (a) the report's printing as a pure table on every OS (clear / a part left / not recorded / refused), the error asserted exactly against the parts, Fatalf on empty Parts; (b) a failed Save: the new error and every part still tried; (c) lab: the refusal step compares the host state (nft expires stripped) or the box is reworded; (d) lab: a foreign nft table, ip rule and route added before install survive rollback
+- [ ] R1.6 (should-fix, docs) (a) api-overview.md connect row; (b) agent doc.go: rollback writes the connect record; (c) ConnectRecord.Save's doc; (d) ClearHost keeps the full description, clearHost one line; (e) platform.go's comment on what removes the kill switch contradicts the package doc; (f) rollback added to TP-181's -json scope line
+- [ ] R1.7 (should-fix, report wording) (a) "traffic goes direct" says whether a service restart puts the down-shape kill switch back (the toggle); (b) a server host's record line worded for the mode; (c) the server's part only where a server can run (macOS report without nftables; checklist output updated); (d) "a service's next start"; (e) the LEFT line's stutter: removeKillSwitch's wrap dropped, each part's label added once where ClearHost flattens
+- [ ] R1.8 (nits, style) (a) RollbackReport.Write → Print; (b) failingClose → notingKillSwitch, locked/held → otherAgent/held; (c) killSwitchPlace moved next to the firewall's KillSwitchTable/KillSwitchAnchor; (d) the root check moved into agent.Rollback as a sentinel error; (e) the lab test named for the behaviour; (f) refusal returns a nil *RollbackReport, printing a nil report prints nothing
+- [ ] R1.9 (notes) (a) TP-132 Notes: its forwarding restore can break Docker started later in the boot, now exposed to device users by rollback; (b) the macOS checklist: an Unrestorable DNS key, and pf enabled by the user before us stays enabled
+
 ## Log
 - 2026-10-23 created in backlog (TP-082 design answers)
 - 2026-11-12 backlog → in-progress, owner: agent-tp-134
@@ -59,3 +71,4 @@ Run on the Mac with thinkpol installed as the service, in a space with an entry.
 - 2026-11-12 merged origin/rewrite 5742584 as 7721f0c; make lint, make test green; full make lab-test on 7721f0c exit 0 (LAB_P=1, GOFLAGS=-p=2)
 - 2026-11-12 not verified: macOS (pf anchor, reference and record removal, routes, scutil DNS) has no lab: the device checklist in Notes is the owner's; box 4 stays open. Out of scope, seen: api-overview.md's `connect` row still says "only with connect-on-boot set"; the CLI reference's command list lacks kill-switch, allow-lan and connect-on-boot; TP-082's harness restore can call rollback now (TP-082's change)
 - 2026-11-12 in-progress → review
+- 2026-11-12 review → has-errors (round 1 findings R1.x)
