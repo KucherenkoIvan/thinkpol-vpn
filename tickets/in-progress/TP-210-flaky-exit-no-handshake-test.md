@@ -66,3 +66,4 @@ branch: "tp-210-flaky-exit-no-handshake-test"
 - 2026-11-12 in-progress → review
 - 2026-11-12 review round 1: R1.1–R1.2
 - 2026-11-12 review → has-errors
+- 2026-11-12 has-errors → in-progress, owner: agent-tp-210
