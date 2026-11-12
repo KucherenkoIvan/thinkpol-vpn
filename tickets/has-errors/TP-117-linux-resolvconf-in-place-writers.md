@@ -41,6 +41,14 @@ Round 2 (2026-11-12):
 - [x] R2.4 (suspicion) a failed in-place write (bind mount) leaves r.written stale, so the backstop can take the partial new content as appended lines: no backstop after a failed write until a write succeeds; test with an injected partial write
 - [x] R2.5 (nit) pointSystem logs that the system resolves through the node right after a deferred Update: say the change is deferred, or leave it and say why
 
+Round 3 (2026-11-12):
+- [ ] R3.1 (should-fix) a writer whose every write settles (period >= the 500 ms settle) is never marked contended, so its resolver is in effect most of the time while Problem says protected. One rule, the contended flag dropped: Problem reports ErrUnprotected while another program's file is in place and for a hold window after the last take-back of another program's write (at least settleMax); every foreign write refreshes it. Tests: writers at 100 ms, 600 ms and 3 s reported unprotected while they write, clear within the window after; mutation: no hold window
+- [ ] R3.2 (should-fix, test oracle) TestResolvConfAWriterThatNeverSettlesIsTakenBackAtTheCap can truncate the node's new file before seeing it: detect the take-back by an inode change between the writer's opens; the same for TestResolvConfAWriterThatKeepsRewritingStaysUnprotected, or a wider margin with a reason
+- [ ] R3.3 (nit) the rename flag covers only events received so far: after the read, drain pending change signals and AND them in before classifying
+- [ ] R3.4 (nit) IN_Q_OVERFLOW is dropped by the name filter: treat it as a non-rename change
+- [ ] R3.5 (nit) writeFailed is set on any failure, including an atomic replace that failed before its rename: set it only when an in-place write failed partway; when writeFailed and the file parses as managed, take the original from memory
+- [ ] R3.6 (nit, tests and docs) TestResolvConfAFileCreatedAtThePathSettles's comment promises a settle that begins with no file, but rm raises no watched event: correct it; the Log notes the no-gap change-events subtest can pass under its mutation
+
 ## Notes
 - Found by TP-115's round-1 correctness review (2026-10-21). The loss predates TP-115.
 - From TP-128's round-1 review (2026-10-22), more cases with the same cause:
@@ -76,3 +84,4 @@ Round 2 (2026-11-12):
 - 2026-11-12 has-errors → in-progress — owner: agent-tp-117, branch: tp-117-linux-resolvconf-in-place-writers
 - 2026-11-12 full make lab-test on b0850e4: first run had one node failure outside this change (internal/agent TestAnExitThatNeverHandshakesIsExitNoHandshake, TP-195's, under load; alone 3 of 3 green in a lab node), the re-run green (the lab phase and 38 packages in lab nodes); lab/RESULTS.md left as on rewrite
 - 2026-11-12 in-progress → review
+- 2026-11-12 review → has-errors (round 3 findings R3.x)
