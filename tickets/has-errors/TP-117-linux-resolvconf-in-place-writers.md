@@ -34,6 +34,13 @@ Round 1 (2026-11-12):
 - [x] R1.6 (should-fix, tests) the poll test's writer outlasts the settle; an identical-content writer; the Update test by timing, not private state; the inotify test's margin; a lab-gated bind-mount test of the node's own in-place write
 - [x] R1.7 (should-fix, docs and ticket) RR4's timing; RR5's reporting; the decision in Notes; doc.go's writers cited accurately; comments; the Log's counts and the branch; writeInPlaceSlowly's first pause
 
+Round 2 (2026-11-12):
+- [ ] R2.1 (should-fix, regression from round 1) a file created at the path (O_CREAT, IN_CREATE fires at the open) has a new inode before any write and is taken at once, empty: only a rename into the path (IN_MOVED_TO) skips the settle; a new inode seen on IN_CREATE or by the poll settles; the Notes and the wholeWrite comment corrected; test: remove, create O_CREAT|O_EXCL, pause, write: the complete content is the original
+- [ ] R2.2 (nit) a writer rewriting in place every 100 ms makes Problem flap (nil for the first 500 ms of each settle after a forced take-back): Problem stays unprotected while such a writer persists; test
+- [ ] R2.3 (nit, docs) when the original was a symlink, Restore puts back the link and appended lines are dropped: say so in doc.go and RR5
+- [ ] R2.4 (suspicion) a failed in-place write (bind mount) leaves r.written stale, so the backstop can take the partial new content as appended lines: no backstop after a failed write until a write succeeds; test with an injected partial write
+- [ ] R2.5 (nit) pointSystem logs that the system resolves through the node right after a deferred Update: say the change is deferred, or leave it and say why
+
 ## Notes
 - Found by TP-115's round-1 correctness review (2026-10-21). The loss predates TP-115.
 - From TP-128's round-1 review (2026-10-22), more cases with the same cause:
@@ -61,3 +68,4 @@ Round 1 (2026-11-12):
 - 2026-11-12 not verified: a real busybox udhcpc or dhcpcd run against the node (the tests' writers do what their scripts do to the file). Out of scope: when the original was a symlink, lines appended to the managed file are told and kept while the node runs, but Restore puts back the link, so they are not kept after it
 - 2026-11-12 has-errors → in-progress — owner: agent-tp-117, branch: tp-117-linux-resolvconf-in-place-writers
 - 2026-11-12 in-progress → review
+- 2026-11-12 review → has-errors (round 2 findings R2.x)
