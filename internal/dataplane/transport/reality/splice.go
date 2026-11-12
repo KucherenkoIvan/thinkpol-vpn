@@ -92,29 +92,33 @@ type targetWriteError struct{ error }
 func (e targetWriteError) Unwrap() error { return e.error }
 
 // gather reads the first TLS record from the client, at most
-// maxHelloRecord bytes and never past it, forwarding each chunk as it is
-// read, except the last heldBack bytes of a whole record. Once the record
-// is whole, authenticate decides: true hands the connection off, the tail
-// still held back; anything else forwards the tail and splices it. It
-// returns the bytes read and the error that ended it, if any (reading
-// from the client, or a targetWriteError); the target speaking or closing
-// first splices too.
+// maxHelloRecord bytes, forwarding each chunk as it is read (whatever one
+// read returns, so the target sees the client's segments as the site
+// would, not a record header on its own), except the last heldBack bytes
+// of a whole record. Once the record is whole, authenticate decides: true
+// hands the connection off, the tail still held back; anything else
+// forwards the tail and splices it. A client sending past its hello
+// before any answer isn't a dialer (ours sends nothing more until the
+// ServerHello) and is spliced, its hello decided all the same, so the
+// caller can tell a replay. It returns the bytes read and the error
+// that ended it, if any (reading from the client, or a
+// targetWriteError); the target speaking or closing first splices too.
 func (m *mirror) gather(authenticate func(record []byte) bool) (record []byte, authenticated bool, err error) {
 	buf := make([]byte, recordHeaderSize+maxHelloRecord)
-	have, need := 0, recordHeaderSize
+	have, need := 0, 0 // need: the whole record's length, once its header is read
 	for {
-		n, rerr := m.client.Read(buf[have:need])
+		n, rerr := m.client.Read(buf[have:])
 		m.mu.Lock()
 		from := have
 		have += n
-		if m.state == gathering && rerr == nil && have == recordHeaderSize && need == recordHeaderSize {
+		if m.state == gathering && need == 0 && have >= recordHeaderSize {
 			size := int(buf[3])<<8 | int(buf[4])
 			if buf[0] != recordTypeHandshake || size > maxHelloRecord {
 				m.state = spliced
 			}
-			need += size
+			need = recordHeaderSize + size
 		}
-		whole := m.state == gathering && rerr == nil && have == need
+		whole := m.state == gathering && rerr == nil && need > 0 && have == need
 		upto := have
 		if whole {
 			upto = max(from, have-heldBack)
@@ -131,6 +135,11 @@ func (m *mirror) gather(authenticate func(record []byte) bool) (record []byte, a
 			m.state = spliced
 			rerr = nil
 		case rerr != nil:
+			m.state = spliced
+		case need > 0 && have > need:
+			// Decided for the caller's verdict (a replay is still one),
+			// spliced whatever it says.
+			authenticate(buf[:need])
 			m.state = spliced
 		case whole:
 			// Decided under the lock: copyFromTarget waits, and a target

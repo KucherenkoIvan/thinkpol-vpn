@@ -39,7 +39,13 @@
 // on a hello that fails it follows at once; on one that authenticates
 // REALITY sends it under its own lock, so the target can't answer before
 // REALITY took the connection (a target answering first would have its
-// real ServerHello spliced to the authenticated client).
+// real ServerHello spliced to the authenticated client). Each read from
+// the client goes on in one write, so the target sees the client's
+// segments as the site would (a record header forwarded on its own made
+// the lab's nginx fail on it and reset the rest). A client sending past
+// its hello before any answer isn't a dialer (ours sends nothing more
+// until the ServerHello): it is spliced as a stranger, its hello still
+// checked, so a replay is counted as one.
 //
 // A target that can't be reached closes the connection. The target's FIN,
 // even before it sent anything, reaches the client as a half-close and

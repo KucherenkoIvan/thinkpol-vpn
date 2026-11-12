@@ -288,6 +288,42 @@ func TestWhatTheRouterRefusesIsSplicedWholeToTheTarget(t *testing.T) {
 	}
 }
 
+// A hello that would authenticate but arrives with bytes after it, before
+// any answer, isn't a dialer's (a dialer sends nothing more until the
+// ServerHello): it is spliced to the target raw and whole, a stranger.
+// The hello and what follows it reach the target as the client's reads
+// returned them, not split at the record header.
+func TestAHelloWithBytesAfterItIsSplicedAsAStranger(t *testing.T) {
+	tr := newTransport(Options{})
+	k := newKeys(t)
+	id, _ := shortIDs()
+	a := randomSpace()
+	seen := startShared(t, tr, theTarget(t), k, map[transport.SpaceID][]transport.PeerLink{a: {peerLink(id)}})
+	tp := newTap(t, seen.addr())
+	client, err := dial(t, tr, tp.addr(), k, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.WritePacket([]byte("after the hello")); err != nil {
+		t.Fatal(err)
+	}
+	server, _ := accept(t, seen.workers[a])
+	if _, err := server.ReadPacket(make([]byte, 64)); err != nil {
+		t.Fatal(err)
+	}
+	stream := tp.captured()[0]
+
+	fresh := startShared(t, tr, theTarget(t), k, map[transport.SpaceID][]transport.PeerLink{a: {peerLink(id)}})
+	probe(t, fresh.addr(), stream)
+	if v := fresh.verdict(t); v != transport.StreamUnknown {
+		t.Fatalf("verdict %d, want StreamUnknown", v)
+	}
+	if !theTarget(t).receivedExactly(stream) {
+		t.Error("the hello and what followed weren't spliced to the target raw and whole")
+	}
+	expectNoAccept(t, fresh.workers[a])
+}
+
 // A hello sealed before the second the router started in is refused, as
 // stale, even though it is fresh and the router never saw it: after a
 // supervisor restart, a tap's capture of what the old supervisor admitted

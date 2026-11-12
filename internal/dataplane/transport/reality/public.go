@@ -118,6 +118,9 @@ func (pl *publicListener) RouteStream(conn net.Conn, serves func(transport.Ident
 	case boundClosed:
 		return transport.StreamHandoff{}, transport.StreamBoundClosed
 	case turnedAway:
+		if verdict == transport.StreamRouted {
+			verdict = transport.StreamUnknown // bytes past its hello: not a dialer
+		}
 		return transport.StreamHandoff{Peer: peer}, verdict
 	}
 	pl.gate.live.untrack(conn, p.target)
