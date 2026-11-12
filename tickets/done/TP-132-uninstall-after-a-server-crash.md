@@ -35,6 +35,7 @@ branch: "tp-132-uninstall-after-a-server-crash"
 ## Notes
 - From TP-046's round-2 reviews (2026-10-23).
 - 2026-11-12 (TP-134): this ticket owns the supervisor's cleanup (`supervisor.ClearLeftovers`, `ClearHost`'s server part). `thinkpol rollback` (TP-134) reuses it through the same `ClearHost` parts and adds nothing for a server; a change to what it undoes goes here, to `ClearLeftovers`.
+- 2026-11-12 (TP-134 review): the cleanup puts `ip_forward` back to 0 when the forwarding record says the dead supervisor turned it on and it is still on, so a Docker (or anything needing forwarding) started later in the same boot, after that supervisor, loses it. `thinkpol rollback` now exposes this to device users too (a device host that ran a server earlier in the boot); whether to restore only when nothing else relies on it is open, not decided here.
 
 ## Review findings
 - [x] R1.1 docs: api-overview-reference.md service uninstall section (synopsis, -force, sample output with the "undid what a crashed agent left" lines, the stop-on-failure error); api-overview.md install.go line range
@@ -61,3 +62,4 @@ branch: "tp-132-uninstall-after-a-server-crash"
 - 2026-11-07 in-progress → review
 - 2026-11-07 review → done, merged into rewrite (round 1: go-paranoid, go-style, pocket-torvalds, same-family second Opus; R1.1–R1.6 fixed; delta check: merge)
 - 2026-11-12 docs (TP-134): Notes: who owns the supervisor's cleanup (this ticket; rollback reuses it)
+- 2026-11-12 Notes (TP-134 review): the forwarding restore can break Docker started later in the boot, now reachable through rollback

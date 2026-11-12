@@ -12,6 +12,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
@@ -95,17 +96,36 @@ type Platform struct {
 	Inspect Inspector
 }
 
-// ClearHost undoes what a crashed run left on the host, as clearHost
-// does; it returns what the server's part undid (a device's can't tell),
-// and as the error what failed. The caller holds the host's agent lock,
-// so no running agent's state is taken.
+// ClearHost undoes what a crashed run left on the host: a server's, as
+// its supervisor's next start would (supervisor.ClearLeftovers: the
+// spaces' veths, the root's forwarding it turned on, its tables and
+// routes), where a server runs; a device's, as a start that doesn't
+// connect does (the routing, clearRouting's two owners, and the OS's
+// resolver configuration); and the kill switch, which a crash and a stop
+// leave on purpose (besides this, only a disconnect or a start that
+// doesn't mean it removes it). Each part is tried, though a step that fails
+// within the server's stops the server's steps after it (ClearLeftovers).
+// It returns what the server's part undid (a device's can't tell), and as
+// the error what failed, each part named once, the server's last. The
+// caller holds the host's agent lock, so no running agent's state is
+// taken.
 func (p Platform) ClearHost() ([]string, error) {
 	parts := p.clearHost()
 	var undone []string
+	var device, server []error
 	for _, part := range parts {
 		undone = append(undone, part.Undone...)
+		if part.Err == nil {
+			continue
+		}
+		err := fmt.Errorf("%s: %w", part.What, part.Err)
+		if part.server {
+			server = append(server, err)
+		} else {
+			device = append(device, err)
+		}
 	}
-	return undone, partsErr(parts)
+	return undone, errors.Join(append(device, server...)...)
 }
 
 // HostPart is one part of what a dead agent can leave on the host, as
@@ -116,42 +136,39 @@ type HostPart struct {
 	What   string
 	Undone []string
 	Err    error
+	server bool
 }
 
-// clearHost undoes what a dead run left on the host, part by part: a
-// server's, as its supervisor's next start would (supervisor.ClearLeftovers:
-// the spaces' veths, the root's forwarding it turned on, its tables and
-// routes); a device's, as a start that doesn't connect does (the routing,
-// clearRouting's two owners, and the OS's resolver configuration); and the
-// kill switch, which a crash and a stop leave on purpose and nothing else
-// but a deliberate disconnect removes. Each part is tried, though a step
-// that fails within the server's stops the server's steps after it
-// (ClearLeftovers).
+// clearHost is ClearHost part by part, in the order they are cleared.
 func (p Platform) clearHost() []HostPart {
-	undone, err := supervisor.ClearLeftovers(supervisor.Options{
-		NewRoot: func() (netcfg.Configurator, error) { return p.NewConfigurator(netcfg.OwnerSupervisor) },
-	})
-	return []HostPart{
-		{What: "a server's leftovers (the spaces' veths, the forwarding its supervisor turned on, its nftables tables)", Undone: undone, Err: err},
-		{What: "the route table's routes and policy rules, and its IPv6 leak guard", Err: p.clearRouteTable()},
-		{What: "the overlay's routes", Err: p.clearOverlay()},
-		{What: "the OS's resolver configuration (what a crashed run changed, put back)", Err: p.RestoreDNS()},
-		{What: "the kill switch (" + killSwitchPlace + ")", Err: p.removeKillSwitch()},
+	var parts []HostPart
+	if supported(ModeServer) == nil {
+		undone, err := supervisor.ClearLeftovers(supervisor.Options{
+			NewRoot: func() (netcfg.Configurator, error) { return p.NewConfigurator(netcfg.OwnerSupervisor) },
+		})
+		parts = append(parts, HostPart{What: "a server's leftovers (the spaces' veths, the forwarding its supervisor turned on, its nftables tables)",
+			Undone: undone, Err: err, server: true})
 	}
+	return append(parts,
+		HostPart{What: "the route table's routes and policy rules, and its IPv6 leak guard", Err: p.clearRouteTable()},
+		HostPart{What: "the overlay's routes", Err: p.clearOverlay()},
+		HostPart{What: "the OS's resolver configuration (what a crashed run changed, put back)", Err: p.RestoreDNS()},
+		HostPart{What: "the kill switch (" + firewall.KillSwitchPlace + ")", Err: p.removeKillSwitch()},
+	)
 }
 
-// partsErr is what failed in parts, nil if nothing did.
-func partsErr(parts []HostPart) error {
-	var errs []error
+// partsLeft is whether some of parts is still on the host.
+func partsLeft(parts []HostPart) bool {
 	for _, p := range parts {
-		errs = append(errs, p.Err)
+		if p.Err != nil {
+			return true
+		}
 	}
-	return errors.Join(errs...)
+	return false
 }
 
 // removeKillSwitch removes what any run left of the kill switch: a
-// device's survives a crash and a stop on purpose, and only a deliberate
-// disconnect or this (`service uninstall`, `rollback`) removes it.
+// device's survives a crash and a stop on purpose (ClearHost).
 func (h DeviceHost) removeKillSwitch() error {
 	if h.NewKillSwitch == nil {
 		return nil
@@ -160,10 +177,7 @@ func (h DeviceHost) removeKillSwitch() error {
 	if ks == nil {
 		return nil
 	}
-	if err := ks.Close(); err != nil {
-		return fmt.Errorf("kill switch: %w", err)
-	}
-	return nil
+	return ks.Close()
 }
 
 // clearNetwork removes what a crashed run left in the host's routing
@@ -180,14 +194,21 @@ func (h DeviceHost) clearNetwork(log *slog.Logger) {
 // utun, but stay in the overlay's record), each owner's record with them.
 // The second is cleared whatever the first says.
 func (h DeviceHost) clearRouting() error {
-	return errors.Join(h.clearRouteTable(), h.clearOverlay())
+	var errs []error
+	if err := h.clearRouteTable(); err != nil {
+		errs = append(errs, fmt.Errorf("%v: %w", netcfg.OwnerRouteTable, err))
+	}
+	if err := h.clearOverlay(); err != nil {
+		errs = append(errs, fmt.Errorf("%v: %w", netcfg.OwnerOverlay, err))
+	}
+	return errors.Join(errs...)
 }
 
 // clearRouteTable removes what route-table enforcement left, with its
 // leak guard; nothing to remove where the OS has no adapter for it.
 func (h DeviceHost) clearRouteTable() error {
 	if err := h.ClearRouteTable(h.NewGuard()); err != nil && !errors.Is(err, errors.ErrUnsupported) {
-		return fmt.Errorf("%v: %w", netcfg.OwnerRouteTable, err)
+		return err
 	}
 	return nil
 }
@@ -196,7 +217,7 @@ func (h DeviceHost) clearRouteTable() error {
 // remove where the OS has no adapter for it.
 func (h DeviceHost) clearOverlay() error {
 	if err := h.ClearConfig(netcfg.OwnerOverlay); err != nil && !errors.Is(err, errors.ErrUnsupported) {
-		return fmt.Errorf("%v: %w", netcfg.OwnerOverlay, err)
+		return err
 	}
 	return nil
 }

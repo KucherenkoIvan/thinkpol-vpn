@@ -1,10 +1,6 @@
 package agent
 
-import (
-	"fmt"
-
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
-)
+import "fmt"
 
 // supported reports whether this OS can run a node's data plane in mode:
 // a device's, not a server's, whose supervisor and per-space workers need
@@ -15,8 +11,3 @@ func supported(mode Mode) error {
 	}
 	return nil
 }
-
-// killSwitchPlace is where the host holds the kill switch, as a report
-// names it: the anchor, and the pf reference that keeps pf enabled for
-// it with its record.
-const killSwitchPlace = "the pf anchor " + firewall.KillSwitchAnchor + ", its pf reference and record"

@@ -13,18 +13,20 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
 
-// TestRollbackAfterACrash runs device-a's agent as the service under the
-// "everything" preset (the crash posture: the kill switch in place while
-// meant up, its toggle off), connected, then kills it (SIGKILL, the
-// restart held off): what the dead agent left (the route table's routes,
-// rules and leak guard, the kill switch's table, resolv.conf pointing at
-// the node) is still there. `thinkpol rollback` is refused while the agent
-// runs, changing nothing; after the kill it puts the host back as it was
+// TestRollbackPutsTheHostBackAfterACrashAndTheRestartStaysDown runs
+// device-a's agent as the service under the "everything" preset (the
+// crash posture: the kill switch in place while meant up, its toggle
+// off), connected, then kills it (SIGKILL, the restart held off): what
+// the dead agent left (the route table's routes, rules and leak guard,
+// the kill switch's table, resolv.conf pointing at the node) is still
+// there. `thinkpol rollback` is refused while the agent runs (exit 75),
+// changing nothing; after the kill it puts the host back as it was
 // before the service was installed (routes and rules of both families,
-// nftables, resolv.conf, links), and traffic goes direct. The restarted
-// agent then comes up disconnected, as rollback recorded, and puts no kill
-// switch back.
-func TestRollbackAfterACrash(t *testing.T) {
+// nftables, resolv.conf, links), what isn't thinkpol's (an nftables
+// table, policy rules and routes of both families, added before the
+// install) kept, and traffic goes direct. The restarted agent then comes
+// up disconnected, as rollback recorded, and puts no kill switch back.
+func TestRollbackPutsTheHostBackAfterACrashAndTheRestartStaysDown(t *testing.T) {
 	t.Parallel()
 	topo := lab.Topology{
 		Networks: []lab.Network{{Name: lab.NetDevices}, {Name: lab.NetServers}},
@@ -65,6 +67,35 @@ func TestRollbackAfterACrash(t *testing.T) {
 		t.Helper()
 		return dev.MustExec(t, "sh", "-c", "cat /etc/resolv.conf; ip rule; ip -6 rule; "+
 			"ip route show table all; ip -6 route show table all; nft list ruleset; ip -br link")
+	}
+	// What isn't thinkpol's, which rollback must leave: a table of
+	// nftables, and a policy rule and a route of each family.
+	notOurs := []string{
+		"nft add table inet lab-foreign", "nft add chain inet lab-foreign keep",
+		"ip rule add pref 32001 to 198.51.100.77 lookup main", "ip -6 rule add pref 32001 to 2001:db8:77::/48 lookup main",
+		"ip route add blackhole 198.51.100.77/32", "ip -6 route add blackhole 2001:db8:77::/48",
+	}
+	for _, cmd := range notOurs {
+		dev.MustExec(t, strings.Fields(cmd)...)
+	}
+	foreignKept := func() string {
+		t.Helper()
+		var gone []string
+		for _, c := range [][]string{
+			{"nft", "list", "chain", "inet", "lab-foreign", "keep"},
+			{"sh", "-c", "ip rule show pref 32001 | grep -q 198.51.100.77"},
+			{"sh", "-c", "ip -6 rule show pref 32001 | grep -q 2001:db8:77::/48"},
+			{"sh", "-c", "ip route show 198.51.100.77/32 | grep -q blackhole"},
+			{"sh", "-c", "ip -6 route show 2001:db8:77::/48 | grep -q blackhole"},
+		} {
+			if _, err := execResult(dev, execTimeout, c...); err != nil {
+				gone = append(gone, strings.Join(c, " "))
+			}
+		}
+		return strings.Join(gone, "; ")
+	}
+	if gone := foreignKept(); gone != "" {
+		t.Fatalf("the foreign state isn't in place, so its survival proves nothing: %s", gone)
 	}
 	before := hostState()
 
@@ -124,14 +155,18 @@ func TestRollbackAfterACrash(t *testing.T) {
 		return nil
 	})
 
-	// Refused while the agent runs: nothing of it changes.
-	running := hostState()
+	// Refused while the agent runs: nothing of it changes. What the
+	// running agent changes by itself is left out: the countdowns of the
+	// direct destinations it renews, and the firewall's counters.
+	volatile := regexp.MustCompile(` (expires \S+|counter packets \d+ bytes \d+)`)
+	steady := func() string { t.Helper(); return volatile.ReplaceAllString(hostState(), "") }
+	running := steady()
 	res, err := execResult(dev, execTimeout, "thinkpol", "rollback")
-	if err == nil || res.ExitCode != 1 || !strings.Contains(res.Stderr, "another thinkpol agent is running on this host") || res.Stdout != "" {
+	if err == nil || res.ExitCode != 75 || !strings.Contains(res.Stderr, "another thinkpol process holds the host") || res.Stdout != "" {
 		t.Errorf("rollback while the agent runs: %v (exit %d)\n%s%s", err, res.ExitCode, res.Stdout, res.Stderr)
 	}
-	if !killSwitch() || !strings.Contains(hostState(), "# thinkpol:") {
-		t.Errorf("rollback while the agent runs changed the host:\n%s\nbefore it:\n%s", hostState(), running)
+	if after := steady(); after != running {
+		t.Errorf("rollback while the agent runs changed the host:\n%s\nbefore it:\n%s", after, running)
 	}
 	ping(t, dev, s4)
 
@@ -157,7 +192,7 @@ func TestRollbackAfterACrash(t *testing.T) {
 		"none left: the route table's routes and policy rules, and its IPv6 leak guard\n",
 		"none left: the OS's resolver configuration",
 		"recorded: disconnected",
-		"the host has no tunnel: traffic goes direct\n",
+		"the host has no tunnel: traffic goes direct, and stays so at a service's next start in this boot: the kill switch's toggle is off\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rollback doesn't say %q", want)
@@ -165,6 +200,9 @@ func TestRollbackAfterACrash(t *testing.T) {
 	}
 	if after := hostState(); after != before {
 		t.Errorf("the host after rollback:\n%s\nbefore the install:\n%s", after, before)
+	}
+	if gone := foreignKept(); gone != "" {
+		t.Errorf("rollback removed what isn't thinkpol's: %s", gone)
 	}
 	if answered, out, err := pingAnswers(dev, pingNoReplyOrRoute, "-c", "1", "-W", "2", foreign.String()); err != nil || !answered {
 		t.Errorf("after rollback %v doesn't answer directly (%v):\n%s", foreign, err, out)
