@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -672,14 +673,138 @@ func TestResolvConfWatchTakesInAChangeThatCameDuringTheRead(t *testing.T) {
 			for _, p := range tc.pending {
 				ch <- p
 			}
-			if got := withPending(tc.ev, ch); got != tc.want {
-				t.Errorf("got %+v, want %+v", got, tc.want)
+			got, took := withPending(tc.ev, ch)
+			if got != tc.want || took != (len(tc.pending) > 0) {
+				t.Errorf("got %+v, took %t; want %+v, took %t", got, took, tc.want, len(tc.pending) > 0)
 			}
 		})
 	}
-	if got := withPending(renamed, nil); got != renamed {
-		t.Errorf("with no change events: got %+v, want %+v", got, renamed)
+	if got, took := withPending(renamed, nil); got != renamed || took {
+		t.Errorf("with no change events: got %+v, took %t; want %+v", got, took, renamed)
 	}
+}
+
+// A change signal taken in after a read makes the watch read the file
+// again: another program's file renamed in after a read of the node's own
+// is judged by a read that sees it, not taken for the node's own.
+func TestResolvConfWatchReadsAgainAfterTakingInAChange(t *testing.T) {
+	own := resolvConfFile{content: []byte("own"), read: true}
+	theirs := resolvConfFile{content: []byte("theirs"), read: true}
+	ch := make(chan bool, 1)
+	reads := 0
+	read := func() (resolvConfFile, error) {
+		reads++
+		if reads == 1 {
+			ch <- true // renamed in right after this read
+			return own, nil
+		}
+		return theirs, nil
+	}
+	ev, f, err := readJudged(read, event{}, ch)
+	if err != nil || string(f.content) != "theirs" || ev != (event{changed: true, renamed: true}) {
+		t.Errorf("judged %q with %+v (err %v), want the file renamed in with a rename", f.content, ev, err)
+	}
+	// Signals that keep coming end the reads at the bound; the last one
+	// stays pending, for the next wake.
+	reads = 0
+	endless := func() (resolvConfFile, error) {
+		reads++
+		ch <- false
+		return own, nil
+	}
+	if _, _, err := readJudged(endless, event{}, ch); err != nil {
+		t.Fatal(err)
+	}
+	if reads != maxRereads+1 || len(ch) != 1 {
+		t.Errorf("%d reads, %d signals pending; want %d and 1", reads, len(ch), maxRereads+1)
+	}
+}
+
+// failPartway makes r's rewrites fail partway: each leaves the first cut
+// bytes of what it would write, the way a write in place that runs out
+// of space does, until the returned func lets them succeed. It counts the
+// rewrites tried.
+func failPartway(t *testing.T, r *resolvConf, cut func(content []byte) int) (succeed func(), tries func() int) {
+	t.Helper()
+	var mu sync.Mutex
+	failing, n := true, 0
+	r.mu.Lock()
+	r.rewrite = func(path string, f resolvConfFile, content []byte) error {
+		mu.Lock()
+		fail := failing
+		n++
+		mu.Unlock()
+		if !fail {
+			return rewriteResolvConf(path, f, content)
+		}
+		if err := os.WriteFile(path, content[:cut(content)], 0o644); err != nil {
+			return err
+		}
+		return partialWriteError{errors.New("injected: write failed partway")}
+	}
+	r.mu.Unlock()
+	return func() { mu.Lock(); failing = false; mu.Unlock() },
+		func() int { mu.Lock(); defer mu.Unlock(); return n }
+}
+
+// A rewrite in place that failed partway can leave the file empty or cut
+// inside the header line, which no longer reads as managed: it is the
+// node's own write all the same, retried with the original kept in
+// memory, not another program's write to settle, take as the original
+// and report (the hold is an hour here: a take-back would show).
+func TestResolvConfARewriteCutBeforeItsHeaderEndsKeepsTheOriginal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cut  func([]byte) int
+	}{
+		{"cut at 0 bytes", func([]byte) int { return 0 }},
+		{"cut inside the header", func([]byte) int { return len(resolvConfHeader) / 2 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, r, _ := startInPlace(t, resolvConfTiming{check: 50 * time.Millisecond, settle: 100 * time.Millisecond, settleMax: time.Second, hold: time.Hour})
+			succeed, _ := failPartway(t, r, tc.cut)
+			next := testSystem
+			next.Search = []string{"other.internal"}
+			if err := r.Update(next); err == nil {
+				t.Fatal("the injected failure is lost")
+			}
+			time.Sleep(150 * time.Millisecond) // retried, still failing
+			if !errors.Is(r.Problem(), ErrUnprotected) {
+				t.Errorf("a failing rewrite: problem %v", r.Problem())
+			}
+			succeed()
+			deadline := time.Now().Add(5 * time.Second)
+			for !managedWith(t, path, isp) || r.Problem() != nil {
+				if time.Now().After(deadline) {
+					t.Fatalf("not rewritten with the original after the failure: problem %v\n%s", r.Problem(), readString(t, path))
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			restoredTo(t, path, r, isp)
+		})
+	}
+}
+
+// A rewrite in place that keeps failing partway inside the original's
+// lines leaves the original cut short in the file: Restore puts back the
+// whole one held in memory. Its own change events don't make it retry at
+// once: a failing write retries on the poll.
+func TestResolvConfRestoreAfterARewriteFailedPartwayPutsBackTheWholeOriginal(t *testing.T) {
+	path, r, _ := startInPlace(t, resolvConfTiming{check: 100 * time.Millisecond, settle: 100 * time.Millisecond, settleMax: time.Second, hold: time.Hour})
+	_, tries := failPartway(t, r, func(content []byte) int { return len(content) - len("attempts:2\n") })
+	next := testSystem
+	next.Search = []string{"other.internal"}
+	if err := r.Update(next); err == nil {
+		t.Fatal("the injected failure is lost")
+	}
+	time.Sleep(500 * time.Millisecond)
+	if n := tries(); n > 10 {
+		t.Errorf("%d rewrites tried in 500 ms with a 100 ms poll: retried on its own change events", n)
+	}
+	if m := parseResolvConf([]byte(readString(t, path))); !m.managed || string(m.original) == isp {
+		t.Fatalf("the file is not cut inside the original:\n%s", readString(t, path))
+	}
+	restoredTo(t, path, r, isp)
 }
 
 // Restore ends the management: an Update after it fails and leaves the

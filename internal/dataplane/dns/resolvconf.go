@@ -296,11 +296,13 @@ type resolvConf struct {
 	// file it left it in: any other content is another program's write.
 	written     []byte
 	writtenInfo fs.FileInfo
-	// writeFailed: a rewrite in place failed partway, so what is at path
-	// may be part of it, not written followed by another program's lines:
-	// no appended lines are taken, and a managed file's original is
-	// originalLink and original, until a rewrite succeeds.
-	writeFailed  bool
+	// failedWrite is the content of a rewrite in place that failed
+	// partway, nil once a rewrite succeeds: what is at path may be part
+	// of it, cut anywhere, not written followed by another program's
+	// lines. Meanwhile no appended lines are taken, a read that is a
+	// prefix of it is the node's own (ownPartial), and the original is
+	// original and originalLink, for apply and Restore alike.
+	failedWrite  []byte
 	originalLink string // the symlink the original was, as last rendered
 	// rewrite puts content at path (rewriteResolvConf; a field so tests can
 	// make a write fail partway).
@@ -377,10 +379,11 @@ func setResolvConfTimed(path, uplink string, c SystemConfig, timing resolvConfTi
 // own (left by a crash). Lines appended to the node's own file are
 // another program's (an in-place writer still appending after its settle
 // ended, or a hand edit) and join the original. After a rewrite in place
-// failed partway (writeFailed), the file may end anywhere in the node's
-// own content, so nothing is taken as appended and a managed file's
-// original is the one held in memory. It returns what to tell the
-// caller, run after unlocking, or nil. r.mu is held.
+// failed partway (failedWrite), the file may end anywhere in the node's
+// own content, so nothing is taken as appended, and a file that is part
+// of that rewrite or still parses as managed has the original held in
+// memory. It returns what to tell the caller, run after unlocking, or
+// nil. r.mu is held.
 func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error) {
 	defer func() { r.err = err }()
 	if ferr != nil {
@@ -388,9 +391,9 @@ func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error
 	}
 	m := parseResolvConf(f.content)
 	symlink, read := f.symlink, f.read
-	if r.writeFailed {
-		if m.managed {
-			m.original, m.symlink = r.original, r.originalLink
+	if r.failedWrite != nil {
+		if m.managed || r.ownPartial(f) {
+			m = managedResolvConf{managed: true, original: r.original, symlink: r.originalLink}
 		}
 	} else if appended, ok := bytes.CutPrefix(f.content, r.written); ok && len(r.written) > 0 && len(appended) > 0 {
 		m = parseResolvConf(r.written)
@@ -415,11 +418,11 @@ func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error
 	if err := r.rewrite(r.path, f, content); err != nil {
 		var partial partialWriteError
 		if errors.As(err, &partial) {
-			r.writeFailed = true
+			r.failedWrite = content
 		}
 		return tell, err
 	}
-	r.written, r.writeFailed = content, false
+	r.written, r.failedWrite = content, nil
 	if fi, err := os.Lstat(r.path); err == nil {
 		r.writtenInfo = fi
 	}
@@ -576,8 +579,8 @@ func (r *resolvConf) watch(first func()) {
 		// Read under r.mu: an apply on a bind mount rewrites in place, and
 		// its half-written file must not look like another program's.
 		r.mu.Lock()
-		f, ferr := readResolvConfFile(r.path)
-		ev := withPending(event{changed: changed, renamed: renamed, quietEnded: quietEnded}, changes)
+		ev, f, ferr := readJudged(func() (resolvConfFile, error) { return readResolvConfFile(r.path) },
+			event{changed: changed, renamed: renamed, quietEnded: quietEnded}, changes)
 		if !r.decide(f, ferr, ev, quiet) {
 			r.mu.Unlock()
 			continue
@@ -604,18 +607,42 @@ type event struct {
 	quietEnded bool // the quiet timer fired
 }
 
-// withPending is ev with the change signal that came while the file was
-// read, if any: a rename's event received before the read covers only
-// the changes so far, and a write into the renamed file that closed
-// before the read makes the file read not the renamed one.
-func withPending(ev event, changes <-chan bool) event {
+// maxRereads bounds readJudged's reads while change signals keep coming;
+// a signal left pending wakes the watch again, with the lock let go.
+const maxRereads = 8
+
+// readJudged reads the file for a decision on ev, taking in the change
+// signals that came meanwhile, and reads the file again after each one
+// it takes: every signal the decision absorbs came before the read it
+// judges. A rename's event received before a read covers only the
+// changes so far: a write into the renamed file that closed meanwhile
+// makes the file read not the renamed one; and another program's file
+// renamed in after a read of the node's own must be judged by a read
+// that sees it.
+func readJudged(read func() (resolvConfFile, error), ev event, changes <-chan bool) (event, resolvConfFile, error) {
+	f, ferr := read()
+	for range maxRereads {
+		next, took := withPending(ev, changes)
+		if !took {
+			break
+		}
+		ev = next
+		f, ferr = read()
+	}
+	return ev, f, ferr
+}
+
+// withPending is ev with the change signal pending, if any, and whether
+// there was one.
+func withPending(ev event, changes <-chan bool) (event, bool) {
 	select {
 	case renamed := <-changes:
 		ev.renamed = renamed && (ev.renamed || !ev.changed)
 		ev.changed = true
+		return ev, true
 	default:
 	}
-	return ev
+	return ev, false
 }
 
 // decide says whether the watch takes the file back now. It starts or
@@ -626,8 +653,11 @@ func (r *resolvConf) decide(f resolvConfFile, ferr error, ev event, quiet *time.
 	case kind == ownFile:
 		// Applied again all the same: it writes nothing unless a settle
 		// that ends this way held an Update's configuration, and it
-		// retries a read that is owed (the uplink behind the stub).
-		return true
+		// retries a read that is owed (the uplink behind the stub). After
+		// a rewrite failed partway, the change events are its own: it is
+		// retried on the poll, or one that keeps failing would retry as
+		// fast as its own events come.
+		return r.failedWrite == nil || !ev.changed
 	case kind == wholeWrite:
 	case r.foreign == nil: // a write begins
 		r.beginForeign(now)
@@ -661,7 +691,8 @@ func (r *resolvConf) beginForeign(now fileState) {
 type fileKind int
 
 const (
-	// ownFile is what the node last wrote.
+	// ownFile is what the node last wrote, or part of a rewrite of its
+	// own that failed partway (ownPartial).
 	ownFile fileKind = iota
 	// wholeWrite is another program's file, complete: one renamed into
 	// the path (a change event says so), or one that can't be read, which
@@ -681,12 +712,19 @@ func (r *resolvConf) classify(f resolvConfFile, ferr error, renamed bool) fileKi
 	switch {
 	case ferr != nil:
 		return wholeWrite
-	case f.read && bytes.Equal(f.content, r.written):
+	case f.read && bytes.Equal(f.content, r.written), r.ownPartial(f):
 		return ownFile
 	case renamed && f.info != nil && r.writtenInfo != nil && !os.SameFile(f.info, r.writtenInfo):
 		return wholeWrite
 	}
 	return inPlaceWrite
+}
+
+// ownPartial says f may be what a rewrite in place that failed partway
+// left: a regular file whose content, empty included, is a prefix of
+// that rewrite's. r.mu is held.
+func (r *resolvConf) ownPartial(f resolvConfFile) bool {
+	return r.failedWrite != nil && f.read && f.symlink == "" && bytes.HasPrefix(r.failedWrite, f.content)
 }
 
 // quietFor is how long the settling write must stay quiet, never past
@@ -777,8 +815,10 @@ func (r *resolvConf) Problem() error {
 }
 
 // Restore puts the original back, as a file or the symlink it was. A
-// resolv.conf another program wrote since is left alone. Update fails
-// after it.
+// resolv.conf another program wrote since is left alone. After a rewrite
+// in place failed partway, what is left of the original in the file may
+// be cut short: the original held in memory is put back instead. Update
+// fails after it.
 func (r *resolvConf) Restore() error {
 	select {
 	case <-r.stop:
@@ -790,6 +830,12 @@ func (r *resolvConf) Restore() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.restored = true
+	if r.failedWrite != nil {
+		f, err := readResolvConfFile(r.path)
+		if err == nil && (r.ownPartial(f) || parseResolvConf(f.content).managed) {
+			return putBackOriginal(r.path, r.original, r.originalLink)
+		}
+	}
 	return restoreResolvConf(r.path)
 }
 
@@ -809,13 +855,18 @@ func restoreResolvConf(path string) error {
 		return err
 	}
 	m := parseResolvConf(content)
-	switch {
-	case !m.managed:
+	if !m.managed {
 		return nil
-	case m.symlink != "":
-		return replace(path, func(tmp string) error { return os.Symlink(m.symlink, tmp) })
 	}
-	return writeFile(path, m.original)
+	return putBackOriginal(path, m.original, m.symlink)
+}
+
+// putBackOriginal puts original at path, or the symlink it was.
+func putBackOriginal(path string, original []byte, symlink string) error {
+	if symlink != "" {
+		return replace(path, func(tmp string) error { return os.Symlink(symlink, tmp) })
+	}
+	return writeFile(path, original)
 }
 
 // writeFile replaces a file's content atomically: a new file, synced, then
