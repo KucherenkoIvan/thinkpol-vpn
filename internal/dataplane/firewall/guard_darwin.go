@@ -582,7 +582,7 @@ func (g *IPv6Guard) kill(ctx context.Context, a *appliedGuard) error {
 // then no guard table (noTable), is empty; anything else, a listing that
 // fails included, fails it with the -F's error and the listing's.
 func (g *IPv6Guard) flush(ctx context.Context) error {
-	return flushAnchor(ctx, g.pf, GuardAnchor, exemptTable, false, "IPv6 guard")
+	return flushAnchor(ctx, g.pf, GuardAnchor, false, "IPv6 guard", exemptTable)
 }
 
 // Close flushes the anchor's rules and table, then releases the

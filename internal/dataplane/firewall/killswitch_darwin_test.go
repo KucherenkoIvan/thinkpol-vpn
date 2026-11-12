@@ -77,12 +77,15 @@ func TestKillSwitchLoadsItsAnchorAndHoldsPfOn(t *testing.T) {
 	}
 	want := []string{
 		"pass out quick on lo0 all no state",
+		"block return out quick proto tcp from any to <thinkpol_killswitch_nodns> port = 53",
+		"block return out quick proto udp from any to <thinkpol_killswitch_nodns> port = 53",
+		"block return out quick proto tcp from any to <thinkpol_killswitch_nodns> port = 853",
 		"pass out quick from any to <thinkpol_killswitch> no state",
 		"pass out quick inet proto udp from any port = 68 to any port = 67 no state",
 		"pass out quick inet6 proto udp from any port = 546 to ff02::1:2 port = 547 no state",
 		"pass out quick inet6 proto udp from any port = 546 to fe80::/10 port = 547 no state",
 	}
-	if !slices.Equal(a.rules[:5], want) || a.rules[len(a.rules)-1] != "block return out quick all" || len(a.rules) != 5+5+4+1 {
+	if !slices.Equal(a.rules[:8], want) || a.rules[len(a.rules)-1] != "block return out quick all" || len(a.rules) != 8+5+4+1 {
 		t.Errorf("the anchor lists:\n%s", strings.Join(a.rules, "\n"))
 	}
 	if got := strings.Join(a.tables[killSwitchTable], " "); got != "203.0.113.50/32 2001:db8:e::50/128" {
@@ -236,10 +239,10 @@ func TestKillSwitchNeedsTheHookAndPfctl(t *testing.T) {
 func TestKillSwitchRefusesAListingWithState(t *testing.T) {
 	r := newRig(t)
 	r.pf.loadHook = func(a *fakeAnchor) {
-		a.rules[1] = strings.Replace(a.rules[1], "no state", "keep state", 1)
+		a.rules[4] = strings.Replace(a.rules[4], "no state", "keep state", 1)
 	}
 	err := r.killSwitch().Apply(context.Background(), downRules(t))
-	if err == nil || !strings.Contains(err.Error(), "kill switch's rule 2") {
+	if err == nil || !strings.Contains(err.Error(), "kill switch's rule 5") {
 		t.Errorf("Apply: %v, want the listing refused", err)
 	}
 }
@@ -264,5 +267,75 @@ func TestKillSwitchReadsBothFamilies(t *testing.T) {
 	}
 	if _, err := parseTable([]byte("   203.0.113.50\n")); err == nil {
 		t.Error("the guard's table reading took IPv4")
+	}
+}
+
+// While down with allow-LAN, DNS to NoDNS (the LAN but the entries) is
+// refused before the table passes the LAN: blocks on UDP and TCP port
+// 53 and TCP port 853 to a table of their own, read back and kept whole
+// as the other.
+func TestKillSwitchRefusesDNSToNoDNS(t *testing.T) {
+	r := newRig(t)
+	k := r.killSwitch()
+	lan := downRules(t)
+	lan.Allow = set(t, "203.0.113.50/32", "2001:db8:e::50/128", "192.168.0.0/16", "fe80::/10")
+	lan.NoDNS = set(t, "192.168.0.0/16", "fe80::/10")
+	if err := k.Apply(context.Background(), lan); err != nil {
+		t.Fatal(err)
+	}
+	a := r.pf.anchors[KillSwitchAnchor]
+	if got := strings.Join(a.tables[killSwitchNoDNS], " "); got != "192.168.0.0/16 fe80::/10" {
+		t.Errorf("the NoDNS table holds %s", got)
+	}
+	blocks := slices.IndexFunc(a.rules, func(l string) bool { return strings.Contains(l, "<thinkpol_killswitch_nodns> port = 53") })
+	pass := slices.IndexFunc(a.rules, func(l string) bool { return strings.Contains(l, "<thinkpol_killswitch>") })
+	if blocks < 0 || pass < blocks || !strings.HasPrefix(a.rules[blocks], "block return out quick") ||
+		!slices.Contains(a.rules, "block return out quick proto tcp from any to <thinkpol_killswitch_nodns> port = 853") {
+		t.Errorf("DNS to the NoDNS table isn't refused before the table's pass:\n%s", strings.Join(a.rules, "\n"))
+	}
+	// Changed from outside: loaded again.
+	loads := r.pf.ran("-f -")
+	r.pf.set(func(f *fakePF) { f.anchors[KillSwitchAnchor].tables[killSwitchNoDNS] = nil })
+	if err := k.Apply(context.Background(), lan); err != nil {
+		t.Fatal(err)
+	}
+	if r.pf.ran("-f -") != loads+1 || len(r.pf.anchors[KillSwitchAnchor].tables[killSwitchNoDNS]) != 2 {
+		t.Error("the NoDNS table emptied from outside wasn't put back")
+	}
+	if err := k.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.pf.anchors[KillSwitchAnchor]; ok {
+		t.Errorf("Close left the anchor: %+v", r.pf.anchors[KillSwitchAnchor])
+	}
+}
+
+// A load pf took whose read-back fails is still enabled: with pf off (a
+// stock Mac) its rules would be evaluated not at all. Apply reports the
+// failure.
+func TestKillSwitchEnablesALoadItCantReadBack(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		spoil func(f *fakePF)
+	}{
+		{"a listing unlike the load", func(f *fakePF) {
+			f.loadHook = func(a *fakeAnchor) { a.rules[0] = strings.Replace(a.rules[0], "no state", "keep state", 1) }
+		}},
+		{"a table it can't read", func(f *fakePF) { f.fail["-T show"] = errFake }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			if r.pf.isOn() {
+				t.Fatal("pf is on before the kill switch: the test proves nothing")
+			}
+			r.pf.set(tc.spoil)
+			err := r.killSwitch().Apply(context.Background(), downRules(t))
+			if err == nil {
+				t.Error("Apply succeeded")
+			}
+			if r.pf.anchors[KillSwitchAnchor] == nil || !r.pf.isOn() {
+				t.Errorf("anchor loaded %v, pf on %v: want the load enabled", r.pf.anchors[KillSwitchAnchor] != nil, r.pf.isOn())
+			}
+		})
 	}
 }

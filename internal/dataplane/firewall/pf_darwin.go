@@ -429,7 +429,7 @@ func killStates(ctx context.Context, pf pfctl, ownAddrs func() ([]netip.Addr, er
 // no table (noTable), is empty; anything else, a listing that fails
 // included, fails it with the -F's error and the listing's. With no
 // pfctl it fails with errNoPfctl, for the owner to translate.
-func flushAnchor(ctx context.Context, pf pfctl, anchor, table string, both bool, owner string) error {
+func flushAnchor(ctx context.Context, pf pfctl, anchor string, both bool, owner string, tables ...string) error {
 	noRules := func(ctx context.Context) error {
 		b, _, err := rulesOf(ctx, pf, anchor, false)
 		if err != nil {
@@ -442,14 +442,17 @@ func flushAnchor(ctx context.Context, pf pfctl, anchor, table string, both bool,
 		return err
 	}
 	tableGone := func(ctx context.Context) error {
-		_, err := listTable(ctx, pf, anchor, table, both, owner)
-		switch {
-		case errors.Is(err, errNoTable):
-			return nil
-		case err == nil:
-			return fmt.Errorf("firewall: pf still holds the %s's table %s", owner, table)
+		for _, table := range tables {
+			_, err := listTable(ctx, pf, anchor, table, both, owner)
+			switch {
+			case errors.Is(err, errNoTable):
+				continue
+			case err == nil:
+				return fmt.Errorf("firewall: pf still holds the %s's table %s", owner, table)
+			}
+			return err
 		}
-		return err
+		return nil
 	}
 	for _, step := range []struct {
 		modifier string

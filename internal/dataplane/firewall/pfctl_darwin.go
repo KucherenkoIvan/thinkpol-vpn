@@ -815,6 +815,16 @@ func anchorText(tun string, exempt []netip.Prefix, upstreams []netip.AddrPort) s
 // tableText is an anchor's load: table name holding prefixes, then rules.
 func tableText(name string, prefixes []netip.Prefix, rules []guardRule) string {
 	var b strings.Builder
+	b.WriteString(tableDef(name, prefixes))
+	for _, r := range rules {
+		b.WriteString(r.text + "\n")
+	}
+	return b.String()
+}
+
+// tableDef is a persist table's definition, a line of pf.conf.
+func tableDef(name string, prefixes []netip.Prefix) string {
+	var b strings.Builder
 	b.WriteString("table <" + name + "> persist {")
 	for i, p := range prefixes {
 		if i > 0 {
@@ -823,9 +833,6 @@ func tableText(name string, prefixes []netip.Prefix, rules []guardRule) string {
 		b.WriteString(" \\\n\t" + p.String())
 	}
 	b.WriteString(" }\n")
-	for _, r := range rules {
-		b.WriteString(r.text + "\n")
-	}
 	return b.String()
 }
 

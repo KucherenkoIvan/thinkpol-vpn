@@ -20,13 +20,14 @@ import (
 const (
 	KillSwitchAnchor = "com.apple/001.thinkpol-killswitch"
 	killSwitchTable  = "thinkpol_killswitch"
+	killSwitchNoDNS  = "thinkpol_killswitch_nodns"
 	killSwitchRecord = "pf-killswitch.token"
 	killSwitchHeader = "# thinkpol firewall: the pf enable reference (pfctl -E) the kill switch holds; released with pfctl -X"
 )
 
 // KillSwitch keeps everything but KillSwitchRules from leaving the
-// device, both families, with a pf anchor, KillSwitchAnchor, and its
-// table, loaded together by one `pfctl -a <anchor> -f - -o none`
+// device, both families, with a pf anchor, KillSwitchAnchor, and its two
+// tables (what passes, and NoDNS), loaded together by one `pfctl -a <anchor> -f - -o none`
 // (killSwitchRules lists the rules), with pf enabled by a reference of
 // its own, recorded in netcfg.StateDir as the guard's is. The anchor and
 // the reference stay when the process dies; Close removes the anchor's
@@ -36,9 +37,11 @@ const (
 // Apply checks the main ruleset has Apple's hook (without it nothing is
 // enforced: an ordinary failure, retried), loads the anchor unless it
 // holds exactly what the last load left (the rules as pfctl listed them,
-// the table entry for entry), enables pf, and kills the states, of
+// the tables entry for entry), enables pf, and kills the states, of
 // either family, whose other end isn't in the table: pf passes a state
-// without rules. Unlike the guard it doesn't look for what passes before
+// without rules. A load pf took is enabled even when its read-back
+// fails: its rules are in pf, unchecked, and with pf off (a stock Mac)
+// they would be evaluated not at all. Unlike the guard it doesn't look for what passes before
 // its anchor (quick passes above the hook, earlier anchors, skipped
 // interfaces): the guard's anchor sorts before it on purpose.
 type KillSwitch struct {
@@ -56,9 +59,9 @@ type KillSwitch struct {
 // appliedKillSwitch is a load: its rules, the table loaded and the
 // anchor's rules as pfctl listed them after it.
 type appliedKillSwitch struct {
-	rules  KillSwitchRules
-	table  []netip.Prefix
-	listed []string
+	rules        KillSwitchRules
+	table, noDNS []netip.Prefix
+	listed       []string
 }
 
 // allows reports whether the table lets anything out to addr.
@@ -102,7 +105,12 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) (err error) {
 	}
 	if a := k.applied; a == nil || !a.rules.Equal(r) || !k.intact(ctx, a) {
 		k.applied = nil
-		a, err := k.load(ctx, r)
+		a, loaded, err := k.load(ctx, r)
+		if err != nil && loaded {
+			k.killStates = true
+			after, eerr := k.enable(ctx)
+			return errors.Join(err, eerr, after)
+		}
 		if err != nil {
 			return err
 		}
@@ -118,32 +126,40 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) (err error) {
 }
 
 // load loads r's anchor and reads it back: the rules checked for their
-// words (checkListed), the table entry for entry.
-func (k *KillSwitch) load(ctx context.Context, r KillSwitchRules) (*appliedKillSwitch, error) {
+// words (checkListed), the tables entry for entry. loaded says pf took
+// the load, whatever the read-back found.
+func (k *KillSwitch) load(ctx context.Context, r KillSwitchRules) (a *appliedKillSwitch, loaded bool, err error) {
 	var b lists.Builder
 	b.AddSet(r.Allow)
 	b.AddSet(r.Direct)
 	all, _ := b.Build()
 	table, upstreams := all.Prefixes(), killSwitchUpstreams(r.Upstreams)
+	var noDNS []netip.Prefix
+	if r.NoDNS != nil {
+		noDNS = r.NoDNS.Prefixes()
+	}
 	rules := killSwitchRules(r.TUN, upstreams)
-	if _, err := k.pf.run(ctx, []byte(tableText(killSwitchTable, table, rules)), "-a", KillSwitchAnchor, "-f", "-", "-o", "none"); err != nil {
-		return nil, fmt.Errorf("firewall: load the kill switch: %w", err)
+	text := tableDef(killSwitchNoDNS, noDNS) + tableText(killSwitchTable, table, rules)
+	if _, err := k.pf.run(ctx, []byte(text), "-a", KillSwitchAnchor, "-f", "-", "-o", "none"); err != nil {
+		return nil, false, fmt.Errorf("firewall: load the kill switch: %w", err)
 	}
 	listed, err := k.listRules(ctx)
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	if err := checkListed(listed, rules, "kill switch"); err != nil {
-		return nil, err
+		return nil, true, err
 	}
-	got, err := listTable(ctx, k.pf, KillSwitchAnchor, killSwitchTable, true, "kill switch")
-	if err != nil {
-		return nil, err
+	got := map[string][]netip.Prefix{}
+	for name, want := range map[string][]netip.Prefix{killSwitchTable: table, killSwitchNoDNS: noDNS} {
+		if got[name], err = listTable(ctx, k.pf, KillSwitchAnchor, name, true, "kill switch"); err != nil {
+			return nil, true, err
+		}
+		if !slices.Equal(got[name], sortedPrefixes(slices.Clone(want))) {
+			return nil, true, fmt.Errorf("firewall: pf's table %s holds %d entries unlike the %d loaded", name, len(got[name]), len(want))
+		}
 	}
-	if !slices.Equal(got, sortedPrefixes(slices.Clone(table))) {
-		return nil, fmt.Errorf("firewall: pf's table %s holds %d entries unlike the %d loaded", killSwitchTable, len(got), len(table))
-	}
-	return &appliedKillSwitch{rules: r, table: got, listed: listed}, nil
+	return &appliedKillSwitch{rules: r, table: got[killSwitchTable], noDNS: got[killSwitchNoDNS], listed: listed}, true, nil
 }
 
 func (k *KillSwitch) listRules(ctx context.Context) ([]string, error) {
@@ -161,10 +177,14 @@ func (k *KillSwitch) intact(ctx context.Context, a *appliedKillSwitch) bool {
 		return false
 	}
 	table, err := listTable(ctx, k.pf, KillSwitchAnchor, killSwitchTable, true, "kill switch")
-	return err == nil && slices.Equal(table, a.table)
+	if err != nil || !slices.Equal(table, a.table) {
+		return false
+	}
+	noDNS, err := listTable(ctx, k.pf, KillSwitchAnchor, killSwitchNoDNS, true, "kill switch")
+	return err == nil && slices.Equal(noDNS, a.noDNS)
 }
 
-// Close flushes the anchor's rules and table, then releases the
+// Close flushes the anchor's rules and tables, then releases the
 // references the kill switch holds or owes, or the one its record holds
 // from this boot (a previous run's). A failure leaves the rest in place
 // for another Close; the anchor goes first, so pf is never left off with
@@ -178,7 +198,7 @@ func (k *KillSwitch) Close() error {
 	}
 	ctx := context.Background()
 	k.applied = nil
-	err := flushAnchor(ctx, k.pf, KillSwitchAnchor, killSwitchTable, true, "kill switch")
+	err := flushAnchor(ctx, k.pf, KillSwitchAnchor, true, "kill switch", killSwitchTable, killSwitchNoDNS)
 	if errors.Is(err, errNoPfctl) {
 		err = k.forget()
 	} else if err == nil {
@@ -219,6 +239,8 @@ func killSwitchUpstreams(ups []netip.AddrPort) []netip.AddrPort {
 //
 //	pass out quick on lo0 all no state
 //	pass out quick on <utun> all no state                                             (connected only)
+//	block return out quick proto { tcp, udp } from any to <thinkpol_killswitch_nodns> port 53
+//	block return out quick proto tcp from any to <thinkpol_killswitch_nodns> port 853
 //	pass out quick from any to <thinkpol_killswitch> no state
 //	pass out quick proto { tcp, udp } from any to <upstream> port <its port> no state (each upstream)
 //	pass out quick inet proto udp from any port 68 to any port 67 no state            (DHCPv4)
@@ -227,7 +249,10 @@ func killSwitchUpstreams(ups []netip.AddrPort) []netip.AddrPort {
 //	pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type { 130, 131, 132, 143 } no state
 //	block return out quick all
 //
-// Outgoing only and stateless, as the guard's. pf can't match a hop
+// Outgoing only and stateless, as the guard's. The two blocks refuse DNS
+// to NoDNS (the LAN while down with allow-LAN), which the table passes
+// otherwise; they are there, over an empty table, in every shape. pf
+// can't match a hop
 // limit: neighbour discovery passes to any destination by its ICMPv6
 // type (nothing else; a router could forward it), MLD only to
 // multicast.
@@ -237,7 +262,12 @@ func killSwitchRules(tun string, upstreams []netip.AddrPort) []guardRule {
 	if tun != "" {
 		rules = append(rules, guardRule{"pass out quick on " + tun + " all no state", 1, pass("on", tun)})
 	}
-	rules = append(rules, guardRule{"pass out quick from any to <" + killSwitchTable + "> no state", 1, pass("<" + killSwitchTable + ">")})
+	noDNS := "<" + killSwitchNoDNS + ">"
+	block := []string{"block", "return", "out", "quick", noDNS}
+	rules = append(rules,
+		guardRule{"block return out quick proto { tcp, udp } from any to " + noDNS + " port 53", 2, slices.Concat(block, []string{"53"})},
+		guardRule{"block return out quick proto tcp from any to " + noDNS + " port 853", 1, slices.Concat(block, []string{"tcp", "853"})},
+		guardRule{"pass out quick from any to <" + killSwitchTable + "> no state", 1, pass("<" + killSwitchTable + ">")})
 	for _, u := range upstreams {
 		a, p := u.Addr().String(), strconv.Itoa(int(u.Port()))
 		rules = append(rules, guardRule{"pass out quick proto { tcp, udp } from any to " + a + " port " + p + " no state", 2, pass(a, "port", p)})
