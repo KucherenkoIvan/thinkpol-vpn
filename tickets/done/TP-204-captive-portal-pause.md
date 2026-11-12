@@ -42,3 +42,4 @@ A member on a captive-portal network (hotel or airport Wi-Fi) can briefly let th
 ## Log
 - 2026-11-12 created in backlog (from TP-048's review; owner decision 2026-11-09)
 - 2026-11-12 backlog → done (dropped, owner 2026-11-12: no pause; the tray makes the switch's off state unmissable, TP-049)
+- 2026-11-12 PRD D4 and the member story no longer promise a pause (owner)
