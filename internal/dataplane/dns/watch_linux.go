@@ -40,7 +40,10 @@ func watchFile(path string) (<-chan bool, func()) {
 				ev := (*unix.InotifyEvent)(unsafe.Pointer(&buf[off]))
 				nameBytes := buf[off+unix.SizeofInotifyEvent : off+unix.SizeofInotifyEvent+int(ev.Len)]
 				off += unix.SizeofInotifyEvent + int(ev.Len)
-				if string(trimNUL(nameBytes)) == name {
+				switch {
+				case ev.Mask&unix.IN_Q_OVERFLOW != 0: // events were lost, a creation among them maybe
+					signal(ch, false)
+				case string(trimNUL(nameBytes)) == name:
 					signal(ch, ev.Mask&unix.IN_MOVED_TO != 0)
 				}
 			}

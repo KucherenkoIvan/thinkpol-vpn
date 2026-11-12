@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/netip"
 	"os"
@@ -229,25 +230,51 @@ func TestResolvConfARewriteOfTheSameContentKeepsTheSettleGoing(t *testing.T) {
 }
 
 // A writer that never goes quiet (another program fighting over the
-// file) is taken back at the settle's cap, not when it stops.
+// file) is taken back at the settle's cap, not when it stops. The writer
+// writes in place, so only the node's take-back, a rename, gives the
+// file it opens another inode: the take-back came after the open before.
+// (Reading the file for the managed one instead could miss it: the
+// writer's next open truncates the node's file before it is read.)
 func TestResolvConfAWriterThatNeverSettlesIsTakenBackAtTheCap(t *testing.T) {
 	timing := resolvConfTiming{check: 20 * time.Millisecond, settle: 300 * time.Millisecond, settleMax: time.Second}
 	path, _, _ := startInPlace(t, timing)
 	start := time.Now()
-	var takenBack time.Duration
+	var prev fs.FileInfo
+	var prevOpened time.Time
 	for i := 0; time.Since(start) < 3*time.Second; i++ {
-		if takenBack == 0 && i > 0 && parseResolvConf([]byte(readString(t, path))).managed {
-			takenBack = time.Since(start)
+		opened := time.Now()
+		fi := overwriteInPlaceStat(t, path, fmt.Sprintf("nameserver 192.0.2.%d\n", 10+i%200))
+		if prev != nil && !os.SameFile(prev, fi) {
+			if after := prevOpened.Sub(start); after > timing.settleMax+timing.settle {
+				t.Errorf("taken back after %v, want within %v", after, timing.settleMax+timing.settle)
+			}
+			return
 		}
-		overwriteInPlace(t, path, fmt.Sprintf("nameserver 192.0.2.%d\n", 10+i%200))
+		prev, prevOpened = fi, opened
 		time.Sleep(100 * time.Millisecond)
 	}
-	switch {
-	case takenBack == 0:
-		t.Fatal("never taken back while the writer ran")
-	case takenBack > timing.settleMax+timing.settle:
-		t.Errorf("taken back after %v, want within %v", takenBack, timing.settleMax+timing.settle)
+	t.Fatal("never taken back while the writer ran")
+}
+
+// overwriteInPlaceStat is overwriteInPlace through one open file, and
+// that file's info.
+func overwriteInPlaceStat(t *testing.T, path, s string) fs.FileInfo {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatal(err)
 	}
+	fi, err := f.Stat()
+	if err == nil {
+		_, err = f.WriteString(s)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fi
 }
 
 // While another program's write hasn't settled for longer than the
@@ -282,9 +309,11 @@ func TestResolvConfAFileRenamedInIsTakenAtOnce(t *testing.T) {
 // A file created at the path is another file than the node's before its
 // first byte is written (rm then `cat >`, an editor writing a new file,
 // install): the change event of its creation and the poll find it new
-// and empty, and it settles like a write in place. With the file removed
-// a while first, the settle that begins with no file isn't cut short by
-// the creation either.
+// and empty, and it settles like a write in place. The removal raises no
+// watched event, so with change events only nothing happens until the
+// creation; removed a while first, the new file is less likely to get
+// the removed one's inode number, which would make it look like the
+// node's file and settle whatever the rule for a new file.
 func TestResolvConfAFileCreatedAtThePathSettles(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -323,39 +352,43 @@ func TestResolvConfAFileCreatedAtThePathSettles(t *testing.T) {
 	}
 }
 
-// A program that rewrites the file in place again and again is taken back
-// at each settle's cap; between those, Problem keeps saying unprotected,
-// not only once each new settle is older than the settle period. Once the
-// writer stops, its last file settles and Problem clears.
-func TestResolvConfAWriterThatKeepsRewritingStaysUnprotected(t *testing.T) {
-	timing := resolvConfTiming{check: 20 * time.Millisecond, settle: 300 * time.Millisecond, settleMax: 600 * time.Millisecond}
-	path, r, told := startInPlace(t, timing)
-	start := time.Now()
-	for i := 0; time.Since(start) < 3*time.Second; i++ {
-		overwriteInPlace(t, path, fmt.Sprintf("nameserver 192.0.2.%d\n", 10+i%200))
-		for range 10 {
-			time.Sleep(10 * time.Millisecond)
-			// Past the first cap, a take-back has been forced.
-			if time.Since(start) > timing.settleMax+timing.settle {
-				if p := r.Problem(); !Unprotected(p) {
-					t.Fatalf("problem %v at %v while the writer goes on, want unprotected", p, time.Since(start).Round(time.Millisecond))
+// Problem follows one rule, with no model of the writer: unprotected
+// while another program's file is in place and for the hold after each
+// take-back. So a writer faster than the settle (taken back at the cap),
+// one whose every write settles, and one that writes every few seconds
+// are all reported for as long as they write, and Problem clears within
+// the hold once they stop. The product's timings, polled often.
+func TestResolvConfAWriterFightingOverTheFileIsUnprotectedAtAnyPeriod(t *testing.T) {
+	timing := resolvConfTimes
+	timing.check = 20 * time.Millisecond
+	for _, period := range []time.Duration{100 * time.Millisecond, 600 * time.Millisecond, 3 * time.Second} {
+		t.Run(period.String(), func(t *testing.T) {
+			t.Parallel()
+			path, r, _ := startInPlace(t, timing)
+			start := time.Now()
+			next := start
+			for now := start; now.Sub(start) < 3200*time.Millisecond; now = time.Now() {
+				if !now.Before(next) {
+					overwriteInPlace(t, path, renewedInPlace)
+					next = next.Add(period)
 				}
+				// The watch sees the first write within a poll.
+				if now.Sub(start) > 300*time.Millisecond {
+					if p := r.Problem(); !Unprotected(p) {
+						t.Fatalf("problem %v at %v while the writer goes on, want unprotected", p, now.Sub(start).Round(time.Millisecond))
+					}
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
-		}
-	}
-	overwriteInPlace(t, path, renewedInPlace)
-	takenBackWith(t, path, renewedInPlace)
-	if got := lastTold(t, told); !slices.Equal(got, renewedInPlaceServers) {
-		t.Errorf("told %v last, want %v", got, renewedInPlaceServers)
-	}
-	// The last take-back may have been at a cap: the node's file stands
-	// for a settle before Problem clears.
-	deadline := time.Now().Add(timing.settle + time.Second)
-	for p := r.Problem(); p != nil; p = r.Problem() {
-		if time.Now().After(deadline) {
-			t.Fatalf("problem %v after the writer stopped", p)
-		}
-		time.Sleep(20 * time.Millisecond)
+			takenBackWith(t, path, renewedInPlace)
+			deadline := time.Now().Add(timing.hold + time.Second)
+			for p := r.Problem(); p != nil; p = r.Problem() {
+				if time.Now().After(deadline) {
+					t.Fatalf("problem %v a hold after the writer stopped", p)
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		})
 	}
 }
 
@@ -538,7 +571,7 @@ func TestResolvConfAPartialRewriteIsNotTakenAsAppendedLines(t *testing.T) {
 		if err := os.WriteFile(path, content[:end], 0o644); err != nil {
 			return err
 		}
-		return errors.New("injected: write failed partway")
+		return partialWriteError{errors.New("injected: write failed partway")}
 	}
 	r.mu.Unlock()
 	next := c
@@ -558,6 +591,95 @@ func TestResolvConfAPartialRewriteIsNotTakenAsAppendedLines(t *testing.T) {
 		t.Errorf("the node's own lines joined the original: %q", m.original)
 	}
 	restoredTo(t, path, r, "")
+}
+
+// A rewrite whose new file failed before its rename (no space for it,
+// no permission) left the path as it was: a line appended by hand before
+// the next rewrite is the hand's, and joins the original.
+func TestResolvConfARewriteThatFailedBeforeItsRenameKeepsAHandAppend(t *testing.T) {
+	path, r, told := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: 100 * time.Millisecond, settleMax: time.Second})
+	r.mu.Lock()
+	failed := false
+	r.rewrite = func(path string, f resolvConfFile, content []byte) error {
+		if failed {
+			return rewriteResolvConf(path, f, content)
+		}
+		failed = true
+		appendFile(t, path, "nameserver 192.0.2.9\n")
+		return errors.New("injected: no space for the new file")
+	}
+	r.mu.Unlock()
+	next := testSystem
+	next.Search = []string{"other.internal"}
+	next.Upstreams = func(a []netip.Addr) { told <- a }
+	if err := r.Update(next); err == nil {
+		t.Fatal("the injected failure is lost")
+	}
+	want := isp + "nameserver 192.0.2.9\n"
+	takenBackWith(t, path, want)
+	restoredTo(t, path, r, want)
+}
+
+// A rewrite in place that failed partway can end inside the original's
+// lines: the original kept in memory is taken, not what is left of it.
+func TestResolvConfARewriteThatFailedPartwayKeepsTheWholeOriginal(t *testing.T) {
+	path, r, _ := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: 100 * time.Millisecond, settleMax: time.Second})
+	r.mu.Lock()
+	failed := false
+	r.rewrite = func(path string, f resolvConfFile, content []byte) error {
+		if failed {
+			return rewriteResolvConf(path, f, content)
+		}
+		failed = true
+		// Cut inside the original's last line, its options.
+		if err := os.WriteFile(path, content[:len(content)-len("attempts:2\n")], 0o644); err != nil {
+			return err
+		}
+		return partialWriteError{errors.New("injected: write failed partway")}
+	}
+	r.mu.Unlock()
+	next := testSystem
+	next.Search = []string{"other.internal"}
+	if err := r.Update(next); err == nil {
+		t.Fatal("the injected failure is lost")
+	}
+	takenBackWith(t, path, isp)
+	restoredTo(t, path, r, isp)
+}
+
+// A change signal that came while the watch read the file joins the
+// event that woke it: a rename stays a rename only if the pending change
+// is one too; a wake with no change event (a poll, the quiet timer)
+// takes the pending change as it is; Update's wake is never a rename.
+func TestResolvConfWatchTakesInAChangeThatCameDuringTheRead(t *testing.T) {
+	renamed := event{changed: true, renamed: true}
+	for _, tc := range []struct {
+		name    string
+		ev      event
+		pending []bool
+		want    event
+	}{
+		{"rename, nothing pending", renamed, nil, renamed},
+		{"rename, a rename pending", renamed, []bool{true}, renamed},
+		{"rename, a write pending", renamed, []bool{false}, event{changed: true}},
+		{"Update's wake, a rename pending", event{changed: true}, []bool{true}, event{changed: true}},
+		{"poll, a rename pending", event{}, []bool{true}, renamed},
+		{"quiet ended, a write pending", event{quietEnded: true}, []bool{false}, event{changed: true, quietEnded: true}},
+		{"poll, nothing pending", event{}, nil, event{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ch := make(chan bool, 1)
+			for _, p := range tc.pending {
+				ch <- p
+			}
+			if got := withPending(tc.ev, ch); got != tc.want {
+				t.Errorf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+	if got := withPending(renamed, nil); got != renamed {
+		t.Errorf("with no change events: got %+v, want %+v", got, renamed)
+	}
 }
 
 // Restore ends the management: an Update after it fails and leaves the

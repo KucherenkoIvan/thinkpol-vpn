@@ -195,6 +195,7 @@ func TestAResolvConfRewrittenMeanwhileIsTakenBack(t *testing.T) {
 	upstreams := make(chan []netip.Addr, 1)
 	r.mu.Lock()
 	r.cfg.Upstreams = func(a []netip.Addr) { upstreams <- a }
+	r.timing.hold = 0 // the hold after a take-back: resolvconf_settle_test.go
 	r.mu.Unlock()
 	renewed := "nameserver 192.0.2.99\n"
 	writeFileAtomic(t, path, renewed)
@@ -243,6 +244,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 		lastUpstreams = a
 		upstreams <- a
 	}
+	r.timing.hold = 0 // the hold after a take-back: resolvconf_settle_test.go
 	r.mu.Unlock()
 
 	mixed := "nameserver 127.0.0.53\nnameserver 192.0.2.88\n"

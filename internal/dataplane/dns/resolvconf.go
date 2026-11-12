@@ -54,7 +54,8 @@ type System interface {
 	Update(SystemConfig) error
 	// Problem says why names may still be resolved outside the node's
 	// resolver (another link's domains in systemd-resolved, a rewrite that
-	// failed, another program's write not taken back within the settle),
+	// failed, another program's write not taken back yet or taken back
+	// moments ago),
 	// nil when the OS resolves through it only. It may also report
 	// ErrUpstreamsStale or ErrNoSystemUpstream, which are not unprotected.
 	Problem() error
@@ -64,7 +65,7 @@ type System interface {
 
 // Deferred says s holds a configuration it hasn't applied yet: its last
 // Update waits for another program's write of the OS's configuration to
-// settle (System.Update). Problem may be nil meanwhile.
+// settle (System.Update). Problem reports unprotected meanwhile.
 func Deferred(s System) bool {
 	d, ok := s.(interface{ deferred() bool })
 	return ok && d.deferred()
@@ -295,10 +296,12 @@ type resolvConf struct {
 	// file it left it in: any other content is another program's write.
 	written     []byte
 	writtenInfo fs.FileInfo
-	// writeFailed: the last rewrite failed, so what is at path may be part
-	// of it, not written followed by another program's lines; no appended
-	// lines are taken until a rewrite succeeds.
-	writeFailed bool
+	// writeFailed: a rewrite in place failed partway, so what is at path
+	// may be part of it, not written followed by another program's lines:
+	// no appended lines are taken, and a managed file's original is
+	// originalLink and original, until a rewrite succeeds.
+	writeFailed  bool
+	originalLink string // the symlink the original was, as last rendered
 	// rewrite puts content at path (rewriteResolvConf; a field so tests can
 	// make a write fail partway).
 	rewrite func(path string, f resolvConfFile, content []byte) error
@@ -306,11 +309,9 @@ type resolvConf struct {
 	// while the watch waits for it to settle; nil when there is none. Update
 	// leaves the rewrite to the watch meanwhile.
 	foreign *foreignWrite
-	// contended: a settle's cap forced the file back at takenBack, so
-	// another program may be writing it again and again; Problem reports
-	// unprotected until the node's file has stood for a settle.
-	contended bool
-	takenBack time.Time
+	// heldUntil: Problem reports unprotected until then, a hold after the
+	// last take-back of another program's write (resolvConfTiming.hold).
+	heldUntil time.Time
 	restored  bool          // Restore ran: there is no watch any more
 	wake      chan struct{} // Update began a settle the watch must time
 	stop      chan struct{}
@@ -336,9 +337,19 @@ type resolvConfTiming struct {
 	// settleMax bounds a settle from its start: a writer that never goes
 	// quiet is taken back anyway.
 	settleMax time.Duration
+	// hold is how long Problem still reports unprotected after the node
+	// took back another program's write, whether it was taken at once,
+	// settled or capped. Another program writing the file again within
+	// hold+settle of the last take-back is reported without a gap, at any
+	// period, with no model of how it writes.
+	hold time.Duration
 }
 
-var resolvConfTimes = resolvConfTiming{check: 2 * time.Second, settle: 500 * time.Millisecond, settleMax: 2 * time.Second}
+// The product's hold is twice the cap: a writer that re-asserts its file
+// within 4.5 s of losing it (a settle and the hold) is reported for as
+// long as it fights, and one write (a DHCP renewal) is reported for at
+// most the settle's cap and the hold, 6 s.
+var resolvConfTimes = resolvConfTiming{check: 2 * time.Second, settle: 500 * time.Millisecond, settleMax: 2 * time.Second, hold: 4 * time.Second}
 
 // errRestored is Update's error once Restore has run.
 var errRestored = errors.New("dns: resolv.conf was restored")
@@ -370,9 +381,11 @@ func setResolvConfTimed(path, uplink string, c SystemConfig, timing resolvConfTi
 // (ferr its error), keeping f as the original unless it is the node's
 // own (left by a crash). Lines appended to the node's own file are
 // another program's (an in-place writer still appending after its settle
-// ended, or a hand edit) and join the original, unless the node's last
-// rewrite failed (writeFailed). It returns what to tell
-// the caller, run after unlocking, or nil. r.mu is held.
+// ended, or a hand edit) and join the original. After a rewrite in place
+// failed partway (writeFailed), the file may end anywhere in the node's
+// own content, so nothing is taken as appended and a managed file's
+// original is the one held in memory. It returns what to tell the
+// caller, run after unlocking, or nil. r.mu is held.
 func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error) {
 	defer func() { r.err = err }()
 	if ferr != nil {
@@ -380,7 +393,11 @@ func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error
 	}
 	m := parseResolvConf(f.content)
 	symlink, read := f.symlink, f.read
-	if appended, ok := bytes.CutPrefix(f.content, r.written); ok && !r.writeFailed && len(r.written) > 0 && len(appended) > 0 {
+	if r.writeFailed {
+		if m.managed {
+			m.original, m.symlink = r.original, r.originalLink
+		}
+	} else if appended, ok := bytes.CutPrefix(f.content, r.written); ok && len(r.written) > 0 && len(appended) > 0 {
 		m = parseResolvConf(r.written)
 		m.original = append(slices.Clip(m.original), appended...)
 	}
@@ -399,8 +416,12 @@ func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error
 	}
 	content := render(r.cfg, m.original, symlink)
 	tell = r.recordOriginal(m.original, read)
+	r.originalLink = symlink
 	if err := r.rewrite(r.path, f, content); err != nil {
-		r.writeFailed = true
+		var partial partialWriteError
+		if errors.As(err, &partial) {
+			r.writeFailed = true
+		}
 		return tell, err
 	}
 	r.written, r.writeFailed = content, false
@@ -561,7 +582,8 @@ func (r *resolvConf) watch(first func()) {
 		// its half-written file must not look like another program's.
 		r.mu.Lock()
 		f, ferr := readResolvConfFile(r.path)
-		if !r.decide(f, ferr, event{changed: changed, renamed: renamed, quietEnded: quietEnded}, quiet) {
+		ev := withPending(event{changed: changed, renamed: renamed, quietEnded: quietEnded}, changes)
+		if !r.decide(f, ferr, ev, quiet) {
 			r.mu.Unlock()
 			continue
 		}
@@ -587,6 +609,20 @@ type event struct {
 	quietEnded bool // the quiet timer fired
 }
 
+// withPending is ev with the change signal that came while the file was
+// read, if any: a rename's event received before the read covers only
+// the changes so far, and a write into the renamed file that closed
+// before the read makes the file read not the renamed one.
+func withPending(ev event, changes <-chan bool) event {
+	select {
+	case renamed := <-changes:
+		ev.renamed = renamed && (ev.renamed || !ev.changed)
+		ev.changed = true
+	default:
+	}
+	return ev
+}
+
 // decide says whether the watch takes the file back now. It starts or
 // moves the quiet timer of a write still settling. r.mu is held.
 func (r *resolvConf) decide(f resolvConfFile, ferr error, ev event, quiet *time.Timer) bool {
@@ -598,7 +634,6 @@ func (r *resolvConf) decide(f resolvConfFile, ferr error, ev event, quiet *time.
 		// retries a read that is owed (the uplink behind the stub).
 		return true
 	case kind == wholeWrite:
-		return true
 	case r.foreign == nil: // a write begins
 		r.beginForeign(now)
 		quiet.Reset(r.quietFor())
@@ -607,26 +642,23 @@ func (r *resolvConf) decide(f resolvConfFile, ferr error, ev event, quiet *time.
 		}
 		return false
 	case time.Since(r.foreign.began) >= r.timing.settleMax: // past the cap
-		r.contended, r.takenBack = true, time.Now()
-		return true
 	case ev.changed || now != r.foreign.last: // still being written
 		r.foreign.last = now
 		quiet.Reset(r.quietFor())
 		return false
 	case !ev.quietEnded: // a poll during a quiet settle
 		return false
+	default: // settled
 	}
-	r.contended = false
-	return true // settled
+	// Another program's write is taken back: whole, past the cap, or
+	// settled.
+	r.heldUntil = time.Now().Add(r.timing.hold)
+	return true
 }
 
-// beginForeign begins settling another program's write, found as now. A
-// writer the cap forced back is still contending if it began again
-// within a settle of being taken back. r.mu is held.
+// beginForeign begins settling another program's write, found as now.
+// r.mu is held.
 func (r *resolvConf) beginForeign(now fileState) {
-	if time.Since(r.takenBack) >= r.timing.settle {
-		r.contended = false
-	}
 	r.foreign = &foreignWrite{began: time.Now(), last: now}
 }
 
@@ -735,10 +767,10 @@ func (r *resolvConf) Problem() error {
 		errs = append(errs, fmt.Errorf("%w: rewriting %s: %v", ErrUnprotected, r.path, r.err))
 	}
 	switch {
-	case r.contended && (r.foreign != nil || time.Since(r.takenBack) < r.timing.settle):
-		errs = append(errs, fmt.Errorf("%w: another program keeps writing %s; taken back only at the settle's cap", ErrUnprotected, r.path))
-	case r.foreign != nil && time.Since(r.foreign.began) > r.timing.settle:
-		errs = append(errs, fmt.Errorf("%w: another program's write of %s has not settled in %v", ErrUnprotected, r.path, time.Since(r.foreign.began).Round(time.Millisecond)))
+	case r.foreign != nil:
+		errs = append(errs, fmt.Errorf("%w: another program's file has been at %s for %v; taken back once its write settles", ErrUnprotected, r.path, time.Since(r.foreign.began).Round(time.Millisecond)))
+	case time.Now().Before(r.heldUntil):
+		errs = append(errs, fmt.Errorf("%w: another program wrote %s %v ago; taken back, it may write it again", ErrUnprotected, r.path, (r.timing.hold-time.Until(r.heldUntil)).Round(time.Millisecond)))
 	}
 	if err := staleUpstreams(r.untold || r.owed); err != nil {
 		errs = append(errs, err)
@@ -820,7 +852,8 @@ func writeNew(path string, content []byte) error {
 }
 
 // writeInPlace rewrites a file's content without replacing the file, and
-// syncs it.
+// syncs it. A failure once the file is open is a partialWriteError: it
+// was truncated, and may hold part of content.
 func writeInPlace(path string, content []byte) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
@@ -833,8 +866,18 @@ func writeInPlace(path string, content []byte) error {
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	return err
+	if err != nil {
+		return partialWriteError{err}
+	}
+	return nil
 }
+
+// partialWriteError is a rewrite in place that failed after it truncated
+// the file. Any other failed rewrite left the path as it was.
+type partialWriteError struct{ err error }
+
+func (e partialWriteError) Error() string { return e.err.Error() }
+func (e partialWriteError) Unwrap() error { return e.err }
 
 // replace puts what create makes at a temporary name next to path in its
 // place, atomically, and syncs the directory.
