@@ -539,33 +539,7 @@ func (r *resolvConf) watch(first func()) {
 		// its half-written file must not look like another program's.
 		r.mu.Lock()
 		f, ferr := readResolvConfFile(r.path)
-		now := stateOf(f, ferr)
-		take := false
-		switch kind := r.classify(f, ferr); {
-		case kind == ownFile:
-			// Applied again all the same: it writes nothing unless a
-			// settle that ends this way held an Update's configuration,
-			// and it retries a read that is owed (the uplink behind the
-			// stub).
-			take = true
-		case kind == wholeWrite:
-			take = true
-		case r.foreign == nil: // an in-place write begins
-			r.foreign = &foreignWrite{began: time.Now(), last: now}
-			quiet.Reset(r.quietFor())
-			if log := r.cfg.Log; log != nil {
-				log.Debug("DNS: another program is writing resolv.conf in place; taking it back once the write settles", "path", r.path)
-			}
-		case time.Since(r.foreign.began) >= r.timing.settleMax: // past the cap
-			take = true
-		case changed || now != r.foreign.last: // still being written
-			r.foreign.last = now
-			quiet.Reset(r.quietFor())
-		case !quietEnded: // a poll during a quiet settle
-		default: // settled
-			take = true
-		}
-		if !take {
+		if !r.decide(f, ferr, changed, quietEnded, quiet) {
 			r.mu.Unlock()
 			continue
 		}
@@ -582,6 +556,39 @@ func (r *resolvConf) watch(first func()) {
 			tell()
 		}
 	}
+}
+
+// decide says whether the watch takes the file back now: changed is a
+// change event (or Update's wake), quietEnded the quiet timer firing. It
+// starts or moves the quiet timer of a write still settling. r.mu is
+// held.
+func (r *resolvConf) decide(f resolvConfFile, ferr error, changed, quietEnded bool, quiet *time.Timer) bool {
+	now := stateOf(f, ferr)
+	switch kind := r.classify(f, ferr); {
+	case kind == ownFile:
+		// Applied again all the same: it writes nothing unless a settle
+		// that ends this way held an Update's configuration, and it
+		// retries a read that is owed (the uplink behind the stub).
+		return true
+	case kind == wholeWrite:
+		return true
+	case r.foreign == nil: // an in-place write begins
+		r.foreign = &foreignWrite{began: time.Now(), last: now}
+		quiet.Reset(r.quietFor())
+		if log := r.cfg.Log; log != nil {
+			log.Debug("DNS: another program is writing resolv.conf in place; taking it back once the write settles", "path", r.path)
+		}
+		return false
+	case time.Since(r.foreign.began) >= r.timing.settleMax: // past the cap
+		return true
+	case changed || now != r.foreign.last: // still being written
+		r.foreign.last = now
+		quiet.Reset(r.quietFor())
+		return false
+	case !quietEnded: // a poll during a quiet settle
+		return false
+	}
+	return true // settled
 }
 
 // fileKind is whose write a read of the managed path found.
