@@ -2,7 +2,7 @@ module github.com/KucherenkoIvan/thinkpol-vpn
 
 go 1.26.0
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
 	github.com/KucherenkoIvan/go-kernel v0.20.0
