@@ -233,8 +233,9 @@
 // written. A file renamed over the path (as an atomic writer,
 // dhclient-script's mv or NetworkManager do) was complete before it got
 // the name: when the change events since the last read, and any that
-// came while it was read, are renames into the path only, it is taken at
-// once (lost events, an inotify queue overflow, count as a write). Any other write is read only once
+// came while it was read (each one makes the watch read the file again),
+// are renames into the path only, it is taken at once (lost events, an
+// inotify queue overflow, count as a write). Any other write is read only once
 // it has settled: the file stays the same, with no change event, for
 // 500 ms, and a settle never runs past 2 s from its start, so a writer
 // that never goes quiet (another program fighting over the file) is
@@ -253,13 +254,18 @@
 // way a file was written (no file at all; the poll, which has no event;
 // a bind mount, where every write is in place, the node's own too), the
 // write settles. Problem reports [ErrUnprotected] by one rule, with no
-// model of how the other program writes: while another program's file is
-// in place, and for 4 s (the hold, twice the cap) after the node takes
-// back another program's write, however it was taken. A program that
-// writes the file again within 4.5 s of losing it (a settle and the
-// hold), at any period, is reported for as long as it does; one write (a
-// DHCP renewal) is reported for a few seconds, 6 s at most (the cap and
-// the hold).
+// model of how the other program writes, once the watch has seen the
+// write: at once on a change event, within the 2 s poll otherwise (a
+// change no event reports; we suspect that is every write in place on a
+// bind mount, whose events go to the source file's own directory, not
+// the watched /etc, but haven't verified it). From then on it reports
+// while another program's file is in place, and for 4 s (the hold, twice
+// the cap) after the node takes back another program's write, however it
+// was taken. A program that writes the file again within 4.5 s of losing
+// it (a settle and the hold), at any period, is reported for as long as
+// it does; one write (a DHCP renewal) is reported for a few seconds, 6 s
+// at most from when it is seen (the cap and the hold), and it may be in
+// effect unreported for up to the poll's 2 s before that.
 //
 // Lines appended to the managed file are taken as another program's and
 // join the original: an in-place writer that paused past the settle or
@@ -269,12 +275,19 @@
 // the managed file. That is the backstop behind the settle, not a
 // replacement for it: on its own it would read the truncated file first,
 // telling and recording an empty original before the real one. After a
-// rewrite of the node's own in place (a bind mount) fails partway, the
-// file may end anywhere in the node's new content, its original lines
-// too: until a rewrite succeeds, nothing is taken as appended, and a
-// managed file's original is the one the node holds, not what is left of
-// it. A rewrite that failed before its rename left the file as it was,
-// and lines appended to it are still taken.
+// rewrite of the node's own in place (a bind mount) fails partway (no
+// space, a quota, an I/O error), the file may end anywhere in the node's
+// new content: empty, inside the header line, inside the original's
+// lines. Until a rewrite succeeds, nothing is taken as appended; a file
+// that is a prefix of the failed rewrite (empty included) is the node's
+// own, not another program's write: it doesn't settle, isn't reported as
+// another program's (the failure itself is, in Problem), and is retried
+// on the poll, not on its own change events, so a write that keeps
+// failing doesn't spin. The original is then the one the node holds, not
+// what is left of it, and so is any file that still parses as managed;
+// Restore puts back that original too. A rewrite that failed before its
+// rename left the file as it was, and lines appended to it are still
+// taken.
 //
 // Update reads the file under the same lock: over another program's
 // write that may still be going on it only records the configuration,

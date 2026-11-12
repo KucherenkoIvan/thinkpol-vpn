@@ -350,7 +350,8 @@ type resolvConfTiming struct {
 // The product's hold is twice the cap: a writer that re-asserts its file
 // within 4.5 s of losing it (a settle and the hold) is reported for as
 // long as it fights, and one write (a DHCP renewal) is reported for at
-// most the settle's cap and the hold, 6 s.
+// most the settle's cap and the hold, 6 s, from when the watch sees it
+// (a change no event reports waits for the poll).
 var resolvConfTimes = resolvConfTiming{check: 2 * time.Second, settle: 500 * time.Millisecond, settleMax: 2 * time.Second, hold: 4 * time.Second}
 
 // errRestored is Update's error once Restore has run.
