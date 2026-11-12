@@ -232,8 +232,9 @@
 // How another program's write is taken back depends on how it was
 // written. A file renamed over the path (as an atomic writer,
 // dhclient-script's mv or NetworkManager do) was complete before it got
-// the name: when the change events since the last read are renames into
-// the path only, it is taken at once. Any other write is read only once
+// the name: when the change events since the last read, and any that
+// came while it was read, are renames into the path only, it is taken at
+// once (lost events, an inotify queue overflow, count as a write). Any other write is read only once
 // it has settled: the file stays the same, with no change event, for
 // 500 ms, and a settle never runs past 2 s from its start, so a writer
 // that never goes quiet (another program fighting over the file) is
@@ -251,11 +252,14 @@
 // the managed file, outside its original. Where it can't be told which
 // way a file was written (no file at all; the poll, which has no event;
 // a bind mount, where every write is in place, the node's own too), the
-// write settles. Problem reports [ErrUnprotected] while another
-// program's file has been in place longer than the settle, and, once a
-// settle's cap forced the file back, until the node's file has stood for
-// a settle: a writer that rewrites the file every few hundred
-// milliseconds is reported for as long as it goes on.
+// write settles. Problem reports [ErrUnprotected] by one rule, with no
+// model of how the other program writes: while another program's file is
+// in place, and for 4 s (the hold, twice the cap) after the node takes
+// back another program's write, however it was taken. A program that
+// writes the file again within 4.5 s of losing it (a settle and the
+// hold), at any period, is reported for as long as it does; one write (a
+// DHCP renewal) is reported for a few seconds, 6 s at most (the cap and
+// the hold).
 //
 // Lines appended to the managed file are taken as another program's and
 // join the original: an in-place writer that paused past the settle or
@@ -265,10 +269,12 @@
 // the managed file. That is the backstop behind the settle, not a
 // replacement for it: on its own it would read the truncated file first,
 // telling and recording an empty original before the real one. After a
-// rewrite of the node's own fails (in place on a bind mount, it may
-// stop partway), nothing is taken as appended until a rewrite succeeds:
-// the file may hold part of the node's own new content after what it
-// wrote before.
+// rewrite of the node's own in place (a bind mount) fails partway, the
+// file may end anywhere in the node's new content, its original lines
+// too: until a rewrite succeeds, nothing is taken as appended, and a
+// managed file's original is the one the node holds, not what is left of
+// it. A rewrite that failed before its rename left the file as it was,
+// and lines appended to it are still taken.
 //
 // Update reads the file under the same lock: over another program's
 // write that may still be going on it only records the configuration,
