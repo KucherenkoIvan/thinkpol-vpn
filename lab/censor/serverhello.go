@@ -31,7 +31,8 @@ type serverHello struct {
 
 // serverHelloOf reads the ServerHello at a server stream's start, whole
 // however many records and segments carried it: errIncomplete until it
-// has arrived, errNotServerHello for anything else.
+// has arrived, errHelloTooLong for one longer than retainBytes,
+// errNotServerHello for anything else.
 func serverHelloOf(b []byte) (serverHello, error) {
 	msg, _, err := helloMessage(b, tlsServerHello)
 	if err != nil {

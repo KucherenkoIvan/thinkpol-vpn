@@ -398,35 +398,128 @@ func (c *censorRun) settled(t *testing.T, l *lab.Lab) error {
 	}
 }
 
-// judged is every flag of module on a flow between device-a and server-1,
-// once there is one: not of server-1's own connections (a relay's to the
-// site, which the prober's probes cause too). Read after settled, the log
-// holds every flag of the flows the module tagged.
-func (c *censorRun) judged(t *testing.T, l *lab.Lab, module string) []judgment {
-	t.Helper()
+// judged is every flag of module on a flow between device-a and server-1
+// (not server-1's own connections: a relay's to the site, which the
+// prober's probes cause too), read once every such flow a module tagged
+// has its flag: the scored probe's flows included, whose comparisons may
+// end seconds after the probe does (server-hello's site dial can take its
+// whole timeout).
+func (c *censorRun) judged(l *lab.Lab, module string) ([]judgment, error) {
 	isServer, dev := isServer1(l), l.Node(lab.DeviceA)
 	isDevice := func(a netip.Addr) bool { return a == dev.IPv4(lab.NetDevices) || a == dev.IPv6(lab.NetDevices) }
-	match := func(e verdictLine) bool {
-		return e.Event == censor.EventFlag && e.Module == module &&
-			(isServer(e.Key.Src) && isDevice(e.Key.Dst) || isDevice(e.Key.Src) && isServer(e.Key.Dst))
+	between := func(k censor.FlowKey) bool {
+		return isServer(k.Src) && isDevice(k.Dst) || isDevice(k.Src) && isServer(k.Dst)
 	}
-	if !c.logged(t, match) {
-		return nil
-	}
-	var flags []judgment
-	lab.Eventually(t, 30*time.Second, func() error {
-		log, err := execRead(c.router, pollTimeout, "cat", censorLogPath)
-		if err != nil {
-			return err
+	// The censor flushes its log every 100 ms: a tag of the scored
+	// probe's last connection is in the file well within judgedAfter.
+	time.Sleep(judgedAfter)
+	read := func() (string, error) { return execRead(c.router, pollTimeout, "cat", censorLogPath) }
+	return awaitJudgments(read, module, between, settleWithin)
+}
+
+const judgedAfter = time.Second
+
+// awaitJudgments reads the verdict log until every flow between the
+// device and the server (between) a module tagged has a flag, then
+// returns module's flags on those flows; an error when some still have
+// none after within.
+func awaitJudgments(read func() (string, error), module string, between func(censor.FlowKey) bool, within time.Duration) ([]judgment, error) {
+	start := time.Now()
+	for {
+		log, err := read()
+		if err == nil {
+			flags, waiting, err := judgments(completeLines(log), module, between)
+			switch {
+			case err != nil:
+				return nil, err
+			case waiting == 0:
+				return flags, nil
+			case time.Since(start) > within:
+				return nil, fmt.Errorf("%d tagged flows between device-a and server-1 have no flag after %s", waiting, within)
+			}
+		} else if time.Since(start) > within {
+			return nil, fmt.Errorf("reading the verdict log: %w", err)
 		}
-		flags = nil
-		_, err = matchVerdicts(completeLines(log), func(e verdictLine) bool {
-			if match(e) {
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// judgments is module's flags on the flows between reports, and how many
+// of those flows a module tagged that have no flag yet.
+func judgments(log, module string, between func(censor.FlowKey) bool) (flags []judgment, waiting int, err error) {
+	tagged, flagged := map[string]bool{}, map[string]bool{}
+	_, err = matchVerdicts(log, func(e verdictLine) bool {
+		if !between(e.Key) {
+			return false
+		}
+		switch e.Event {
+		case censor.EventTag:
+			tagged[e.Flow] = true
+		case censor.EventFlag:
+			flagged[e.Flow] = true
+			if e.Module == module {
 				flags = append(flags, judgment{v4: e.Key.Src.Is4(), why: fmt.Sprintf("%s, %s", e.Verdict, e.Reason)})
 			}
-			return false
-		})
-		return err
+		}
+		return false
 	})
-	return flags
+	if err != nil {
+		return nil, 0, err
+	}
+	for f := range tagged {
+		if !flagged[f] {
+			waiting++
+		}
+	}
+	return flags, waiting, nil
+}
+
+// TestAwaitJudgments: the flags are read once the scored probe's tagged
+// connections have theirs, so an IPv6 comparison that ends after the
+// probe ("not compared" seconds later) is in what the cell judges.
+func TestAwaitJudgments(t *testing.T) {
+	dev4, dev6 := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")
+	srv4, srv6 := netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("2001:db8::2")
+	other := netip.MustParseAddr("192.0.2.99")
+	between := func(k censor.FlowKey) bool { return k.Src != other && k.Dst != other }
+	line := func(event, module string, src, dst netip.Addr, port uint16, reason string) string {
+		k := censor.FlowKey{Proto: censor.ProtoTCP, Src: src, SrcPort: 443, Dst: dst, DstPort: port}
+		b, err := json.Marshal(censor.LogEntry{Event: event, Module: module, Flow: k.String(), Verdict: censor.Accept, Reason: reason})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b) + "\n"
+	}
+	const match, unreachable = "server hello matches the site", "not compared: the site 198.51.100.10:443 for camouflage.example.net: i/o timeout"
+	firstProbe := line(censor.EventTag, "server-hello", srv4, dev4, 40000, "") + line(censor.EventFlag, "server-hello", srv4, dev4, 40000, match) +
+		line(censor.EventTag, "server-hello", srv6, dev6, 40001, "") + line(censor.EventFlag, "server-hello", srv6, dev6, 40001, match) +
+		// a flow outside device-a<->server-1 tagged and never flagged
+		line(censor.EventTag, "server-hello", other, dev4, 40009, "")
+	scored := firstProbe + line(censor.EventTag, "server-hello", srv4, dev4, 40002, "") + line(censor.EventFlag, "server-hello", srv4, dev4, 40002, match) +
+		line(censor.EventTag, "server-hello", srv6, dev6, 40003, "")
+	late := scored + line(censor.EventFlag, "server-hello", srv6, dev6, 40003, unreachable)
+
+	reads := []string{scored, scored, late}
+	read := func() (string, error) {
+		s := reads[0]
+		if len(reads) > 1 {
+			reads = reads[1:]
+		}
+		return s, nil
+	}
+	flags, err := awaitJudgments(read, "server-hello", between, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flags) != 4 || !strings.Contains(flags[3].why, "not compared") || flags[3].v4 {
+		t.Fatalf("judged %+v, want the four flags with the late IPv6 \"not compared\"", flags)
+	}
+	cc := censorCase{report: "server-hello", verdictSays: map[string]string{rowHTTPS: match}}
+	if err := cc.verdictMisses(rowHTTPS, flags, false); err == nil {
+		t.Error("a late \"not compared\" passes the cell")
+	}
+
+	if _, err := awaitJudgments(func() (string, error) { return scored, nil }, "server-hello", between, time.Second); err == nil {
+		t.Error("a tagged connection never flagged: no error")
+	}
 }

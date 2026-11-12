@@ -1,8 +1,10 @@
 package censor
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/netip"
 	"time"
 )
@@ -94,10 +96,20 @@ func parsePrefixes(field string, in []string) ([]netip.Prefix, error) {
 }
 
 // unmarshalSettings reads a module's settings; none at all is {}. Every
-// module reads its settings through it.
+// module reads its settings through it. A field the module doesn't have
+// is an error: a misspelt setting must not leave the module on its
+// default.
 func unmarshalSettings(settings json.RawMessage, into any) error {
 	if len(settings) == 0 {
 		return nil
 	}
-	return json.Unmarshal(settings, into)
+	dec := json.NewDecoder(bytes.NewReader(settings))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(into); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return fmt.Errorf("settings: data after the object")
+	}
+	return nil
 }

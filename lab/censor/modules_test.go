@@ -1,6 +1,7 @@
 package censor
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -97,5 +98,40 @@ func TestModulesWithoutSettings(t *testing.T) {
 		if fmt.Sprint(errNil) != fmt.Sprint(errEmpty) {
 			t.Errorf("%s: without settings %v, with {} %v", name, errNil, errEmpty)
 		}
+	}
+}
+
+// TestSettingsRejectUnknownFields: a misspelt setting fails every module,
+// never leaving it on its default; so does anything after the object.
+func TestSettingsRejectUnknownFields(t *testing.T) {
+	registryMu.Lock()
+	var names []string
+	for n := range passives {
+		names = append(names, n)
+	}
+	for n := range actives {
+		names = append(names, n)
+	}
+	registryMu.Unlock()
+	if len(names) == 0 {
+		t.Fatal("no module registered")
+	}
+	for _, n := range names {
+		if !Registered(n) {
+			t.Errorf("%s isn't Registered", n)
+		}
+		_, _, err := Build(Config{Modules: []ModuleConfig{{Name: n, Settings: json.RawMessage(`{"upstreamTel": "report"}`)}}})
+		if err == nil || !strings.Contains(err.Error(), "upstreamTel") {
+			t.Errorf("%s with a misspelt setting: %v, want an error naming it", n, err)
+		}
+	}
+	if Registered("probr") {
+		t.Error("a misspelt module name is Registered")
+	}
+	if _, _, err := Build(Config{Modules: []ModuleConfig{{Name: "block-ip", Settings: json.RawMessage(`{"destinations": ["203.0.113.9"]} {}`)}}}); err == nil {
+		t.Error("settings with data after the object: no error")
+	}
+	if _, _, err := Build(Config{Modules: []ModuleConfig{{Name: "block-ip", Settings: json.RawMessage(`{"destinations": ["203.0.113.9"]}`)}}}); err != nil {
+		t.Errorf("good settings: %v", err)
 	}
 }
