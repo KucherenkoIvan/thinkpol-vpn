@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"time"
 
@@ -20,9 +19,7 @@ func init() {
 
 func runConnectOnBoot(ctx context.Context, e env, args []string) error {
 	cmd := newAPICommand("connect-on-boot")
-	c, err := cmd.dial(e, args, func(fs *flag.FlagSet) bool {
-		return fs.NArg() == 0 || fs.NArg() == 1 && (fs.Arg(0) == "on" || fs.Arg(0) == "off")
-	})
+	c, err := cmd.dial(e, args, onOffArgs)
 	if err != nil {
 		return err
 	}

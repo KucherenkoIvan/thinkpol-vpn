@@ -49,6 +49,7 @@ func testHost() Host {
 			SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
 				return nil, errors.New("no system upstreams in this test")
 			},
+			NewKillSwitch: (&memKillSwitches{}).new,
 		},
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"sync"
 	"time"
 
@@ -24,15 +25,15 @@ import (
 // The guard's nftables table: owned by its name, like the route table's
 // routes by their protocol, so a successor finds what a crashed run left.
 const (
-	GuardTable = "thinkpol-guard"
-	guardChain = "output"
-	guardSet   = "exempt6"
+	GuardTable  = "thinkpol-guard"
+	outputChain = "output"
+	guardSet    = "exempt6"
 )
 
-// guardPriority hooks the chain after every other output chain
-// (NF_IP6_PRI_LAST): a route chain that re-marks or reroutes a packet
-// does so before the guard sees it, never after.
-const guardPriority = nftables.ChainPriority(math.MaxInt32)
+// lastPriority hooks a chain after every other chain at its hook
+// (NF_IP_PRI_LAST): a route chain that re-marks or reroutes a packet does
+// so before ours sees it, never after.
+const lastPriority = nftables.ChainPriority(math.MaxInt32)
 
 // IPv6Guard is routetable's Guard on Linux: it keeps IPv6 from leaving
 // around the tunnel (routetable.Exempt) with one nftables table in a
@@ -124,10 +125,14 @@ func forceBuffers(c *netlink.Conn) error {
 	return serr
 }
 
-func (g *IPv6Guard) conn() (*nftables.Conn, error) {
+func (g *IPv6Guard) conn() (*nftables.Conn, error) { return nftConn(g.netns) }
+
+// nftConn is an nftables connection in the namespace netns (-1: the
+// calling thread's), its buffers forced to sockbuf.
+func nftConn(netns int) (*nftables.Conn, error) {
 	opts := []nftables.ConnOption{nftables.WithSockOptions(forceBuffers)}
-	if g.netns >= 0 {
-		opts = append(opts, nftables.WithNetNSFd(g.netns))
+	if netns >= 0 {
+		opts = append(opts, nftables.WithNetNSFd(netns))
 	}
 	c, err := nftables.New(opts...)
 	if err != nil {
@@ -215,9 +220,9 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) error {
 		elems = elems[n:]
 	}
 	accept := nftables.ChainPolicyAccept
-	prio := guardPriority
+	prio := lastPriority
 	chain := c.AddChain(&nftables.Chain{
-		Name: guardChain, Table: table, Type: nftables.ChainTypeFilter,
+		Name: outputChain, Table: table, Type: nftables.ChainTypeFilter,
 		Hooknum: nftables.ChainHookOutput, Priority: &prio, Policy: &accept,
 	})
 	for _, exprs := range guardRules(e, set.Name, set.ID) {
@@ -231,63 +236,89 @@ func (g *IPv6Guard) Apply(ctx context.Context, e routetable.Exempt) error {
 }
 
 // whole reports whether the table holds exactly what Apply put there for
-// e: no flags (a dormant table's chains are unhooked: no guard at all),
-// its one chain as hooked (another base chain in it, one setting the
-// links' mark, would run before ours), each rule's expressions (counters
-// aside) in order, and the set's elements, an element added (a leak) or
-// removed (a refusal) included. It dumps the set: tens of milliseconds
-// for a country-sized one, on each re-apply.
+// e (wholeTable).
 func whole(c *nftables.Conn, e routetable.Exempt) bool {
-	table, err := c.ListTableOfFamily(GuardTable, nftables.TableFamilyINet)
+	return wholeTable(c, GuardTable, []wantChain{{outputChain, *nftables.ChainHookOutput, guardRules(e, guardSet, 0)}},
+		wantSet{guardSet, nftables.TypeIP6Addr, intervals(e.Ranges6())})
+}
+
+// wantSet is one interval set of a table as Apply builds it.
+type wantSet struct {
+	name     string
+	keyType  nftables.SetDatatype
+	elements []nftables.SetElement
+}
+
+// wantChain is one base chain of a table as Apply builds it: hooked at
+// hook, lastPriority, policy accept.
+type wantChain struct {
+	name  string
+	hook  nftables.ChainHook
+	rules [][]expr.Any
+}
+
+// wholeTable reports whether the inet table name holds exactly what an
+// Apply put there: no flags (a dormant table's chains are unhooked: no
+// filter at all), exactly its chains, each as hooked (another base chain
+// in it, one setting the links' mark, would run before ours), each
+// rule's expressions (counters aside) in order, and each set's elements,
+// an element added (a leak) or removed (a refusal) included. It dumps the
+// sets: tens of milliseconds for a country-sized one, on each re-apply.
+func wholeTable(c *nftables.Conn, name string, chains []wantChain, sets ...wantSet) bool {
+	table, err := c.ListTableOfFamily(name, nftables.TableFamilyINet)
 	if err != nil || table.Flags != 0 {
 		return false
 	}
-	chain, ok := onlyChain(c)
-	if !ok || chain.Hooknum == nil || *chain.Hooknum != *nftables.ChainHookOutput ||
-		chain.Priority == nil || *chain.Priority != guardPriority || chain.Policy == nil || *chain.Policy != nftables.ChainPolicyAccept {
+	have, err := tableChains(c, name)
+	if err != nil || len(have) != len(chains) {
 		return false
 	}
-	rules, err := c.GetRules(table, chain)
-	want := guardRules(e, guardSet, 0)
-	if err != nil || len(rules) != len(want) {
-		return false
+	for _, w := range chains {
+		i := slices.IndexFunc(have, func(ch *nftables.Chain) bool { return ch.Name == w.name })
+		if i < 0 {
+			return false
+		}
+		chain := have[i]
+		if chain.Hooknum == nil || *chain.Hooknum != w.hook ||
+			chain.Priority == nil || *chain.Priority != lastPriority || chain.Policy == nil || *chain.Policy != nftables.ChainPolicyAccept {
+			return false
+		}
+		rules, err := c.GetRules(table, chain)
+		if err != nil || len(rules) != len(w.rules) {
+			return false
+		}
+		for i, r := range rules {
+			if !sameExprs(r.Exprs, w.rules[i]) {
+				return false
+			}
+		}
 	}
-	for i, r := range rules {
-		if !sameExprs(r.Exprs, want[i]) {
+	for _, w := range sets {
+		set, err := c.GetSetByName(table, w.name)
+		if err != nil || !set.Interval || set.KeyType.Name != w.keyType.Name {
+			return false
+		}
+		elems, err := c.GetSetElements(set)
+		if err != nil || !sameElements(elems, w.elements) {
 			return false
 		}
 	}
-	set, err := c.GetSetByName(table, guardSet)
-	if err != nil || !set.Interval || set.KeyType.Name != nftables.TypeIP6Addr.Name {
-		return false
-	}
-	elems, err := c.GetSetElements(set)
-	return err == nil && sameElements(elems, intervals(e.Ranges6()))
+	return true
 }
 
-// guardChains are the chains of the guard's table.
-func guardChains(c *nftables.Conn) ([]*nftables.Chain, error) {
+// tableChains are the chains of our inet table name.
+func tableChains(c *nftables.Conn, name string) ([]*nftables.Chain, error) {
 	chains, err := c.ListChainsOfTableFamily(nftables.TableFamilyINet)
 	if err != nil {
 		return nil, err
 	}
 	var ours []*nftables.Chain
 	for _, ch := range chains {
-		if ch.Table != nil && ch.Table.Name == GuardTable {
+		if ch.Table != nil && ch.Table.Name == name {
 			ours = append(ours, ch)
 		}
 	}
 	return ours, nil
-}
-
-// onlyChain is the guard table's chain when it is the only one and is
-// guardChain.
-func onlyChain(c *nftables.Conn) (*nftables.Chain, bool) {
-	ours, err := guardChains(c)
-	if err != nil || len(ours) != 1 || ours[0].Name != guardChain {
-		return nil, false
-	}
-	return ours[0], true
 }
 
 // sameExprs compares a rule as the kernel dumps it with one as Apply
@@ -588,9 +619,14 @@ func guardRules(e routetable.Exempt, setName string, setID uint32) [][]expr.Any 
 
 // oifname is "oifname == name" (the whole name and its NUL, as nft
 // compares an exact name).
-func oifname(name string) []expr.Any {
+func oifname(name string) []expr.Any { return ifname(expr.MetaKeyOIFNAME, name) }
+
+// iifname is "iifname == name".
+func iifname(name string) []expr.Any { return ifname(expr.MetaKeyIIFNAME, name) }
+
+func ifname(key expr.MetaKey, name string) []expr.Any {
 	return []expr.Any{
-		&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
+		&expr.Meta{Key: key, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: append([]byte(name), 0)},
 	}
 }

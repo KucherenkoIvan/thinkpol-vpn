@@ -63,7 +63,7 @@ func (g *IPv6Guard) inspect() routetable.GuardReport {
 	table := tables[i]
 	r.Present = true
 	r.NFTables = &routetable.NFTablesReport{Dormant: tableFlags(table)&unix.NFT_TABLE_F_DORMANT != 0}
-	chains, err := guardChains(c)
+	chains, err := tableChains(c, GuardTable)
 	if err != nil {
 		r.NFTables.ChainsUnreadable = "nftables chains: " + err.Error()
 		r.RulesUnreadable = r.NFTables.ChainsUnreadable

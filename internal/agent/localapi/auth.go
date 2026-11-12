@@ -57,6 +57,8 @@ var methodAccess = map[string]Access{
 	localapiv1.LocalService_Disconnect_FullMethodName:       AccessControl,
 	localapiv1.LocalService_SetRulePreset_FullMethodName:    AccessControl,
 	localapiv1.LocalService_SetConnectOnBoot_FullMethodName: AccessControl,
+	localapiv1.LocalService_SetKillSwitch_FullMethodName:    AccessControl,
+	localapiv1.LocalService_SetAllowLAN_FullMethodName:      AccessControl,
 	localapiv1.LocalService_Diagnose_FullMethodName:         AccessControl,
 	localapiv1.LocalService_TailLogs_FullMethodName:         AccessAdmin,
 }

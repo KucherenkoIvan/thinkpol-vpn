@@ -138,7 +138,7 @@ func TestUpAppliesThePlatformDefaults(t *testing.T) {
 	}
 	agent.ApplyOSDefaults(&cfg)
 	want := agent.Config{StateDir: agent.DefaultStateDir, Mode: agent.ModeDevice, LogLevel: "info", MapPoll: 5 * time.Second,
-		Connect: true, APISocket: agent.DefaultAPISocket(), APIGroup: "thinkpol", DNS: true}
+		Connect: true, APISocket: agent.DefaultAPISocket(), APIGroup: "thinkpol", DNS: true, FailClosedAfterCrash: true}
 	if cfg != want {
 		t.Fatalf("defaults %+v", cfg)
 	}
