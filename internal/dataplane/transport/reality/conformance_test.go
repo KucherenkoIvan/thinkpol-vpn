@@ -14,10 +14,16 @@ var shapings = map[string]transport.Shaping{
 	"random":  {Padding: transport.Padding{Mode: transport.PadRandom, Min: 0, Max: MaxRandomPadding}},
 }
 
-// TestConformance runs unshaped with a table the listener takes late, as
-// on a loaded node: a dial right after a table change admitted its peer
-// still finds the old table.
 func TestConformance(t *testing.T) {
+	transporttest.Run(t, harness(t, newTransport(Options{}), transport.Shaping{}))
+}
+
+// TestConformanceLateTable runs the suite with a table the listener takes
+// late, as on a loaded node: a dial right after a table change that
+// admitted its peer still finds the old table. RevocationRacingDial is
+// trivial here (the listener never sees the racing peer), which is why
+// TestConformance keeps the immediate table.
+func TestConformanceLateTable(t *testing.T) {
 	h := harness(t, newTransport(Options{}), transport.Shaping{})
 	listen := h.Listen
 	h.Listen = func(t *testing.T, addr string, peers transport.Peers, camouflage transport.Camouflage) (transport.Listener, transporttest.Endpoint) {

@@ -46,10 +46,9 @@
 // links whose credential stays pick up their new settings, or close with
 // [ErrSettingsRefused] if the transport refuses them. A listener may take
 // a change in the background: until it has, a credential the change added
-// fails authentication like any other (for reality, the dialer is spliced
-// to the target and its dial fails), so a dialer admitted by a new map
-// dials again. Accept may
-// return a link that is already closed. Closing a listener closes every link
+// fails authentication like any other (its dial may fail, or get a link
+// that is never accepted), so a dialer admitted by a new map dials again.
+// Accept may return a link that is already closed. Closing a listener closes every link
 // it accepted; a dialer's link either carries on with a listener restarted
 // at the same endpoint or closes, so the layer above redials.
 //

@@ -458,7 +458,7 @@ type front struct {
 
 func newFront(t *testing.T) *front {
 	t.Helper()
-	ln := listenUnlearned(t, func() (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") })
+	ln := listenUnlearned(t)
 	f := &front{t: t, ln: ln}
 	t.Cleanup(func() { _ = ln.Close(); f.release() })
 	tg := theTarget(t)
@@ -483,16 +483,16 @@ func newFront(t *testing.T) *front {
 	return f
 }
 
-// listenUnlearned listens with listen until it gets an address REALITY
+// listenUnlearned listens on loopback until it gets an address REALITY
 // never detected records for in this process, keeping the others open
 // until the test ends. What REALITY learned outlives the target it learned
 // it from, and -count reruns the tests in one process, where a loopback
 // port an earlier target used comes round again: detect would take that
 // target's records for the new one's and return at once.
-func listenUnlearned(t *testing.T, listen func() (net.Listener, error)) net.Listener {
+func listenUnlearned(t *testing.T) net.Listener {
 	t.Helper()
 	for range 100 {
-		ln, err := listen()
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
