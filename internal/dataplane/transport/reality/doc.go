@@ -60,6 +60,13 @@
 // own sealed time leaves the window. A replayed hello is spliced like any
 // failed authentication.
 //
+// The listener takes a table change in a goroutine of its own. Until it
+// has, a short id the change added fails authentication like any other:
+// spliced to the target (or given to the camouflage), so the client's
+// REALITY handshake fails and it dials again. A short id the change removed
+// between a hello's authentication and its admission is checked again at
+// admission, so its connection closes instead of becoming a link.
+//
 // An authenticated connection's TLS handshake is REALITY's server
 // (github.com/xtls/reality, an unmodified MPL-2.0 module dependency, see
 // TP-087's Notes), given the ClientHello again and the target connection
