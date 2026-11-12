@@ -190,3 +190,4 @@ Run on the owner's Mac with thinkpol installed as the service (`sudo thinkpol se
 - 2026-11-12 not verified: everything on macOS (the restricted DHCPv6 rules as pfctl lists them, forwarded traffic through the anchor: device checks 2 and 12; the errNoPfctl and pf_darwin.go move are unit-tested with the fake pfctl only). Out of scope, for the board: RR59's boot window (a oneshot applying the down shape before network-pre.target, a boot-time pf rule); the go1.26.11 toolchain bump for GO-2026-6859; `diag` doesn't show the kill switch's table (from round 0)
 - 2026-11-12 in-progress → review
 - 2026-11-12 review → has-errors (round 2 findings R2.x)
+- 2026-11-12 has-errors → in-progress
