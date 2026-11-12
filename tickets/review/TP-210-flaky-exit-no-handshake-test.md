@@ -23,8 +23,8 @@ branch: "tp-210-flaky-exit-no-handshake-test"
 - Retrying, longer timeouts without a cause, skipping under load.
 
 ## Acceptance
-- [ ] the root cause named in Notes, with the evidence (a log or a trace from a failing run)
-- [ ] the fix; the test passes 20 times in a lab node with the machine loaded (`make lab-gotest PKG=./internal/agent/ RUN=TestAnExitThatNeverHandshakesIsExitNoHandshake COUNT=20` beside a full lab), and a mutation that reverts the fix fails it
+- [x] the root cause named in Notes, with the evidence (a log or a trace from a failing run)
+- [x] the fix; the test passes 20 times in a lab node with the machine loaded (`make lab-gotest PKG=./internal/agent/ RUN=TestAnExitThatNeverHandshakesIsExitNoHandshake COUNT=20` beside a full lab), and a mutation that reverts the fix fails it
 
 ## Notes
 - A third failure, in TP-048's full lab on 590e016: health went `down` with `exit_no_handshake` during the steady-traffic step (status_test.go:1095), 3.3 s into the test.
@@ -46,7 +46,17 @@ branch: "tp-210-flaky-exit-no-handshake-test"
 - **What a real device shows.** Under scheduling delay at production timings the grading is right: a link closes after 6 s without proof, and while WireGuard keeps retrying its next initiation follows the link's return within about 5.3 s, inside the 15 s deadline, so the restarted count holds. The flake needs the test's 1 s deadline, shorter than WireGuard's retry interval. Related production edge, independent of load (out of scope, for the board): an exit still pending when its first hop re-dials, with no initiation within 15 s of the link's return (WireGuard gave up for want of traffic), is graded `down`/`exit_no_handshake` the moment traffic resumes and the first initiation goes out, until the exit answers (one round trip for a healthy exit). docs/design/api-overview.md's health row says "the 15 s start over when it comes back", which this edge doesn't do. An exact grading needs the first initiation sent since the link came up, which wg doesn't report (it keeps the first unanswered and the last).
 - **Not explained.** Failures 1.3 s into a run don't fit this mechanism, which needs WireGuard's retry (5 s or later). Their logs weren't kept. The same re-dial explains them if their step failed with `no_link_up` (a second re-dial inside the steady step), which the fixed test leaves to no_link_up's own tests. The 3.3 s `exit_no_handshake` in TP-048's run has no log either and stays unexplained.
 - **Fix (test only, the grading unchanged).** The wait step waits for the exit's completed handshake (`LastHandshake` set, nothing pending) as well as ok. The steady step asserts what it is about, no `exit_no_handshake` and no exit unanswered, not every health problem: once a handshake completed nothing is pending, and under steady traffic WireGuard initiates again only to rekey (120 s) or 15 s after it stops hearing back, so a re-dial there can only raise `no_link_up`.
+- **Not fixed: a re-dial storm.** With freezes up to 1 s (the links' DeadAfter), the link closed every 2 s or so, and each WireGuard retry fired at the same resume instant the link was declared dead ("Failed to send handshake initiation: path: no path to the peer"), so no initiation reached the exit for 15 s and the wait step failed (1 of 20). That is fastPaths' 1 s DeadAfter on a machine stalled for whole seconds, a harsher regime than the ticket's failures, which never showed it.
 
 ## Log
 - 2026-11-12 created in backlog (from TP-048's full labs)
 - 2026-11-12 backlog → in-progress, owner: agent-tp-210
+- 2026-11-12 diagnosis: reproduced without the lab by freezing the test binary at random (SIGSTOP/SIGCONT, stops of 50 to 700 ms): 2 of 10 failed on rewrite at 7d7968f with the ticket's symptom; a temporary trace of what health is graded from named the cause (Notes)
+- 2026-11-12 fix (1480f95): status_test.go's wait step also needs the exit's completed handshake (exitHandshook); the steady step asserts no exit_no_handshake and no exit unanswered instead of health ok; the grading is unchanged
+- 2026-11-12 under the same freezes the fixed test passed 20 of 20, one run going through the failing path (ok after a re-dial with nothing answered) and waiting until the retry was answered
+- 2026-11-12 mutations: M1 the wait step back to health ok alone failed 6 of 20 under the freezes, each `exit_no_handshake` in the steady step (the mutation that reverts the fix); M2 the steady step back to "health ok" failed 11 of 20 with `no_link_up` under freezes up to 1 s, where the fixed test failed 1 (the re-dial storm in Notes); M3 exitHandshakes also counting an exit whose last handshake is older than the deadline failed the steady step at once, without load
+- 2026-11-12 merged origin/rewrite at 5742584 (19a263d); `make lint` and `make test` green on it
+- 2026-11-12 `make lab-gotest PKG=./internal/agent/ RUN='^TestAnExitThatNeverHandshakesIsExitNoHandshake$' COUNT=20` on ae1db8f: 20 of 20 passed (9.1 to 9.4 s each), run while the full lab below was running and the CPU pool was full
+- 2026-11-12 full `make lab-test` green on ae1db8f (GOFLAGS=-p=2, LAB_P=1, under the full-lab lock): lab phase and 39 packages
+- 2026-11-12 not verified: the 1.3 s failures and TP-048's 3.3 s one (no logs kept; Notes). For the board, out of scope: the production edge in Notes (an exit pending across a re-dial, idle past the deadline, is `down` from its first new initiation until it answers; api-overview's health row says the 15 s start over), and the re-dial storm under whole-second stalls
+- 2026-11-12 in-progress → review
