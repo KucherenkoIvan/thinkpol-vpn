@@ -354,13 +354,8 @@ var resolvConfTimes = resolvConfTiming{check: 2 * time.Second, settle: 500 * tim
 // errRestored is Update's error once Restore has run.
 var errRestored = errors.New("dns: resolv.conf was restored")
 
-// setResolvConf manages the resolv.conf at path with the product's
-// timings.
-func setResolvConf(path string, uplink string, c SystemConfig) (*resolvConf, error) {
-	return setResolvConfTimed(path, uplink, c, resolvConfTimes)
-}
-
-// setResolvConfTimed is setResolvConf with the given timings. The first
+// setResolvConfTimed manages the resolv.conf at path with the given
+// timings (resolvConfTimes are the product's). The first
 // take-over reads the file as it is: with nothing written yet there is
 // no telling another program's write in progress from a finished one
 // (RESIDUAL-RISKS.md RR5).
