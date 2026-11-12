@@ -489,8 +489,10 @@ var censorCases = []censorCase{
 	{name: "ip-blocklist (entry)", expect: allFail(), blocker: "ip-blocklist",
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig { return entryIPBlocklist(t, l) }},
 	// Reset, its default: plain TCP, OpenVPN over TCP and the rest name
-	// no site; the relay's clients name the site it relays to.
-	{name: "sni-blocklist (entry)", expect: map[string]string{rowHTTPS: "fail", rowRelayTCP: "fail"}, blocker: "sni-blocklist",
+	// no site; the relay's clients name the site it relays to, and so do
+	// reality's, whose server-1 also checks its target under that name:
+	// a censor blocking the site's name blocks reality with it.
+	{name: "sni-blocklist (entry)", expect: map[string]string{rowHTTPS: "fail", rowRelayTCP: "fail", rowReality: "fail"}, blocker: "sni-blocklist",
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			return []censor.ModuleConfig{{Name: "sni-blocklist", Settings: json.RawMessage(`{"names": ["` + httpsName + `"]}`)}}
 		}},

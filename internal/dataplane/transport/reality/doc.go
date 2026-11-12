@@ -41,14 +41,17 @@
 // REALITY took the connection (a target answering first would have its
 // real ServerHello spliced to the authenticated client).
 //
-// A target that can't be reached closes the connection. Before the hello
-// is decided either side closing closes both whole, as REALITY's server
-// does: the target closing before it sent anything closes the client, and
-// the client's FIN before its hello was whole closes the target. Once
-// spliced, each side's FIN is passed on as a half-close, and the other
-// direction ends once it was idle for 5 s, which REALITY's server doesn't
-// do (a client that stays silent after the site closed would hold both
-// connections for good; an answer that keeps flowing isn't cut). Closing
+// A target that can't be reached closes the connection. The target's FIN,
+// even before it sent anything, reaches the client as a half-close and
+// what the client still sends goes on to the target, as the site's own
+// lingering close reads on: a prober still sending gets the site's FIN,
+// not a reset, where REALITY's server closes both (a difference the lab's
+// prober caught under load). The client's FIN before its hello was whole
+// closes both. Once spliced, each side's FIN is passed on as a
+// half-close, and the other direction ends once it was idle for 5 s,
+// which REALITY's server doesn't do (a client that stays silent after the
+// site closed would hold both connections for good; an answer that keeps
+// flowing isn't cut). Closing
 // the listener ends its splices, cancels its dials to the target and
 // waits for both. With an Admission.Camouflage, the hello is read whole
 // (for at most 10 s) before anything is dialled, and what fails goes to

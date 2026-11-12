@@ -24,11 +24,12 @@ var spliceLinger = 5 * time.Second
 // of the listener's. The hello either authenticates, and the target is
 // handed to REALITY, or the mirror becomes a splice.
 //
-// Before the hello is decided, either side closing closes both whole, as
-// REALITY's server does: the target closing before it sent anything
-// closes the client, and the client's FIN before its hello was whole
-// closes the target. Once spliced, each side's FIN is passed on as a
-// half-close.
+// The target's FIN, even before it sent anything, is passed on as a
+// half-close: what the client still sends goes on to the target, as the
+// site's own lingering close reads on, so a client still sending gets the
+// site's FIN, not a reset (REALITY's server closes both there). The
+// client's FIN before its hello was whole closes both; once spliced, each
+// side's FIN is passed on as a half-close. A target's error closes both.
 type mirror struct {
 	client, target *idleConn
 	linger         time.Duration
@@ -131,9 +132,9 @@ func (m *mirror) forward(b []byte) error {
 }
 
 // copyFromTarget is the target → client direction: while the hello is
-// gathered, anything from the target splices the connection, and its
-// closing before it sent anything closes both; after a hand-off it stops,
-// keeping what it read for REALITY.
+// gathered, anything from the target, its FIN included, splices the
+// connection; after a hand-off it stops, keeping what it read for
+// REALITY.
 func (m *mirror) copyFromTarget() {
 	defer close(m.fromTarget)
 	buf := make([]byte, 32<<10)
@@ -147,6 +148,10 @@ func (m *mirror) copyFromTarget() {
 	m.state = spliced
 	m.mu.Unlock()
 	if n == 0 && err != nil {
+		if err == io.EOF {
+			m.endDirection(m.client, nil)
+			return
+		}
 		m.closeBoth()
 		return
 	}

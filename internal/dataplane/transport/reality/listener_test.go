@@ -89,6 +89,46 @@ func TestAStallingProbeIsClosedWhenTheTargetClosesIt(t *testing.T) {
 	}
 }
 
+// A target that closes its side before it sent anything, as nginx does
+// on bytes that aren't TLS (a lingering close: its FIN, then it reads on),
+// is passed on as the site's own close would be: the client gets the FIN,
+// and what it still sends goes on to the target rather than being reset,
+// so a prober sees the site's close, not a reset.
+func TestATargetsSilentCloseReachesTheClientAsItsFIN(t *testing.T) {
+	setLinger(t, 2*time.Second)
+	header := []byte{23, 3, 3, 0, 16} // application data first: no hello
+	after := make(chan []byte, 1)
+	tg := newIdleTarget(t, 5*time.Second, func(c *net.TCPConn, r io.Reader) {
+		if !bytes.HasPrefix(r.(*recorder).bytes(), header) {
+			_, _ = io.Copy(io.Discard, r) // Listen's own checks of the target
+			return
+		}
+		_ = c.CloseWrite()
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		rest, _ := io.ReadAll(r)
+		after <- rest
+	})
+	l := listenTo(t, newTransport(Options{}), tg, newKeys(t))
+	c := probe(t, l.Addr().String(), header)
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err := c.Read(make([]byte, 1)); n != 0 || err != io.EOF {
+		t.Fatalf("the client read %d bytes, %v; want the target's FIN", n, err)
+	}
+	more := bytes.Repeat([]byte{0x42}, 995)
+	if _, err := c.Write(more); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.(*net.TCPConn).CloseWrite()
+	select {
+	case rest := <-after:
+		if !bytes.HasSuffix(rest, more) {
+			t.Errorf("the target read %d bytes after its FIN, want the client's %d", len(rest), len(more))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the target never finished reading")
+	}
+}
+
 // setLinger sets spliceLinger for one test.
 func setLinger(t *testing.T, d time.Duration) {
 	linger := spliceLinger
@@ -155,16 +195,17 @@ func TestAnAnswerAfterTheClientsFINFlowsOnPastTheLinger(t *testing.T) {
 	}
 }
 
-// Before the hello is decided, the target closing without a word closes
-// the client whole, as REALITY's server does: a prober writing after the
-// FIN is reset. The reset shows on the next write: Linux reads EOF after
-// it, since the FIN came first.
-func TestBeforeTheHelloTheTargetsCloseClosesTheClientWhole(t *testing.T) {
+// Before the hello is decided, a target that closes whole without a word
+// (no lingering close) still resets a prober writing after its FIN, as the
+// site would: the write goes on to the target, whose reset closes the
+// client. The reset shows on a later write: Linux reads EOF after it,
+// since the FIN came first.
+func TestBeforeTheHelloATargetsWholeCloseResetsTheClient(t *testing.T) {
 	tg := newIdleTarget(t, 300*time.Millisecond, nil)
 	l := listenTo(t, newTransport(Options{}), tg, newKeys(t))
 	c := probe(t, l.Addr().String(), []byte{recordTypeHandshake, 3, 1, 0x02})
 	closedWithin(t, c, 5*time.Second)
-	for i := range 2 {
+	for i := range 5 {
 		_, err := c.Write([]byte("after the FIN"))
 		if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
 			return
@@ -174,7 +215,7 @@ func TestBeforeTheHelloTheTargetsCloseClosesTheClientWhole(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Error("two writes past the FIN went through: the listener's end of the client is still open")
+	t.Error("five writes past the FIN went through: the listener's end of the client is still open")
 }
 
 // Before the hello is decided, the client's FIN closes the target whole,
