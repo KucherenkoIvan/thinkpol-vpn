@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
 
@@ -89,3 +90,56 @@ var ErrKillSwitchInPlace = errors.New("firewall: the kill switch is in place, bu
 // errKillSwitchClosed: the kill switch was closed. Shared by the Linux and
 // macOS kill switches; Windows has none yet (TP-076).
 var errKillSwitchClosed = errors.New("firewall: the kill switch is closed") //nolint:unused // unused on Windows only
+
+// KillSwitchReport is the kill switch as the host shows it, for
+// diagnostics (`thinkpol diag`): read, never changed, by
+// InspectKillSwitch, whether or not a KillSwitch runs (what a crash or a
+// stop left shows too). A part that couldn't be read says why in its
+// Unreadable; one that could is all there is.
+type KillSwitchReport struct {
+	// Unreadable: why nothing of it could be read (no nf_tables, no
+	// pfctl, an OS without a kill switch).
+	Unreadable string
+	// Where names its place on the host: "nftables table inet
+	// thinkpol-killswitch", "pf anchor com.apple/001.thinkpol-killswitch".
+	Where string
+	// Present: the host holds it (the table exists; the anchor lists
+	// rules). PresentUnknown: that couldn't be told (the anchor's rules
+	// unreadable).
+	Present, PresentUnknown bool
+	// Rules are its rules in order, as the host lists them, with their
+	// counters.
+	Rules           []routetable.GuardRuleReport
+	RulesUnreadable string
+	// Sets are its nftables sets or pf tables by name, each with its
+	// size: none when it isn't there. Only the sizes: their entries are
+	// public addresses (the entries', the direct destinations'), and the
+	// direct ones may run to thousands.
+	Sets           []KillSwitchSetReport
+	SetsUnreadable string
+	// NFTables is the table's own state, on Linux.
+	NFTables *routetable.NFTablesReport
+	// PF is pf's state as it concerns the kill switch, on macOS.
+	PF *KillSwitchPFReport
+}
+
+// KillSwitchSetReport is one of the kill switch's sets or tables.
+type KillSwitchSetReport struct {
+	Name string
+	// Entries is its size: on Linux the intervals the set holds (a
+	// prefix or a range each; a direct set's expired ones gone), on macOS
+	// the addresses and prefixes `pfctl -T show` lists.
+	Entries    int
+	Unreadable string
+}
+
+// KillSwitchPFReport is pf's state as it concerns the kill switch (the
+// guard's own check of the main ruleset is the guard's report's).
+type KillSwitchPFReport struct {
+	Enabled           bool
+	EnabledUnreadable string
+	// Reference is the `pfctl -E` reference the kill switch's record
+	// names, and whether pf still lists it as taken by that process.
+	Reference           *routetable.PFReferenceReport
+	ReferenceUnreadable string
+}

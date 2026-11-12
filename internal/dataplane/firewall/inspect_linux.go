@@ -47,43 +47,128 @@ func (g *IPv6Guard) inspect() routetable.GuardReport {
 		r.Unreadable = err.Error()
 		return r
 	}
+	t, err := readTable(c, GuardTable)
+	if err != nil {
+		r.Unreadable = err.Error()
+		return r
+	}
+	if t.table == nil {
+		return r
+	}
+	r.Present, r.NFTables, r.Rules, r.RulesUnreadable = true, t.nft, t.rules, t.rulesUnreadable
+	r.Exempt, r.ExemptUnreadable = exemptSet(c, t.table)
+	return r
+}
+
+// InspectKillSwitch reads the kill switch's table in the calling
+// thread's network namespace as the kernel holds it, for diagnostics:
+// its flags, chains, rules with their counters and the sizes of its
+// sets. It changes nothing, and works whether or not a kill switch runs.
+func InspectKillSwitch(context.Context) KillSwitchReport {
+	return NewKillSwitch().inspect()
+}
+
+// InspectKillSwitchInNamespace is InspectKillSwitch in the network
+// namespace at path.
+func InspectKillSwitchInNamespace(path string) KillSwitchReport {
+	k, err := NewKillSwitchInNamespace(path)
+	if err != nil {
+		return KillSwitchReport{Unreadable: err.Error()}
+	}
+	defer func() { _ = unix.Close(k.netns) }()
+	return k.inspect()
+}
+
+func (k *KillSwitch) inspect() KillSwitchReport {
+	r := KillSwitchReport{Where: "nftables table inet " + KillSwitchTable}
+	c, err := nftConn(k.netns)
+	if err != nil {
+		r.Unreadable = err.Error()
+		return r
+	}
+	t, err := readTable(c, KillSwitchTable)
+	if err != nil {
+		r.Unreadable = err.Error()
+		return r
+	}
+	if t.table == nil {
+		return r
+	}
+	r.Present, r.NFTables, r.Rules, r.RulesUnreadable = true, t.nft, t.rules, t.rulesUnreadable
+	sets, err := c.GetSets(t.table)
+	if err != nil {
+		r.SetsUnreadable = "nftables sets: " + err.Error()
+		return r
+	}
+	for _, set := range sets {
+		r.Sets = append(r.Sets, setSize(c, set))
+	}
+	return r
+}
+
+// setSize counts set's intervals: an interval set dumps each as its first
+// address and, flagged as its end, the address after its last (and may
+// flag the gap below the first so), so only the starts count.
+func setSize(c *nftables.Conn, set *nftables.Set) KillSwitchSetReport {
+	out := KillSwitchSetReport{Name: set.Name}
+	elems, err := c.GetSetElements(set)
+	if err != nil {
+		out.Unreadable = fmt.Sprintf("nftables set %s: %v", set.Name, err)
+		return out
+	}
+	for _, e := range elems {
+		if !e.IntervalEnd {
+			out.Entries++
+		}
+	}
+	return out
+}
+
+// tableReading is a table as readTable found it; table is nil when the
+// namespace has none by its name.
+type tableReading struct {
+	table           *nftables.Table
+	nft             *routetable.NFTablesReport
+	rules           []routetable.GuardRuleReport
+	rulesUnreadable string
+}
+
+// readTable reads the inet table name: its flags, chains, and rules with
+// their counters. err is set when the tables can't be listed at all.
+func readTable(c *nftables.Conn, name string) (tableReading, error) {
 	tables, err := c.ListTablesOfFamily(nftables.TableFamilyINet)
 	if err != nil {
 		if noNFTables(err) {
-			r.Unreadable = "no nf_tables in the kernel: " + err.Error()
-		} else {
-			r.Unreadable = "nftables: " + err.Error()
+			return tableReading{}, fmt.Errorf("no nf_tables in the kernel: %w", err)
 		}
-		return r
+		return tableReading{}, fmt.Errorf("nftables: %w", err)
 	}
-	i := slices.IndexFunc(tables, func(t *nftables.Table) bool { return t.Name == GuardTable })
+	i := slices.IndexFunc(tables, func(t *nftables.Table) bool { return t.Name == name })
 	if i < 0 {
-		return r
+		return tableReading{}, nil
 	}
 	table := tables[i]
-	r.Present = true
-	r.NFTables = &routetable.NFTablesReport{Dormant: tableFlags(table)&unix.NFT_TABLE_F_DORMANT != 0}
-	chains, err := tableChains(c, GuardTable)
+	r := tableReading{table: table, nft: &routetable.NFTablesReport{Dormant: tableFlags(table)&unix.NFT_TABLE_F_DORMANT != 0}}
+	chains, err := tableChains(c, name)
 	if err != nil {
-		r.NFTables.ChainsUnreadable = "nftables chains: " + err.Error()
-		r.RulesUnreadable = r.NFTables.ChainsUnreadable
+		r.nft.ChainsUnreadable = "nftables chains: " + err.Error()
+		r.rulesUnreadable = r.nft.ChainsUnreadable
 	}
 	for _, ch := range chains {
-		r.NFTables.Chains = append(r.NFTables.Chains, chainReport(ch))
-		if r.RulesUnreadable != "" {
+		r.nft.Chains = append(r.nft.Chains, chainReport(ch))
+		if r.rulesUnreadable != "" {
 			continue
 		}
 		rules, err := c.GetRules(table, ch)
 		if err != nil {
-			r.Rules, r.RulesUnreadable = nil, fmt.Sprintf("nftables rules of chain %s: %v", ch.Name, err)
+			r.rules, r.rulesUnreadable = nil, fmt.Sprintf("nftables rules of chain %s: %v", ch.Name, err)
 			continue
 		}
 		for _, rule := range rules {
-			r.Rules = append(r.Rules, ruleReport(ch.Name, rule.Exprs))
+			r.rules = append(r.rules, ruleReport(ch.Name, rule.Exprs))
 		}
 	}
-	r.Exempt, r.ExemptUnreadable = exemptSet(c, table)
-	return r
+	return r, nil
 }
 
 // tableFlags are the table's flags. The kernel sends them big-endian, and
@@ -209,8 +294,9 @@ func ruleReport(chain string, exprs []expr.Any) routetable.GuardRuleReport {
 	return r
 }
 
-// ruleText renders exprs nft-like, as far as the guard's own rules need
-// it (the text is a reading aid, not nft input): what a meta key or a payload loads, then compared, looked up
+// ruleText renders exprs nft-like, as far as the guard's and the kill
+// switch's own rules need it (the text is a reading aid, not nft input):
+// what a meta key, a conntrack key or a payload loads, then compared, looked up
 // or ranged, and the statements. A raw payload is nft's `@base,offset,len`
 // in bits; an expression it doesn't know shows as its type. A counter
 // shows without its values, which the report carries apart.
@@ -226,6 +312,9 @@ func ruleText(exprs []expr.Any) string {
 			} else {
 				words = append(words, "meta "+loaded)
 			}
+		case *expr.Ct:
+			loaded = ctName(v.Key)
+			words = append(words, "ct "+loaded)
 		case *expr.Payload:
 			loaded = "payload"
 			words = append(words, fmt.Sprintf("@%s,%d,%d", payloadBase(v.Base), v.Offset*8, v.Len*8))
@@ -273,6 +362,16 @@ func metaName(k expr.MetaKey) string {
 	return "key" + strconv.Itoa(int(k))
 }
 
+func ctName(k expr.CtKey) string {
+	switch k {
+	case expr.CtKeyDIRECTION:
+		return "direction"
+	case expr.CtKeySTATE:
+		return "state"
+	}
+	return "key" + strconv.Itoa(int(k))
+}
+
 func payloadBase(b expr.PayloadBase) string {
 	switch b {
 	case expr.PayloadBaseLLHeader:
@@ -304,8 +403,9 @@ func cmpOp(op expr.CmpOp) string {
 }
 
 // dataText renders a comparison's data by what was loaded to compare it
-// with: interface names as strings, families and protocols by name, a
-// mark in hex, an address as one, other numbers big-endian.
+// with: interface names as strings, families, protocols and conntrack
+// directions by name, a mark in hex, an address as one, other numbers
+// big-endian.
 func dataText(loaded string, d []byte) string {
 	switch loaded {
 	case "oifname", "iifname":
@@ -333,6 +433,15 @@ func dataText(loaded string, d []byte) string {
 				return "ipv6-icmp"
 			case unix.IPPROTO_ICMP:
 				return "icmp"
+			}
+		}
+	case "direction":
+		if len(d) == 1 {
+			switch d[0] {
+			case 0: // IP_CT_DIR_ORIGINAL
+				return "original"
+			case 1: // IP_CT_DIR_REPLY
+				return "reply"
 			}
 		}
 	case "mark":

@@ -4,6 +4,7 @@ package firewall_test
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"slices"
 	"strings"
@@ -106,4 +107,119 @@ func TestInspectReadsTheGuardAsTheKernelHoldsIt(t *testing.T) {
 	if r := firewall.InspectIPv6GuardInNamespace("/run/netns/no-such-namespace"); !strings.Contains(r.Unreadable, "no-such-namespace") {
 		t.Fatalf("a namespace that isn't there: %+v", r)
 	}
+}
+
+// TestInspectReadsTheKillSwitchAsTheKernelHoldsIt applies the kill switch
+// down, has it refuse pings, and reads it back: its two chains as hooked,
+// its rules in nft's order (the forward chain's replies by conntrack's
+// direction) with the refusals counted, its sets' sizes; connected, the
+// TUN's rules and the direct sets' sizes; closed, no kill switch, not an
+// unreadable one.
+func TestInspectReadsTheKillSwitchAsTheKernelHoldsIt(t *testing.T) {
+	p := ksPair(t)
+	ns := "/run/netns/" + p.dev
+	if r := firewall.InspectKillSwitchInNamespace(ns); r.Unreadable != "" || r.Present || r.Rules != nil || r.Sets != nil ||
+		r.Where != "nftables table inet thinkpol-killswitch" {
+		t.Fatalf("before the kill switch: %+v", r)
+	}
+	k := p.killSwitch(t)
+	ctx := context.Background()
+	down := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: set(t, entry4+"/32", entry6+"/128", "10.0.0.0/8"), NoDNS: set(t, "10.0.0.0/8")}
+	if err := k.Apply(ctx, down); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if p.ping4(t, foreign4) {
+			t.Fatal("the kill switch let a ping out")
+		}
+	}
+
+	r := firewall.InspectKillSwitchInNamespace(ns)
+	if r.Unreadable != "" || !r.Present || r.PresentUnknown || r.RulesUnreadable != "" || r.SetsUnreadable != "" || r.PF != nil {
+		t.Fatalf("down: %+v", r)
+	}
+	wantChains := []routetable.NFTChainReport{
+		{Name: "output", Hook: "output", Priority: 2147483647, Policy: "accept"},
+		{Name: "forward", Hook: "forward", Priority: 2147483647, Policy: "accept"},
+	}
+	if nf := r.NFTables; nf == nil || nf.Dormant || nf.ChainsUnreadable != "" || !slices.Equal(nf.Chains, wantChains) {
+		t.Fatalf("the table: %+v", r.NFTables)
+	}
+	perChain := map[string]int{}
+	var texts []string
+	for _, rule := range r.Rules {
+		perChain[rule.Chain]++
+		texts = append(texts, rule.Chain+": "+rule.Text)
+		if rule.Counted != strings.Contains(rule.Text, "counter") {
+			t.Errorf("rule %+v", rule)
+		}
+	}
+	for _, chain := range []string{"output", "forward"} {
+		if n := strings.Count(p.nft(t, "-a", "list", "chain", "inet", firewall.KillSwitchTable, chain), "# handle"); perChain[chain] != n || n < 5 {
+			t.Errorf("chain %s: %d rules, nft lists %d", chain, perChain[chain], n)
+		}
+	}
+	for _, want := range []string{
+		`output: meta oifname "lo" accept`,
+		`output: meta mark 0x00007470 accept`,
+		"output: counter reject with icmpx admin-prohibited",
+		"forward: ct direction reply meta nfproto ipv4 @nh,96,32 @allow4 accept",
+	} {
+		if !slices.Contains(texts, want) {
+			t.Errorf("no rule %q in:\n%s", want, strings.Join(texts, "\n"))
+		}
+	}
+	if slices.ContainsFunc(texts, func(s string) bool { return strings.Contains(s, "thinkpol0") }) {
+		t.Errorf("down, the TUN passes:\n%s", strings.Join(texts, "\n"))
+	}
+	if last := r.Rules[perChain["output"]-1]; last.Chain != "output" || last.Packets < 3 {
+		t.Errorf("three refused pings, the output chain's last rule counted %+v", last)
+	}
+	if got, want := setSizes(r.Sets), "allow4=2 allow6=1 direct4=0 direct6=0 nodns4=1 nodns6=0"; got != want {
+		t.Errorf("sets %s, want %s", got, want)
+	}
+
+	up := down
+	up.TUN, up.Direct = "thinkpol0", set(t, "198.51.100.0/24", "192.0.2.0/25", "192.0.2.200/32", "2001:db8:d0::/48")
+	if err := k.Apply(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	r = firewall.InspectKillSwitchInNamespace(ns)
+	texts = nil
+	for _, rule := range r.Rules {
+		texts = append(texts, rule.Chain+": "+rule.Text)
+	}
+	for _, want := range []string{`output: meta oifname "thinkpol0" accept`, `forward: meta iifname "thinkpol0" accept`} {
+		if !slices.Contains(texts, want) {
+			t.Errorf("connected: no rule %q in:\n%s", want, strings.Join(texts, "\n"))
+		}
+	}
+	if got, want := setSizes(r.Sets), "allow4=2 allow6=1 direct4=3 direct6=1 nodns4=1 nodns6=0"; got != want {
+		t.Errorf("connected: sets %s, want %s", got, want)
+	}
+
+	if err := k.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if r := firewall.InspectKillSwitchInNamespace(ns); r.Unreadable != "" || r.Present || r.Rules != nil || r.Sets != nil || r.NFTables != nil {
+		t.Fatalf("closed: %+v", r)
+	}
+	if r := firewall.InspectKillSwitchInNamespace("/run/netns/no-such-namespace"); !strings.Contains(r.Unreadable, "no-such-namespace") {
+		t.Fatalf("a namespace that isn't there: %+v", r)
+	}
+}
+
+// setSizes is sets as "name=entries ...", by name; an unreadable one
+// as "name=?".
+func setSizes(sets []firewall.KillSwitchSetReport) string {
+	var out []string
+	for _, s := range sets {
+		n := fmt.Sprint(s.Entries)
+		if s.Unreadable != "" {
+			n = "?"
+		}
+		out = append(out, s.Name+"="+n)
+	}
+	slices.Sort(out)
+	return strings.Join(out, " ")
 }
