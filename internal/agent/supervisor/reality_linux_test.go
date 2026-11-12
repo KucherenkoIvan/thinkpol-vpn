@@ -402,9 +402,15 @@ func TestRealitySpacesShareAListener(t *testing.T) {
 	if !tg.receivedWhole(func() []byte { return captured }) {
 		t.Error("the replay didn't reach the target raw and whole")
 	}
-	eventually(t, 5*time.Second, "the strangers counted", func() error {
-		if ls := s.Listeners(); len(ls) != 1 || ls[0].Unauthenticated != 2 || ls[0].Routed != 4 {
+	// The stranger counted on the listener, the replay as space A's.
+	eventually(t, 5*time.Second, "the stranger and the replay counted", func() error {
+		if ls := s.Listeners(); len(ls) != 1 || ls[0].Unauthenticated != 1 || ls[0].Routed != 4 {
 			return fmt.Errorf("listeners %+v", ls)
+		}
+		for _, w := range s.Workers() {
+			if w.Space == spA.ID && w.Shared.Replayed != 1 {
+				return fmt.Errorf("space A %+v", w.Shared)
+			}
 		}
 		return nil
 	})
