@@ -205,9 +205,12 @@ func (r *runner) pointSystem() {
 	r.guard.set(true, sys, nil)
 	r.systemCfg, r.dnsRetryAt = want, time.Time{}
 	if p := sys.Problem(); p != nil {
-		if dns.Unprotected(p) {
+		switch {
+		case dns.Deferred(sys):
+			r.dp.Log.Error("DNS: the system's new configuration waits for another program's write of it to settle: names may leave outside the tunnel meanwhile", "servers", want.Servers, "err", p)
+		case dns.Unprotected(p):
 			r.dp.Log.Error("DNS: the system resolves through the node, but not only: names may leave outside the tunnel", "err", p)
-		} else {
+		default:
 			// The OS configuration warned when the read failed: one
 			// warning an episode.
 			r.dp.Log.Info("DNS: the system resolves through the node; the direct upstreams may be stale", "err", p)
