@@ -37,6 +37,8 @@ A member on a captive-portal network (hotel or airport Wi-Fi) can briefly let th
 - Open design question for the implementer and the orchestrator: (a) portal-only: DNS to the LAN's resolver plus HTTP(S) to the addresses it answers, narrow but brittle (portals redirect across hosts, some use HTTPS on IPs the lookup didn't name); (b) a short direct window (say 60 s, everything direct), simple and robust but a real leak window. Decide before any code; record the choice and why here and in security.md.
 - R2.8/RR62: the down shape refuses DNS to the LAN even with allow-LAN; the pause must deliberately let the portal's lookup through.
 - The pause must not be stored as a toggle: a restart without the agent's memory of it falls back to the down shape.
+- Dropped (owner, 2026-11-12): no pause. A pause is as easy to forget to end after logging in to a portal as the kill switch is to forget to turn back on, and a more complex filter on top isn't worth it. Behind a captive portal the member turns the kill switch off (or uses allow-LAN where the portal is on a private address), then back on; the tray makes the switch's off state unmissable (TP-049). Nothing was built; the acceptance boxes stay unticked.
 
 ## Log
 - 2026-11-12 created in backlog (from TP-048's review; owner decision 2026-11-09)
+- 2026-11-12 backlog → done (dropped, owner 2026-11-12: no pause; the tray makes the switch's off state unmissable, TP-049)

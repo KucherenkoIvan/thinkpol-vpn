@@ -783,7 +783,7 @@ Refusals travel as go-kernel domain error codes over gRPC status codes. The clie
 - `health`: a level (`ok`, `degraded`, `down`) and its problems;
 - `data_plane`: MTU, IPv6 and why it is off, last Apply error, peers, neighbors and their links, egresses, skipped entries, listeners, and counters by name;
 - `workers`, `public_listeners`, `uplink`: on a server;
-- `rule_preset`, `rules_enforced`, `rule_preset_unavailable`, `connect_on_boot`: a device's toggles (TP-048 adds the kill switch, allow-LAN and pause here);
+- `rule_preset`, `rules_enforced`, `rule_preset_unavailable`, `connect_on_boot`: a device's toggles (TP-048 adds the kill switch and allow-LAN here);
 - `maps_refused`, `last_run_crashed`, `last_run_unreadable`;
 - no `schema_version` on the wire: the CLI's JSON adds its own (the localapi package doc's "JSON").
 
