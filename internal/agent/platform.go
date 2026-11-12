@@ -95,26 +95,63 @@ type Platform struct {
 	Inspect Inspector
 }
 
-// ClearHost undoes what a crashed run left on the host: a device's, as a
-// start that doesn't connect does (the routing, clearNetwork, and the OS's
-// resolver configuration), and its kill switch, which nothing else but a
-// deliberate disconnect removes; and a server's, as its supervisor's next start
-// would (supervisor.ClearLeftovers: the spaces' veths, the root's
-// forwarding it turned on, its tables and routes). The three are each
-// tried, though a step that fails within the server's stops the server's
-// steps after it (ClearLeftovers); it returns what the server's undid (a
-// device's can't tell), and as the error what failed. The caller holds
-// the host's agent lock, so no running agent's state is taken.
+// ClearHost undoes what a crashed run left on the host, as clearHost
+// does; it returns what the server's part undid (a device's can't tell),
+// and as the error what failed. The caller holds the host's agent lock,
+// so no running agent's state is taken.
 func (p Platform) ClearHost() ([]string, error) {
+	parts := p.clearHost()
+	var undone []string
+	for _, part := range parts {
+		undone = append(undone, part.Undone...)
+	}
+	return undone, partsErr(parts)
+}
+
+// HostPart is one part of what a dead agent can leave on the host, as
+// clearing it went: What names it, Undone is what clearing it undid where
+// it can tell (a server's part), and Err why some of it is left. With no
+// Err none of it is left, whether or not there was any.
+type HostPart struct {
+	What   string
+	Undone []string
+	Err    error
+}
+
+// clearHost undoes what a dead run left on the host, part by part: a
+// server's, as its supervisor's next start would (supervisor.ClearLeftovers:
+// the spaces' veths, the root's forwarding it turned on, its tables and
+// routes); a device's, as a start that doesn't connect does (the routing,
+// clearRouting's two owners, and the OS's resolver configuration); and the
+// kill switch, which a crash and a stop leave on purpose and nothing else
+// but a deliberate disconnect removes. Each part is tried, though a step
+// that fails within the server's stops the server's steps after it
+// (ClearLeftovers).
+func (p Platform) clearHost() []HostPart {
 	undone, err := supervisor.ClearLeftovers(supervisor.Options{
 		NewRoot: func() (netcfg.Configurator, error) { return p.NewConfigurator(netcfg.OwnerSupervisor) },
 	})
-	return undone, errors.Join(p.clearRouting(), p.RestoreDNS(), p.removeKillSwitch(), err)
+	return []HostPart{
+		{What: "a server's leftovers (the spaces' veths, the forwarding its supervisor turned on, its nftables tables)", Undone: undone, Err: err},
+		{What: "the route table's routes and policy rules, and its IPv6 leak guard", Err: p.clearRouteTable()},
+		{What: "the overlay's routes", Err: p.clearOverlay()},
+		{What: "the OS's resolver configuration (what a crashed run changed, put back)", Err: p.RestoreDNS()},
+		{What: "the kill switch (" + killSwitchPlace + ")", Err: p.removeKillSwitch()},
+	}
+}
+
+// partsErr is what failed in parts, nil if nothing did.
+func partsErr(parts []HostPart) error {
+	var errs []error
+	for _, p := range parts {
+		errs = append(errs, p.Err)
+	}
+	return errors.Join(errs...)
 }
 
 // removeKillSwitch removes what any run left of the kill switch: a
 // device's survives a crash and a stop on purpose, and only a deliberate
-// disconnect or this (service uninstall) removes it.
+// disconnect or this (`service uninstall`, `rollback`) removes it.
 func (h DeviceHost) removeKillSwitch() error {
 	if h.NewKillSwitch == nil {
 		return nil
@@ -143,12 +180,23 @@ func (h DeviceHost) clearNetwork(log *slog.Logger) {
 // utun, but stay in the overlay's record), each owner's record with them.
 // The second is cleared whatever the first says.
 func (h DeviceHost) clearRouting() error {
-	var errs []error
+	return errors.Join(h.clearRouteTable(), h.clearOverlay())
+}
+
+// clearRouteTable removes what route-table enforcement left, with its
+// leak guard; nothing to remove where the OS has no adapter for it.
+func (h DeviceHost) clearRouteTable() error {
 	if err := h.ClearRouteTable(h.NewGuard()); err != nil && !errors.Is(err, errors.ErrUnsupported) {
-		errs = append(errs, fmt.Errorf("%v: %w", netcfg.OwnerRouteTable, err))
+		return fmt.Errorf("%v: %w", netcfg.OwnerRouteTable, err)
 	}
+	return nil
+}
+
+// clearOverlay removes what the overlay's configurator left; nothing to
+// remove where the OS has no adapter for it.
+func (h DeviceHost) clearOverlay() error {
 	if err := h.ClearConfig(netcfg.OwnerOverlay); err != nil && !errors.Is(err, errors.ErrUnsupported) {
-		errs = append(errs, fmt.Errorf("%v: %w", netcfg.OwnerOverlay, err))
+		return fmt.Errorf("%v: %w", netcfg.OwnerOverlay, err)
 	}
-	return errors.Join(errs...)
+	return nil
 }

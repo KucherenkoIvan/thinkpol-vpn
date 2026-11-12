@@ -18,3 +18,6 @@ func supported(Mode) error {
 // staticcheck can't prove supported always fails here and flag the
 // caller's error check.
 var errNoDataPlane = fmt.Errorf("%w: no data plane on %s yet", ErrUnsupported, runtime.GOOS)
+
+// killSwitchPlace: no kill switch on this OS yet (Windows: TP-076).
+const killSwitchPlace = "none on this OS"
