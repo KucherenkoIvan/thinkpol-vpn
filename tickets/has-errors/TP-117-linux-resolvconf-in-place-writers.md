@@ -49,6 +49,11 @@ Round 3 (2026-11-12):
 - [x] R3.5 (nit) writeFailed is set on any failure, including an atomic replace that failed before its rename: set it only when an in-place write failed partway; when writeFailed and the file parses as managed, take the original from memory
 - [x] R3.6 (nit, tests and docs) TestResolvConfAFileCreatedAtThePathSettles's comment promises a settle that begins with no file, but rm raises no watched event: correct it; the Log notes the no-gap change-events subtest can pass under its mutation
 
+Round 4 (2026-11-12):
+- [ ] R4.1 (should-fix) the in-memory original (R3.5) is used only when a partial file still parses as managed, and Restore never uses it. A rewrite in place cut at 0 bytes or inside the header line reads as another program's write: it settles and its content (empty) replaces the original, so Restore puts back an empty resolv.conf; a cut inside the original lines followed by Restore before the retry writes the truncated original. Keep the content of the failed attempt; while a rewrite has failed, a read that is a prefix of it (empty included) is the node's own (no settle, no hold, not reported as another program's write), with the original and link from memory; Restore after a failed rewrite writes the original from memory. Tests with an injected partial write: a 0-byte cut, a cut inside the header, a cut inside the original lines followed by Restore
+- [ ] R4.2 (nit) withPending drains a signal that came after the read, but decide judges the old read: the node's own file read, another program's file renamed in, its signal swallowed, nothing written and the other program's inode recorded as the node's, with Problem nil until the next poll. When a drain took anything, read the file again, until nothing is pending
+- [ ] R4.3 (docs) RR4 and doc.go overstate the health claim: unprotected while another program's file is in place holds once the watch has seen the write, at once on a change event, within the 2 s poll otherwise (a change only the poll sees, probably every in-place write on a bind mount: a suspicion); the 6 s counts from when the write is seen
+
 ## Notes
 - Found by TP-115's round-1 correctness review (2026-10-21). The loss predates TP-115.
 - From TP-128's round-1 review (2026-10-22), more cases with the same cause:
@@ -92,3 +97,4 @@ Round 3 (2026-11-12):
 - 2026-11-12 full make lab-test green on e10c28e (the lab phase and 39 packages in lab nodes); lab/RESULTS.md left as on rewrite
 - 2026-11-12 has-errors → in-progress — owner: agent-tp-117, branch: tp-117-linux-resolvconf-in-place-writers
 - 2026-11-12 in-progress → review
+- 2026-11-12 review → has-errors (round 4 findings R4.x)
