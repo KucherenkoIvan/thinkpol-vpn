@@ -8,10 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"sync"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
+	"github.com/vishvananda/netlink"
+	vnetns "github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
@@ -26,7 +29,13 @@ const (
 	killSwitchSet6  = "allow6"
 	directSet4      = "direct4"
 	directSet6      = "direct6"
+	noDNSSet4       = "nodns4"
+	noDNSSet6       = "nodns6"
 )
+
+// ksSetIDs are the batch ids of the kill switch's sets, in
+// killSwitchSets' order; zero when only compared by name.
+type ksSetIDs [6]uint32
 
 // KillSwitch keeps everything but KillSwitchRules from leaving the
 // device, both families, with one nftables table in a network namespace:
@@ -36,10 +45,16 @@ const (
 //	  set allow6 { type ipv6_addr; flags interval; elements = <Allow's IPv6> }
 //	  set direct4 { type ipv4_addr; flags interval,timeout; timeout 30s; elements = <Direct's IPv4> }
 //	  set direct6 { type ipv6_addr; flags interval,timeout; timeout 30s; elements = <Direct's IPv6> }
+//	  set nodns4 { type ipv4_addr; flags interval; elements = <NoDNS's IPv4> }
+//	  set nodns6 { type ipv6_addr; flags interval; elements = <NoDNS's IPv6> }
 //	  chain output { type filter hook output priority 2147483647; policy accept;
 //	    oifname "lo" accept
 //	    oifname <TUN> accept                                 (connected only)
 //	    meta mark <Mark> accept
+//	    meta nfproto ipv4 ip daddr @nodns4 udp dport 53 counter reject with icmpx admin-prohibited
+//	    meta nfproto ipv4 ip daddr @nodns4 tcp dport 53 counter reject with tcp reset
+//	    meta nfproto ipv4 ip daddr @nodns4 tcp dport 853 counter reject with tcp reset
+//	    (the same three for ip6 daddr @nodns6)
 //	    meta nfproto ipv4 ip daddr @allow4 accept
 //	    meta nfproto ipv6 ip6 daddr @allow6 accept
 //	    meta nfproto ipv4 ip daddr @direct4 accept
@@ -55,6 +70,8 @@ const (
 //	  chain forward { type filter hook forward priority 2147483647; policy accept;
 //	    oifname <TUN> accept                                 (connected only)
 //	    iifname <TUN> accept                                 (connected only)
+//	    iifname <bridge> oifname <bridge> accept             (each bridge in the namespace)
+//	    (the six @nodns rules of output)
 //	    meta nfproto ipv4 ip daddr @allow4 accept
 //	    meta nfproto ipv6 ip6 daddr @allow6 accept
 //	    meta nfproto ipv4 ip daddr @direct4 accept
@@ -81,7 +98,16 @@ const (
 // tunnelled flows come in by the TUN). A refusal goes back to the client
 // by output, which lets it out only to an allowed address (the client's,
 // with allow-LAN); otherwise it is refused in turn, and the client times
-// out instead of failing at once. Not postrouting:
+// out instead of failing at once. With br_netfilter (bridge-nf-call-
+// iptables, as Docker up to 27 and Kubernetes set it) a frame bridged
+// between two ports of one bridge (container to container on docker0)
+// meets the forward hook too, the bridge both its in and out interface:
+// it never leaves through routing, so it passes. nftables' inet family
+// has no bridge-port key (meta ibrname is the bridge family's), and an
+// xt physdev match would make nft unable to list the table, so the
+// bridges are named one by one, as listed at each Apply: a bridge made
+// since passes at the next one (the agent's re-apply). A packet routed
+// back out of the bridge it came in by passes as well. Not postrouting:
 // reject is refused there (input, forward and output only), and output
 // already has what the device sends itself. The direct sets' elements
 // expire DirectTimeout after they were put in: every Apply puts them in
@@ -148,11 +174,15 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) error {
 	if err := k.probe(c); err != nil {
 		return err
 	}
+	bridges, err := bridgeNames(k.netns)
+	if err != nil {
+		return err
+	}
 	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: KillSwitchTable}
 	sets := killSwitchSets(table, r)
-	if k.applied != nil && k.applied.Equal(r) && wholeTable(c, KillSwitchTable, killSwitchChains(r, [4]uint32{}), wants(sets)...) {
+	if k.applied != nil && k.applied.Equal(r) && wholeTable(c, KillSwitchTable, killSwitchChains(r, ksSetIDs{}, bridges), wants(sets)...) {
 		// Put the direct sets' elements in again, their timeouts anew.
-		for _, s := range sets[2:] {
+		for _, s := range sets[2:4] {
 			c.FlushSet(s.set)
 			if err := addElements(c, s.set, s.elems); err != nil {
 				return err
@@ -177,7 +207,11 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) error {
 	}
 	accept := nftables.ChainPolicyAccept
 	prio := lastPriority
-	for _, w := range killSwitchChains(r, [4]uint32{sets[0].set.ID, sets[1].set.ID, sets[2].set.ID, sets[3].set.ID}) {
+	var ids ksSetIDs
+	for i, s := range sets {
+		ids[i] = s.set.ID
+	}
+	for _, w := range killSwitchChains(r, ids, bridges) {
 		chain := c.AddChain(&nftables.Chain{
 			Name: w.name, Table: table, Type: nftables.ChainTypeFilter,
 			Hooknum: &w.hook, Priority: &prio, Policy: &accept,
@@ -233,8 +267,8 @@ type ksSet struct {
 	elems []nftables.SetElement
 }
 
-// killSwitchSets are the sets for r: allow4, allow6, then the expiring
-// direct4 and direct6.
+// killSwitchSets are the sets for r: allow4, allow6, the expiring
+// direct4 and direct6, then nodns4 and nodns6.
 func killSwitchSets(table *nftables.Table, r KillSwitchRules) []ksSet {
 	set := func(name string, key nftables.SetDatatype, expire bool) *nftables.Set {
 		s := &nftables.Set{Table: table, Name: name, KeyType: key, Interval: true}
@@ -248,6 +282,8 @@ func killSwitchSets(table *nftables.Table, r KillSwitchRules) []ksSet {
 		{set(killSwitchSet6, nftables.TypeIP6Addr, false), intervals(ranges(r.Allow, true))},
 		{set(directSet4, nftables.TypeIPAddr, true), intervals(ranges(r.Direct, false))},
 		{set(directSet6, nftables.TypeIP6Addr, true), intervals(ranges(r.Direct, true))},
+		{set(noDNSSet4, nftables.TypeIPAddr, false), intervals(ranges(r.NoDNS, false))},
+		{set(noDNSSet6, nftables.TypeIP6Addr, false), intervals(ranges(r.NoDNS, true))},
 	}
 }
 
@@ -284,17 +320,51 @@ func ranges(s *lists.Set, v6 bool) []lists.Range {
 }
 
 // killSwitchChains are the table's chains for r (see KillSwitch), looking
-// the sets up by name and batch id: allow4, allow6, direct4, direct6.
-func killSwitchChains(r KillSwitchRules, ids [4]uint32) []wantChain {
+// the sets up by name and batch id, with bridges the namespace's bridges.
+func killSwitchChains(r KillSwitchRules, ids ksSetIDs, bridges []string) []wantChain {
 	return []wantChain{
 		{outputChain, *nftables.ChainHookOutput, outputRules(r, ids)},
-		{forwardChain, *nftables.ChainHookForward, forwardRules(r, ids)},
+		{forwardChain, *nftables.ChainHookForward, forwardRules(r, ids, bridges)},
 	}
 }
 
-// ksLookups are "<family> <load> @set accept" for each of the four sets,
-// the address loaded by load(v6).
-func ksLookups(ids [4]uint32, load func(v6 bool) expr.Any) [][]expr.Any {
+// bridgeNames are the bridges of the namespace (netns, -1 the calling
+// thread's), sorted.
+func bridgeNames(netns int) ([]string, error) {
+	var h *netlink.Handle
+	var err error
+	if netns >= 0 {
+		h, err = netlink.NewHandleAt(vnetns.NsHandle(netns), unix.NETLINK_ROUTE)
+	} else {
+		h, err = netlink.NewHandle(unix.NETLINK_ROUTE)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("firewall: list the bridges: %w", err)
+	}
+	defer h.Close()
+	for range 3 {
+		var links []netlink.Link
+		if links, err = h.LinkList(); errors.Is(err, netlink.ErrDumpInterrupted) {
+			continue // the links changed during the dump
+		}
+		if err != nil {
+			break
+		}
+		var names []string
+		for _, l := range links {
+			if l.Type() == "bridge" {
+				names = append(names, l.Attrs().Name)
+			}
+		}
+		slices.Sort(names)
+		return names, nil
+	}
+	return nil, fmt.Errorf("firewall: list the bridges: %w", err)
+}
+
+// ksLookups are "<family> <load> @set accept" for allow4, allow6,
+// direct4 and direct6, the address loaded by load(v6).
+func ksLookups(ids ksSetIDs, load func(v6 bool) expr.Any) [][]expr.Any {
 	accept := &expr.Verdict{Kind: expr.VerdictAccept}
 	names := [4]string{killSwitchSet4, killSwitchSet6, directSet4, directSet6}
 	out := make([][]expr.Any, 4)
@@ -341,8 +411,40 @@ func refused() [][]expr.Any {
 	}
 }
 
+// noDNS refuses DNS to the nodns sets: UDP to port 53 with an ICMP
+// error, TCP to ports 53 and 853 with a reset, both families.
+func noDNS(ids ksSetIDs) [][]expr.Any {
+	var rules [][]expr.Any
+	for i, name := range []string{noDNSSet4, noDNSSet6} {
+		family := byte(unix.NFPROTO_IPV4)
+		if i == 1 {
+			family = unix.NFPROTO_IPV6
+		}
+		for _, d := range []struct {
+			proto byte
+			port  uint16
+		}{{unix.IPPROTO_UDP, 53}, {unix.IPPROTO_TCP, 53}, {unix.IPPROTO_TCP, 853}} {
+			reject := &expr.Reject{Type: unix.NFT_REJECT_ICMPX_UNREACH, Code: unix.NFT_REJECT_ICMPX_ADMIN_PROHIBITED}
+			if d.proto == unix.IPPROTO_TCP {
+				reject = &expr.Reject{Type: unix.NFT_REJECT_TCP_RST}
+			}
+			rules = append(rules, append(nfproto(family),
+				daddr(i == 1),
+				&expr.Lookup{SourceRegister: 1, SetName: name, SetID: ids[4+i]},
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{d.proto}},
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binary.BigEndian.AppendUint16(nil, d.port)},
+				&expr.Counter{},
+				reject,
+			))
+		}
+	}
+	return rules
+}
+
 // outputRules are the output chain's rules, in order.
-func outputRules(r KillSwitchRules, ids [4]uint32) [][]expr.Any {
+func outputRules(r KillSwitchRules, ids ksSetIDs) [][]expr.Any {
 	accept := &expr.Verdict{Kind: expr.VerdictAccept}
 	rules := [][]expr.Any{append(oifname("lo"), accept)}
 	if r.TUN != "" {
@@ -355,6 +457,7 @@ func outputRules(r KillSwitchRules, ids [4]uint32) [][]expr.Any {
 			accept,
 		})
 	}
+	rules = append(rules, noDNS(ids)...)
 	rules = append(rules, ksLookups(ids, daddr)...)
 	rules = append(rules,
 		append(udpPorts(unix.NFPROTO_IPV4, 68, 67), accept),
@@ -370,12 +473,16 @@ func outputRules(r KillSwitchRules, ids [4]uint32) [][]expr.Any {
 }
 
 // forwardRules are the forward chain's rules, in order.
-func forwardRules(r KillSwitchRules, ids [4]uint32) [][]expr.Any {
+func forwardRules(r KillSwitchRules, ids ksSetIDs, bridges []string) [][]expr.Any {
 	accept := &expr.Verdict{Kind: expr.VerdictAccept}
 	var rules [][]expr.Any
 	if r.TUN != "" {
 		rules = append(rules, append(oifname(r.TUN), accept), append(iifname(r.TUN), accept))
 	}
+	for _, b := range bridges {
+		rules = append(rules, append(append(iifname(b), oifname(b)...), accept))
+	}
+	rules = append(rules, noDNS(ids)...)
 	rules = append(rules, ksLookups(ids, daddr)...)
 	// "ct direction reply": a reply of a flow someone else opened. (Not
 	// "ct original ip daddr": nftables sends and reads that key's

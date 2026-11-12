@@ -32,35 +32,47 @@ type KillSwitchRules struct {
 	// Upstreams are the direct DNS upstreams, for an OS without socket
 	// marks (macOS lets DNS to them out on their ports); while connected.
 	Upstreams []netip.AddrPort
+	// NoDNS are destinations DNS (UDP and TCP port 53, TCP port 853) is
+	// refused to even where Allow lets everything else out: the agent's
+	// LAN but the entries, in the down shape with allow-LAN, so the OS's
+	// own resolvers (a home router forwarding in the clear) get no
+	// lookups while the tunnel is down. The links' marked sockets pass
+	// on Linux.
+	NoDNS *lists.Set
 }
 
 // Equal reports whether r and o let out the same traffic.
 func (r KillSwitchRules) Equal(o KillSwitchRules) bool {
 	return r.TUN == o.TUN && r.Mark == o.Mark && r.Allow.Equal(o.Allow) && r.Direct.Equal(o.Direct) &&
-		slices.Equal(r.Upstreams, o.Upstreams)
+		slices.Equal(r.Upstreams, o.Upstreams) && r.NoDNS.Equal(o.NoDNS)
 }
 
-// LAN is what allow-LAN lets out: private and link-local unicast, and
-// multicast and broadcast, of both families. It is the agent's
-// definition, which puts it in Allow; the firewall itself never reads
-// it.
+// LAN is what allow-LAN lets out: private and link-local unicast,
+// broadcast, and multicast of link-local and site-local scope only (mDNS
+// on 224.0.0.251 and ff02::fb, SSDP on 239.255.255.250, ff02::c and
+// ff05::c), both families; multicast of a wider scope may be routed
+// beyond the LAN. It is the agent's definition, which puts it in Allow
+// (and, while down, in NoDNS); the firewall itself never reads it.
 var LAN = []netip.Prefix{
 	netip.MustParsePrefix("10.0.0.0/8"),
 	netip.MustParsePrefix("172.16.0.0/12"),
 	netip.MustParsePrefix("192.168.0.0/16"),
 	netip.MustParsePrefix("169.254.0.0/16"),
-	netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("224.0.0.0/24"),   // link-local multicast (RFC 5771)
+	netip.MustParsePrefix("239.255.0.0/16"), // site-local scope (RFC 2365)
 	netip.MustParsePrefix("255.255.255.255/32"),
 	netip.MustParsePrefix("fe80::/10"),
 	netip.MustParsePrefix("fc00::/7"),
-	netip.MustParsePrefix("ff00::/8"),
+	netip.MustParsePrefix("ff02::/16"), // link-local scope (RFC 4291)
+	netip.MustParsePrefix("ff05::/16"), // site-local scope
 }
 
 // DirectTimeout is how long, on Linux, Direct stays in place after the
-// last Apply: the agent applies the kill switch again every 10 s while
-// it runs, so only a dead agent, or one whose node loop stalls for about
-// 20 s, lets it expire. Longer would leave a dead agent's direct
-// destinations open longer.
+// last Apply: the agent applies the kill switch again at every 10 s tick
+// while it runs, at most about 15 s apart (an apply between ticks can
+// push the next one a tick later), so only a dead agent, or one whose
+// node loop stalls for about 15 s, lets it expire. Longer would leave a
+// dead agent's direct destinations open longer.
 const DirectTimeout = 30 * time.Second
 
 // ErrKillSwitchUnsupported: the OS can't hold the kill switch (no

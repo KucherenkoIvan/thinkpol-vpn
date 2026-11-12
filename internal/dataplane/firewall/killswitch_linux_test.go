@@ -5,6 +5,7 @@ package firewall_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os/exec"
@@ -27,6 +28,8 @@ const (
 	entry4   = "203.0.113.50" // an entry's endpoint
 	entry6   = "2001:db8:e::50"
 	lan4     = "10.9.0.1" // a private address beyond the gateway
+	lan6     = "fd09::1"
+	spoof4   = "198.51.100.9" // an allowed source no one has
 )
 
 // ksPair is newPair with IPv4 sites, an entry of each family and a
@@ -38,7 +41,122 @@ func ksPair(t *testing.T) *pair {
 		p.ip(t, p.gw, "addr", "add", a, "dev", "lo")
 	}
 	p.ip(t, p.gw, "addr", "add", entry6+"/128", "dev", "lo")
+	p.ip(t, p.gw, "addr", "add", lan6+"/128", "dev", "lo")
 	return p
+}
+
+// sockaddr is addr:port as a socket address, with its family; a
+// link-local address names its interface after a %.
+func sockaddr(t *testing.T, addr string, port int) (unix.Sockaddr, int) {
+	t.Helper()
+	a, err := netip.ParseAddr(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Is4() {
+		return &unix.SockaddrInet4{Port: port, Addr: a.As4()}, unix.AF_INET
+	}
+	sa := &unix.SockaddrInet6{Port: port, Addr: a.As16()}
+	if a.Zone() != "" {
+		ifc, err := net.InterfaceByName(a.Zone())
+		if err != nil {
+			t.Fatal(err)
+		}
+		sa.ZoneId = uint32(ifc.Index)
+	}
+	return sa, unix.AF_INET6
+}
+
+// udpArrives says whether a UDP datagram sent from namespace from (from
+// src, if set) reaches dst:port in namespace to.
+func udpArrives(t *testing.T, from, src, to, dst string, port int) bool {
+	t.Helper()
+	var rfd int
+	var err error
+	inNS(t, to, func() {
+		sa, family := sockaddr(t, dst, port)
+		if rfd, err = unix.Socket(family, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0); err != nil {
+			return
+		}
+		tv := unix.NsecToTimeval((2 * time.Second).Nanoseconds())
+		_ = unix.SetsockoptTimeval(rfd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv)
+		err = unix.Bind(rfd, sa)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Close(rfd) }()
+	inNS(t, from, func() {
+		sa, family := sockaddr(t, dst, port)
+		var fd int
+		if fd, err = unix.Socket(family, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0); err != nil {
+			return
+		}
+		defer func() { _ = unix.Close(fd) }()
+		if src != "" {
+			bind, _ := sockaddr(t, src, 0)
+			if err = unix.Bind(fd, bind); err != nil {
+				return
+			}
+		}
+		// A refusal at output can show as an error on the send.
+		_ = unix.Sendto(fd, []byte("probe"), 0, sa)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64)
+	n, _, err := unix.Recvfrom(rfd, buf, 0)
+	return err == nil && string(buf[:n]) == "probe"
+}
+
+// listenTCP listens on addr:port in namespace ns until the test ends.
+func listenTCP(t *testing.T, ns, addr string, port int) {
+	t.Helper()
+	var fd int
+	var err error
+	inNS(t, ns, func() {
+		sa, family := sockaddr(t, addr, port)
+		if fd, err = unix.Socket(family, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0); err != nil {
+			return
+		}
+		if err = unix.Bind(fd, sa); err == nil {
+			err = unix.Listen(fd, 16)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unix.Close(fd) })
+}
+
+// dialTCP connects TCP from namespace ns to dst:port and returns the
+// error (nil: connected) within 3 s.
+func dialTCP(t *testing.T, ns, dst string, port int) error {
+	t.Helper()
+	var err error
+	inNS(t, ns, func() {
+		sa, family := sockaddr(t, dst, port)
+		var fd int
+		if fd, err = unix.Socket(family, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0); err != nil {
+			return
+		}
+		defer func() { _ = unix.Close(fd) }()
+		tv := unix.NsecToTimeval((3 * time.Second).Nanoseconds())
+		_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &tv)
+		err = unix.Connect(fd, sa)
+	})
+	return err
+}
+
+// sysctl sets keys in namespace ns.
+func sysctl(t *testing.T, ns string, keys ...string) {
+	t.Helper()
+	for _, key := range keys {
+		if out, err := exec.Command("ip", "netns", "exec", ns, "sysctl", "-qw", key).CombinedOutput(); err != nil {
+			t.Fatalf("sysctl %s: %v: %s", key, err, out)
+		}
+	}
 }
 
 func (p *pair) killSwitch(t *testing.T) *firewall.KillSwitch {
@@ -262,10 +380,33 @@ func TestKillSwitchLetsOutOnlyEntriesWhileDown(t *testing.T) {
 
 	lan := down
 	lan.Allow = set(t, append([]string{entry4 + "/32", entry6 + "/128"}, prefixStrings(firewall.LAN)...)...)
+	lan.NoDNS = set(t, prefixStrings(firewall.LAN)...)
 	if err := k.Apply(ctx, lan); err != nil {
 		t.Fatal(err)
 	}
 	check("down, allow-LAN", downProbes(true))
+	// DNS to the LAN is refused while down, allow-LAN or not (the OS's
+	// own resolvers forward in the clear); the rest of the LAN passes.
+	for _, port := range []int{53, 853, 8080} {
+		listenTCP(t, p.gw, lan4, port)
+		listenTCP(t, p.gw, lan6, port)
+	}
+	for _, dst := range []string{lan4, lan6} {
+		for _, port := range []int{53, 853} {
+			if err := dialTCP(t, p.dev, dst, port); !errors.Is(err, syscall.ECONNREFUSED) {
+				t.Errorf("down, allow-LAN: TCP to %s port %d: %v, want refused", dst, port, err)
+			}
+		}
+		if err := dialTCP(t, p.dev, dst, 8080); err != nil {
+			t.Errorf("down, allow-LAN: TCP to %s port 8080: %v, want connected", dst, err)
+		}
+		if udpArrives(t, p.dev, "", p.gw, dst, 53) {
+			t.Errorf("down, allow-LAN: UDP to %s port 53 arrived", dst)
+		}
+		if !udpArrives(t, p.dev, "", p.gw, dst, 5353) {
+			t.Errorf("down, allow-LAN: UDP to %s port 5353 didn't arrive", dst)
+		}
+	}
 
 	// Connected: the TUN and the direct destinations too.
 	up := firewall.KillSwitchRules{TUN: "thinkpol0", Mark: routetable.Mark, Allow: set(t, entry4+"/32", entry6+"/128"), Direct: set(t, domestic6+"/128")}
@@ -399,6 +540,46 @@ func (p *pair) behind(t *testing.T) string {
 	return client
 }
 
+// tunnel replaces the device's dummy thinkpol0 with a veth to the
+// gateway (tun0 there) that carries foreign4 and foreign6 both ways:
+// the device routes them into it, and the gateway sends their replies
+// back by it (policy routing by source).
+func tunnel(t *testing.T, p *pair) {
+	t.Helper()
+	p.ip(t, p.dev, "link", "del", "thinkpol0")
+	p.ip(t, p.dev, "link", "add", "thinkpol0", "type", "veth", "peer", "name", "tun0", "netns", p.gw)
+	for _, args := range [][]string{
+		{"link", "set", "thinkpol0", "up"},
+		{"addr", "add", "10.88.0.1/30", "dev", "thinkpol0"},
+		{"addr", "add", "2001:db8:88::1/64", "dev", "thinkpol0", "nodad"},
+		{"route", "add", foreign4 + "/32", "via", "10.88.0.2"},
+		{"-6", "route", "add", foreign6 + "/128", "via", "2001:db8:88::2"},
+	} {
+		p.ip(t, p.dev, args...)
+	}
+	for _, args := range [][]string{
+		{"link", "set", "tun0", "up"},
+		{"addr", "add", "10.88.0.2/30", "dev", "tun0"},
+		{"addr", "add", "2001:db8:88::2/64", "dev", "tun0", "nodad"},
+		{"route", "add", "default", "via", "10.88.0.1", "table", "88"},
+		{"-6", "route", "add", "default", "via", "2001:db8:88::1", "table", "88"},
+		{"rule", "add", "from", foreign4, "lookup", "88"},
+		{"-6", "rule", "add", "from", foreign6, "lookup", "88"},
+	} {
+		p.ip(t, p.gw, args...)
+	}
+	// Neighbour discovery on the link waits for the link-local
+	// addresses' DAD.
+	deadline := time.Now().Add(10 * time.Second)
+	for p.ip(t, p.dev, "-6", "addr", "show", "dev", "thinkpol0", "tentative") != "" ||
+		p.ip(t, p.gw, "-6", "addr", "show", "dev", "tun0", "tentative") != "" {
+		if time.Now().After(deadline) {
+			t.Fatal("the TUN's link-local addresses are still tentative")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // pingFrom says whether one ping from namespace ns is answered.
 func pingFrom(ns, dst string) bool {
 	family := "-4"
@@ -429,7 +610,10 @@ func clientDial4(t *testing.T, ns, dst string) error {
 // What the device forwards (a container, a VM, a hotspot's client) never
 // meets the output chain: the kill switch's forward chain lets it reach
 // only the entries (their replies coming back) while the tunnel is down,
-// and the direct destinations too while connected, both families.
+// with allow-LAN the LAN but its DNS, and connected the direct
+// destinations and whatever goes by the TUN (its replies coming in by
+// it) too, both families. A new flow from an allowed source isn't a
+// reply.
 func TestKillSwitchConfinesForwardedTraffic(t *testing.T) {
 	p := ksPair(t)
 	client := p.behind(t)
@@ -474,20 +658,55 @@ func TestKillSwitchConfinesForwardedTraffic(t *testing.T) {
 	}
 	check("down, allow-LAN", map[string]bool{foreign4: false, foreign6: false, entry4: true})
 
+	// Forwarded DNS to the LAN is refused while down, as the device's own.
+	lan.NoDNS = set(t, prefixStrings(firewall.LAN)...)
+	if err := k.Apply(ctx, lan); err != nil {
+		t.Fatal(err)
+	}
+	if udpArrives(t, client, "", p.gw, lan4, 53) {
+		t.Error("down, allow-LAN: the client's UDP to lan4 port 53 arrived")
+	}
+	if !udpArrives(t, client, "", p.gw, lan4, 5353) {
+		t.Error("down, allow-LAN: the client's UDP to lan4 port 5353 didn't arrive")
+	}
+
+	// Connected: the TUN is a veth to the gateway, which sends foreign's
+	// replies back by it, so the client's tunnelled flows go out by the
+	// TUN and their replies come in by it.
+	tunnel(t, p)
 	up := firewall.KillSwitchRules{TUN: "thinkpol0", Mark: routetable.Mark, Allow: set(t, entry4+"/32", entry6+"/128"), Direct: set(t, domestic6+"/128")}
 	if err := k.Apply(ctx, up); err != nil {
 		t.Fatal(err)
 	}
-	check("connected", map[string]bool{foreign4: false, foreign6: false, domestic6: true, entry6: true})
-	// Re-applied whole: the forward chain is part of what is compared.
-	p.nft(t, "flush", "chain", "inet", firewall.KillSwitchTable, "forward")
-	if !pingFrom(client, foreign4) {
-		t.Fatal("still refused with the forward chain flushed")
-	}
-	if err := k.Apply(ctx, up); err != nil {
+	check("connected", map[string]bool{foreign4: true, foreign6: true, domestic6: true, entry6: true, lan4: false})
+	// A new flow in the reply direction from an allowed source (spoofed)
+	// isn't a reply: refused.
+	spoofed := up
+	spoofed.Allow = set(t, entry4+"/32", entry6+"/128", spoof4+"/32")
+	if err := k.Apply(ctx, spoofed); err != nil {
 		t.Fatal(err)
 	}
-	check("connected, re-applied", map[string]bool{foreign4: false, domestic6: true})
+	p.ip(t, client, "addr", "add", spoof4+"/32", "dev", "lo")
+	sysctl(t, p.dev, "net.ipv4.conf.all.rp_filter=0", "net.ipv4.conf.ctr0.rp_filter=0")
+	sysctl(t, p.gw, "net.ipv4.conf.all.rp_filter=0", "net.ipv4.conf.gw0.rp_filter=0")
+	if udpArrives(t, client, spoof4, p.gw, lan4, 9999) {
+		t.Error("connected: a new flow from an allowed source to lan4 passed")
+	}
+	if !udpArrives(t, client, "", p.gw, foreign4, 9999) {
+		t.Error("connected: the client's UDP to foreign4 by the TUN didn't arrive")
+	}
+	// Re-applied whole: the forward chain is part of what is compared.
+	p.nft(t, "flush", "chain", "inet", firewall.KillSwitchTable, "forward")
+	if !pingFrom(client, lan4) {
+		t.Fatal("still refused with the forward chain flushed")
+	}
+	if !udpArrives(t, client, spoof4, p.gw, lan4, 9999) {
+		t.Fatal("a datagram from the spoofed source doesn't arrive with the forward chain flushed: the spoofing check proves nothing")
+	}
+	if err := k.Apply(ctx, spoofed); err != nil {
+		t.Fatal(err)
+	}
+	check("connected, re-applied", map[string]bool{lan4: false, foreign4: true, domestic6: true})
 }
 
 // The kill switch and the guard are two tables: IPv6 must pass both, and
@@ -523,4 +742,85 @@ func prefixStrings(ps []netip.Prefix) []string {
 		out[i] = p.String()
 	}
 	return out
+}
+
+// bridged adds a bridge to the device with a client namespace on each of
+// two ports, 10.<n>.0.2 and .3 (2001:db8:<n>::2 and ::3), routed by the
+// device's 10.<n>.0.1, and returns the clients' namespaces.
+func bridged(t *testing.T, p *pair, bridge string, n int) (string, string) {
+	t.Helper()
+	p.ip(t, p.dev, "link", "add", bridge, "type", "bridge")
+	p.ip(t, p.dev, "link", "set", bridge, "up")
+	p.ip(t, p.dev, "addr", "add", fmt.Sprintf("10.%d.0.1/24", n), "dev", bridge)
+	var clients [2]string
+	for i := range clients {
+		ns := fmt.Sprintf("%s-%s-%d", p.dev, bridge, i)
+		if out, err := exec.Command("ip", "netns", "add", ns).CombinedOutput(); err != nil {
+			t.Fatalf("ip netns add: %v: %s", err, out)
+		}
+		t.Cleanup(func() { _, _ = exec.Command("ip", "netns", "del", ns).CombinedOutput() })
+		port := fmt.Sprintf("%sp%d", bridge, i)
+		p.ip(t, p.dev, "link", "add", port, "type", "veth", "peer", "name", "eth0", "netns", ns)
+		p.ip(t, p.dev, "link", "set", port, "master", bridge, "up")
+		for _, args := range [][]string{
+			{"link", "set", "lo", "up"},
+			{"link", "set", "eth0", "up"},
+			{"addr", "add", fmt.Sprintf("10.%d.0.%d/24", n, i+2), "dev", "eth0"},
+			{"addr", "add", fmt.Sprintf("2001:db8:%d::%d/64", n, i+2), "dev", "eth0", "nodad"},
+			{"route", "add", "default", "via", fmt.Sprintf("10.%d.0.1", n)},
+		} {
+			p.ip(t, ns, args...)
+		}
+		clients[i] = ns
+	}
+	return clients[0], clients[1]
+}
+
+// With br_netfilter (bridge-nf-call-iptables, as Docker up to 27 and
+// Kubernetes set it) frames bridged between two ports of one bridge meet
+// the forward hook: the kill switch lets them pass, container to
+// container, and nothing routed. A bridge made after an Apply passes
+// from the next one.
+func TestKillSwitchPassesFramesBridgedWithinABridge(t *testing.T) {
+	p := ksPair(t)
+	if exec.Command("ip", "netns", "exec", p.dev, "test", "-d", "/proc/sys/net/bridge").Run() != nil {
+		t.Skip("no br_netfilter in this kernel: bridged frames never meet the forward hook")
+	}
+	sysctl(t, p.dev, "net.bridge.bridge-nf-call-iptables=1", "net.bridge.bridge-nf-call-ip6tables=1", "net.ipv4.ip_forward=1")
+	p.ip(t, p.gw, "route", "add", "10.78.0.0/24", "via", "192.0.2.2")
+	c1, c2 := bridged(t, p, "br0", 78)
+	for _, dst := range []string{"10.78.0.3", "2001:db8:78::3", foreign4} {
+		if !pingFrom(c1, dst) {
+			t.Fatalf("%s doesn't reach %s without a kill switch: the test proves nothing", c1, dst)
+		}
+	}
+	k := p.killSwitch(t)
+	ctx := context.Background()
+	down := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: set(t, entry4+"/32", entry6+"/128")}
+	if err := k.Apply(ctx, down); err != nil {
+		t.Fatal(err)
+	}
+	for dst, want := range map[string]bool{"10.78.0.3": true, "2001:db8:78::3": true, foreign4: false, entry4: true} {
+		if got := pingFrom(c1, dst); got != want {
+			t.Errorf("down: %s's ping to %s answered %v, want %v", c1, dst, got, want)
+		}
+	}
+	listenTCP(t, c2, "10.78.0.3", 8080)
+	if err := dialTCP(t, c1, "10.78.0.3", 8080); err != nil {
+		t.Errorf("down: a TCP connect across the bridge: %v", err)
+	}
+
+	c3, _ := bridged(t, p, "br1", 79)
+	if pingFrom(c3, "10.79.0.3") {
+		t.Fatal("a bridge made after the Apply passes before the next: br_netfilter doesn't put bridged frames through the forward hook, so the test proves nothing")
+	}
+	if err := k.Apply(ctx, down); err != nil {
+		t.Fatal(err)
+	}
+	if !pingFrom(c3, "10.79.0.3") {
+		t.Error("a bridge made after the Apply is still refused after the next")
+	}
+	if !pingFrom(c1, "10.78.0.3") {
+		t.Error("the first bridge is refused after the re-apply")
+	}
 }
