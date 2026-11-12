@@ -9,8 +9,8 @@ size: S
 depends_on: [TP-048, TP-091]
 refs: [D4, docs/design/desktop-client.md#the-local-api]
 needs_human: macos
-owner: ""
-branch: ""
+owner: agent-tp-208
+branch: tp-208-diag-shows-the-kill-switch
 ---
 
 ## Goal
@@ -33,3 +33,4 @@ branch: ""
 
 ## Log
 - 2026-11-12 created in backlog (from TP-048's review)
+- 2026-11-12 backlog → in-progress, owner: agent-tp-208
