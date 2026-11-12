@@ -11,6 +11,7 @@ refs: [D4, RR61]
 owner: ""
 branch: ""
 ---
+
 ## Goal
 On Linux, a bridge that becomes the uplink (a port enslaved, a default route moved onto it or a port, a VLAN on top of it) stops passing what it bridges at once, not at the next re-apply (up to about 15 s today, RR61).
 

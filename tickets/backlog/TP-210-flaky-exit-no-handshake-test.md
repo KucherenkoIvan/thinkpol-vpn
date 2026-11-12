@@ -11,6 +11,7 @@ refs: []
 owner: ""
 branch: ""
 ---
+
 ## Goal
 `TestAnExitThatNeverHandshakesIsExitNoHandshake` (internal/agent/status_test.go, from TP-195) passes reliably under a loaded full lab, for a known root cause, not a retry.
 

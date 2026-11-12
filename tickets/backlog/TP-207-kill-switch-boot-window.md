@@ -12,6 +12,7 @@ needs_human: macos
 owner: ""
 branch: ""
 ---
+
 ## Goal
 With the kill switch on (or the crash posture meant up for this boot), nothing leaves the device between power-on and the agent's first apply. Neither the nftables table nor the pf anchor survives a reboot today (RR59).
 

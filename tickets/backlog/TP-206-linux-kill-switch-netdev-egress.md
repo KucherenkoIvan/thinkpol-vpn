@@ -11,6 +11,7 @@ refs: [D4, R2, RR61]
 owner: ""
 branch: ""
 ---
+
 ## Goal
 On Linux, traffic bridged at layer 2 onto the uplink (Docker's macvlan and ipvlan networks, libvirt's macvtap, a bridge enslaving eth0 without br_netfilter) meets the kill switch: today it never reaches the inet output and forward hooks and leaves direct whatever the kill switch says (RR61).
 

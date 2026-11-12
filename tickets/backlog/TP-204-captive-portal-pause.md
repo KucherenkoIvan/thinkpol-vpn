@@ -12,6 +12,7 @@ needs_human: macos
 owner: ""
 branch: ""
 ---
+
 ## Goal
 A member on a captive-portal network (hotel or airport Wi-Fi) can briefly let the OS reach the portal while the kill switch holds, without turning the kill switch off. The pause ends by itself, and status shows it while it runs. Owner decision 2026-11-09: its own ticket, in M2, before the gate (TP-029).
 

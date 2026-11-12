@@ -12,6 +12,7 @@ needs_human: macos
 owner: ""
 branch: ""
 ---
+
 ## Goal
 `thinkpol diag` shows what the kill switch holds on the host (the nftables table on Linux, the pf anchor and its tables on macOS) beside the leak guard's section, so a member's report says whether it was in place and what it let out.
 

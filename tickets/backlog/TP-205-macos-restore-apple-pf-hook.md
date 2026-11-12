@@ -12,6 +12,7 @@ needs_human: macos
 owner: ""
 branch: ""
 ---
+
 ## Goal
 On macOS, after something flushes the main ruleset (`pfctl -F all`, another VPN loading a pf.conf without `anchor "com.apple/*"`), the kill switch is enforced again within a re-apply, without a reboot. Today the anchor hangs under Apple's hook; with the hook gone nothing of it is evaluated and status says `kill_switch_not_enforced` until someone puts the hook back (RR58).
 
