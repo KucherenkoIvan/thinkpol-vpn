@@ -1079,20 +1079,44 @@ func TestAnExitThatNeverHandshakesIsExitNoHandshake(t *testing.T) {
 	}
 
 	a.maps <- s.build(t, 2)
-	// WireGuard initiates again RekeyTimeout (5 s) after the last one.
+	// WireGuard initiates again RekeyTimeout (5 s) after the last one. Ok
+	// alone isn't the exit answering: a busy machine can hold fastPaths'
+	// probes past their second, and once the link re-dials an initiation
+	// sent before it isn't graded, so health reads ok with none answered.
 	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(20 * time.Millisecond) {
 		st = b.node.Status()
-		if st.Health().Level == HealthOK {
+		if exitHandshook(st) && st.Health().Level == HealthOK {
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("still %+v after the exit took the device in: %+v", st.Health(), st.DataPlane.Peers)
 		}
 	}
-	// A healthy exit under steady traffic stays ok over several deadlines.
+	// A healthy exit under steady traffic isn't flagged over several
+	// deadlines. A link re-dialed on a busy machine is no_link_up's, not
+	// this grading's.
 	for until := time.Now().Add(4 * time.Second); time.Now().Before(until); time.Sleep(20 * time.Millisecond) {
-		if st = b.node.Status(); st.Health().Level != HealthOK {
+		st = b.node.Status()
+		if slices.Contains(st.Health().Problems, ProblemExitNoHandshake) || st.ExitsUnanswered != 0 {
 			t.Fatalf("the exit answering under steady traffic: %+v, peers %+v", st.Health(), st.DataPlane.Peers)
 		}
 	}
+}
+
+// exitHandshook reports whether st's data plane has an exit peer and has
+// completed a handshake with each, none pending since.
+func exitHandshook(st Status) bool {
+	if st.DataPlane == nil {
+		return false
+	}
+	exits := 0
+	for _, p := range st.DataPlane.Peers {
+		if p.Exit {
+			if p.LastHandshake.IsZero() || !p.HandshakePendingSince.IsZero() {
+				return false
+			}
+			exits++
+		}
+	}
+	return exits > 0
 }
