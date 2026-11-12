@@ -23,6 +23,9 @@ const (
 	// kept out of the flow's stream (or first datagram) for a reason, the
 	// receiver discarding it: once per flow and reason.
 	EventIgnore = "ignore"
+	// EventUnnoticed is a snapshot (a new flow, Module empty, or a tag by
+	// Module) an active module had no room for ([Engine.Unnoticed]).
+	EventUnnoticed = "unnoticed"
 	// EventSummary is a flow's totals, one per flow when it starts over
 	// ([Engine.Handle]) or the censor stops.
 	EventSummary = "summary"

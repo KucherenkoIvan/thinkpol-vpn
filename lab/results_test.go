@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -25,11 +26,13 @@ import (
 // probed in its own lab, and a transport's censored cells run in parallel:
 // a transport passes when its data crossed the censor in the lab router
 // over IPv4 and over IPv6, fails when it crossed over neither, and is
-// partial when only one family crossed, which no cell expects. A cell
-// whose outcome contradicts what its censor means to produce fails the
-// test, and a cell whose censor can't be trusted (censord died, the kernel
-// dropped queued packets, the verdict log doesn't show the probe's flows)
-// is an error. RESULTS.md is written only by a complete run with no error.
+// partial when only one family crossed, which only a row that varies
+// (censorCase.varies) may be. A cell whose outcome contradicts what its
+// censor means to produce fails the test, and a cell whose censor can't be
+// trusted (censord died, the kernel dropped queued packets, an active
+// module missed a snapshot, the verdict log doesn't show the probe's flows,
+// the module the cell quotes didn't compare what it must) is an error.
+// RESULTS.md is written only by a complete run with no error.
 //
 // A transport's off cell (no censor) runs before its censored cells and
 // they read its result: a transport must pass without a censor before it
@@ -57,7 +60,7 @@ func TestCensorMatrix(t *testing.T) {
 		defer func() { record(cell) }()
 
 		topology := lab.Standard()
-		if tr.upstream {
+		if cc.upstream || tr.upstream {
 			topology = lab.Upstream()
 		}
 		l := lab.StartOwnSlot(t, topology)
@@ -68,7 +71,12 @@ func TestCensorMatrix(t *testing.T) {
 		}
 		var c *censorRun
 		if cc.modules != nil {
-			c = startCensor(t, l, cc.modules(t, l))
+			modules, err := withRowSettings(cc.modules(t, l), tr.moduleSettings)
+			if err != nil {
+				cell.detail = "bad module settings"
+				t.Fatal(err)
+			}
+			c = startCensor(t, l, modules)
 		}
 
 		want := cc.want(tr.name)
@@ -76,13 +84,23 @@ func TestCensorMatrix(t *testing.T) {
 		if held {
 			tr.hold(t, l, target, cc.hold)
 		}
-		crossed := tr.probe(t, l, target, want == "pass")
-		cell.result, cell.detail = score(crossed)
+		if cc.settle {
+			// An active module judges a connection after it has crossed:
+			// the first probe shows it the transport, the cell is the
+			// probe after its verdicts.
+			tr.probe(t, l, target, false)
+			if err := c.settled(t, l); err != nil {
+				cell.result, cell.detail = "error", "the active modules didn't settle"
+				t.Fatal(err)
+			}
+		}
+		got := tr.probe(t, l, target, want == "pass")
+		cell.result, cell.detail = score(got)
 		if held {
 			// The probe after the hold crosses on a redialled connection
 			// even if the censor cut the one it held: what it blocked
 			// during the hold is the cell's verdict.
-			if how, err := blockedBy(t, l, c, cc.watch); err == nil {
+			if how, err := blockedBy(t, l, c, cc.watch, crossed{}, true); err == nil {
 				cell.result, cell.detail = "fail", fmt.Sprintf("the censor %s the connection held for %v", how, cc.hold)
 			} else if cell.result == "pass" {
 				cell.detail = strings.TrimPrefix(fmt.Sprintf("%s; held %v first", cell.detail, cc.hold), "; ")
@@ -103,12 +121,30 @@ func TestCensorMatrix(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if want == "fail" {
-			how, err := blockedBy(t, l, c, cc.blocker)
+		if want == "fail" || want == "varies" && cell.result != "pass" {
+			how, err := blockedBy(t, l, c, cc.blocker, got, tr.oneUnderlay)
 			if err != nil {
 				t.Error(err)
-			} else if cell.result == "fail" {
+			} else if cell.result != "pass" {
 				cell.detail += "; the censor " + how + " them"
+			}
+		}
+		if want == "varies" {
+			cell.detail = strings.TrimPrefix(cell.detail+"; varies: "+cc.varies[tr.name], "; ")
+			want = cell.result
+		}
+		if cc.report != "" {
+			flags, err := c.judged(l, cc.report)
+			if err != nil {
+				cell.result, cell.detail = "error", "the report module didn't judge the probe's flows"
+				t.Fatalf("%s against %s: %v", tr.name, cc.name, err)
+			}
+			if len(flags) > 0 {
+				cell.detail = strings.TrimPrefix(cell.detail+"; "+cc.report+": "+flags[0].why, "; ")
+			}
+			if err := cc.verdictMisses(tr.name, flags, tr.oneUnderlay); err != nil {
+				cell.result, cell.detail = "error", err.Error()
+				t.Fatalf("%s against %s: %v", tr.name, cc.name, err)
 			}
 		}
 		if cell.result != want {
@@ -117,20 +153,10 @@ func TestCensorMatrix(t *testing.T) {
 		return cell
 	}
 
+	if err := checkMatrix(censorCases, transports); err != nil {
+		t.Fatal(err)
+	}
 	off, censored := censorCases[0], censorCases[1:]
-	if off.modules != nil {
-		t.Fatalf("censor case %q is the off cell and must have no censor", off.name)
-	}
-	for _, cc := range censored {
-		if cc.modules == nil {
-			t.Fatalf("censor case %q has no censor: only censorCases[0] may be off", cc.name)
-		}
-		for tr, want := range cc.expect {
-			if want == "fail" && cc.blocker == "" {
-				t.Fatalf("censor case %q expects %s to fail but names no blocker", cc.name, tr)
-			}
-		}
-	}
 	for _, tr := range transports {
 		t.Run(tr.name, func(t *testing.T) {
 			t.Parallel()
@@ -162,6 +188,102 @@ func TestCensorMatrix(t *testing.T) {
 	}
 }
 
+// checkMatrix refuses cases and rows that would let a cell pass without
+// meaning it.
+func checkMatrix(cases []censorCase, rows []transport) error {
+	if len(cases) == 0 || cases[0].modules != nil {
+		return fmt.Errorf("the first censor case is the off cell and must have no censor")
+	}
+	for _, tr := range rows {
+		for module := range tr.moduleSettings {
+			if !censor.Registered(module) {
+				return fmt.Errorf("%s sets settings of %q, which is no censor module", tr.name, module)
+			}
+		}
+	}
+	for _, cc := range cases[1:] {
+		if cc.modules == nil {
+			return fmt.Errorf("censor case %q has no censor: only the first case may be off", cc.name)
+		}
+		for tr, want := range cc.expect {
+			if want == "fail" && cc.blocker == "" {
+				return fmt.Errorf("censor case %q expects %s to fail but names no blocker", cc.name, tr)
+			}
+		}
+		if len(cc.varies) > 0 && cc.blocker == "" {
+			return fmt.Errorf("censor case %q has rows that vary but names no blocker", cc.name)
+		}
+		for tr := range cc.varies {
+			if !strings.HasSuffix(tr, " (reference)") {
+				return fmt.Errorf("censor case %q lets %s vary: only a reference row may, a gate row's result is never chance", cc.name, tr)
+			}
+		}
+		if len(cc.verdictSays) > 0 && cc.report == "" {
+			return fmt.Errorf("censor case %q checks verdicts but names no module to report", cc.name)
+		}
+		for _, tr := range rows {
+			if _, tuned := tr.moduleSettings[cc.report]; tuned && cc.report != "" && cc.verdictSays[tr.name] == "" {
+				return fmt.Errorf("%s sets %s's settings, but censor case %q doesn't say what its verdict must say (verdictSays)", tr.name, cc.report, cc.name)
+			}
+			// The prober probes a TCP connection only once its client's
+			// first bytes settle: unlisted, a gate row's cell would pass
+			// unprobed.
+			if cc.report == "prober" && !tr.udp && !isReferenceOrControl(tr.name) && cc.verdictSays[tr.name] == "" {
+				return fmt.Errorf("%s is a TCP gate row, but censor case %q doesn't say what the prober's verdict on it must say (verdictSays)", tr.name, cc.name)
+			}
+			// The comparison needs the site's answer: unlisted, a TLS gate
+			// row whose site dial timed out ("not compared") would pass.
+			if cc.report == "server-hello" && tr.tls && !isReferenceOrControl(tr.name) && cc.verdictSays[tr.name] == "" {
+				return fmt.Errorf("%s is a TLS gate row, but censor case %q doesn't say what the server-hello verdict on it must say (verdictSays)", tr.name, cc.name)
+			}
+		}
+	}
+	return nil
+}
+
+// isReferenceOrControl says whether a row is no thinkpol transport, by
+// its name's suffix: every other row is a gate row.
+func isReferenceOrControl(row string) bool {
+	return strings.HasSuffix(row, " (reference)") || strings.HasSuffix(row, " (control)")
+}
+
+// TestCheckMatrix: the matrix as written passes its own checks; a TCP
+// gate row missing from the prober case's verdictSays, a TLS gate row
+// missing from the server-hello case's, a row tuning a report module
+// without a verdictSays entry, and a row tuning a module that doesn't
+// exist each fail the run.
+func TestCheckMatrix(t *testing.T) {
+	if err := checkMatrix(censorCases, transports); err != nil {
+		t.Fatalf("the matrix: %v", err)
+	}
+	on := func(*testing.T, *lab.Lab) []censor.ModuleConfig { return nil }
+	prober := censorCase{name: "active prober", modules: on, report: "prober", verdictSays: map[string]string{"gate-a": "TLS: the server", "tls-gate": "TLS: the server"}}
+	serverHello := censorCase{name: "server-hello", modules: on, report: "server-hello", verdictSays: map[string]string{"tls-gate": "server hello matches the site"}}
+	cases := []censorCase{{name: "off"}, prober, serverHello}
+	for _, c := range []struct {
+		name    string
+		rows    []transport
+		wantErr string
+	}{
+		{"listed TCP gate row, rows that aren't gate rows", []transport{{name: "gate-a"}, {name: "udp-gate", udp: true}, {name: rowRandomTCP}, {name: rowHTTPS}}, ""},
+		{"unlisted TCP gate row", []transport{{name: "gate-b"}}, "gate-b is a TCP gate row"},
+		{"tuned, unlisted", []transport{{name: "udp-gate", udp: true, moduleSettings: map[string]map[string]any{"prober": {"upstreamTell": "report"}}}}, "doesn't say what its verdict must say"},
+		{"tuned reference row, unlisted", []transport{{name: rowRelayTCP, moduleSettings: map[string]map[string]any{"prober": {"upstreamTell": "report"}}}}, "doesn't say what its verdict must say"},
+		{"tuned, listed", []transport{{name: "gate-a", moduleSettings: map[string]map[string]any{"prober": {"upstreamTell": "report"}}}}, ""},
+		{"misspelt module", []transport{{name: "gate-a", moduleSettings: map[string]map[string]any{"probr": {"upstreamTell": "report"}}}}, "no censor module"},
+		{"listed TLS gate row, TLS rows that aren't gate rows", []transport{{name: "tls-gate", tls: true}, {name: rowHTTPS, tls: true}, {name: rowRelayTCP, tls: true}}, ""},
+		{"unlisted TLS gate row", []transport{{name: "gate-a", tls: true}}, "gate-a is a TLS gate row"},
+	} {
+		err := checkMatrix(cases, c.rows)
+		switch {
+		case c.wantErr == "" && err != nil:
+			t.Errorf("%s: %v", c.name, err)
+		case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+			t.Errorf("%s: %v, want an error saying %q", c.name, err, c.wantErr)
+		}
+	}
+}
+
 // The off-cell gate messages: a censored cell sees them when its baseline
 // didn't run or didn't pass.
 const (
@@ -178,8 +300,8 @@ type crossed struct{ v4, v6 bool }
 
 // score is a cell's result: pass when data crossed over both families,
 // fail when it crossed over neither, and partial when only one did, which
-// no censor case expects: a blocking censor that one family slips past
-// leaks, and a transport that loses a family doesn't pass.
+// only a row that varies may be: a blocking censor that one family slips
+// past leaks, and a transport that loses a family doesn't pass.
 func score(c crossed) (result, detail string) {
 	switch {
 	case c.v4 && c.v6:
@@ -222,6 +344,9 @@ type censorCase struct {
 	// a transport not in it must pass.
 	expect  map[string]string
 	modules func(t *testing.T, l *lab.Lab) []censor.ModuleConfig // nil: no censord
+	// varies holds the rows whose result is chance, with why: any result
+	// is accepted, and a family that didn't cross must be the blocker's.
+	varies map[string]string
 	// blocker is the module a cell expected to fail must find blocking
 	// in the verdict log.
 	blocker string
@@ -230,9 +355,97 @@ type censorCase struct {
 	// module of the case, blocked its connection meanwhile.
 	hold  time.Duration
 	watch string
+	// upstream runs the cell in lab.Upstream: the camouflage site behind
+	// the router.
+	upstream bool
+	// settle probes twice, the cell scoring the second, once the active
+	// modules have flagged every flow of server-1 a module tagged.
+	settle bool
+	// report names the module whose flags of connections between device-a
+	// and server-1 the cell checks (verdictSays), its detail quoting the
+	// first.
+	report string
+	// verdictSays holds the rows whose report verdicts must say something,
+	// the comparison the cell is for: every flag the module raised on the
+	// row's connections must say it, and each family the row's probe uses
+	// needs one. A verdict without it ("not compared", another reason) or
+	// a family with no flag is an error, never a pass: the IPv4
+	// connection's match says nothing of the IPv6 one's.
+	verdictSays map[string]string
+}
+
+// judgment is a flag of the report module on a connection between
+// device-a and server-1: its family, and "<verdict>, <reason>".
+type judgment struct {
+	v4  bool
+	why string
+}
+
+// verdictMisses is an error when row's flags from the report module lack
+// what the case needs them to say: a flag that doesn't say it, or says
+// "not compared", or a family with no flag (either family will do for a
+// row whose tunnels share one underlay family). The module didn't compare
+// what the cell is for, which must not score as a pass.
+func (cc censorCase) verdictMisses(row string, flags []judgment, oneUnderlay bool) error {
+	says, ok := cc.verdictSays[row]
+	if !ok {
+		return nil
+	}
+	flagged := map[bool]bool{}
+	for _, f := range flags {
+		if strings.Contains(f.why, "not compared") || !strings.Contains(f.why, says) {
+			return fmt.Errorf("%s's verdict %q doesn't say %q", cc.report, f.why, says)
+		}
+		flagged[f.v4] = true
+	}
+	switch {
+	case len(flagged) == 0:
+		return fmt.Errorf("%s never flagged the row's connections, want verdicts saying %q", cc.report, says)
+	case oneUnderlay:
+		return nil
+	case !flagged[true]:
+		return fmt.Errorf("%s flagged no IPv4 connection of the row, want a verdict saying %q", cc.report, says)
+	case !flagged[false]:
+		return fmt.Errorf("%s flagged no IPv6 connection of the row, want a verdict saying %q", cc.report, says)
+	}
+	return nil
+}
+
+// TestVerdictMisses: a cell whose module didn't compare, on any of the
+// row's connections ("not compared", or no flag in a family), is an
+// error, whatever the row's crossing scored.
+func TestVerdictMisses(t *testing.T) {
+	const match, unreachable = "accept, server hello matches the site camouflage.example.net", "accept, not compared: the site is unreachable"
+	cc := censorCase{report: "server-hello", verdictSays: map[string]string{rowHTTPS: "server hello matches the site"}}
+	for _, c := range []struct {
+		name        string
+		flags       []judgment
+		oneUnderlay bool
+		wantErr     bool
+	}{
+		{"both families match", []judgment{{true, match}, {false, match}, {true, match}}, false, false},
+		{"no flag", nil, false, true},
+		{"IPv6 not compared after IPv4 matched", []judgment{{true, match}, {false, unreachable}}, false, true},
+		{"IPv6 compared later, once not", []judgment{{true, match}, {false, match}, {false, unreachable}}, false, true},
+		{"not compared, saying the text too", []judgment{{true, match}, {false, "accept, not compared: server hello matches the site's name only"}}, false, true},
+		{"another reason", []judgment{{true, match}, {false, "drop, server hello unlike the site"}}, false, true},
+		{"no IPv6 flag", []judgment{{true, match}, {true, match}}, false, true},
+		{"no IPv4 flag", []judgment{{false, match}}, false, true},
+		{"one underlay, one family", []judgment{{false, match}}, true, false},
+	} {
+		if err := cc.verdictMisses(rowHTTPS, c.flags, c.oneUnderlay); (err != nil) != c.wantErr {
+			t.Errorf("%s: %v, want an error: %v", c.name, err, c.wantErr)
+		}
+	}
+	if err := cc.verdictMisses(rowPlainTCP, nil, false); err != nil {
+		t.Errorf("a row the case doesn't check: %v", err)
+	}
 }
 
 func (cc censorCase) want(transport string) string {
+	if _, ok := cc.varies[transport]; ok {
+		return "varies"
+	}
 	if w, ok := cc.expect[transport]; ok {
 		return w
 	}
@@ -250,6 +463,8 @@ const (
 	rowWireGuard  = "wireguard (reference)"
 	rowOpenVPNUDP = "openvpn-udp (reference)"
 	rowOpenVPNTCP = "openvpn-tcp (reference)"
+	rowRandomTCP  = "random-tcp (reference)"
+	rowRelayTCP   = "relay-tcp (reference)"
 )
 
 // allFail expects every row to fail.
@@ -274,8 +489,8 @@ var censorCases = []censorCase{
 	{name: "ip-blocklist (entry)", expect: allFail(), blocker: "ip-blocklist",
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig { return entryIPBlocklist(t, l) }},
 	// Reset, its default: plain TCP, OpenVPN over TCP and the rest name
-	// no site.
-	{name: "sni-blocklist (entry)", expect: map[string]string{rowHTTPS: "fail"}, blocker: "sni-blocklist",
+	// no site; the relay's clients name the site it relays to.
+	{name: "sni-blocklist (entry)", expect: map[string]string{rowHTTPS: "fail", rowRelayTCP: "fail"}, blocker: "sni-blocklist",
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			return []censor.ModuleConfig{{Name: "sni-blocklist", Settings: json.RawMessage(`{"names": ["` + httpsName + `"]}`)}}
 		}},
@@ -298,6 +513,51 @@ var censorCases = []censorCase{
 	{name: "wireguard-rhythm", hold: 450 * time.Second, watch: "wireguard-rhythm",
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{}`)}}
+		}},
+	// M2 gate checks (docs/design/milestones.md). Wu et al.'s exemptions
+	// on each connection's first data, UDP's first datagram too: thinkpol's
+	// udp sends random bytes first (exempt by chance about once in 400
+	// tunnels: six printable bytes first); OpenVPN's first packet is mostly
+	// zeros, and HTTPS starts with a TLS record. A WireGuard initiation
+	// ends in 16 zero bytes, and is exempt about one time in four.
+	{name: "fully-encrypted", expect: map[string]string{rowUDP: "fail", rowRandomTCP: "fail"},
+		varies: map[string]string{rowWireGuard: "a WireGuard initiation (mac2's 16 zero bytes) averages about 3.47 set bits per byte, " +
+			"and Wu et al.'s first exemption (3.4 or fewer) passes about one in four, its tunnel with it"},
+		blocker: "fully-encrypted",
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+			return []censor.ModuleConfig{{Name: "fully-encrypted", Settings: json.RawMessage(`{}`)}}
+		}},
+	// The prober probes every TCP server-1 serves data on, and what
+	// fully-encrypted finds suspect (its UDP suspects it doesn't probe),
+	// against nginx on the camouflage node: the https row's nginx answers
+	// every probe and the TLS handshake as it does; the echo server and
+	// OpenVPN don't; the relay answers as the site does, the site's own
+	// answers, and shows the upstream tell; so does reality, which splices
+	// every probe to its target, and whose tell is reported, not flagged
+	// (owner, 2026-11-09: REALITY's design can't avoid it).
+	{name: "active prober", expect: map[string]string{rowRandomTCP: "fail", rowOpenVPNTCP: "fail", rowRelayTCP: "fail"}, blocker: "prober",
+		upstream: true, settle: true, report: "prober",
+		verdictSays: map[string]string{rowHTTPS: "TLS: the server", rowRelayTCP: "upstream tell: a connection", rowReality: "reported, not flagged"},
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+			camouflage := lab.StartCamouflage(t, l)
+			return []censor.ModuleConfig{
+				{Name: "fully-encrypted", Settings: json.RawMessage(`{"tagOnly": true}`)},
+				{Name: "prober", Settings: proberSettings(t, l, camouflage)},
+			}
+		}},
+	// The https, relay and reality rows' ClientHellos name the camouflage
+	// site: their server hellos are compared with the site's answer to the
+	// same ClientHello (the relay's is the site's own, reality's REALITY's
+	// imitation of it).
+	{name: "server-hello", upstream: true, settle: true, report: "server-hello",
+		verdictSays: map[string]string{rowHTTPS: "server hello matches the site", rowRelayTCP: "server hello matches the site", rowReality: "server hello matches the site"},
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+			camouflage := lab.StartCamouflage(t, l)
+			b, err := json.Marshal(map[string]map[string]string{"sites": {httpsName: camouflage[0].String()}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return []censor.ModuleConfig{{Name: "server-hello", Settings: b}}
 		}},
 }
 
@@ -327,21 +587,113 @@ type transport struct {
 	// sawFlows checks the verdict log has the probe's flows on the
 	// underlay: the censor saw what it judged.
 	sawFlows func(t *testing.T, l *lab.Lab, c *censorRun) error
-	// upstream runs the row's cells in lab.Upstream: the camouflage site
-	// behind the router.
+	// upstream runs every cell of the row in lab.Upstream.
 	upstream bool
+	// udp: the row's underlay is UDP, which the prober never probes.
+	udp bool
+	// oneUnderlay: both overlay families ride one underlay family, so a
+	// blocked cell may blame either family's underlay.
+	oneUnderlay bool
+	// moduleSettings overrides, by module name, settings of the censor
+	// modules a case runs, in every cell of the row: a key set here
+	// replaces the case's. A gate row whose entry relays what it doesn't
+	// recognize to the camouflage site (REALITY) asks for the prober's
+	// upstreamTell "report" here. A key that names no module fails the
+	// run, and so does a row tuning a case's report module without being
+	// in its verdictSays (checkMatrix).
+	moduleSettings map[string]map[string]any
+	// tls: the row's underlay connection is TLS whose ClientHello names
+	// the camouflage site, so the server-hello comparison has something
+	// to compare (checkMatrix).
+	tls bool
 	// hold, if set, keeps the transport in use for a while (a case's
 	// hold) before the probe.
 	hold func(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration)
 }
 
+// withRowSettings is the case's module configs with a row's overrides
+// (transport.moduleSettings) merged in.
+func withRowSettings(configs []censor.ModuleConfig, overrides map[string]map[string]any) ([]censor.ModuleConfig, error) {
+	out := slices.Clone(configs)
+	for i, mc := range out {
+		o, ok := overrides[mc.Name]
+		if !ok {
+			continue
+		}
+		settings := map[string]any{}
+		if len(mc.Settings) > 0 {
+			if err := json.Unmarshal(mc.Settings, &settings); err != nil {
+				return nil, fmt.Errorf("%s's settings: %w", mc.Name, err)
+			}
+		}
+		maps.Copy(settings, o)
+		b, err := json.Marshal(settings)
+		if err != nil {
+			return nil, fmt.Errorf("%s's settings: %w", mc.Name, err)
+		}
+		out[i].Settings = b
+	}
+	return out, nil
+}
+
+// TestWithRowSettings: a row's override reaches the module it names, and
+// only that one; a row without one (relay-tcp, whose cell fails on the
+// upstream tell) runs the case's settings.
+func TestWithRowSettings(t *testing.T) {
+	proberSettings := `{"reference": {"name": "camouflage.example.net", "addresses": ["198.51.100.10:443"]}, "destinations": ["192.0.2.9"]}`
+	configs := []censor.ModuleConfig{
+		{Name: "fully-encrypted", Settings: json.RawMessage(`{"tagOnly": true}`)},
+		{Name: "prober", Settings: json.RawMessage(proberSettings)},
+	}
+	got, err := withRowSettings(configs, map[string]map[string]any{"prober": {"upstreamTell": "report"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prober struct {
+		Reference    struct{ Name string } `json:"reference"`
+		Destinations []string              `json:"destinations"`
+		UpstreamTell string                `json:"upstreamTell"`
+	}
+	if err := json.Unmarshal(got[1].Settings, &prober); err != nil {
+		t.Fatal(err)
+	}
+	if prober.UpstreamTell != "report" || prober.Reference.Name != "camouflage.example.net" || len(prober.Destinations) != 1 {
+		t.Errorf("the prober's settings with the row's override: %s", got[1].Settings)
+	}
+	if string(got[0].Settings) != `{"tagOnly": true}` || string(configs[1].Settings) != proberSettings {
+		t.Errorf("touched what the override doesn't name: %s, the case's own %s", got[0].Settings, configs[1].Settings)
+	}
+	if _, _, err := censor.Build(censor.Config{Modules: got}); err != nil {
+		t.Errorf("the merged settings: %v", err)
+	}
+	// The override is what the module parses: a value it refuses fails.
+	bad, err := withRowSettings(configs, map[string]map[string]any{"prober": {"upstreamTell": "ignore"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := censor.Build(censor.Config{Modules: bad}); err == nil {
+		t.Error("the module accepted upstreamTell \"ignore\": the override didn't reach it")
+	}
+	unchanged, err := withRowSettings(configs, nil)
+	if err != nil || string(unchanged[1].Settings) != proberSettings {
+		t.Errorf("a row without overrides: %s, %v", unchanged[1].Settings, err)
+	}
+	for _, tr := range transports {
+		if _, ok := tr.moduleSettings["prober"]["upstreamTell"]; ok && tr.name == rowRelayTCP {
+			t.Errorf("%s sets the prober's upstreamTell: its cell must fail on the tell", tr.name)
+		}
+	}
+}
+
 var transports = []transport{
 	{name: rowPlainTCP, setup: setupPlainTCP, probe: probePlainTCP, sawFlows: sawPlainTCP},
-	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPS, sawFlows: sawHTTPS},
-	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP},
-	{name: rowWireGuard, setup: setupWireGuard, probe: probeUDP, sawFlows: sawWireGuard},
-	{name: rowOpenVPNUDP, setup: openVPN{"udp"}.setup, probe: openVPN{"udp"}.probe, sawFlows: openVPN{"udp"}.sawFlows},
+	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPSOn(443), sawFlows: sawHTTPS, tls: true},
+	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP, udp: true, oneUnderlay: true},
+	{name: rowWireGuard, setup: setupWireGuard, probe: probeUDP, sawFlows: sawWireGuard, udp: true},
+	{name: rowOpenVPNUDP, setup: openVPN{"udp"}.setup, probe: openVPN{"udp"}.probe, sawFlows: openVPN{"udp"}.sawFlows, udp: true},
 	{name: rowOpenVPNTCP, setup: openVPN{"tcp"}.setup, probe: openVPN{"tcp"}.probe, sawFlows: openVPN{"tcp"}.sawFlows},
+	{name: rowRandomTCP, setup: setupRandom, probe: probeRandom, sawFlows: sawRandom},
+	{name: rowRelayTCP, setup: setupRelay, probe: probeHTTPSOn(relayRowPort), sawFlows: sawRelay, upstream: true, tls: true},
 	realityRow,
 }
 
@@ -430,26 +782,99 @@ func sawUDP(t *testing.T, l *lab.Lab, c *censorRun) error {
 }
 
 // blockedBy checks the verdict log blamed the case's blocker for the
-// blocked cell: it dropped or reset packets to or from server-1. It
-// returns which.
-func blockedBy(t *testing.T, l *lab.Lab, c *censorRun, blocker string) (string, error) {
+// blocked cell: it dropped or reset packets to or from server-1 over each
+// family that didn't cross (over either, for a row whose tunnels share one
+// underlay family). It returns which.
+func blockedBy(t *testing.T, l *lab.Lab, c *censorRun, blocker string, got crossed, oneUnderlay bool) (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("a blocking cell without a censor")
 	}
 	server := l.Node(lab.Server1)
-	isServer := func(a netip.Addr) bool { return a == server.IPv4(lab.NetServers) || a == server.IPv6(lab.NetServers) }
+	found := map[censor.Verdict]bool{}
+	for _, addrs := range blockedFamilies(server.IPv4(lab.NetServers), server.IPv6(lab.NetServers), got, oneUnderlay) {
+		blocked := false
+		for _, v := range []censor.Verdict{censor.Drop, censor.Reset} {
+			if c.logged(t, blames(blocker, v, addrs)) {
+				found[v], blocked = true, true
+			}
+		}
+		if !blocked {
+			return "", fmt.Errorf("data to %v didn't cross, but the verdict log has no %s drop or reset of its traffic", addrs, blocker)
+		}
+	}
 	var verdicts []string
 	for _, v := range []censor.Verdict{censor.Drop, censor.Reset} {
-		if c.logged(t, func(e verdictLine) bool {
-			return e.Verdict == v && e.Module == blocker && (isServer(e.Key.Dst) || isServer(e.Key.Src))
-		}) {
+		if found[v] {
 			verdicts = append(verdicts, map[censor.Verdict]string{censor.Drop: "dropped", censor.Reset: "reset"}[v])
 		}
 	}
-	if len(verdicts) == 0 {
-		return "", fmt.Errorf("the transport stopped, but the verdict log has no %s drop or reset of server-1's traffic", blocker)
-	}
 	return strings.Join(verdicts, " and "), nil
+}
+
+// blockedFamilies is what blockedBy needs a blocker's verdict on, one
+// entry each: server-1's address of each family that didn't cross, or
+// either address once for a row whose tunnels share one underlay family.
+func blockedFamilies(v4, v6 netip.Addr, got crossed, oneUnderlay bool) [][]netip.Addr {
+	if oneUnderlay {
+		return [][]netip.Addr{{v4, v6}}
+	}
+	var families [][]netip.Addr
+	if !got.v4 {
+		families = append(families, []netip.Addr{v4})
+	}
+	if !got.v6 {
+		families = append(families, []netip.Addr{v6})
+	}
+	return families
+}
+
+// TestBlockedFamilies: a family that didn't cross needs the blocker's
+// verdict on its own address, not on either of the server's.
+func TestBlockedFamilies(t *testing.T) {
+	v4, v6 := netip.MustParseAddr("192.0.2.9"), netip.MustParseAddr("2001:db8::9")
+	for _, c := range []struct {
+		got         crossed
+		oneUnderlay bool
+		want        [][]netip.Addr
+	}{
+		{crossed{}, false, [][]netip.Addr{{v4}, {v6}}},
+		{crossed{v6: true}, false, [][]netip.Addr{{v4}}},
+		{crossed{v4: true}, false, [][]netip.Addr{{v6}}},
+		{crossed{v4: true, v6: true}, false, nil},
+		{crossed{}, true, [][]netip.Addr{{v4, v6}}},
+	} {
+		got := blockedFamilies(v4, v6, c.got, c.oneUnderlay)
+		if !slices.EqualFunc(got, c.want, slices.Equal[[]netip.Addr]) {
+			t.Errorf("%+v, one underlay %v: %v, want %v", c.got, c.oneUnderlay, got, c.want)
+		}
+	}
+}
+
+// blames matches a verdict log entry of blocker's verdict v on traffic to
+// or from one of addrs.
+func blames(blocker string, v censor.Verdict, addrs []netip.Addr) func(verdictLine) bool {
+	return func(e verdictLine) bool {
+		return e.Verdict == v && e.Module == blocker && (slices.Contains(addrs, e.Key.Dst) || slices.Contains(addrs, e.Key.Src))
+	}
+}
+
+// TestBlames: a blocker's drop of one family's traffic doesn't blame it
+// for the other's.
+func TestBlames(t *testing.T) {
+	v4, v6 := netip.MustParseAddr("192.0.2.9"), netip.MustParseAddr("2001:db8::9")
+	dev4 := netip.MustParseAddr("192.0.2.1")
+	e := verdictLine{LogEntry: censor.LogEntry{Module: "fully-encrypted", Verdict: censor.Drop}, Key: censor.FlowKey{Proto: censor.ProtoUDP, Src: dev4, Dst: v4}}
+	for _, c := range []struct {
+		addrs []netip.Addr
+		want  bool
+	}{{[]netip.Addr{v4}, true}, {[]netip.Addr{v6}, false}, {[]netip.Addr{v4, v6}, true}} {
+		if got := blames("fully-encrypted", censor.Drop, c.addrs)(e); got != c.want {
+			t.Errorf("a drop to %s blames %v: %v, want %v", v4, c.addrs, got, c.want)
+		}
+	}
+	if blames("prober", censor.Drop, []netip.Addr{v4})(e) || blames("fully-encrypted", censor.Reset, []netip.Addr{v4})(e) {
+		t.Error("blamed another module or verdict")
+	}
 }
 
 func waitOutput(p *lab.Process, pattern string, timeout time.Duration) error {
@@ -540,13 +965,33 @@ func (c *censorRun) stats() (censor.QueueStats, error) {
 	return censor.ParseQueueStats(out, censorQueue)
 }
 
-// healthy is nil when censord is still running and the kernel dropped
-// nothing on the way to it since it became ready.
+// healthy is nil when censord is still running, the kernel dropped
+// nothing on the way to it since it became ready, and every active module
+// was handed every snapshot: one it missed (a new flow, a tag) is a
+// connection it judged without, a dropped new flow clearing an entry of
+// the upstream tell.
 func (c *censorRun) healthy(t *testing.T) error {
 	select {
 	case <-c.proc.Done():
 		return fmt.Errorf("censord exited: %v\n%s", c.proc.Err(), c.proc.Output())
 	default:
+	}
+	log, err := execRead(c.router, pollTimeout, "cat", censorLogPath)
+	if err != nil {
+		return err
+	}
+	var missed verdictLine
+	if _, err := matchVerdicts(completeLines(log), func(e verdictLine) bool {
+		if e.Event == censor.EventUnnoticed {
+			missed = e
+			return true
+		}
+		return false
+	}); err != nil {
+		return err
+	}
+	if missed.Event != "" {
+		return fmt.Errorf("an active module missed a snapshot: %s %s (%s)", missed.Flow, missed.Module, missed.Reason)
 	}
 	now, err := c.stats()
 	if err != nil {
@@ -662,9 +1107,13 @@ func writeResults(t *testing.T, cells []matrixCell, expected int) {
 	b.WriteString("<!-- Generated by `make lab` (TestCensorMatrix); do not edit. -->\n\n")
 	b.WriteString("Did a transport's data cross the censor in the lab router, device-a to server-1: " +
 		"pass when it crossed over IPv4 and over IPv6, fail when it crossed over neither " +
-		"(one family alone is partial, which no cell expects: the run fails and this file is not written). Every cell is probed. " +
+		"(one family alone is partial, which only a row that varies may be; anywhere else the run fails and this file is not written). Every cell is probed. " +
 		"The `(control)` rows are not transports: they show that plain TCP and HTTPS on the underlay cross the censor, and that the censor sees them. " +
-		"The `(reference)` rows are real WireGuard and OpenVPN, which the fingerprint modules must block.\n\n")
+		"The `(reference)` rows are real WireGuard and OpenVPN, which the fingerprint modules must block, " +
+		"random-tcp, a naive echo server fed random bytes (what a fully encrypted proxy looks like), which fully-encrypted and the prober must block, " +
+		"and relay-tcp, an entry that splices every connection to the camouflage site as REALITY does with what it doesn't recognize, which the prober's upstream tell must block. " +
+		"A cell of the active prober or server-hello quotes the module's verdict on the row's first connection to server-1. " +
+		"A cell whose detail says `varies` is chance by nature, and says why: it shows what this run got, and only a `(reference)` row may vary.\n\n")
 	b.WriteString("| transport | censor | result | detail |\n|---|---|---|---|\n")
 	for _, c := range cells {
 		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.transport, c.censor, c.result, strings.ReplaceAll(c.detail, "|", `\|`))

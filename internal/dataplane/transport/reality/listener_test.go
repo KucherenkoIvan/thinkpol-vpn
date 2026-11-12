@@ -458,10 +458,7 @@ type front struct {
 
 func newFront(t *testing.T) *front {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	ln := listenUnlearned(t)
 	f := &front{t: t, ln: ln}
 	t.Cleanup(func() { _ = ln.Close(); f.release() })
 	tg := theTarget(t)
@@ -484,6 +481,42 @@ func newFront(t *testing.T) *front {
 		}
 	}()
 	return f
+}
+
+// listenUnlearned listens on loopback until it gets an address REALITY
+// never detected records for in this process, keeping the others open
+// until the test ends. What REALITY learned outlives the target it learned
+// it from, and -count reruns the tests in one process, where a loopback
+// port an earlier target used comes round again: detect would take that
+// target's records for the new one's and return at once.
+func listenUnlearned(t *testing.T) net.Listener {
+	t.Helper()
+	for range 100 {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if unlearned(ln.Addr().String()) {
+			return ln
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+	}
+	t.Fatal("100 loopback addresses in a row whose records REALITY already detected")
+	return nil
+}
+
+// unlearned reports whether nothing about dest is known to detect: no
+// records under any of its keys in REALITY's store, no detection of ours.
+func unlearned(dest string) bool {
+	for alpn := range detectedALPNs {
+		if _, ok := (upstreamRecords{}).load(recordsKey(dest, serverName, alpn)); ok {
+			return false
+		}
+	}
+	detections.mu.Lock()
+	defer detections.mu.Unlock()
+	_, ok := detections.byDest[dest]
+	return !ok
 }
 
 func passThrough(c net.Conn, address string) {

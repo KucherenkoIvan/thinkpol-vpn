@@ -54,6 +54,9 @@ type Stream struct {
 	pendingBytes      int
 	broken            bool
 	fresh             []byte
+	// client: the stream began with a SYN without ACK, so its sender
+	// opened the connection.
+	client bool
 }
 
 type segment struct {
@@ -99,6 +102,7 @@ func (s *Stream) add(seq uint32, flags uint8, payload []byte) string {
 	if flags&Syn != 0 {
 		if !s.synced {
 			s.synced, s.isn, s.nextSeq = true, seq, seq+1
+			s.client = flags&Ack == 0
 		}
 		if len(payload) > 0 {
 			// Linux reads a SYN's data only with TCP Fast Open, which a

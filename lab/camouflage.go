@@ -25,8 +25,8 @@ const (
 // with the image's certificate for CamouflageName, on CamouflagePort of
 // both its addresses, unless it runs already. It returns them, IPv4
 // first, once both listen. It is the target a reality listener splices
-// to, and the site TP-026's prober and server-hello comparison, not built
-// yet, are to compare servers with.
+// to, and the site the prober and the server-hello comparison compare
+// servers with.
 func StartCamouflage(t testing.TB, l *Lab) []netip.AddrPort {
 	t.Helper()
 	node := l.Node(Camouflage)

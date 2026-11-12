@@ -21,36 +21,38 @@ import (
 // each starts its handshake in the probe, after the censor is up, so the
 // censor sees the connection from its first packet.
 
-// httpsName is the name the https row's ClientHello asks for.
-const httpsName = "site.example.net"
+// httpsName is the name the https row's ClientHello asks for: the
+// camouflage site's, so the prober's TLS comparison and server-hello
+// compare the row's nginx with the site.
+const httpsName = lab.CamouflageName
 
+// setupHTTPS runs nginx on server-1 as an ordinary site for httpsName, the
+// same server and settings as the camouflage site (startCamouflage): what
+// the prober and server-hello must not flag.
 func setupHTTPS(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	server := l.Node(lab.Server1)
-	server.MustExec(t, "sh", "-ec", "mkdir -p /tmp/https && cd /tmp/https && "+
-		"openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 "+
-		"-keyout key.pem -out cert.pem -subj /CN="+httpsName+" -addext subjectAltName=DNS:"+httpsName+" 2>/dev/null")
-	for _, a := range serverAddrs(server) {
-		server.Start(t, "openssl", "s_server", "-quiet", "-www", "-accept", netip.AddrPortFrom(a, 443).String(),
-			"-cert", "/tmp/https/cert.pem", "-key", "/tmp/https/key.pem")
-	}
-	waitSockets(t, server, "-lnt", 443, 2)
+	startNginx(t, server, "/tmp/https", httpsName, 443, serverAddrs(server))
 	return probeTarget{server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)}, nil
 }
 
-// probeHTTPS fetches a page from server-1 over each family, by name.
-func probeHTTPS(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
-	dev := l.Node(lab.DeviceA)
-	get := func(a netip.Addr) (bool, error) {
-		return untilAnswer(window(wantPass), func() (bool, error) { return httpsFetches(dev, a) })
+// probeHTTPSOn fetches a page from server-1's port over each family, by
+// name.
+func probeHTTPSOn(port int) func(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
+	return func(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
+		dev := l.Node(lab.DeviceA)
+		get := func(a netip.Addr) (bool, error) {
+			return untilAnswer(window(wantPass), func() (bool, error) { return httpsFetches(dev, a, port) })
+		}
+		return crossed{v4: mustProbe(t)(get(to.v4)), v6: mustProbe(t)(get(to.v6))}
 	}
-	return crossed{v4: mustProbe(t)(get(to.v4)), v6: mustProbe(t)(get(to.v6))}
 }
 
-// httpsFetches says whether one HTTPS request to httpsName at a got a 200.
+// httpsFetches says whether one HTTPS request to httpsName at a's port got
+// a 200.
 // "Doesn't cross" is curl failing to connect, timing out, or having the
 // connection reset or closed under it, its TLS handshake included; any
 // other failure is an error.
-func httpsFetches(dev *lab.Node, a netip.Addr) (bool, error) {
+func httpsFetches(dev *lab.Node, a netip.Addr, port int) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	host := a.String()
@@ -58,7 +60,7 @@ func httpsFetches(dev *lab.Node, a netip.Addr) (bool, error) {
 		host = "[" + host + "]"
 	}
 	res, err := dev.Exec(ctx, "curl", "-sS", "-k", "--max-time", "3", "-o", "/dev/null", "-w", "%{http_code}",
-		"--resolve", httpsName+":443:"+host, "https://"+httpsName+"/")
+		"--resolve", fmt.Sprintf("%s:%d:%s", httpsName, port, host), fmt.Sprintf("https://%s:%d/", httpsName, port))
 	switch {
 	case err == nil && strings.TrimSpace(res.Stdout) == "200":
 		return true, nil
@@ -78,6 +80,22 @@ func httpsFetches(dev *lab.Node, a netip.Addr) (bool, error) {
 
 func sawHTTPS(t *testing.T, l *lab.Lab, c *censorRun) error {
 	return sawFlowsTo(t, l, c, censor.ProtoTCP, 443, 443)
+}
+
+// relayRowPort is the relay row's port on server-1.
+const relayRowPort = 9443
+
+// setupRelay runs the relay row: server-1 splices every connection on
+// relayRowPort to the camouflage site, in the same family, as an entry
+// that relays what it doesn't recognize does.
+func setupRelay(t *testing.T, l *lab.Lab) (probeTarget, error) {
+	server := l.Node(lab.Server1)
+	startRelay(t, server, relayRowPort, lab.StartCamouflage(t, l))
+	return probeTarget{server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)}, nil
+}
+
+func sawRelay(t *testing.T, l *lab.Lab, c *censorRun) error {
+	return sawFlowsTo(t, l, c, censor.ProtoTCP, relayRowPort, relayRowPort)
 }
 
 // sawFlowsTo checks the verdict log has a flow from device-a to server-1
@@ -242,11 +260,15 @@ func familyAddr(v6 bool) netip.Addr {
 // censor, and pings server-1 through each. Until a client's tun is up its
 // overlay has no route: ping sends nothing and fails with "Network is
 // unreachable", which counts as no reply (pingNoReplyOrRoute). A blocked
-// cell still needs the verdict log to blame the handshake (blockedBy), which
-// accepts a drop in either IP family, so a tunnel that never came up for
-// another reason isn't scored blocked, for the whole cell and not per family.
+// cell still needs the verdict log to blame the handshake (blockedBy) in
+// each family that didn't cross, so a tunnel that never came up for
+// another reason isn't scored blocked.
 func (o openVPN) probe(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
+	// A cell may probe twice (censorCase.settle): the clients start once.
+	if o.clientsRunning(t, dev) {
+		return o.ping(t, l, to, wantPass)
+	}
 	for _, v6 := range []bool{false, true} {
 		ifname, port := "ovpn4", ovpnPort4
 		if v6 {
@@ -257,6 +279,26 @@ func (o openVPN) probe(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) 
 			"--tls-client", "--ca", "/tmp/ovpn/ca.crt", "--cert", "/tmp/ovpn/client.crt", "--key", "/tmp/ovpn/client.key",
 			"--ifconfig", ovpnOverlay[v6]+".2", ovpnOverlay[v6]+".1", "--connect-retry", "1", "1", "--verb", "3")
 	}
+	return o.ping(t, l, to, wantPass)
+}
+
+// clientsRunning says whether device-a runs the OpenVPN clients already:
+// pgrep's exit 0 found one, 1 none, anything else is an error.
+func (o openVPN) clientsRunning(t *testing.T, dev *lab.Node) bool {
+	t.Helper()
+	res, err := execResult(dev, pollTimeout, "pgrep", "-f", "^openvpn --dev ovpn4 ")
+	switch {
+	case err == nil:
+		return true
+	case res.ExitCode == 1:
+		return false
+	}
+	t.Fatalf("pgrep openvpn on %s: %v\n%s", dev.Name, err, res.Stderr)
+	return false
+}
+
+func (o openVPN) ping(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
+	dev := l.Node(lab.DeviceA)
 	return crossed{
 		v4: mustProbe(t)(pingCrosses(dev, to.v4, window(wantPass), pingNoReplyOrRoute)),
 		v6: mustProbe(t)(pingCrosses(dev, to.v6, window(wantPass), pingNoReplyOrRoute)),

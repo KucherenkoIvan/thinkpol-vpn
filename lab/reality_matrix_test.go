@@ -19,12 +19,19 @@ const rowReality = "reality"
 // realityRow is the matrix's reality row: server-1 serves reality through
 // its shared listener (`thinkpol up -mode server`), its target the lab's
 // camouflage site, from lab/maps/reality.yaml; device-a dials it. Its
-// cells run in lab.Upstream. The device comes up in the cell's probe (or
+// cells run in lab.Upstream, and its ClientHello names the camouflage
+// site, which the prober and the server-hello comparison point at. The
+// device comes up in the cell's probe (or
 // hold), after censord, so the censor reads its TLS connection from the
 // first byte.
 var realityRow = transport{
 	name: rowReality, setup: setupReality, probe: probeReality, sawFlows: sawReality,
-	upstream: true, hold: holdReality,
+	upstream: true, hold: holdReality, tls: true,
+	// One link, over whichever of server-1's endpoints came up first.
+	oneUnderlay: true,
+	// REALITY dials its target on every connection it doesn't recognize:
+	// the upstream tell is reported, not a gate check (owner, 2026-11-09).
+	moduleSettings: map[string]map[string]any{"prober": {"upstreamTell": "report"}},
 }
 
 // realityLabs are the reality cells' device-a processes, started once per
