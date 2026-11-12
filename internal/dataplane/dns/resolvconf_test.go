@@ -198,7 +198,7 @@ func TestAResolvConfRewrittenMeanwhileIsTakenBack(t *testing.T) {
 	r.mu.Unlock()
 	renewed := "nameserver 192.0.2.99\n"
 	writeFileAtomic(t, path, renewed)
-	deadline := time.Now().Add(3 * resolvConfCheck)
+	deadline := time.Now().Add(3 * resolvConfTimes.check)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
 			t.Fatalf("not taken back:\n%s", readString(t, path))
@@ -247,7 +247,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 
 	mixed := "nameserver 127.0.0.53\nnameserver 192.0.2.88\n"
 	writeFileAtomic(t, path, mixed)
-	deadline := time.Now().Add(3 * resolvConfCheck)
+	deadline := time.Now().Add(3 * resolvConfTimes.check)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
 			t.Fatalf("not taken back:\n%s", readString(t, path))
@@ -267,7 +267,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 	writeFileAtomic(t, uplink, "nameserver 198.51.100.53\n")
 	stubOnly := "nameserver 127.0.0.53\n"
 	writeFileAtomic(t, path, stubOnly)
-	deadline = time.Now().Add(3 * resolvConfCheck)
+	deadline = time.Now().Add(3 * resolvConfTimes.check)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
 			t.Fatalf("stub-only rewrite not taken back:\n%s", readString(t, path))
@@ -289,7 +289,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 	}
 	stubOnlyOther := "nameserver 127.0.0.54\noptions edns0\n"
 	writeFileAtomic(t, path, stubOnlyOther)
-	deadline = time.Now().Add(3 * resolvConfCheck)
+	deadline = time.Now().Add(3 * resolvConfTimes.check)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
 			t.Fatalf("stub-only without uplink not taken back:\n%s", readString(t, path))
@@ -318,7 +318,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 		if !slices.Equal(got, want) {
 			t.Errorf("uplink back: upstreams %v, want %v", got, want)
 		}
-	case <-time.After(3 * resolvConfCheck):
+	case <-time.After(3 * resolvConfTimes.check):
 		t.Fatal("uplink back: never told the owed read")
 	}
 	if p := r.Problem(); p != nil {
@@ -830,7 +830,7 @@ func (e taggedUnprotected) Is(target error) bool { return target == ErrUnprotect
 func applyOnce(t *testing.T, r *resolvConf) {
 	t.Helper()
 	r.mu.Lock()
-	tell, _ := r.apply()
+	tell, _ := r.apply(readResolvConfFile(r.path))
 	r.mu.Unlock()
 	if tell != nil {
 		tell()
