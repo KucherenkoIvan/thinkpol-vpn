@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [docs/design/security.md#kill-switch]
-owner: ""
-branch: ""
+owner: "agent-tp-134"
+branch: "tp-134-thinkpol-rollback"
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ A user (or the device-test harness) whose agent crashed can put the host back wi
 
 ## Log
 - 2026-10-23 created in backlog (TP-082 design answers)
+- 2026-11-12 backlog → in-progress, owner: agent-tp-134
