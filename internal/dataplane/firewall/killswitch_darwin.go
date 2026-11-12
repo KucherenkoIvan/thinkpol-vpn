@@ -107,9 +107,17 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) (err error) {
 		k.applied = nil
 		a, loaded, err := k.load(ctx, r)
 		if err != nil && loaded {
+			// pf took the text: kill the states its table refuses, as
+			// after a good load, or a read-back that keeps failing leaves
+			// them passing. Not recorded as applied: the next Apply
+			// loads it again, and kills again.
 			k.killStates = true
 			after, eerr := k.enable(ctx)
-			return errors.Join(err, eerr, after)
+			var kerr error
+			if eerr == nil {
+				kerr = killStates(ctx, k.pf, k.own, a.allows, true, "the kill switch refuses")
+			}
+			return errors.Join(err, eerr, kerr, after)
 		}
 		if err != nil {
 			return err
@@ -127,7 +135,8 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) (err error) {
 
 // load loads r's anchor and reads it back: the rules checked for their
 // words (checkListed), the tables entry for entry. loaded says pf took
-// the load, whatever the read-back found.
+// the load, whatever the read-back found; when it did and the read-back
+// failed, a holds what was loaded, unchecked (no listing).
 func (k *KillSwitch) load(ctx context.Context, r KillSwitchRules) (a *appliedKillSwitch, loaded bool, err error) {
 	var b lists.Builder
 	b.AddSet(r.Allow)
@@ -143,20 +152,21 @@ func (k *KillSwitch) load(ctx context.Context, r KillSwitchRules) (a *appliedKil
 	if _, err := k.pf.run(ctx, []byte(text), "-a", KillSwitchAnchor, "-f", "-", "-o", "none"); err != nil {
 		return nil, false, fmt.Errorf("firewall: load the kill switch: %w", err)
 	}
+	unchecked := &appliedKillSwitch{rules: r, table: table, noDNS: noDNS}
 	listed, err := k.listRules(ctx)
 	if err != nil {
-		return nil, true, err
+		return unchecked, true, err
 	}
 	if err := checkListed(listed, rules, "kill switch"); err != nil {
-		return nil, true, err
+		return unchecked, true, err
 	}
 	got := map[string][]netip.Prefix{}
 	for name, want := range map[string][]netip.Prefix{killSwitchTable: table, killSwitchNoDNS: noDNS} {
 		if got[name], err = listTable(ctx, k.pf, KillSwitchAnchor, name, true, "kill switch"); err != nil {
-			return nil, true, err
+			return unchecked, true, err
 		}
 		if !slices.Equal(got[name], sortedPrefixes(slices.Clone(want))) {
-			return nil, true, fmt.Errorf("firewall: pf's table %s holds %d entries unlike the %d loaded", name, len(got[name]), len(want))
+			return unchecked, true, fmt.Errorf("firewall: pf's table %s holds %d entries unlike the %d loaded", name, len(got[name]), len(want))
 		}
 	}
 	return &appliedKillSwitch{rules: r, table: got[killSwitchTable], noDNS: got[killSwitchNoDNS], listed: listed}, true, nil
@@ -240,7 +250,7 @@ func killSwitchUpstreams(ups []netip.AddrPort) []netip.AddrPort {
 //	pass out quick on lo0 all no state
 //	pass out quick on <utun> all no state                                             (connected only)
 //	block return out quick proto { tcp, udp } from any to <thinkpol_killswitch_nodns> port 53
-//	block return out quick proto tcp from any to <thinkpol_killswitch_nodns> port 853
+//	block return out quick proto { tcp, udp } from any to <thinkpol_killswitch_nodns> port 853
 //	pass out quick from any to <thinkpol_killswitch> no state
 //	pass out quick proto { tcp, udp } from any to <upstream> port <its port> no state (each upstream)
 //	pass out quick inet proto udp from any port 68 to any port 67 no state            (DHCPv4)
@@ -250,8 +260,9 @@ func killSwitchUpstreams(ups []netip.AddrPort) []netip.AddrPort {
 //	block return out quick all
 //
 // Outgoing only and stateless, as the guard's. The two blocks refuse DNS
-// to NoDNS (the LAN while down with allow-LAN), which the table passes
-// otherwise; they are there, over an empty table, in every shape. pf
+// (plain, DNS over TLS and DNS over QUIC) to NoDNS (the LAN while down
+// with allow-LAN), which the table passes otherwise; they are there,
+// over an empty table, in every shape. pf
 // can't match a hop
 // limit: neighbour discovery passes to any destination by its ICMPv6
 // type (nothing else; a router could forward it), MLD only to
@@ -266,7 +277,7 @@ func killSwitchRules(tun string, upstreams []netip.AddrPort) []guardRule {
 	block := []string{"block", "return", "out", "quick", noDNS}
 	rules = append(rules,
 		guardRule{"block return out quick proto { tcp, udp } from any to " + noDNS + " port 53", 2, slices.Concat(block, []string{"53"})},
-		guardRule{"block return out quick proto tcp from any to " + noDNS + " port 853", 1, slices.Concat(block, []string{"tcp", "853"})},
+		guardRule{"block return out quick proto { tcp, udp } from any to " + noDNS + " port 853", 2, slices.Concat(block, []string{"853"})},
 		guardRule{"pass out quick from any to <" + killSwitchTable + "> no state", 1, pass("<" + killSwitchTable + ">")})
 	for _, u := range upstreams {
 		a, p := u.Addr().String(), strconv.Itoa(int(u.Port()))

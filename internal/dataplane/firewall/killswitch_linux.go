@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"sync"
@@ -54,7 +55,8 @@ type ksSetIDs [6]uint32
 //	    meta nfproto ipv4 ip daddr @nodns4 udp dport 53 counter reject with icmpx admin-prohibited
 //	    meta nfproto ipv4 ip daddr @nodns4 tcp dport 53 counter reject with tcp reset
 //	    meta nfproto ipv4 ip daddr @nodns4 tcp dport 853 counter reject with tcp reset
-//	    (the same three for ip6 daddr @nodns6)
+//	    meta nfproto ipv4 ip daddr @nodns4 udp dport 853 counter reject with icmpx admin-prohibited
+//	    (the same four for ip6 daddr @nodns6)
 //	    meta nfproto ipv4 ip daddr @allow4 accept
 //	    meta nfproto ipv6 ip6 daddr @allow6 accept
 //	    meta nfproto ipv4 ip daddr @direct4 accept
@@ -70,8 +72,8 @@ type ksSetIDs [6]uint32
 //	  chain forward { type filter hook forward priority 2147483647; policy accept;
 //	    oifname <TUN> accept                                 (connected only)
 //	    iifname <TUN> accept                                 (connected only)
-//	    iifname <bridge> oifname <bridge> accept             (each bridge in the namespace)
-//	    (the six @nodns rules of output)
+//	    iifname <bridge> oifname <bridge> accept             (each bridge on its own: innerBridges)
+//	    (the eight @nodns rules of output)
 //	    meta nfproto ipv4 ip daddr @allow4 accept
 //	    meta nfproto ipv6 ip6 daddr @allow6 accept
 //	    meta nfproto ipv4 ip daddr @direct4 accept
@@ -102,12 +104,20 @@ type ksSetIDs [6]uint32
 // iptables, as Docker up to 27 and Kubernetes set it) a frame bridged
 // between two ports of one bridge (container to container on docker0)
 // meets the forward hook too, the bridge both its in and out interface:
-// it never leaves through routing, so it passes. nftables' inet family
-// has no bridge-port key (meta ibrname is the bridge family's), and an
-// xt physdev match would make nft unable to list the table, so the
-// bridges are named one by one, as listed at each Apply: a bridge made
-// since passes at the next one (the agent's re-apply). A packet routed
-// back out of the bridge it came in by passes as well. Not postrouting:
+// it passes if the bridge is on its own (innerBridges: only veth and tap
+// ports, no default or gatewayed route out of it). A bridge that
+// enslaves the uplink, or carries the default route, isn't: a VM's frame
+// bridged from its tap to eth0 in the uplink's br0 meets the hook with
+// br0 as both too, and would leave for the internet, so such a bridge
+// falls through to the refusals (its VMs then reach only what the sets
+// allow, the LAN with allow-LAN, never its DNS while down). nftables'
+// inet family has no bridge-port key (meta ibrname is the bridge
+// family's), and an xt physdev match would make nft unable to list the
+// table, so the bridges are named one by one, as listed at each Apply:
+// a bridge made, or a port or route changed, since counts from the
+// next one (the agent's re-apply). A packet routed back out of the
+// bridge it came in by passes as well (only a bridge on its own, which
+// routes nowhere beyond its link). Not postrouting:
 // reject is refused there (input, forward and output only), and output
 // already has what the device sends itself. The direct sets' elements
 // expire DirectTimeout after they were put in: every Apply puts them in
@@ -121,6 +131,8 @@ type KillSwitch struct {
 	applied *KillSwitchRules
 	closed  bool
 	capable bool
+	// listBridges is innerBridges when nil (tests fail it).
+	listBridges func(netns int) ([]string, error)
 }
 
 // NewKillSwitch returns the kill switch of the calling thread's network
@@ -157,7 +169,9 @@ func (k *KillSwitch) probe(c *nftables.Conn) error {
 // Apply puts r in place, replacing whatever the table held (a previous
 // run's included) in one transaction: there is never a moment without
 // it. Applying what is in place again only checks the table holds
-// exactly that, and rebuilds it if not.
+// exactly that, and rebuilds it if not. When the bridges can't be
+// listed, r goes in with no bridge passing and Apply returns the
+// listing's error: the next Apply lists them again.
 func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -174,9 +188,16 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) error {
 	if err := k.probe(c); err != nil {
 		return err
 	}
-	bridges, err := bridgeNames(k.netns)
-	if err != nil {
-		return err
+	list := innerBridges
+	if k.listBridges != nil {
+		list = k.listBridges
+	}
+	// Unlisted, the rest still goes in, with no bridge passing: bridged
+	// frames are refused, nothing else is open meanwhile. The error is
+	// still Apply's, so the agent reports it and applies again.
+	bridges, listErr := list(k.netns)
+	if listErr != nil {
+		bridges = nil
 	}
 	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: KillSwitchTable}
 	sets := killSwitchSets(table, r)
@@ -191,7 +212,7 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) error {
 		if err := c.Flush(); err != nil {
 			return fmt.Errorf("firewall: renew the kill switch's direct destinations: %w", err)
 		}
-		return nil
+		return listErr
 	}
 	k.applied = nil
 	c.AddTable(table)
@@ -224,7 +245,7 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) error {
 		return fmt.Errorf("firewall: apply the kill switch: %w", err)
 	}
 	k.applied = &r
-	return nil
+	return listErr
 }
 
 // Close removes the table, whichever run put it there, and lets go of
@@ -328,9 +349,17 @@ func killSwitchChains(r KillSwitchRules, ids ksSetIDs, bridges []string) []wantC
 	}
 }
 
-// bridgeNames are the bridges of the namespace (netns, -1 the calling
-// thread's), sorted.
-func bridgeNames(netns int) ([]string, error) {
+// innerBridges are the bridges of the namespace (netns, -1 the calling
+// thread's) whose frames may pass bridged within them, sorted: those
+// whose every port is a veth or a tap (containers, VMs) and out of which
+// no route of either family, in any table, is a default route or goes by
+// a gateway. A bridge with any other port (the uplink enslaved, a Wi-Fi
+// interface, a VLAN, a bond, a VXLAN) or that routes beyond its link
+// (the host's uplink, an entry reached through it) isn't one: what it
+// bridges falls through to the refusals. A gatewayed or default route
+// that names no interface (a nexthop object) can't be placed: then none
+// is.
+func innerBridges(netns int) ([]string, error) {
 	var h *netlink.Handle
 	var err error
 	if netns >= 0 {
@@ -344,22 +373,64 @@ func bridgeNames(netns int) ([]string, error) {
 	defer h.Close()
 	for range 3 {
 		var links []netlink.Link
-		if links, err = h.LinkList(); errors.Is(err, netlink.ErrDumpInterrupted) {
-			continue // the links changed during the dump
+		var routes []netlink.Route
+		links, err = h.LinkList()
+		if err == nil {
+			routes, err = h.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: unix.RT_TABLE_UNSPEC}, netlink.RT_FILTER_TABLE)
+		}
+		if errors.Is(err, netlink.ErrDumpInterrupted) {
+			continue // the links or routes changed during the dump
 		}
 		if err != nil {
 			break
 		}
-		var names []string
-		for _, l := range links {
-			if l.Type() == "bridge" {
-				names = append(names, l.Attrs().Name)
-			}
-		}
-		slices.Sort(names)
-		return names, nil
+		return bridgesOnTheirOwn(links, routes), nil
 	}
 	return nil, fmt.Errorf("firewall: list the bridges: %w", err)
+}
+
+// bridgesOnTheirOwn are innerBridges of links and routes.
+func bridgesOnTheirOwn(links []netlink.Link, routes []netlink.Route) []string {
+	bridges := map[int]string{}
+	for _, l := range links {
+		if l.Type() == "bridge" {
+			bridges[l.Attrs().Index] = l.Attrs().Name
+		}
+	}
+	for _, l := range links {
+		if m := l.Attrs().MasterIndex; m != 0 && l.Type() != "veth" && l.Type() != "tuntap" {
+			delete(bridges, m)
+		}
+	}
+	for _, r := range routes {
+		if r.Type != unix.RTN_UNICAST {
+			continue // local, broadcast, unreachable, blackhole: never out of a bridge
+		}
+		gateway := r.Gw != nil || r.Via != nil
+		out := []int{r.LinkIndex}
+		for _, nh := range r.MultiPath {
+			gateway = gateway || nh.Gw != nil || nh.Via != nil
+			out = append(out, nh.LinkIndex)
+		}
+		if !gateway && r.Dst != nil {
+			if ones, _ := r.Dst.Mask.Size(); ones != 0 {
+				continue // on-link, not a default route
+			}
+		}
+		placed := false
+		for _, i := range out {
+			if i != 0 {
+				placed = true
+				delete(bridges, i)
+			}
+		}
+		if !placed {
+			return nil
+		}
+	}
+	names := slices.Collect(maps.Values(bridges))
+	slices.Sort(names)
+	return names
 }
 
 // ksLookups are "<family> <load> @set accept" for allow4, allow6,
@@ -411,8 +482,9 @@ func refused() [][]expr.Any {
 	}
 }
 
-// noDNS refuses DNS to the nodns sets: UDP to port 53 with an ICMP
-// error, TCP to ports 53 and 853 with a reset, both families.
+// noDNS refuses DNS to the nodns sets: UDP to ports 53 and 853 (DNS over
+// QUIC) with an ICMP error, TCP to ports 53 and 853 with a reset, both
+// families.
 func noDNS(ids ksSetIDs) [][]expr.Any {
 	var rules [][]expr.Any
 	for i, name := range []string{noDNSSet4, noDNSSet6} {
@@ -423,7 +495,7 @@ func noDNS(ids ksSetIDs) [][]expr.Any {
 		for _, d := range []struct {
 			proto byte
 			port  uint16
-		}{{unix.IPPROTO_UDP, 53}, {unix.IPPROTO_TCP, 53}, {unix.IPPROTO_TCP, 853}} {
+		}{{unix.IPPROTO_UDP, 53}, {unix.IPPROTO_TCP, 53}, {unix.IPPROTO_TCP, 853}, {unix.IPPROTO_UDP, 853}} {
 			reject := &expr.Reject{Type: unix.NFT_REJECT_ICMPX_UNREACH, Code: unix.NFT_REJECT_ICMPX_ADMIN_PROHIBITED}
 			if d.proto == unix.IPPROTO_TCP {
 				reject = &expr.Reject{Type: unix.NFT_REJECT_TCP_RST}

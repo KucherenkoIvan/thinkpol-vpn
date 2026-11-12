@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"runtime"
 	"slices"
 	"time"
 
@@ -93,7 +94,14 @@ var crashPresets = []rules.Preset{rules.PresetEverything, rules.PresetAllButDome
 type killSwitchSettings struct {
 	on, allowLAN, failClosed bool
 	preset                   rules.Preset
+	// marked: the links' sockets pass the kill switch by their mark
+	// (Linux), before its DNS refusals; else (macOS) DNS to an entry
+	// that serves its transport on a DNS port must be let through.
+	marked bool
 }
+
+// linksMarked is killSwitchSettings.marked on this OS.
+const linksMarked = runtime.GOOS == "linux"
 
 // killSwitchView is the connection as the kill switch sees it.
 type killSwitchView struct {
@@ -105,7 +113,7 @@ type killSwitchView struct {
 	connected *routetable.Exempt
 	tun       string
 	// entries are the endpoints of the device's links in its section.
-	entries []netip.Addr
+	entries []netip.AddrPort
 }
 
 // active is whether the rules are meant to be in place.
@@ -116,13 +124,20 @@ func (s killSwitchSettings) active(meantUp bool) bool {
 // rules are the kill switch's rules for v: the down shape (the entries)
 // or, connected, the connected one (the TUN, the direct destinations and
 // the direct upstreams too), with the LAN when allowed. Down, DNS to the
-// LAN but the entries is refused even with allow-LAN (owner,
-// 2026-11-12): the OS is back on its own resolvers, a home router that
-// forwards lookups in the clear.
+// LAN is refused even with allow-LAN (owner, 2026-11-12): the OS is back
+// on its own resolvers, a home router that forwards lookups in the
+// clear. An entry on the LAN that is also its resolver gets none either:
+// on Linux the links' sockets pass by their mark, before the refusals;
+// on macOS (no mark) only an entry whose transport is on port 53 or 853
+// is spared, or its link couldn't come up.
 func (s killSwitchSettings) rules(v killSwitchView) firewall.KillSwitchRules {
-	var eb, lb, ab lists.Builder
-	for _, a := range v.entries {
+	var eb, db, lb, ab lists.Builder
+	for _, e := range v.entries {
+		a := e.Addr()
 		_ = eb.AddPrefix(netip.PrefixFrom(a, a.BitLen())) // unmapped, valid
+		if !s.marked && (e.Port() == 53 || e.Port() == 853) {
+			_ = db.AddPrefix(netip.PrefixFrom(a, a.BitLen()))
+		}
 	}
 	for _, p := range firewall.LAN {
 		_ = lb.AddPrefix(p)
@@ -135,7 +150,8 @@ func (s killSwitchSettings) rules(v killSwitchView) firewall.KillSwitchRules {
 		ab.AddSet(lan)
 		r.Allow, _ = ab.Build()
 		if v.connected == nil {
-			r.NoDNS = lan.Minus(ents)
+			onDNSPorts, _ := db.Build()
+			r.NoDNS = lan.Minus(onDNSPorts)
 		}
 	}
 	if v.connected != nil {
@@ -144,13 +160,15 @@ func (s killSwitchSettings) rules(v killSwitchView) firewall.KillSwitchRules {
 	return r
 }
 
-// entries are the endpoint addresses of the links in section.
-func entries(section netmap.Section) []netip.Addr {
-	var out []netip.Addr
+// entries are the endpoints of the links in section, their addresses
+// unmapped and without a zone.
+func entries(section netmap.Section) []netip.AddrPort {
+	var out []netip.AddrPort
 	for _, l := range section.Links {
 		for _, e := range l.Endpoints {
-			if a := e.Address.Addr().Unmap().WithZone(""); a.IsValid() && !slices.Contains(out, a) {
-				out = append(out, a)
+			a := e.Address.Addr().Unmap().WithZone("")
+			if ap := netip.AddrPortFrom(a, e.Address.Port()); a.IsValid() && !slices.Contains(out, ap) {
+				out = append(out, ap)
 			}
 		}
 	}
@@ -265,7 +283,7 @@ func (k *killSwitchKeeper) status(s killSwitchSettings, active bool) KillSwitchS
 func (n *Node) killSwitchSettings() killSwitchSettings {
 	n.settingsMu.Lock()
 	defer n.settingsMu.Unlock()
-	s := killSwitchSettings{on: n.cfg.KillSwitch, allowLAN: n.cfg.AllowLAN, failClosed: n.cfg.FailClosedAfterCrash, preset: n.device.Rules.Preset}
+	s := killSwitchSettings{on: n.cfg.KillSwitch, allowLAN: n.cfg.AllowLAN, failClosed: n.cfg.FailClosedAfterCrash, preset: n.device.Rules.Preset, marked: linksMarked}
 	if v := n.device.KillSwitch; v != nil {
 		s.on = *v
 	}

@@ -794,6 +794,9 @@ func TestKillSwitchPassesFramesBridgedWithinABridge(t *testing.T) {
 			t.Fatalf("%s doesn't reach %s without a kill switch: the test proves nothing", c1, dst)
 		}
 	}
+	if !pingFrom(p.gw, "10.78.0.3") {
+		t.Fatal("the gateway doesn't reach the bridge's client without a kill switch: the test proves nothing")
+	}
 	k := p.killSwitch(t)
 	ctx := context.Background()
 	down := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: set(t, entry4+"/32", entry6+"/128")}
@@ -809,6 +812,11 @@ func TestKillSwitchPassesFramesBridgedWithinABridge(t *testing.T) {
 	if err := dialTCP(t, c1, "10.78.0.3", 8080); err != nil {
 		t.Errorf("down: a TCP connect across the bridge: %v", err)
 	}
+	// Forwarded into the bridge from the uplink, a new flow isn't bridged
+	// within it: refused.
+	if pingFrom(p.gw, "10.78.0.3") {
+		t.Error("down: a new flow from the uplink into the bridge passed")
+	}
 
 	c3, _ := bridged(t, p, "br1", 79)
 	if pingFrom(c3, "10.79.0.3") {
@@ -822,5 +830,169 @@ func TestKillSwitchPassesFramesBridgedWithinABridge(t *testing.T) {
 	}
 	if !pingFrom(c1, "10.78.0.3") {
 		t.Error("the first bridge is refused after the re-apply")
+	}
+}
+
+// A bridge that isn't on its own (it enslaves the uplink, carries the
+// default route, has a port that is neither a veth nor a tap) passes
+// nothing bridged within it: a VM's frame bridged from its port to the
+// uplink in the uplink's bridge would leave for the internet, so it is
+// refused while down like anything forwarded, both families, and with
+// allow-LAN its DNS to the LAN too.
+func TestKillSwitchRefusesFramesBridgedThroughTheUplink(t *testing.T) {
+	p := ksPair(t)
+	if exec.Command("ip", "netns", "exec", p.dev, "test", "-d", "/proc/sys/net/bridge").Run() != nil {
+		t.Skip("no br_netfilter in this kernel: bridged frames never meet the forward hook")
+	}
+	sysctl(t, p.dev, "net.bridge.bridge-nf-call-iptables=1", "net.bridge.bridge-nf-call-ip6tables=1",
+		"net.ipv4.ip_forward=1", "net.ipv6.conf.all.forwarding=1")
+	// eth0 (the veth to the gateway) enslaved in brup, the device's
+	// addresses and default routes on brup; a VM's port in brup with an
+	// address of the uplink's network, routed by the gateway.
+	for _, args := range [][]string{
+		{"route", "del", "default"},
+		{"-6", "route", "del", "default"},
+		{"addr", "flush", "dev", "eth0"},
+		{"link", "add", "brup", "type", "bridge"},
+		{"link", "set", "eth0", "master", "brup"},
+		{"link", "set", "brup", "up"},
+		{"addr", "add", "192.0.2.2/24", "dev", "brup"},
+		{"addr", "add", "2001:db8:1::2/64", "dev", "brup", "nodad"},
+		{"route", "add", "default", "via", "192.0.2.1"},
+		{"-6", "route", "add", "default", "via", "2001:db8:1::1"},
+	} {
+		p.ip(t, p.dev, args...)
+	}
+	vm := p.dev + "-vm"
+	if out, err := exec.Command("ip", "netns", "add", vm).CombinedOutput(); err != nil {
+		t.Fatalf("ip netns add: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _, _ = exec.Command("ip", "netns", "del", vm).CombinedOutput() })
+	p.ip(t, p.dev, "link", "add", "vnet0", "type", "veth", "peer", "name", "eth0", "netns", vm)
+	p.ip(t, p.dev, "link", "set", "vnet0", "master", "brup", "up")
+	for _, args := range [][]string{
+		{"link", "set", "lo", "up"},
+		{"link", "set", "eth0", "up"},
+		{"addr", "add", "192.0.2.9/24", "dev", "eth0"},
+		{"addr", "add", "2001:db8:1::9/64", "dev", "eth0", "nodad"},
+		{"route", "add", "default", "via", "192.0.2.1"},
+		{"-6", "route", "add", "default", "via", "2001:db8:1::1"},
+	} {
+		p.ip(t, vm, args...)
+	}
+	for _, dst := range []string{foreign4, foreign6, entry4, entry6} {
+		deadline := time.Now().Add(10 * time.Second)
+		for !pingFrom(vm, dst) {
+			if time.Now().After(deadline) {
+				t.Fatalf("the VM doesn't reach %s without a kill switch: the test proves nothing", dst)
+			}
+		}
+	}
+	k := p.killSwitch(t)
+	ctx := context.Background()
+	down := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: set(t, entry4+"/32", entry6+"/128")}
+	if err := k.Apply(ctx, down); err != nil {
+		t.Fatal(err)
+	}
+	// Not entry6: the VM's neighbour discovery with the gateway is
+	// bridged too, and refused without allow-LAN (the forward chain has
+	// no ND exemption), so IPv6 to anywhere may fail.
+	for dst, want := range map[string]bool{foreign4: false, foreign6: false, entry4: true} {
+		if got := pingFrom(vm, dst); got != want {
+			t.Errorf("down: the VM's ping to %s answered %v, want %v", dst, got, want)
+		}
+	}
+	if !p.ping4(t, entry4) || p.ping4(t, foreign4) {
+		t.Error("down: the device's own pings by the uplink bridge aren't confined as without it")
+	}
+	lan := down
+	lan.Allow = set(t, append([]string{entry4 + "/32", entry6 + "/128"}, prefixStrings(firewall.LAN)...)...)
+	lan.NoDNS = set(t, prefixStrings(firewall.LAN)...)
+	if err := k.Apply(ctx, lan); err != nil {
+		t.Fatal(err)
+	}
+	if udpArrives(t, vm, "", p.gw, lan4, 53) {
+		t.Error("down, allow-LAN: the VM's UDP to lan4 port 53 arrived")
+	}
+	if !udpArrives(t, vm, "", p.gw, lan4, 5353) {
+		t.Error("down, allow-LAN: the VM's UDP to lan4 port 5353 didn't arrive")
+	}
+	if pingFrom(vm, foreign4) {
+		t.Error("down, allow-LAN: the VM's ping to foreign4 answered")
+	}
+
+	// A bridge without a route out of it but with a port that is neither
+	// a veth nor a tap (here a dummy, as a Wi-Fi interface or a VLAN
+	// would be) passes nothing within it either; without that port it
+	// does.
+	c1, _ := bridged(t, p, "br1", 79)
+	if err := k.Apply(ctx, down); err != nil {
+		t.Fatal(err)
+	}
+	if !pingFrom(c1, "10.79.0.3") {
+		t.Fatal("frames within a bridge of veths are refused: the test proves nothing")
+	}
+	p.ip(t, p.dev, "link", "add", "wlan9", "type", "dummy")
+	p.ip(t, p.dev, "link", "set", "wlan9", "master", "br1", "up")
+	if err := k.Apply(ctx, down); err != nil {
+		t.Fatal(err)
+	}
+	if pingFrom(c1, "10.79.0.3") {
+		t.Error("down: frames within a bridge with a dummy port passed")
+	}
+}
+
+// When the bridges can't be listed, Apply still puts the rules in place
+// (a first start, the connected shape narrowed to the down one), with no
+// bridge passing, and fails; the next Apply that lists them passes them
+// again.
+func TestKillSwitchAppliesWhenTheBridgesCantBeListed(t *testing.T) {
+	p := ksPair(t)
+	k := p.killSwitch(t)
+	ctx := context.Background()
+	listing := errors.New("the dump was interrupted three times")
+	firewall.SetBridgeListing(k, func(int) ([]string, error) { return nil, listing })
+	down := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: set(t, entry4+"/32", entry6+"/128")}
+	if err := k.Apply(ctx, down); !errors.Is(err, listing) {
+		t.Errorf("first Apply: %v, want the listing's error", err)
+	}
+	if p.ping4(t, foreign4) || !p.ping4(t, entry4) {
+		t.Error("first Apply, unlisted: not in the down shape")
+	}
+
+	firewall.SetBridgeListing(k, nil)
+	up := firewall.KillSwitchRules{TUN: "thinkpol0", Mark: routetable.Mark, Allow: set(t, entry4+"/32", entry6+"/128"), Direct: set(t, foreign4+"/32")}
+	if err := k.Apply(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	if !p.ping4(t, foreign4) {
+		t.Fatal("connected: the direct destination is refused: the test proves nothing")
+	}
+	firewall.SetBridgeListing(k, func(int) ([]string, error) { return nil, listing })
+	if err := k.Apply(ctx, down); !errors.Is(err, listing) {
+		t.Errorf("connected to down, unlisted: %v, want the listing's error", err)
+	}
+	if p.ping4(t, foreign4) {
+		t.Error("connected to down, unlisted: the connected shape stayed")
+	}
+
+	if exec.Command("ip", "netns", "exec", p.dev, "test", "-d", "/proc/sys/net/bridge").Run() != nil {
+		t.Log("no br_netfilter in this kernel: bridged frames not checked")
+		return
+	}
+	sysctl(t, p.dev, "net.bridge.bridge-nf-call-iptables=1", "net.ipv4.ip_forward=1")
+	c1, _ := bridged(t, p, "br0", 78)
+	if err := k.Apply(ctx, down); !errors.Is(err, listing) {
+		t.Errorf("re-applied, unlisted: %v, want the listing's error", err)
+	}
+	if pingFrom(c1, "10.78.0.3") {
+		t.Error("unlisted: frames bridged within a bridge passed")
+	}
+	firewall.SetBridgeListing(k, nil)
+	if err := k.Apply(ctx, down); err != nil {
+		t.Fatal(err)
+	}
+	if !pingFrom(c1, "10.78.0.3") {
+		t.Error("listed again: frames bridged within the bridge are still refused")
 	}
 }

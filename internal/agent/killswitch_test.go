@@ -45,14 +45,14 @@ func TestKillSwitchSettingsDecide(t *testing.T) {
 		}
 	}
 
-	entry := netip.MustParseAddr("203.0.113.50")
+	entry := netip.MustParseAddrPort("203.0.113.50:443")
 	direct := mustSet(t, "198.51.100.0/24", "2001:db8:d0::/48")
 	up := &routetable.Exempt{TUN: "thinkpol0", Mark: routetable.Mark, Direct: direct, Upstreams: []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53")}}
-	down := killSwitchSettings{}.rules(killSwitchView{entries: []netip.Addr{entry}})
+	down := killSwitchSettings{}.rules(killSwitchView{entries: []netip.AddrPort{entry}})
 	if down.TUN != "" || down.Mark != routetable.Mark || !down.Allow.Equal(mustSet(t, "203.0.113.50/32")) || down.Upstreams != nil {
 		t.Errorf("down shape %+v %v", down, down.Allow.Prefixes())
 	}
-	conn := killSwitchSettings{allowLAN: true}.rules(killSwitchView{entries: []netip.Addr{entry}, connected: up, tun: "thinkpol0"})
+	conn := killSwitchSettings{allowLAN: true}.rules(killSwitchView{entries: []netip.AddrPort{entry}, connected: up, tun: "thinkpol0"})
 	for _, a := range []string{"203.0.113.50", "10.1.2.3", "fe80::1", "ff02::fb"} {
 		if !conn.Allow.Contains(netip.MustParseAddr(a)) {
 			t.Errorf("the connected shape with allow-LAN doesn't let %s out", a)
@@ -77,17 +77,34 @@ func TestKillSwitchSettingsDecide(t *testing.T) {
 	if !conn.NoDNS.IsEmpty() || !down.NoDNS.IsEmpty() {
 		t.Errorf("DNS refused connected (%v) or down without allow-LAN (%v)", conn.NoDNS.Prefixes(), down.NoDNS.Prefixes())
 	}
-	// Down with allow-LAN, DNS to the LAN is refused, but to an entry on
-	// it (its transport may use port 53).
-	lanEntry := netip.MustParseAddr("192.168.1.10")
-	downLAN := killSwitchSettings{allowLAN: true}.rules(killSwitchView{entries: []netip.Addr{entry, lanEntry}})
-	for a, want := range map[string]bool{"10.1.2.3": true, "192.168.1.11": true, "fe80::1": true, "fd00::53": true, "192.168.1.10": false, "203.0.113.50": false} {
-		if got := downLAN.NoDNS.Contains(netip.MustParseAddr(a)); got != want {
-			t.Errorf("down with allow-LAN: DNS to %s refused %v, want %v", a, got, want)
-		}
+	// Down with allow-LAN, DNS to the LAN is refused, an entry on it that
+	// is also the LAN's resolver included: on Linux its link's sockets
+	// pass by their mark anyway; on macOS (no mark) only an entry whose
+	// transport is on a DNS port is spared, or its link couldn't come up.
+	lanEntries := []netip.AddrPort{
+		entry,
+		netip.MustParseAddrPort("192.168.1.10:443"), // and the LAN's resolver
+		netip.MustParseAddrPort("192.168.1.20:53"),
+		netip.MustParseAddrPort("[fd00::853]:853"),
 	}
-	if !downLAN.Allow.Contains(lanEntry) || !downLAN.Allow.Contains(netip.MustParseAddr("10.1.2.3")) {
-		t.Errorf("down with allow-LAN lets out %v", downLAN.Allow.Prefixes())
+	for _, c := range []struct {
+		os     string
+		marked bool
+		spared []string
+	}{{"linux", true, nil}, {"darwin", false, []string{"192.168.1.20", "fd00::853"}}} {
+		downLAN := killSwitchSettings{allowLAN: true, marked: c.marked}.rules(killSwitchView{entries: lanEntries})
+		for _, a := range []string{"10.1.2.3", "192.168.1.11", "fe80::1", "fd00::53", "192.168.1.10", "192.168.1.20", "fd00::853"} {
+			want := !slices.Contains(c.spared, a)
+			if got := downLAN.NoDNS.Contains(netip.MustParseAddr(a)); got != want {
+				t.Errorf("%s, down with allow-LAN: DNS to %s refused %v, want %v", c.os, a, got, want)
+			}
+		}
+		if downLAN.NoDNS.Contains(entry.Addr()) {
+			t.Errorf("%s: the NoDNS set reaches beyond the LAN: %v", c.os, downLAN.NoDNS.Prefixes())
+		}
+		if !downLAN.Allow.Contains(netip.MustParseAddr("192.168.1.10")) || !downLAN.Allow.Contains(netip.MustParseAddr("10.1.2.3")) {
+			t.Errorf("%s: down with allow-LAN lets out %v", c.os, downLAN.Allow.Prefixes())
+		}
 	}
 }
 

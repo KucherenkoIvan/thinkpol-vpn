@@ -80,12 +80,13 @@ func TestKillSwitchLoadsItsAnchorAndHoldsPfOn(t *testing.T) {
 		"block return out quick proto tcp from any to <thinkpol_killswitch_nodns> port = 53",
 		"block return out quick proto udp from any to <thinkpol_killswitch_nodns> port = 53",
 		"block return out quick proto tcp from any to <thinkpol_killswitch_nodns> port = 853",
+		"block return out quick proto udp from any to <thinkpol_killswitch_nodns> port = 853",
 		"pass out quick from any to <thinkpol_killswitch> no state",
 		"pass out quick inet proto udp from any port = 68 to any port = 67 no state",
 		"pass out quick inet6 proto udp from any port = 546 to ff02::1:2 port = 547 no state",
 		"pass out quick inet6 proto udp from any port = 546 to fe80::/10 port = 547 no state",
 	}
-	if !slices.Equal(a.rules[:8], want) || a.rules[len(a.rules)-1] != "block return out quick all" || len(a.rules) != 8+5+4+1 {
+	if !slices.Equal(a.rules[:9], want) || a.rules[len(a.rules)-1] != "block return out quick all" || len(a.rules) != 9+5+4+1 {
 		t.Errorf("the anchor lists:\n%s", strings.Join(a.rules, "\n"))
 	}
 	if got := strings.Join(a.tables[killSwitchTable], " "); got != "203.0.113.50/32 2001:db8:e::50/128" {
@@ -239,10 +240,10 @@ func TestKillSwitchNeedsTheHookAndPfctl(t *testing.T) {
 func TestKillSwitchRefusesAListingWithState(t *testing.T) {
 	r := newRig(t)
 	r.pf.loadHook = func(a *fakeAnchor) {
-		a.rules[4] = strings.Replace(a.rules[4], "no state", "keep state", 1)
+		a.rules[5] = strings.Replace(a.rules[5], "no state", "keep state", 1)
 	}
 	err := r.killSwitch().Apply(context.Background(), downRules(t))
-	if err == nil || !strings.Contains(err.Error(), "kill switch's rule 5") {
+	if err == nil || !strings.Contains(err.Error(), "kill switch's rule 6") {
 		t.Errorf("Apply: %v, want the listing refused", err)
 	}
 }
@@ -290,7 +291,8 @@ func TestKillSwitchRefusesDNSToNoDNS(t *testing.T) {
 	blocks := slices.IndexFunc(a.rules, func(l string) bool { return strings.Contains(l, "<thinkpol_killswitch_nodns> port = 53") })
 	pass := slices.IndexFunc(a.rules, func(l string) bool { return strings.Contains(l, "<thinkpol_killswitch>") })
 	if blocks < 0 || pass < blocks || !strings.HasPrefix(a.rules[blocks], "block return out quick") ||
-		!slices.Contains(a.rules, "block return out quick proto tcp from any to <thinkpol_killswitch_nodns> port = 853") {
+		!slices.Contains(a.rules, "block return out quick proto tcp from any to <thinkpol_killswitch_nodns> port = 853") ||
+		!slices.Contains(a.rules, "block return out quick proto udp from any to <thinkpol_killswitch_nodns> port = 853") {
 		t.Errorf("DNS to the NoDNS table isn't refused before the table's pass:\n%s", strings.Join(a.rules, "\n"))
 	}
 	// Changed from outside: loaded again.
@@ -311,7 +313,9 @@ func TestKillSwitchRefusesDNSToNoDNS(t *testing.T) {
 }
 
 // A load pf took whose read-back fails is still enabled: with pf off (a
-// stock Mac) its rules would be evaluated not at all. Apply reports the
+// stock Mac) its rules would be evaluated not at all; and the states its
+// table refuses are killed, as after a good load, or pf would go on
+// passing them while the read-back keeps failing. Apply reports the
 // failure.
 func TestKillSwitchEnablesALoadItCantReadBack(t *testing.T) {
 	for _, tc := range []struct {
@@ -328,13 +332,29 @@ func TestKillSwitchEnablesALoadItCantReadBack(t *testing.T) {
 			if r.pf.isOn() {
 				t.Fatal("pf is on before the kill switch: the test proves nothing")
 			}
+			entry4 := netip.MustParseAddrPort("203.0.113.50:443")
+			r.pf.states = []fakeState{
+				{"tcp", netip.AddrPortFrom(ownV4, 50000), netip.MustParseAddrPort("203.0.113.7:443"), true},
+				{"tcp", netip.AddrPortFrom(ownV4, 50001), entry4, true},
+				{"udp", netip.AddrPortFrom(ownV6, 50002), netip.MustParseAddrPort("[2001:db8:ab::7]:443"), true},
+			}
 			r.pf.set(tc.spoil)
-			err := r.killSwitch().Apply(context.Background(), downRules(t))
-			if err == nil {
-				t.Error("Apply succeeded")
+			k := r.killSwitch()
+			for range 2 {
+				err := k.Apply(context.Background(), downRules(t))
+				if err == nil {
+					t.Error("Apply succeeded")
+				}
 			}
 			if r.pf.anchors[KillSwitchAnchor] == nil || !r.pf.isOn() {
 				t.Errorf("anchor loaded %v, pf on %v: want the load enabled", r.pf.anchors[KillSwitchAnchor] != nil, r.pf.isOn())
+			}
+			var left []netip.AddrPort
+			for _, s := range r.pf.stateList() {
+				left = append(left, s.remote)
+			}
+			if !slices.Equal(left, []netip.AddrPort{entry4}) {
+				t.Errorf("states left %v, want the entry's alone", left)
 			}
 		})
 	}
