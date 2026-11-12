@@ -193,6 +193,26 @@ func TestDiagnoseServesAVersionedSnapshot(t *testing.T) {
 			t.Errorf("no %q in\n%s", key, out.String())
 		}
 	}
+	// The kill switch prints beside the guard.
+	dec := json.NewDecoder(bytes.NewReader(out.Bytes()))
+	if _, err := dec.Token(); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, key.(string))
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if i := slices.Index(keys, "guard"); i < 0 || i+1 == len(keys) || keys[i+1] != "kill_switch" {
+		t.Errorf("not beside the guard: %v", keys)
+	}
 	tun, _ := parsed["tun"].(map[string]any)
 	if parsed["schema_version"] != float64(SchemaVersion) || tun["name"] != "utun9" || tun["unreadable"] != "" {
 		t.Fatalf("JSON:\n%s", out.String())

@@ -103,7 +103,7 @@ func TestTheHostPartsAreRoots(t *testing.T) {
 	if insp.reads() != 0 || d.HostParts || d.Routes.RoutesUnreadable != UnreadableRootOnly || d.Routes.RulesUnreadable != UnreadableRootOnly ||
 		d.Routes.Routes != nil || d.Guard.Unreadable != UnreadableRootOnly || d.Guard.Present ||
 		d.KillSwitch.Unreadable != UnreadableRootOnly || d.KillSwitch.Present || d.DNS.Unreadable != UnreadableRootOnly || d.DNS.Sources != nil {
-		t.Fatalf("not root: %d reads, %+v, %+v", insp.reads(), d.Routes, d.Guard)
+		t.Fatalf("not root: %d reads, %+v, %+v, %+v", insp.reads(), d.Routes, d.Guard, d.KillSwitch)
 	}
 	if !slices.Equal(d.DropIns.Paths, insp.dropIns.Paths) {
 		t.Fatalf("not root: drop-ins %+v", d.DropIns)

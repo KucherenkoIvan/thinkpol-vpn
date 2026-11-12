@@ -31,7 +31,13 @@ branch: tp-208-diag-shows-the-kill-switch
 ## Notes
 - Milestone M2: cheap, since the guard's inspector is the template, and the M2 acceptance device session (TP-029) checks the macOS kill switch: the diag output is its evidence.
 - From TP-048's review (open since round 2).
-- For TP-029's checklist, `sudo thinkpol diag` (root: it is a host part) has `kill_switch` beside `guard`, quotable by JSON path: `kill_switch.where` ("pf anchor com.apple/001.thinkpol-killswitch"), `kill_switch.present`, `kill_switch.rules.rules[].text` (pfctl's lines, in order, with `packets`, `evaluations`), `kill_switch.sets.sets[]` (`thinkpol_killswitch` and `thinkpol_killswitch_nodns` with their `entries`), `kill_switch.pf.enabled.enabled`, `kill_switch.pf.reference` (`recorded`, `pid`, `held`). With the switch off: `present` false, no rules or sets.
+- For TP-029's checklist, `sudo thinkpol diag` (root: it is a host part) has `kill_switch` beside `guard`, quotable by JSON path: `kill_switch.where` ("pf anchor com.apple/001.thinkpol-killswitch"), `kill_switch.present`, `kill_switch.rules.rules[].text` (pfctl's lines, in order, with `packets`, `evaluations`), `kill_switch.sets.sets[]` (`thinkpol_killswitch` and `thinkpol_killswitch_nodns` with their `entries`), `kill_switch.pf.enabled.enabled`, `kill_switch.pf.reference` (`recorded`, `pid`, `held`). With the switch off: `present` false, no rules or sets (unverified on a Mac: what `pfctl -a <anchor> -s rules -v` prints for a missing anchor; the off state may read as `present` left out, unknown, rather than false). Read the kill switch's section together with `guard.pf.guard_check` and `guard.pf.skipped`: a main ruleset without `anchor "com.apple/*"` leaves the anchor loaded, so `kill_switch.present`, `kill_switch.pf.enabled.enabled` and `kill_switch.pf.reference.held` all read true while pf evaluates nothing in it, and only `guard_check` ("missing") shows that; anchors sorting between `000.thinkpol` and `001.thinkpol-killswitch` are listed nowhere. Rule texts quote real addresses (the direct DNS upstreams in `kill_switch.rules.rules[].text`; an unparsable table's entry in its `unreadable`): redact every address before anything from it goes into a ticket.
+
+## Review findings
+- [ ] R1.1 (should-fix) the TP-029 checklist note: read the kill switch with `guard.pf.guard_check` and `guard.pf.skipped` (an unhooked anchor reads present, enabled and held); redact addresses in rule texts and unreadable texts; the missing anchor's reading unverified on a Mac
+- [ ] R1.2 (should-fix) stale docs and comments: (a) localapi doc.go and localapi.proto, a guard's or a kill switch's `present`; (b) doc.go, a pf reference's token stays in its owner's record; (c) api-overview-reference.md, kill_switch in the group's sample, five host parts; (d) routetable/inspect.go's shared types say the guard's or the kill switch's
+- [ ] R1.3 (nit) (a) the not-regular record's error names its owner; (b) localapi.proto declares kill_switch beside guard (number 15 kept); (c) diagnose_test's not-root failure prints d.KillSwitch
+- [ ] R1.4 (note) TP-117's TestResolvConfRestoreAfterARewriteFailedPartwayPutsBackTheWholeOriginal failed once under load; the orchestrator files it
 
 ## Log
 - 2026-11-12 created in backlog (from TP-048's review)
@@ -43,3 +49,4 @@ branch: tp-208-diag-shows-the-kill-switch
 - 2026-11-12 not verified: the macOS reading on a real Mac (fake pfctl only; TP-029). Out of scope: TP-117's TestResolvConfRestoreAfterARewriteFailedPartwayPutsBackTheWholeOriginal failed once in make test under load ("not cut inside the original"), passed 5/5 alone and on the rerun
 - 2026-11-12 full make lab-test green on 13b6bc0 (lab and every package in a lab node, GOFLAGS=-p=2 LAB_P=1)
 - 2026-11-12 in-progress → review
+- 2026-11-12 review round 1: no code defect; docs and nits R1.1–R1.4

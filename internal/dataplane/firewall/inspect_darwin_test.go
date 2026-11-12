@@ -400,8 +400,11 @@ func TestInspectReadsTheRecordWithoutQuotingIt(t *testing.T) {
 	if err := os.Symlink(filepath.Join(r.dir, "elsewhere"), path); err != nil {
 		t.Fatal(err)
 	}
-	if ref, why := r.guard().inspectReference(ctx, "guard"); ref != nil || why != "the guard's record: "+string(staleNotRegular) {
-		t.Errorf("a symlink: %+v, %q", ref, why)
+	for _, owner := range []string{"guard", "kill switch"} {
+		want := "the " + owner + "'s record: not a regular file (a symlink or a fifo is never the " + owner + "'s)"
+		if ref, why := r.guard().inspectReference(ctx, owner); ref != nil || why != want {
+			t.Errorf("a symlink, %s: %+v, %q", owner, ref, why)
+		}
 	}
 }
 

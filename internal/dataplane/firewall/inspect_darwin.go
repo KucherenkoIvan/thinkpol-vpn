@@ -141,6 +141,8 @@ func (pe *pfEnabler) inspectReference(ctx context.Context, owner string) (*route
 		return nil, err.Error()
 	case state == recordStale && why == staleOtherBoot:
 		return &routetable.PFReferenceReport{Stale: true}, ""
+	case state == recordStale && why == staleNotRegular:
+		return nil, "the " + owner + "'s record: " + string(why) + " (a symlink or a fifo is never the " + owner + "'s)"
 	case state == recordStale:
 		return nil, "the " + owner + "'s record: " + string(why)
 	case state == recordNone:

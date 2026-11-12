@@ -423,7 +423,7 @@ Writes a JSON snapshot of the node's state and of what it changed on the host. I
 |---|---|---|
 | `-o` | `-` | write to this file, mode 0600, written beside it and renamed over it; `-` (or empty) prints it |
 
-The JSON is part of the v1 contract, at `schema_version` 2 (2 spelled the enum values in diag's `status` the text view's way, `connected` and no longer `CONNECTION_CONNECTED`), in the same convention as `status -json` (above): the schema's snake_case names, every field present, an unset one as its zero value or null, the same bytes for the same state; its `status` is the service's, and the top-level `schema_version` is the CLI's, as in `status -json`. A part the agent couldn't read has only `unreadable` set. Root and the service's user get everything. The group gets `host_parts: false`, with the routes, policy rules, guard and DNS marked unreadable. The group's snapshot, abridged:
+The JSON is part of the v1 contract, at `schema_version` 2 (2 spelled the enum values in diag's `status` the text view's way, `connected` and no longer `CONNECTION_CONNECTED`), in the same convention as `status -json` (above): the schema's snake_case names, every field present, an unset one as its zero value or null, the same bytes for the same state; its `status` is the service's, and the top-level `schema_version` is the CLI's, as in `status -json`. A part the agent couldn't read has only `unreadable` set. Root and the service's user get everything. The group gets `host_parts: false`, with the routes, policy rules, guard, kill switch and DNS marked unreadable. The group's snapshot, abridged:
 
 ```json
 {
@@ -445,11 +445,12 @@ The JSON is part of the v1 contract, at `schema_version` 2 (2 spelled the enum v
   "routes": { "unreadable": "root only: it names public addresses", "routes": [], "unrecorded_proto2": [] },
   "policy_rules": { "unreadable": "root only: it names public addresses", "rules": [] },
   "guard": { "unreadable": "root only: it names public addresses", "where": "", "rules": null, "exempt": null, "nftables": null, "pf": null },
+  "kill_switch": { "unreadable": "root only: it names public addresses", "where": "", "rules": null, "sets": null, "nftables": null, "pf": null },
   "dns": { "unreadable": "root only: it names public addresses", "sources": [] }
 }
 ```
 
-Root's snapshot fills those four parts. An excerpt from the same run:
+Root's snapshot fills those five parts. An excerpt from the same run:
 
 ```json
   "guard": {

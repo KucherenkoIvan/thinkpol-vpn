@@ -1144,10 +1144,11 @@ func (x *DiagnoseResponse) GetDiagnostics() *Diagnostics {
 // Diagnostics is `thinkpol diag`'s snapshot: the evidence a device run
 // records. `thinkpol diag` writes it as JSON with these field names
 // (snake_case) and every field present, unset ones as their zero value
-// or null, but a guard's `present`, left out when it couldn't be told. A
-// part the agent couldn't read has `unreadable` set to why, and nothing
-// else; a part without it was read, and what it lists is all there is. No key, token or session id is in it; endpoints and
-// addresses are, in the host parts, which only root gets.
+// or null, but a guard's or a kill switch's `present`, left out when it
+// couldn't be told. A part the agent couldn't read has `unreadable` set
+// to why, and nothing else; a part without it was read, and what it
+// lists is all there is. No key, token or session id is in it;
+// endpoints and addresses are, in the host parts, which only root gets.
 type Diagnostics struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The schema. Bumped when a field is removed or renamed or its type or
@@ -1178,6 +1179,9 @@ type Diagnostics struct {
 	PolicyRules *DiagRules  `protobuf:"bytes,10,opt,name=policy_rules,json=policyRules,proto3" json:"policy_rules,omitempty"`
 	// The IPv6 leak guard as the host holds it. A host part.
 	Guard *DiagGuard `protobuf:"bytes,11,opt,name=guard,proto3" json:"guard,omitempty"`
+	// The kill switch as the host holds it, on or off, whatever left it
+	// (a crashed or stopped run's included). A host part.
+	KillSwitch *DiagKillSwitch `protobuf:"bytes,15,opt,name=kill_switch,json=killSwitch,proto3" json:"kill_switch,omitempty"`
 	// The resolvers the host uses, for the overlay's names and the rest, as
 	// it reports them (Linux: resolv.conf and systemd-resolved; macOS:
 	// scutil --dns). A host part.
@@ -1192,10 +1196,7 @@ type Diagnostics struct {
 	// nothing (it stopped cleanly) and on a server, which keeps no trace.
 	// Root only, like the host parts: the group's snapshot has it
 	// unreadable when there is one.
-	LastRun *DiagLastRun `protobuf:"bytes,14,opt,name=last_run,json=lastRun,proto3" json:"last_run,omitempty"`
-	// The kill switch as the host holds it, on or off, whatever left it
-	// (a crashed or stopped run's included). A host part.
-	KillSwitch    *DiagKillSwitch `protobuf:"bytes,15,opt,name=kill_switch,json=killSwitch,proto3" json:"kill_switch,omitempty"`
+	LastRun       *DiagLastRun `protobuf:"bytes,14,opt,name=last_run,json=lastRun,proto3" json:"last_run,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1307,6 +1308,13 @@ func (x *Diagnostics) GetGuard() *DiagGuard {
 	return nil
 }
 
+func (x *Diagnostics) GetKillSwitch() *DiagKillSwitch {
+	if x != nil {
+		return x.KillSwitch
+	}
+	return nil
+}
+
 func (x *Diagnostics) GetDns() *DiagDns {
 	if x != nil {
 		return x.Dns
@@ -1324,13 +1332,6 @@ func (x *Diagnostics) GetServiceDropIns() *DiagDropIns {
 func (x *Diagnostics) GetLastRun() *DiagLastRun {
 	if x != nil {
 		return x.LastRun
-	}
-	return nil
-}
-
-func (x *Diagnostics) GetKillSwitch() *DiagKillSwitch {
-	if x != nil {
-		return x.KillSwitch
 	}
 	return nil
 }
@@ -2481,7 +2482,8 @@ func (x *DiagGuardRules) GetRules() []*DiagGuardRule {
 	return nil
 }
 
-// A rule of the guard as the host lists it, with its counters.
+// A rule of the guard's or the kill switch's as the host lists it,
+// with its counters.
 type DiagGuardRule struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The nftables chain (Linux).
@@ -4659,12 +4661,12 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\x06routes\x18\t \x01(\v2 .thinkpol.localapi.v1.DiagRoutesR\x06routes\x12B\n" +
 	"\fpolicy_rules\x18\n" +
 	" \x01(\v2\x1f.thinkpol.localapi.v1.DiagRulesR\vpolicyRules\x125\n" +
-	"\x05guard\x18\v \x01(\v2\x1f.thinkpol.localapi.v1.DiagGuardR\x05guard\x12/\n" +
+	"\x05guard\x18\v \x01(\v2\x1f.thinkpol.localapi.v1.DiagGuardR\x05guard\x12E\n" +
+	"\vkill_switch\x18\x0f \x01(\v2$.thinkpol.localapi.v1.DiagKillSwitchR\n" +
+	"killSwitch\x12/\n" +
 	"\x03dns\x18\f \x01(\v2\x1d.thinkpol.localapi.v1.DiagDnsR\x03dns\x12K\n" +
 	"\x10service_drop_ins\x18\r \x01(\v2!.thinkpol.localapi.v1.DiagDropInsR\x0eserviceDropIns\x12<\n" +
-	"\blast_run\x18\x0e \x01(\v2!.thinkpol.localapi.v1.DiagLastRunR\alastRun\x12E\n" +
-	"\vkill_switch\x18\x0f \x01(\v2$.thinkpol.localapi.v1.DiagKillSwitchR\n" +
-	"killSwitch\"a\n" +
+	"\blast_run\x18\x0e \x01(\v2!.thinkpol.localapi.v1.DiagLastRunR\alastRun\"a\n" +
 	"\vDiagLastRun\x12\x1e\n" +
 	"\n" +
 	"unreadable\x18\x01 \x01(\tR\n" +
@@ -5112,10 +5114,10 @@ var file_thinkpol_localapi_v1_localapi_proto_depIdxs = []int32{
 	31, // 15: thinkpol.localapi.v1.Diagnostics.routes:type_name -> thinkpol.localapi.v1.DiagRoutes
 	33, // 16: thinkpol.localapi.v1.Diagnostics.policy_rules:type_name -> thinkpol.localapi.v1.DiagRules
 	35, // 17: thinkpol.localapi.v1.Diagnostics.guard:type_name -> thinkpol.localapi.v1.DiagGuard
-	49, // 18: thinkpol.localapi.v1.Diagnostics.dns:type_name -> thinkpol.localapi.v1.DiagDns
-	27, // 19: thinkpol.localapi.v1.Diagnostics.service_drop_ins:type_name -> thinkpol.localapi.v1.DiagDropIns
-	26, // 20: thinkpol.localapi.v1.Diagnostics.last_run:type_name -> thinkpol.localapi.v1.DiagLastRun
-	36, // 21: thinkpol.localapi.v1.Diagnostics.kill_switch:type_name -> thinkpol.localapi.v1.DiagKillSwitch
+	36, // 18: thinkpol.localapi.v1.Diagnostics.kill_switch:type_name -> thinkpol.localapi.v1.DiagKillSwitch
+	49, // 19: thinkpol.localapi.v1.Diagnostics.dns:type_name -> thinkpol.localapi.v1.DiagDns
+	27, // 20: thinkpol.localapi.v1.Diagnostics.service_drop_ins:type_name -> thinkpol.localapi.v1.DiagDropIns
+	26, // 21: thinkpol.localapi.v1.Diagnostics.last_run:type_name -> thinkpol.localapi.v1.DiagLastRun
 	67, // 22: thinkpol.localapi.v1.DiagApply.started:type_name -> google.protobuf.Timestamp
 	66, // 23: thinkpol.localapi.v1.DiagApply.took:type_name -> google.protobuf.Duration
 	30, // 24: thinkpol.localapi.v1.DiagApply.steps:type_name -> thinkpol.localapi.v1.DiagApplyStep

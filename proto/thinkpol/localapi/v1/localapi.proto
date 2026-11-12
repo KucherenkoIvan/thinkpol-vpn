@@ -154,10 +154,11 @@ message DiagnoseResponse {
 // Diagnostics is `thinkpol diag`'s snapshot: the evidence a device run
 // records. `thinkpol diag` writes it as JSON with these field names
 // (snake_case) and every field present, unset ones as their zero value
-// or null, but a guard's `present`, left out when it couldn't be told. A
-// part the agent couldn't read has `unreadable` set to why, and nothing
-// else; a part without it was read, and what it lists is all there is. No key, token or session id is in it; endpoints and
-// addresses are, in the host parts, which only root gets.
+// or null, but a guard's or a kill switch's `present`, left out when it
+// couldn't be told. A part the agent couldn't read has `unreadable` set
+// to why, and nothing else; a part without it was read, and what it
+// lists is all there is. No key, token or session id is in it;
+// endpoints and addresses are, in the host parts, which only root gets.
 message Diagnostics {
   // The schema. Bumped when a field is removed or renamed or its type or
   // meaning changes; not when a field is added. `unreadable` texts are
@@ -187,6 +188,9 @@ message Diagnostics {
   DiagRules policy_rules = 10;
   // The IPv6 leak guard as the host holds it. A host part.
   DiagGuard guard = 11;
+  // The kill switch as the host holds it, on or off, whatever left it
+  // (a crashed or stopped run's included). A host part.
+  DiagKillSwitch kill_switch = 15;
   // The resolvers the host uses, for the overlay's names and the rest, as
   // it reports them (Linux: resolv.conf and systemd-resolved; macOS:
   // scutil --dns). A host part.
@@ -202,9 +206,6 @@ message Diagnostics {
   // Root only, like the host parts: the group's snapshot has it
   // unreadable when there is one.
   DiagLastRun last_run = 14;
-  // The kill switch as the host holds it, on or off, whatever left it
-  // (a crashed or stopped run's included). A host part.
-  DiagKillSwitch kill_switch = 15;
 }
 
 // The head of the previous run's stderr, line by line.
@@ -375,7 +376,8 @@ message DiagGuardRules {
   repeated DiagGuardRule rules = 2;
 }
 
-// A rule of the guard as the host lists it, with its counters.
+// A rule of the guard's or the kill switch's as the host lists it,
+// with its counters.
 message DiagGuardRule {
   // The nftables chain (Linux).
   string chain = 1;
