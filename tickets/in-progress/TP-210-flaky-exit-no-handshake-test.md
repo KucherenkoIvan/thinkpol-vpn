@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-195]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-210"
+branch: "tp-210-flaky-exit-no-handshake-test"
 ---
 
 ## Goal
@@ -33,3 +33,4 @@ branch: ""
 
 ## Log
 - 2026-11-12 created in backlog (from TP-048's full labs)
+- 2026-11-12 backlog → in-progress, owner: agent-tp-210
