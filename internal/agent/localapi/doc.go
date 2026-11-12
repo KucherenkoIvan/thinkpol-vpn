@@ -235,7 +235,7 @@
 // `diag` ([WriteDiagnostics]), follows one convention, opt-in with
 // `-json` (`diag` has no text form yet); a person's output stays text.
 // TP-181 gives the other commands `-json` in it, and every field added
-// to the status (TP-048's kill switch, allow-LAN and pause toggles, say)
+// to the status (TP-048's kill switch and allow-LAN toggles, say)
 // follows it:
 //
 //   - the schema's own field names, snake_case (`space_id`,
