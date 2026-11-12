@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"slices"
 	"strings"
@@ -224,7 +225,8 @@ func TestEngineActiveTwoModules(t *testing.T) {
 // the module sees new flows again once it has room.
 func TestEngineSlowActiveNeverStalls(t *testing.T) {
 	stuck := &stuckActive{release: make(chan struct{}), got: make(chan FlowSnapshot, 1024)}
-	eng := NewEngine(nil, []Active{stuck}, nil)
+	var log syncBuffer
+	eng := NewEngine(nil, []Active{stuck}, &log)
 	defer eng.Shutdown()
 
 	const flows = 300
@@ -244,6 +246,7 @@ func TestEngineSlowActiveNeverStalls(t *testing.T) {
 	if missed == 0 || missed >= flows {
 		t.Fatalf("unnoticed = %d, want the flows past the channel's room", missed)
 	}
+	waitLog(t, &log, fmt.Sprintf(`"event":"%s","flow":"udp 192.0.2.1:%d->198.51.100.2:2"`, EventUnnoticed, flows))
 
 	close(stuck.release)
 	for i := uint64(0); i < flows-missed; i++ {

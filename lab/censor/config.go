@@ -51,6 +51,15 @@ func register[T any](mu *sync.Mutex, into map[string]func(json.RawMessage) (T, e
 	into[name] = build
 }
 
+// Registered says whether a module of name can be built from config.
+func Registered(name string) bool {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	_, passive := passives[name]
+	_, active := actives[name]
+	return passive || active
+}
+
 // Build builds the config's modules. An unknown name is an error: a test
 // asking for a censor that does not exist must not silently censor less.
 // A passive module that also implements Active is in both lists, one

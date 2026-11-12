@@ -96,6 +96,9 @@ type Flow struct {
 	FirstDatagram []byte
 
 	reverse *Flow
+	// initiator: the censor saw the flow before its reverse. Initiator
+	// reads it for UDP only; a TCP flow's comes from its SYN.
+	initiator bool
 	// pinned is the flow's terminal verdict, nil while none is.
 	pinned *rule
 	// done marks the passive modules (by index) that pinned a verdict:
@@ -125,6 +128,22 @@ type Flow struct {
 // Reverse is the flow of the replies, nil until the censor has seen one
 // of them. Both directions link each other.
 func (f *Flow) Reverse() *Flow { return f.reverse }
+
+// Initiator reports whether the flow is the direction that opened its
+// connection, the client's: for TCP the one whose stream began with a SYN
+// without ACK (neither direction of a connection joined midstream), for
+// UDP the direction the censor saw first, which for a flow already
+// running when the censor started may be the server's.
+func (f *Flow) Initiator() bool {
+	if f.Stream != nil {
+		return f.Stream.client
+	}
+	return f.initiator
+}
+
+// TaggedBy reports whether the named passive module tagged the flow:
+// earlier in the config on this packet, or on an earlier one.
+func (f *Flow) TaggedBy(module string) bool { return f.tagged[module] }
 
 // Payload is what the censor retained of the flow: a TCP stream's prefix,
 // a UDP flow's first datagram. A module that keeps it clones it.
@@ -231,6 +250,8 @@ func (t *flowTable) fresh(key FlowKey, now time.Time) *Flow {
 	}
 	if r, ok := t.flows[key.Reverse()]; ok {
 		f.reverse, r.reverse = r, f
+	} else {
+		f.initiator = true
 	}
 	t.flows[key] = f
 	return f
