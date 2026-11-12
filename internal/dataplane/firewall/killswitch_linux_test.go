@@ -400,8 +400,10 @@ func TestKillSwitchLetsOutOnlyEntriesWhileDown(t *testing.T) {
 		if err := dialTCP(t, p.dev, dst, 8080); err != nil {
 			t.Errorf("down, allow-LAN: TCP to %s port 8080: %v, want connected", dst, err)
 		}
-		if udpArrives(t, p.dev, "", p.gw, dst, 53) {
-			t.Errorf("down, allow-LAN: UDP to %s port 53 arrived", dst)
+		for _, port := range []int{53, 853} { // 853: DNS over QUIC
+			if udpArrives(t, p.dev, "", p.gw, dst, port) {
+				t.Errorf("down, allow-LAN: UDP to %s port %d arrived", dst, port)
+			}
 		}
 		if !udpArrives(t, p.dev, "", p.gw, dst, 5353) {
 			t.Errorf("down, allow-LAN: UDP to %s port 5353 didn't arrive", dst)
@@ -794,8 +796,8 @@ func TestKillSwitchPassesFramesBridgedWithinABridge(t *testing.T) {
 			t.Fatalf("%s doesn't reach %s without a kill switch: the test proves nothing", c1, dst)
 		}
 	}
-	if !pingFrom(p.gw, "10.78.0.3") {
-		t.Fatal("the gateway doesn't reach the bridge's client without a kill switch: the test proves nothing")
+	if !udpArrives(t, p.gw, "", c2, "10.78.0.3", 9999) {
+		t.Fatal("the gateway's datagram doesn't reach the bridge's client without a kill switch: the test proves nothing")
 	}
 	k := p.killSwitch(t)
 	ctx := context.Background()
@@ -813,9 +815,10 @@ func TestKillSwitchPassesFramesBridgedWithinABridge(t *testing.T) {
 		t.Errorf("down: a TCP connect across the bridge: %v", err)
 	}
 	// Forwarded into the bridge from the uplink, a new flow isn't bridged
-	// within it: refused.
-	if pingFrom(p.gw, "10.78.0.3") {
-		t.Error("down: a new flow from the uplink into the bridge passed")
+	// within it: refused (one way: a ping's reply would be refused
+	// anyway).
+	if udpArrives(t, p.gw, "", c2, "10.78.0.3", 9999) {
+		t.Error("down: a new flow from the uplink into the bridge arrived")
 	}
 
 	c3, _ := bridged(t, p, "br1", 79)

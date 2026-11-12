@@ -329,9 +329,11 @@
 // crash posture, so a crash leaves it. Otherwise it is removed. Its rules
 // ([firewall.KillSwitchRules]) are the down shape (the endpoints of the
 // links in the device's section, none while removed, and with allow-LAN
-// the LAN, but DNS to it: NoDNS, the LAN but the entries, as the OS is
-// back on its own resolvers, a router that forwards lookups in the
-// clear; owner, 2026-11-12) or, while the data plane is up, the connected
+// the LAN, but DNS to it: NoDNS, the LAN, an entry on it included (on
+// Linux the links' sockets pass by their mark before the refusals; on
+// macOS an entry whose transport is on port 53 or 853 is spared), as
+// the OS is back on its own resolvers, a router that forwards lookups in
+// the clear; owner, 2026-11-12) or, while the data plane is up, the connected
 // one: the TUN, and the direct destinations and upstreams the route
 // table exempts (routetable.GuardFor of the last Want) on top, and with
 // allow-LAN the whole LAN, DNS included.

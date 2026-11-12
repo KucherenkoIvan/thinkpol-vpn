@@ -40,10 +40,10 @@
 // a hotspot's clients) out direct, and only the kill switch holds it: its
 // forward chain on Linux, its anchor on macOS (pf filters a forwarded
 // packet on its way out too). What is bridged onto the uplink at layer 2
-// (Docker's macvlan and ipvlan, libvirt's macvtap, a bridge enslaving
-// the physical interface) is routed by no one here: on Linux it never
-// meets the inet hooks and leaves around the kill switch
-// (RESIDUAL-RISKS.md RR61).
+// (Docker's macvlan and ipvlan, libvirt's macvtap, and without
+// br_netfilter a bridge enslaving the physical interface) is routed by
+// no one here: on Linux it never meets the inet hooks and leaves around
+// the kill switch (RESIDUAL-RISKS.md RR61).
 //
 // When the guard goes in, how it is kept for routes whose re-apply fails,
 // and when it is removed (under the route table's owner lock, also by
@@ -518,9 +518,11 @@
 // while connected the TUN, the direct destinations (Direct) and, on
 // macOS, DNS to the direct upstreams; on Linux the links' marked
 // sockets; and always DHCP (v4 and v6) and the link's neighbour
-// discovery and MLD. DNS (UDP and TCP port 53, TCP port 853) to NoDNS is
-// refused before Allow is looked at: the agent puts the LAN but the
-// entries there while down with allow-LAN (RESIDUAL-RISKS.md RR62).
+// discovery and MLD. DNS (UDP and TCP ports 53 and 853: plain, over TLS,
+// over QUIC) to NoDNS is refused before Allow is looked at (after the
+// links' marked sockets on Linux): the agent puts the LAN there while
+// down with allow-LAN, on macOS but the entries whose transport is on
+// port 53 or 853 (RESIDUAL-RISKS.md RR62).
 // Everything else is refused (a reset, an ICMP error).
 // What is allowed, and when it is in place, is the agent's choice (the
 // agent package doc, "The kill switch"); the firewall applies it, checks
@@ -541,7 +543,7 @@
 //	  set nodns4, nodns6 { flags interval; elements = <NoDNS> }
 //	  chain output { type filter hook output priority 2147483647; policy accept;
 //	    oifname "lo" accept; oifname <TUN> accept (connected); meta mark <Mark> accept
-//	    ip daddr @nodns4, ip6 daddr @nodns6: udp dport 53 reject; tcp dport { 53, 853 } reject with tcp reset
+//	    ip daddr @nodns4, ip6 daddr @nodns6: udp dport { 53, 853 } reject; tcp dport { 53, 853 } reject with tcp reset
 //	    ip daddr @allow4 accept; ip6 daddr @allow6 accept
 //	    ip daddr @direct4 accept; ip6 daddr @direct6 accept
 //	    udp 68 -> 67 accept (IPv4); udp 546 -> 547 to ff02::1:2 or fe80::/10 accept (IPv6)
@@ -550,7 +552,7 @@
 //	  }
 //	  chain forward { type filter hook forward priority 2147483647; policy accept;
 //	    oifname <TUN> accept; iifname <TUN> accept (connected)
-//	    iifname <bridge> oifname <bridge> accept (each bridge in the namespace)
+//	    iifname <bridge> oifname <bridge> accept (each bridge on its own)
 //	    the same DNS refusals as output
 //	    ip daddr @allow4, @direct4 accept; ip6 daddr @allow6, @direct6 accept
 //	    ct direction reply: ip saddr @allow4, @direct4 accept; ip6 saddr @allow6, @direct6 accept
@@ -566,12 +568,20 @@
 // direction only, so a client can't spoof its way out). With
 // br_netfilter (bridge-nf-call-iptables, set by Docker up to 27 and by
 // Kubernetes) a frame bridged between two ports of one bridge meets the
-// forward hook as well, the bridge its in and out interface: it never
-// leaves the machine by routing, so it passes, by a rule per bridge the
-// namespace has at the Apply (nftables' inet family has no bridge-port
-// key, and an xt physdev match would leave the table unlistable by nft);
-// a bridge made since passes from the next Apply, and a packet routed
-// back out of the bridge it came in by passes too. A forward
+// forward hook as well, the bridge its in and out interface. It passes
+// within a bridge on its own: every port a veth or a tap (containers,
+// VMs) and no default or gatewayed route out of it, of either family, in
+// any table, so it never leads off the machine; a packet routed back out
+// of such a bridge passes too. A bridge with another port (the uplink
+// enslaved, Wi-Fi, a VLAN, a bond, a VXLAN) or a route beyond its link
+// (the host's default route on br0) passes nothing within it: a VM's
+// frame bridged from its tap to eth0 would otherwise leave for the
+// internet. There is a rule per such bridge as the namespace has them
+// at the Apply (nftables' inet family has no bridge-port key, and an xt
+// physdev match would leave the table unlistable by nft): a bridge made,
+// or a port or route changed, since counts from the next Apply. When
+// the links or routes can't be listed, the rest goes in with no bridge
+// passing, and Apply fails, so the agent reports it and tries again. A forward
 // chain, not postrouting: reject is refused at postrouting, and output
 // already holds what the device sends itself. What it refuses, a
 // published container port reached from the LAN without allow-LAN
@@ -595,7 +605,7 @@
 //	pass out quick on lo0 all no state
 //	pass out quick on <utun> all no state                                             (connected)
 //	block return out quick proto { tcp, udp } from any to <thinkpol_killswitch_nodns> port 53
-//	block return out quick proto tcp from any to <thinkpol_killswitch_nodns> port 853
+//	block return out quick proto { tcp, udp } from any to <thinkpol_killswitch_nodns> port 853
 //	pass out quick from any to <thinkpol_killswitch> no state
 //	pass out quick proto { tcp, udp } from any to <upstream> port <its port> no state (each upstream, connected)
 //	pass out quick inet proto udp from any port 68 to any port 67 no state

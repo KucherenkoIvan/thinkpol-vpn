@@ -32,12 +32,12 @@ type KillSwitchRules struct {
 	// Upstreams are the direct DNS upstreams, for an OS without socket
 	// marks (macOS lets DNS to them out on their ports); while connected.
 	Upstreams []netip.AddrPort
-	// NoDNS are destinations DNS (UDP and TCP port 53, TCP port 853) is
+	// NoDNS are destinations DNS (UDP and TCP ports 53 and 853) is
 	// refused to even where Allow lets everything else out: the agent's
-	// LAN but the entries, in the down shape with allow-LAN, so the OS's
-	// own resolvers (a home router forwarding in the clear) get no
-	// lookups while the tunnel is down. The links' marked sockets pass
-	// on Linux.
+	// LAN in the down shape with allow-LAN (on macOS but the entries
+	// whose transport is on port 53 or 853), so the OS's own resolvers
+	// (a home router forwarding in the clear) get no lookups while the
+	// tunnel is down. The links' marked sockets pass on Linux.
 	NoDNS *lists.Set
 }
 
