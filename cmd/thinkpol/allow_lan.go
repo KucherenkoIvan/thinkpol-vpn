@@ -12,7 +12,7 @@ func init() {
 	register(command{
 		path:    "allow-lan",
 		args:    "[-socket path] [on|off]",
-		summary: "show or set whether the kill switch lets the LAN out: private, link-local and multicast addresses (off by default; at once)",
+		summary: "show or set whether the kill switch lets the LAN out: private and link-local addresses, local multicast; not its DNS while the tunnel is down (off by default; at once)",
 		run:     runAllowLAN,
 	})
 }

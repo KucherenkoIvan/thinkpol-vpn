@@ -218,9 +218,9 @@ The node file `node.json` and the device file `device.json` exist, `rules.local`
 | Surface | Behaviour |
 |---|---|
 | `thinkpol kill-switch [on\|off]`, local API `SetKillSwitch` | no value shows it (`kill-switch: on, allow-LAN off (in place)`); a value sets it, stored in `device.json` (`kill_switch`), in effect before the call returns; the status follows. The access group may call it; a server refuses it (`server_mode`) |
-| `thinkpol allow-lan [on\|off]`, local API `SetAllowLAN` | the same shape for allow-LAN (`allow_lan`): private, link-local and multicast addresses of both families pass the kill switch |
+| `thinkpol allow-lan [on\|off]`, local API `SetAllowLAN` | the same shape for allow-LAN (`allow_lan`): private and link-local unicast, broadcast, and link-local and site-local multicast of both families pass the kill switch; while the tunnel is down DNS to them doesn't (RR62) |
 | `node.json` `kill_switch`, `allow_lan`, `fail_closed_after_crash`; flags `-kill-switch`, `-allow-lan`, `-fail-closed-after-crash` | the node's defaults until a member sets a toggle; `fail_closed_after_crash` (default true) is the crash posture's opt-out |
-| `status`, `Status.kill_switch` | `kill switch: on, allow-LAN off (in place)`, or `(held by the crash posture while the connection is meant up)`, or `(not enforced: apply_failed, retrying)` (the codes: `apply_failed`, `remove_failed`, `unsupported`); JSON `on`, `allow_lan`, `active`, `enforced`, `error` |
+| `status`, `Status.kill_switch` | `kill switch: on, allow-LAN off (in place)`, or `(held by the crash posture while the connection is meant up)`, or `(not enforced: apply_failed, retrying)` (the codes: `apply_failed`, `remove_failed`, `unsupported`), or `(not applied yet)` before the agent's first apply (`not_applied`, which the health leaves to the start); JSON `on`, `allow_lan`, `active`, `enforced`, `error` |
 | health | `kill_switch_not_enforced` (degraded): putting it in place or removing it failed, retried every 10 s; `kill_switch_unsupported` (degraded): the OS can't hold it while it should be in |
 
 The captive-portal pause is not built: a separate M2 ticket (owner, 2026-11-09). TP-167 aligns the exit codes.

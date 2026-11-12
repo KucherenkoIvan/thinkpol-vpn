@@ -36,9 +36,14 @@
 // the guard's: nothing forwarded is bound to an interface, and while
 // connected routing (rule 5301 on Linux) sends it into the tunnel. While
 // the tunnel is down (disconnected, after a crash) routing lets what the
-// device forwards (containers, VMs, a hotspot's clients) out direct, and
-// only the kill switch holds it: its forward chain on Linux, its anchor
-// on macOS (pf filters a forwarded packet on its way out too).
+// device routes for others (containers behind NAT, VMs on a NAT network,
+// a hotspot's clients) out direct, and only the kill switch holds it: its
+// forward chain on Linux, its anchor on macOS (pf filters a forwarded
+// packet on its way out too). What is bridged onto the uplink at layer 2
+// (Docker's macvlan and ipvlan, libvirt's macvtap, a bridge enslaving
+// the physical interface) is routed by no one here: on Linux it never
+// meets the inet hooks and leaves around the kill switch
+// (RESIDUAL-RISKS.md RR61).
 //
 // When the guard goes in, how it is kept for routes whose re-apply fails,
 // and when it is removed (under the route table's owner lock, also by
@@ -508,10 +513,15 @@
 // [KillSwitch] lets nothing out of any interface but loopback except
 // what [KillSwitchRules] allows, both families, a socket bound to an
 // interface or not: the entries and, with allow-LAN, the LAN ([LAN], the
-// agent's definition, kept here) in Allow; while connected the TUN, the direct destinations (Direct) and,
-// on macOS, DNS to the direct upstreams; on Linux the links' marked
+// agent's definition, kept here: private and link-local unicast,
+// broadcast, multicast of link-local and site-local scope) in Allow;
+// while connected the TUN, the direct destinations (Direct) and, on
+// macOS, DNS to the direct upstreams; on Linux the links' marked
 // sockets; and always DHCP (v4 and v6) and the link's neighbour
-// discovery and MLD. Everything else is refused (a reset, an ICMP error).
+// discovery and MLD. DNS (UDP and TCP port 53, TCP port 853) to NoDNS is
+// refused before Allow is looked at: the agent puts the LAN but the
+// entries there while down with allow-LAN (RESIDUAL-RISKS.md RR62).
+// Everything else is refused (a reset, an ICMP error).
 // What is allowed, and when it is in place, is the agent's choice (the
 // agent package doc, "The kill switch"); the firewall applies it, checks
 // it is whole, and removes it. It is an owner of its own, apart from the
@@ -528,8 +538,10 @@
 //	table inet thinkpol-killswitch {
 //	  set allow4, allow6 { flags interval; elements = <Allow> }
 //	  set direct4, direct6 { flags interval,timeout; timeout 30s; elements = <Direct> }
+//	  set nodns4, nodns6 { flags interval; elements = <NoDNS> }
 //	  chain output { type filter hook output priority 2147483647; policy accept;
 //	    oifname "lo" accept; oifname <TUN> accept (connected); meta mark <Mark> accept
+//	    ip daddr @nodns4, ip6 daddr @nodns6: udp dport 53 reject; tcp dport { 53, 853 } reject with tcp reset
 //	    ip daddr @allow4 accept; ip6 daddr @allow6 accept
 //	    ip daddr @direct4 accept; ip6 daddr @direct6 accept
 //	    udp 68 -> 67 accept (IPv4); udp 546 -> 547 to ff02::1:2 or fe80::/10 accept (IPv6)
@@ -538,6 +550,8 @@
 //	  }
 //	  chain forward { type filter hook forward priority 2147483647; policy accept;
 //	    oifname <TUN> accept; iifname <TUN> accept (connected)
+//	    iifname <bridge> oifname <bridge> accept (each bridge in the namespace)
+//	    the same DNS refusals as output
 //	    ip daddr @allow4, @direct4 accept; ip6 daddr @allow6, @direct6 accept
 //	    ct direction reply: ip saddr @allow4, @direct4 accept; ip6 saddr @allow6, @direct6 accept
 //	    meta l4proto tcp reject with tcp reset; reject with icmpx admin-prohibited
@@ -549,27 +563,39 @@
 // routes for others (container bridges, VM NAT, a hotspot), which never
 // meets output: into and out of the TUN, to the allowed and direct
 // destinations, and their replies (by source, in conntrack's reply
-// direction only, so a client can't spoof its way out). A forward
+// direction only, so a client can't spoof its way out). With
+// br_netfilter (bridge-nf-call-iptables, set by Docker up to 27 and by
+// Kubernetes) a frame bridged between two ports of one bridge meets the
+// forward hook as well, the bridge its in and out interface: it never
+// leaves the machine by routing, so it passes, by a rule per bridge the
+// namespace has at the Apply (nftables' inet family has no bridge-port
+// key, and an xt physdev match would leave the table unlistable by nft);
+// a bridge made since passes from the next Apply, and a packet routed
+// back out of the bridge it came in by passes too. A forward
 // chain, not postrouting: reject is refused at postrouting, and output
 // already holds what the device sends itself. What it refuses, a
 // published container port reached from the LAN without allow-LAN
 // included, is the kill switch working: everything not allowed is
 // refused, whoever routes it. Direct's elements expire [DirectTimeout] after they were put
 // in, and every Apply, a re-apply of what is in place included, puts them
-// in again (flush and add, one transaction): the agent re-applies every
-// 10 s, so only a dead agent lets them go, leaving the entries and the
-// LAN. A kernel without nf_tables makes it unsupported
+// in again (flush and add, one transaction): the agent re-applies at
+// every 10 s tick, at most about 15 s apart, so only a dead agent (or a
+// node loop stalled for about 15 s) lets them go, leaving the entries
+// and the LAN. A kernel without nf_tables makes it unsupported
 // ([ErrKillSwitchUnsupported]), by the guard's probe.
 //
 // On macOS it is the anchor `com.apple/001.thinkpol-killswitch`
 // ([KillSwitchAnchor]) under Apple's hook, sorting after the guard's (an
-// anchor before the guard's is a bypass to it), with one table of both
+// anchor before the guard's is a bypass to it), with a table of both
 // families (Allow and Direct together: pf can't expire an entry, so a
 // dead agent's direct destinations stay until the next start narrows
-// them), loaded with its rules in one `pfctl -f - -o none`:
+// them) and one of NoDNS, loaded with its rules in one
+// `pfctl -f - -o none`:
 //
 //	pass out quick on lo0 all no state
 //	pass out quick on <utun> all no state                                             (connected)
+//	block return out quick proto { tcp, udp } from any to <thinkpol_killswitch_nodns> port 53
+//	block return out quick proto tcp from any to <thinkpol_killswitch_nodns> port 853
 //	pass out quick from any to <thinkpol_killswitch> no state
 //	pass out quick proto { tcp, udp } from any to <upstream> port <its port> no state (each upstream, connected)
 //	pass out quick inet proto udp from any port 68 to any port 67 no state
@@ -580,9 +606,13 @@
 //
 // pf can't match a hop limit: neighbour discovery passes by its ICMPv6
 // type to any destination, MLD only to multicast. Every Apply checks the
-// main ruleset has the hook (without it: an ordinary failure, retried),
-// reads the anchor back (the rules checked for their words, as the
-// guard's, the table entry for entry) and reloads what differs, holds pf
+// main ruleset has the hook (without it: an ordinary failure, retried;
+// a main ruleset flushed, or replaced by a pf.conf without the hook,
+// leaves the anchor unevaluated until someone puts the hook back, which
+// the kill switch doesn't), reads the anchor back (the rules checked for
+// their words, as the guard's, the tables entry for entry) and reloads
+// what differs (a load pf took is enabled even when its read-back fails:
+// with pf off, its rules would be evaluated not at all), holds pf
 // on by a reference of its own (`pfctl -E`, recorded in
 // pf-killswitch.token next to the guard's record, released by Close
 // under the guard's rules: the reference machinery is shared), and after

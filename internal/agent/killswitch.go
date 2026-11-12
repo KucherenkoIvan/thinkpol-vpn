@@ -57,8 +57,13 @@ const (
 
 // killSwitchReapply is how often the kill switch in place is applied
 // again: a re-apply checks it is whole and puts back what someone
-// removed (`nft flush ruleset`, `pfctl -F`), and on Linux renews the
-// direct destinations (firewall.DirectTimeout).
+// removed of its own table or anchor (`nft flush ruleset`, a flush of
+// its anchor), and on Linux renews the direct destinations
+// (firewall.DirectTimeout). On macOS a flush of the main ruleset
+// (`pfctl -F all`, a pf.conf loaded without `anchor "com.apple/*"`)
+// removes Apple's hook, under which the anchor is evaluated at all:
+// that isn't repaired here (the agent doesn't reload /etc/pf.conf), and
+// the kill switch stays not enforced until the hook is back.
 const killSwitchReapply = 10 * time.Second
 
 // killSwitchStopTimeout bounds the last apply as the node returns, its
