@@ -1089,18 +1089,31 @@ func TestAnExitThatNeverHandshakesIsExitNoHandshake(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("still %+v after the exit took the device in: %+v", st.Health(), st.DataPlane.Peers)
+			t.Fatalf("still %+v after the exit took the device in: %+v", st.Health(), peersOf(st))
 		}
 	}
 	// A healthy exit under steady traffic isn't flagged over several
-	// deadlines. A link re-dialed on a busy machine is no_link_up's, not
-	// this grading's.
+	// deadlines. A link re-dialed on a busy machine raises no_link_up or
+	// neighbor_down, which have their own tests; anything else, or the
+	// data plane going away, is a regression.
 	for until := time.Now().Add(4 * time.Second); time.Now().Before(until); time.Sleep(20 * time.Millisecond) {
 		st = b.node.Status()
-		if slices.Contains(st.Health().Problems, ProblemExitNoHandshake) || st.ExitsUnanswered != 0 {
-			t.Fatalf("the exit answering under steady traffic: %+v, peers %+v", st.Health(), st.DataPlane.Peers)
+		h := st.Health()
+		unexpected := slices.ContainsFunc(h.Problems, func(p Problem) bool {
+			return p != ProblemNoLinkUp && p != ProblemNeighborDown
+		})
+		if st.Connection != Connected || st.DataPlane == nil || unexpected || st.ExitsUnanswered != 0 {
+			t.Fatalf("the exit answering under steady traffic: connection %v, %+v, peers %+v", st.Connection, h, peersOf(st))
 		}
 	}
+}
+
+// peersOf returns st's data plane peers, none without a data plane.
+func peersOf(st Status) []dataplane.PeerStatus {
+	if st.DataPlane == nil {
+		return nil
+	}
+	return st.DataPlane.Peers
 }
 
 // exitHandshook reports whether st's data plane has an exit peer and has
