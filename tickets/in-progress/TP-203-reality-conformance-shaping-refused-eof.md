@@ -55,3 +55,4 @@ TP-087's reality conformance test passes every time, or the product bug it expos
 - 2026-11-12 in-progress → review
 - 2026-11-12 review: R1.1–R1.3
 - 2026-11-12 review → has-errors
+- 2026-11-12 has-errors → in-progress, owner: agent-tp-203
