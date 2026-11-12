@@ -78,9 +78,9 @@ const killSwitchStopTimeout = 10 * time.Second
 const KillSwitchStopNote = "a stop leaves the kill switch in place, as a crash does: only the entries (and the LAN with allow-LAN) are reachable until the agent runs again; to stop with traffic going direct, run `thinkpol kill-switch off` and `thinkpol disconnect` first, or `thinkpol service uninstall`"
 
 // warnLeftInPlace warns, as the node returns, when it leaves the kill
-// switch in place.
+// switch in place, applied without error or not.
 func (k *killSwitchKeeper) warnLeftInPlace() {
-	if k.applied != nil {
+	if k.inPlace {
 		k.log.Warn("the agent stops; " + KillSwitchStopNote)
 	}
 }
@@ -184,10 +184,14 @@ type killSwitchKeeper struct {
 	// ks is the kill switch it holds; nil before the first call, after a
 	// Close, and on a host without one.
 	ks KillSwitch
-	// applied is what is in place (nil: nothing, as far as it knows);
-	// removed says Close succeeded since.
+	// applied is what was applied without error (nil: nothing, or
+	// re-applied at the next call); removed says Close succeeded since.
 	applied *firewall.KillSwitchRules
 	removed bool
+	// inPlace: rules are in place, as far as it knows: an Apply put them
+	// there, with an error or not (firewall.ErrKillSwitchInPlace), and no
+	// Close succeeded since. Any other failure leaves what was there.
+	inPlace bool
 	// failed is the last call's failure; reapplyAt when the rules in
 	// place are applied again.
 	failed    error
@@ -217,7 +221,7 @@ func (k *killSwitchKeeper) keep(ctx context.Context, want bool, r firewall.KillS
 		}
 		k.ks, k.applied = nil, nil
 		if ks == nil {
-			k.removed, k.failed = true, nil
+			k.removed, k.failed, k.inPlace = true, nil, false
 			return
 		}
 		if err := ks.Close(); err != nil {
@@ -225,7 +229,7 @@ func (k *killSwitchKeeper) keep(ctx context.Context, want bool, r firewall.KillS
 			k.ks = ks // tried again on the next call
 			return
 		}
-		k.removed, k.failed = true, nil
+		k.removed, k.failed, k.inPlace = true, nil, false
 		k.log.Info("kill switch removed")
 		return
 	}
@@ -241,13 +245,16 @@ func (k *killSwitchKeeper) keep(ctx context.Context, want bool, r firewall.KillS
 	first := k.applied == nil || !k.applied.Equal(r)
 	if err := k.ks.Apply(ctx, r); err != nil {
 		k.applied = nil
+		if errors.Is(err, firewall.ErrKillSwitchInPlace) {
+			k.inPlace, k.removed = true, false
+		}
 		k.fail(err)
 		return
 	}
 	// Half a period: the ticker's next tick comes a period after the one
 	// handled here, which is earlier than a period after now; due at a
 	// whole period, every other tick would be skipped (20 s, not 10 s).
-	k.applied, k.removed, k.failed, k.reapplyAt = &r, false, nil, now.Add(killSwitchReapply/2)
+	k.applied, k.removed, k.inPlace, k.failed, k.reapplyAt = &r, false, true, nil, now.Add(killSwitchReapply/2)
 	if first {
 		k.log.Info("kill switch in place", "tunnel", onOff(r.TUN != ""), "allowed_ranges", len(r.Allow.Ranges()))
 	}

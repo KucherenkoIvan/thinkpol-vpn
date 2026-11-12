@@ -570,18 +570,27 @@
 // Kubernetes) a frame bridged between two ports of one bridge meets the
 // forward hook as well, the bridge its in and out interface. It passes
 // within a bridge on its own: every port a veth or a tap (containers,
-// VMs) and no default or gatewayed route out of it, of either family, in
-// any table, so it never leads off the machine; a packet routed back out
-// of such a bridge passes too. A bridge with another port (the uplink
-// enslaved, Wi-Fi, a VLAN, a bond, a VXLAN) or a route beyond its link
-// (the host's default route on br0) passes nothing within it: a VM's
-// frame bridged from its tap to eth0 would otherwise leave for the
-// internet. There is a rule per such bridge as the namespace has them
-// at the Apply (nftables' inet family has no bridge-port key, and an xt
-// physdev match would leave the table unlistable by nft): a bridge made,
-// or a port or route changed, since counts from the next Apply. When
-// the links or routes can't be listed, the rest goes in with no bridge
-// passing, and Apply fails, so the agent reports it and tries again. A forward
+// VMs) and no default or gatewayed route (by RTA_GATEWAY or RTA_VIA) out
+// of it, of either family, in any table, whether the route names the
+// bridge, one of its ports or a device on top of either (br0.100, a VLAN
+// on a port), so it never leads off the machine; a packet routed back
+// out of such a bridge passes too. A bridge with another port (the
+// uplink enslaved, Wi-Fi, a VLAN, a bond, a VXLAN) or a route beyond its
+// link (the host's default route on br0, on a veth uplink enslaved in it
+// as inside a container, or on a VLAN on top of it) passes nothing
+// within it: a VM's frame bridged from its tap to eth0 would otherwise
+// leave for the internet. A unicast route that names no interface (one
+// by a nexthop object, dumped as RTA_NH_ID alone with
+// nexthop_compat_mode=0, which netlink doesn't read) can't be placed:
+// then no bridge passes. What it can't see: a bridge whose veth uplink
+// has no default route yet when listed (DHCP pending) passes until the
+// next Apply after the route appears. There is a rule per such bridge
+// as the namespace has them at the Apply (nftables' inet family has no
+// bridge-port key, and an xt physdev match would leave the table
+// unlistable by nft): a bridge made, or a port or route changed, since
+// counts from the next Apply. When the links or routes can't be listed,
+// the rest goes in with no bridge passing, and Apply fails, wrapping
+// [ErrKillSwitchInPlace], so the agent reports it and tries again. A forward
 // chain, not postrouting: reject is refused at postrouting, and output
 // already holds what the device sends itself. What it refuses, a
 // published container port reached from the LAN without allow-LAN
@@ -622,7 +631,9 @@
 // the kill switch doesn't), reads the anchor back (the rules checked for
 // their words, as the guard's, the tables entry for entry) and reloads
 // what differs (a load pf took is enabled even when its read-back fails:
-// with pf off, its rules would be evaluated not at all), holds pf
+// with pf off, its rules would be evaluated not at all; Apply then fails
+// wrapping [ErrKillSwitchInPlace], and, loading again at each Apply,
+// kills states again only for a text it hasn't killed for), holds pf
 // on by a reference of its own (`pfctl -E`, recorded in
 // pf-killswitch.token next to the guard's record, released by Close
 // under the guard's rules: the reference machinery is shared), and after

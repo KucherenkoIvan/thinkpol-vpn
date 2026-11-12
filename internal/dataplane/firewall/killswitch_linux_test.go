@@ -947,8 +947,9 @@ func TestKillSwitchRefusesFramesBridgedThroughTheUplink(t *testing.T) {
 
 // When the bridges can't be listed, Apply still puts the rules in place
 // (a first start, the connected shape narrowed to the down one), with no
-// bridge passing, and fails; the next Apply that lists them passes them
-// again.
+// bridge passing, not even one the last good listing found, and fails,
+// saying the rules are in place; the next Apply that lists them passes
+// them again.
 func TestKillSwitchAppliesWhenTheBridgesCantBeListed(t *testing.T) {
 	p := ksPair(t)
 	k := p.killSwitch(t)
@@ -956,8 +957,8 @@ func TestKillSwitchAppliesWhenTheBridgesCantBeListed(t *testing.T) {
 	listing := errors.New("the dump was interrupted three times")
 	firewall.SetBridgeListing(k, func(int) ([]string, error) { return nil, listing })
 	down := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: set(t, entry4+"/32", entry6+"/128")}
-	if err := k.Apply(ctx, down); !errors.Is(err, listing) {
-		t.Errorf("first Apply: %v, want the listing's error", err)
+	if err := k.Apply(ctx, down); !errors.Is(err, listing) || !errors.Is(err, firewall.ErrKillSwitchInPlace) {
+		t.Errorf("first Apply: %v, want the listing's error, the rules in place", err)
 	}
 	if p.ping4(t, foreign4) || !p.ping4(t, entry4) {
 		t.Error("first Apply, unlisted: not in the down shape")
@@ -985,8 +986,17 @@ func TestKillSwitchAppliesWhenTheBridgesCantBeListed(t *testing.T) {
 	}
 	sysctl(t, p.dev, "net.bridge.bridge-nf-call-iptables=1", "net.ipv4.ip_forward=1")
 	c1, _ := bridged(t, p, "br0", 78)
-	if err := k.Apply(ctx, down); !errors.Is(err, listing) {
-		t.Errorf("re-applied, unlisted: %v, want the listing's error", err)
+	// Listed first, so a listing that fails can't fall back on a good one.
+	firewall.SetBridgeListing(k, nil)
+	if err := k.Apply(ctx, down); err != nil {
+		t.Fatal(err)
+	}
+	if !pingFrom(c1, "10.78.0.3") {
+		t.Fatal("listed: frames bridged within the bridge are refused: the test proves nothing")
+	}
+	firewall.SetBridgeListing(k, func(int) ([]string, error) { return nil, listing })
+	if err := k.Apply(ctx, down); !errors.Is(err, listing) || !errors.Is(err, firewall.ErrKillSwitchInPlace) {
+		t.Errorf("re-applied, unlisted: %v, want the listing's error, the rules in place", err)
 	}
 	if pingFrom(c1, "10.78.0.3") {
 		t.Error("unlisted: frames bridged within a bridge passed")

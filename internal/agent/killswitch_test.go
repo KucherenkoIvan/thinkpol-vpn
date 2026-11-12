@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"os"
@@ -399,6 +400,74 @@ func TestTheKillSwitchIsReappliedAtEveryTick(t *testing.T) {
 	}
 	if firewall.DirectTimeout < 2*killSwitchReapply {
 		t.Errorf("firewall.DirectTimeout %v leaves no stall margin over a %v re-apply", firewall.DirectTimeout, killSwitchReapply)
+	}
+}
+
+// scriptedKillSwitch answers each Apply with the next of errs (nil once
+// they run out), putting the rules in place unless the error says
+// nothing changed, and each Close with closeErr.
+type scriptedKillSwitch struct {
+	in       *firewall.KillSwitchRules
+	errs     []error
+	closeErr error
+}
+
+func (s *scriptedKillSwitch) Apply(_ context.Context, r firewall.KillSwitchRules) error {
+	var err error
+	if len(s.errs) > 0 {
+		err, s.errs = s.errs[0], s.errs[1:]
+	}
+	if err == nil || errors.Is(err, firewall.ErrKillSwitchInPlace) {
+		s.in = &r
+	}
+	return err
+}
+
+func (s *scriptedKillSwitch) Close() error {
+	if s.closeErr == nil {
+		s.in = nil
+	}
+	return s.closeErr
+}
+
+// The stop warns whenever rules are in place, an Apply that put them
+// there but failed (bridges unlisted on Linux, a read-back that failed on
+// macOS) included, and is reported failed all the same; it says nothing
+// when nothing was ever put in place or a Close removed it.
+func TestAStopWarnsWhileRulesAreInPlace(t *testing.T) {
+	r := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")}
+	inPlace := fmt.Errorf("%w: the bridges can't be listed", firewall.ErrKillSwitchInPlace)
+	refused := errors.New("the load failed")
+	for _, c := range []struct {
+		name  string
+		ks    *scriptedKillSwitch
+		steps []bool // keep(want)
+		warn  bool
+	}{
+		{"in place with an error", &scriptedKillSwitch{errs: []error{inPlace}}, []bool{true}, true},
+		{"in place with an error, then again", &scriptedKillSwitch{errs: []error{inPlace, inPlace}}, []bool{true, true}, true},
+		{"applied, then a failure that left it", &scriptedKillSwitch{errs: []error{nil, refused}}, []bool{true, true}, true},
+		{"never in place", &scriptedKillSwitch{errs: []error{refused}}, []bool{true}, false},
+		{"in place with an error, then removed", &scriptedKillSwitch{errs: []error{inPlace}}, []bool{true, false}, false},
+		{"in place, the removal failed", &scriptedKillSwitch{errs: []error{inPlace}, closeErr: refused}, []bool{true, false}, true},
+	} {
+		var log strings.Builder
+		k := killSwitchKeeper{newKS: func() KillSwitch { return c.ks }, log: slog.New(slog.NewTextHandler(&log, nil))}
+		for _, want := range c.steps {
+			k.keep(context.Background(), want, r)
+		}
+		if errors.Is(k.failed, firewall.ErrKillSwitchInPlace) {
+			if st := k.status(killSwitchSettings{on: true}, true); st.Enforced || st.Error != KillSwitchApplyFailed {
+				t.Errorf("%s: status %+v, want apply_failed", c.name, st)
+			}
+		}
+		if (c.ks.in != nil) != c.warn {
+			t.Fatalf("%s: the script left %v in place: the case proves nothing", c.name, c.ks.in)
+		}
+		k.warnLeftInPlace()
+		if got := strings.Contains(log.String(), KillSwitchStopNote); got != c.warn {
+			t.Errorf("%s: warned %v, want %v:\n%s", c.name, got, c.warn, log.String())
+		}
 	}
 }
 

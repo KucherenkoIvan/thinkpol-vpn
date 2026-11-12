@@ -350,7 +350,9 @@
 // member changes a toggle ([Node.SetKillSwitch], [Node.SetAllowLAN]),
 // which return once it was acted on. A stop is no deliberate disconnect:
 // the node returning leaves the down shape in place if it was meant up or
-// the toggle is on, as a crash would, and warns so ([KillSwitchStopNote]).
+// the toggle is on, as a crash would, and warns so ([KillSwitchStopNote])
+// whenever rules are in place, an apply that put them there but failed
+// ([firewall.ErrKillSwitchInPlace]) included.
 // Only a deliberate disconnect with the toggle off (or no crash posture),
 // a start that comes up so, or `service uninstall` ([Platform.ClearHost])
 // removes it. A disconnect is recorded for the boot before the node hears

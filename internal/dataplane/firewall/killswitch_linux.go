@@ -171,7 +171,8 @@ func (k *KillSwitch) probe(c *nftables.Conn) error {
 // it. Applying what is in place again only checks the table holds
 // exactly that, and rebuilds it if not. When the bridges can't be
 // listed, r goes in with no bridge passing and Apply returns the
-// listing's error: the next Apply lists them again.
+// listing's error, wrapping [ErrKillSwitchInPlace]: the next Apply lists
+// them again.
 func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -197,7 +198,7 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) error {
 	// still Apply's, so the agent reports it and applies again.
 	bridges, listErr := list(k.netns)
 	if listErr != nil {
-		bridges = nil
+		bridges, listErr = nil, fmt.Errorf("%w: %w", ErrKillSwitchInPlace, listErr)
 	}
 	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: KillSwitchTable}
 	sets := killSwitchSets(table, r)
@@ -353,12 +354,17 @@ func killSwitchChains(r KillSwitchRules, ids ksSetIDs, bridges []string) []wantC
 // thread's) whose frames may pass bridged within them, sorted: those
 // whose every port is a veth or a tap (containers, VMs) and out of which
 // no route of either family, in any table, is a default route or goes by
-// a gateway. A bridge with any other port (the uplink enslaved, a Wi-Fi
-// interface, a VLAN, a bond, a VXLAN) or that routes beyond its link
-// (the host's uplink, an entry reached through it) isn't one: what it
-// bridges falls through to the refusals. A gatewayed or default route
-// that names no interface (a nexthop object) can't be placed: then none
-// is.
+// a gateway (RTA_GATEWAY or RTA_VIA), whether the route names the bridge,
+// one of its ports, or a device on top of either (a VLAN, a macvlan). A
+// bridge with any other port (the uplink enslaved, a Wi-Fi interface, a
+// VLAN, a bond, a VXLAN) or that routes beyond its link (the host's
+// uplink, an entry reached through it, the uplink a veth enslaved in it
+// as in a container) isn't one: what it bridges falls through to the
+// refusals. A unicast route that names no interface can't be placed,
+// gatewayed or not: with nexthop_compat_mode=0 the kernel dumps a route
+// by a nexthop object as RTA_NH_ID alone, which netlink doesn't read, so
+// such a route says neither where it goes nor whether by a gateway. Then
+// no bridge is.
 func innerBridges(netns int) ([]string, error) {
 	var h *netlink.Handle
 	var err error
@@ -392,7 +398,9 @@ func innerBridges(netns int) ([]string, error) {
 // bridgesOnTheirOwn are innerBridges of links and routes.
 func bridgesOnTheirOwn(links []netlink.Link, routes []netlink.Route) []string {
 	bridges := map[int]string{}
+	byIndex := map[int]netlink.Link{}
 	for _, l := range links {
+		byIndex[l.Attrs().Index] = l
 		if l.Type() == "bridge" {
 			bridges[l.Attrs().Index] = l.Attrs().Name
 		}
@@ -405,6 +413,9 @@ func bridgesOnTheirOwn(links []netlink.Link, routes []netlink.Route) []string {
 	for _, r := range routes {
 		if r.Type != unix.RTN_UNICAST {
 			continue // local, broadcast, unreachable, blackhole: never out of a bridge
+		}
+		if r.LinkIndex == 0 && len(r.MultiPath) == 0 {
+			return nil // by a nexthop object (RTA_NH_ID alone): can't be placed
 		}
 		gateway := r.Gw != nil || r.Via != nil
 		out := []int{r.LinkIndex}
@@ -421,7 +432,7 @@ func bridgesOnTheirOwn(links []netlink.Link, routes []netlink.Route) []string {
 		for _, i := range out {
 			if i != 0 {
 				placed = true
-				delete(bridges, i)
+				delete(bridges, bridgeUnder(byIndex, i))
 			}
 		}
 		if !placed {
@@ -431,6 +442,33 @@ func bridgesOnTheirOwn(links []netlink.Link, routes []netlink.Route) []string {
 	names := slices.Collect(maps.Values(bridges))
 	slices.Sort(names)
 	return names
+}
+
+// bridgeUnder is the index of the bridge a frame sent out of link i ends
+// up in, 0 if none: i itself, the bridge i is a port of, or the bridge
+// under the device i sits on top of (a VLAN or a macvlan on the bridge
+// or on a port), followed down IFLA_LINK. A veth's IFLA_LINK is its
+// peer, not a lower device, and one in another namespace (NetNsID set)
+// isn't an index here: neither is followed.
+func bridgeUnder(byIndex map[int]netlink.Link, i int) int {
+	for range 8 {
+		l, ok := byIndex[i]
+		if !ok {
+			return 0
+		}
+		if l.Type() == "bridge" {
+			return i
+		}
+		a := l.Attrs()
+		if m, ok := byIndex[a.MasterIndex]; ok && m.Type() == "bridge" {
+			return a.MasterIndex
+		}
+		if a.ParentIndex == 0 || a.ParentIndex == i || l.Type() == "veth" || a.NetNsID >= 0 {
+			return 0
+		}
+		i = a.ParentIndex
+	}
+	return 0
 }
 
 // ksLookups are "<family> <load> @set accept" for allow4, allow6,

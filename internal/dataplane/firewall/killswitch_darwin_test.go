@@ -359,3 +359,40 @@ func TestKillSwitchEnablesALoadItCantReadBack(t *testing.T) {
 		})
 	}
 }
+
+// While the read-back keeps failing, the states are killed once per text
+// loaded, not at every Apply: connected, the TUN's flows to foreign
+// addresses aren't in the table, and killing them every 10 s would cut
+// every tunnelled connection. Apply says the rules are in place.
+func TestKillSwitchKillsOncePerLoadItCantReadBack(t *testing.T) {
+	r := newRig(t)
+	r.pf.set(func(f *fakePF) { f.fail["-T show"] = errFake })
+	foreign := fakeState{"tcp", netip.AddrPortFrom(ownV4, 50000), netip.MustParseAddrPort("203.0.113.7:443"), true}
+	r.pf.states = []fakeState{foreign}
+	k := r.killSwitch()
+	ctx := context.Background()
+	if err := k.Apply(ctx, upRules(t)); !errors.Is(err, ErrKillSwitchInPlace) {
+		t.Fatalf("Apply: %v, want the rules in place", err)
+	}
+	if len(r.pf.stateList()) != 0 {
+		t.Fatalf("states left %v after the first load", r.pf.stateList())
+	}
+
+	r.pf.set(func(f *fakePF) { f.states = []fakeState{foreign} }) // a flow through the TUN
+	r.pf.forget()
+	for range 3 {
+		if err := k.Apply(ctx, upRules(t)); !errors.Is(err, ErrKillSwitchInPlace) {
+			t.Fatalf("Apply again: %v, want the rules in place", err)
+		}
+	}
+	if n := r.pf.ran("-k"); n != 0 || len(r.pf.stateList()) != 1 {
+		t.Errorf("the same text loaded again: %d kills, states %v; want none killed", n, r.pf.stateList())
+	}
+
+	if err := k.Apply(ctx, downRules(t)); !errors.Is(err, ErrKillSwitchInPlace) {
+		t.Fatalf("Apply down: %v, want the rules in place", err)
+	}
+	if len(r.pf.stateList()) != 0 {
+		t.Errorf("another text loaded: states left %v", r.pf.stateList())
+	}
+}

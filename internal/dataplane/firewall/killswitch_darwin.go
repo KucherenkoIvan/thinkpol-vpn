@@ -41,7 +41,10 @@ const (
 // either family, whose other end isn't in the table: pf passes a state
 // without rules. A load pf took is enabled even when its read-back
 // fails: its rules are in pf, unchecked, and with pf off (a stock Mac)
-// they would be evaluated not at all. Unlike the guard it doesn't look for what passes before
+// they would be evaluated not at all; Apply then returns an error
+// wrapping [ErrKillSwitchInPlace], loads again at the next Apply, and
+// kills states again only when the text loaded changed (or pf was found
+// stale), as a good load does. Unlike the guard it doesn't look for what passes before
 // its anchor (quick passes above the hook, earlier anchors, skipped
 // interfaces): the guard's anchor sorts before it on purpose.
 type KillSwitch struct {
@@ -53,7 +56,10 @@ type KillSwitch struct {
 	applied *appliedKillSwitch
 	// killStates: pf's states still need checking against applied.
 	killStates bool
-	closed     bool
+	// uncheckedKilled is the text of the last load whose read-back failed
+	// and whose refused states were killed since.
+	uncheckedKilled string
+	closed          bool
 }
 
 // appliedKillSwitch is a load: its rules, the table loaded and the
@@ -62,6 +68,8 @@ type appliedKillSwitch struct {
 	rules        KillSwitchRules
 	table, noDNS []netip.Prefix
 	listed       []string
+	// text is what was loaded.
+	text string
 }
 
 // allows reports whether the table lets anything out to addr.
@@ -110,19 +118,29 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) (err error) {
 			// pf took the text: kill the states its table refuses, as
 			// after a good load, or a read-back that keeps failing leaves
 			// them passing. Not recorded as applied: the next Apply
-			// loads it again, and kills again.
-			k.killStates = true
-			after, eerr := k.enable(ctx)
-			var kerr error
-			if eerr == nil {
-				kerr = killStates(ctx, k.pf, k.own, a.allows, true, "the kill switch refuses")
+			// loads it again, but kills again only for another text (or
+			// pf found stale): killing at every Apply would cut the
+			// TUN's flows and the direct upstreams' TCP DNS connected,
+			// which the table doesn't hold, every 10 s.
+			if a.text != k.uncheckedKilled {
+				k.killStates = true
 			}
-			return errors.Join(err, eerr, kerr, after)
+			after, eerr := k.enable(ctx)
+			if eerr != nil {
+				return errors.Join(err, eerr, after)
+			}
+			var kerr error
+			if k.killStates {
+				if kerr = killStates(ctx, k.pf, k.own, a.allows, true, "the kill switch refuses"); kerr == nil {
+					k.killStates, k.uncheckedKilled = false, a.text
+				}
+			}
+			return fmt.Errorf("%w: %w", ErrKillSwitchInPlace, errors.Join(err, kerr, after))
 		}
 		if err != nil {
 			return err
 		}
-		k.applied, k.killStates = a, true
+		k.applied, k.killStates, k.uncheckedKilled = a, true, ""
 	}
 	after, err := k.enable(ctx)
 	if err == nil && k.killStates {
@@ -152,7 +170,7 @@ func (k *KillSwitch) load(ctx context.Context, r KillSwitchRules) (a *appliedKil
 	if _, err := k.pf.run(ctx, []byte(text), "-a", KillSwitchAnchor, "-f", "-", "-o", "none"); err != nil {
 		return nil, false, fmt.Errorf("firewall: load the kill switch: %w", err)
 	}
-	unchecked := &appliedKillSwitch{rules: r, table: table, noDNS: noDNS}
+	unchecked := &appliedKillSwitch{rules: r, table: table, noDNS: noDNS, text: text}
 	listed, err := k.listRules(ctx)
 	if err != nil {
 		return unchecked, true, err
@@ -169,7 +187,7 @@ func (k *KillSwitch) load(ctx context.Context, r KillSwitchRules) (a *appliedKil
 			return unchecked, true, fmt.Errorf("firewall: pf's table %s holds %d entries unlike the %d loaded", name, len(got[name]), len(want))
 		}
 	}
-	return &appliedKillSwitch{rules: r, table: got[killSwitchTable], noDNS: got[killSwitchNoDNS], listed: listed}, true, nil
+	return &appliedKillSwitch{rules: r, table: got[killSwitchTable], noDNS: got[killSwitchNoDNS], listed: listed, text: text}, true, nil
 }
 
 func (k *KillSwitch) listRules(ctx context.Context) ([]string, error) {

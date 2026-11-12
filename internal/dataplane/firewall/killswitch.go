@@ -79,6 +79,13 @@ const DirectTimeout = 30 * time.Second
 // nf_tables in the kernel; no pfctl).
 var ErrKillSwitchUnsupported = errors.New("firewall: the OS can't hold the kill switch")
 
+// ErrKillSwitchInPlace marks an Apply error after which the rules are in
+// place all the same, enforced but not as asked in full: on Linux the
+// bridges couldn't be listed (none passes), on macOS pf took the load and
+// is on but its read-back failed. Any other Apply error leaves what was
+// in place before (one transaction).
+var ErrKillSwitchInPlace = errors.New("firewall: the kill switch is in place, but")
+
 // errKillSwitchClosed: the kill switch was closed. Shared by the Linux and
 // macOS kill switches; Windows has none yet (TP-076).
 var errKillSwitchClosed = errors.New("firewall: the kill switch is closed") //nolint:unused // unused on Windows only
