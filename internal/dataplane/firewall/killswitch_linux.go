@@ -34,6 +34,10 @@ const (
 	noDNSSet6       = "nodns6"
 )
 
+// KillSwitchPlace is where the host holds the kill switch, as a report
+// names it.
+const KillSwitchPlace = "the nftables table inet " + KillSwitchTable
+
 // ksSetIDs are the batch ids of the kill switch's sets, in
 // killSwitchSets' order; zero when only compared by name.
 type ksSetIDs [6]uint32

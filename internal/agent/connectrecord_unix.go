@@ -55,7 +55,7 @@ func (r fileConnectRecord) Load() (bool, bool, error) {
 }
 
 // Save replaces the record atomically (0600; the directory made 0700 if
-// missing). Only the goroutine that runs the node calls it.
+// missing). A caller holds the host lock or runs the node that does.
 func (r fileConnectRecord) Save(connect bool) error {
 	boot, err := r.boot()
 	if err != nil {

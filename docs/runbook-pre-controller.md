@@ -76,7 +76,12 @@ stops it, undoes what a crashed agent left (a server's forwarding, firewall
 tables and veths included), and removes the unit and the binary; the
 `thinkpol` group and the state directory stay. If undoing fails it stops
 with the unit and binary still on disk and says what is left; fix that and
-run it again, or add `-force` to remove them anyway. On a device, whether
+run it again, or add `-force` to remove them anyway. To undo what a dead
+agent left without uninstalling (a device's routes, DNS changes and kill
+switch, which a crash or a stop leaves on purpose, or a server's
+forwarding, tables and veths), run `sudo thinkpol rollback` while no
+agent runs: it says part by part what is left, and a device's service
+then starts disconnected for the rest of the boot. On a device, whether
 the service connects at boot is the member's choice: `thinkpol
 connect-on-boot on|off`, run by a member of the `thinkpol` group without
 root, from the next boot (off by default). Both refuse
