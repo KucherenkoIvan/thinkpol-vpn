@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-211"
+branch: "tp-211-lab-runs-on-docker29"
 ---
 
 ## Goal
@@ -36,3 +36,4 @@ What a full lab and `make test` hit on such a host (measured 2026-11-14):
 
 ## Log
 - 2026-11-14 created (orchestrator's measurements on a Linux Docker 29 host)
+- 2026-11-14 backlog → in-progress, owner: agent-tp-211
