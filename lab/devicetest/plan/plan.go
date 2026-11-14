@@ -67,6 +67,9 @@ type Op struct {
 	Change Change
 	// Text is what an ask asks, one line.
 	Text string
+	// IfFailed is what the owner types if the operation fails, one line:
+	// the run's stop prompt says it in place of "the plan doesn't say".
+	IfFailed string
 }
 
 // Change names one of the core's kinds of change, with its parameters.
@@ -86,9 +89,16 @@ func UndoLast() Op { return Op{Kind: OpUndoLast} }
 
 // Ask prints text after the time on the run's one terminal, waits for
 // Enter and saves the line the owner typed before it, a note, in the
-// evidence. The dead-man's budget runs while it waits, and a Ctrl-C stops
-// the run once Enter is pressed.
+// evidence. The dead-man's budget runs while it waits (the prompt says
+// how much is left), the run checks it still records before and after
+// the wait, and a Ctrl-C stops the run once Enter is pressed.
 func Ask(text string) Op { return Op{Kind: OpAsk, Text: text} }
+
+// IfFailed is op with what the owner types if it fails, one line.
+func IfFailed(op Op, text string) Op {
+	op.IfFailed = text
+	return op
+}
 
 // PfSkip loads `set skip on iface` before the stock pf rules
 // (/etc/pf.conf); its undo loads the stock rules.
@@ -118,6 +128,9 @@ func (p Plan) Validate() error {
 		}
 		seen[s.Name] = true
 		for _, op := range s.Ops {
+			if strings.ContainsAny(op.IfFailed, "\r\n") {
+				return fmt.Errorf("plan %s, step %s: what to type if an operation fails is one line", p.Ticket, s.Name)
+			}
 			switch {
 			case op.Kind == OpRead && len(op.Argv) == 0:
 				return fmt.Errorf("plan %s, step %s: an empty root read", p.Ticket, s.Name)

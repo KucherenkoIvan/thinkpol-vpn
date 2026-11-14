@@ -45,6 +45,9 @@ func listing(p plan.Plan, phys string) string {
 		}
 		w("capture: %s, filter %q, running until the run ends; its pcap is kept in the evidence", iface, controlFilter(c.Filter, "N"))
 		w("  (the plan's filter %q with the self-test's controls: N is the negative marker's source port)", c.Filter)
+		if hasAsk(p) {
+			w("  before and after each ask, one marker (twice if missed) checks the capture still records")
+		}
 	}
 	for i, st := range p.Steps {
 		w("step %d %s", i+1, st.Name)
@@ -53,12 +56,29 @@ func listing(p plan.Plan, phys string) string {
 			if op.Kind == plan.OpDo {
 				w("    undo: %s", undoText(op.Change))
 			}
+			if op.IfFailed != "" {
+				w("    if it fails: %s", op.IfFailed)
+			}
 		}
 	}
 	w("then, and on Ctrl-C, a closed terminal or a crash: every change undone, newest first,")
 	w("  and the Mac compared with its baseline: CLEAN, LEFT with what to do, or REBOOT; a run left pending is closed")
 	w("  by a later restore: CLEAN, or after a reboot RESET-BY-REBOOT, or devicetest restore -forget RUN (FORGOTTEN)")
+	if restoreWaitNote != "" {
+		w("  %s", restoreWaitNote)
+	}
 	return b.String()
+}
+
+func hasAsk(p plan.Plan) bool {
+	for _, st := range p.Steps {
+		for _, op := range st.Ops {
+			if op.Kind == plan.OpAsk {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func describeOp(op plan.Op) string {

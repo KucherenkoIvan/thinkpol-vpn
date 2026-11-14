@@ -24,7 +24,10 @@
 //     baseline and an armed dead-man; changes are typed, of the core's
 //     kinds, root reads are listings the core allows, and the tool does
 //     only what the plan lists: anything else stops the run and asks the
-//     owner (continue, or restore and end);
+//     owner (continue, or restore and end; the plan may say which, per
+//     operation, with plan.IfFailed), and a change that failed and was
+//     passed over leaves its step a NOTE.txt: what follows it there was
+//     recorded without it, and the step's undo acted on an earlier change;
 //   - the Mac is put back after a normal end, Ctrl-C, a closed terminal, a
 //     crash or kill of either process, and a power loss (at the next
 //     `devicetest restore`, which every later run waits for); the result
@@ -51,8 +54,10 @@
 //     decode); captures/ (the pcap, tcpdump's stderr, markers.jsonl with
 //     the markers and each step's start and end); steps/NN-name/ (each
 //     root read's .out, .err and .json with its exit status, each ask's
-//     .json with its times and the owner's note, and `thinkpol diag` or
-//     why there is none); snapshots/ (the baseline and after each
+//     .json with its times, the owner's note and whether the run still
+//     recorded before and after it, and `thinkpol diag` or why there is
+//     none); recording-stopped.txt (when an ask's check found the run no
+//     longer recording, and why); snapshots/ (the baseline and after each
 //     restore, raw); actions/ (what each change ran); restore/ and
 //     journal/. Captures keep 128 bytes a packet and are never deleted:
 //     the evidence is the owner's, kept privately. Root's own state
@@ -80,7 +85,12 @@
 // own newest change, and asks (plan.Ask("Turn Wi-Fi off.")): what the
 // owner does by hand, a timestamped prompt on the one terminal that waits
 // for Enter and keeps the note typed before it. The dead-man's budget
-// runs while an ask waits. depguard holds plan and plans to a short list of
+// runs while an ask waits, and the prompt says how much is left. Before
+// and after each wait the run checks it still records: no restore has run
+// (the dead-man's, say), and the capture still sees a marker (tcpdump
+// stops at its packet limit); when either fails, "THE CAPTURE STOPPED at
+// HH:MM:SS: why; what you do now isn't recorded" is printed then and
+// before every later prompt. Between asks nothing else would notice. depguard holds plan and plans to a short list of
 // standard packages: a plan can't run a command or reach the core, and the
 // listing is the whole run. A plan records and never judges: no counting,
 // parsing or PASS/FAIL. What a judge decides again and again becomes a Go

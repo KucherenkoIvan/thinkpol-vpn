@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -57,12 +58,18 @@ func runAsRoot(t *testing.T, p plan.Plan, phys string) labRun {
 // runAsRootTyping runs p with typed as the owner's terminal input.
 func runAsRootTyping(t *testing.T, p plan.Plan, phys, typed string) labRun {
 	t.Helper()
+	return runAsRootWith(t, p, phys, func(*runner) io.Reader { return strings.NewReader(typed) })
+}
+
+// runAsRootWith runs p with input's reader as the owner's terminal input.
+func runAsRootWith(t *testing.T, p plan.Plan, phys string, input func(*runner) io.Reader) labRun {
+	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	var term bytes.Buffer
-	r := &runner{plan: p, phys: phys, in: bufio.NewReader(strings.NewReader(typed)), out: &term,
+	r := &runner{plan: p, phys: phys, out: &term,
 		helperCommand: func(args []string) (*exec.Cmd, error) {
 			cmd, err := safety.RootCommand(self, args)
 			if cmd != nil {
@@ -70,6 +77,7 @@ func runAsRootTyping(t *testing.T, p plan.Plan, phys, typed string) labRun {
 			}
 			return cmd, err
 		}}
+	r.in = bufio.NewReader(input(r))
 	base := t.TempDir()
 	start := time.Now()
 	err = r.run(t.Context(), base)
@@ -159,7 +167,7 @@ func TestAnAskWaitsForTheOwnerAndKeepsTheNote(t *testing.T) {
 	if got.err != nil || got.record.Steps != 1 {
 		t.Fatalf("run: %v %+v\n%s", got.err, got.record, got.term)
 	}
-	if !regexp.MustCompile(`(?m)^\d\d:\d\d:\d\d Turn Wi-Fi off\. Then type your note, if any, and press Enter: `).MatchString(got.term) {
+	if !regexp.MustCompile(`(?m)^\d\d:\d\d:\d\d Turn Wi-Fi off\. Then type your note, if any, and press Enter \(budget: \dm\d+s left\): `).MatchString(got.term) {
 		t.Errorf("no timestamped prompt:\n%s", got.term)
 	}
 	var ask struct {
@@ -182,6 +190,36 @@ func TestAnAskWaitsForTheOwnerAndKeepsTheNote(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(got.path, "steps/01-by-hand/cmd-003.ip-route-show.out")); err != nil {
 		t.Errorf("the read after the ask: %v", err)
+	}
+}
+
+// The helper killed during an ask (as by its dead-man): between asks
+// nothing else calls it, so the asks' checks say the capture stopped,
+// right after that ask and again right before the next prompt.
+func TestAnAskAfterTheHelperDiedSaysTheCaptureStopped(t *testing.T) {
+	iface := labInterface(t)
+	p := plan.Plan{Ticket: "TP-903", Title: "the helper dies during an ask", Budget: 2 * time.Minute,
+		Capture: plan.Capture{Iface: plan.Physical, Filter: "ip6"},
+		Steps:   []plan.Step{{Name: "first", Ops: []plan.Op{plan.Ask("Connect.")}}, {Name: "second", Ops: []plan.Op{plan.Ask("Look up a name.")}}}}
+	got := runAsRootWith(t, p, iface, func(r *runner) io.Reader {
+		// The launch script execs the helper: its pid is the helper's.
+		return &typing{lines: []string{"yes\n", "connected\n", "a name\n"}, before: map[int]func(){1: func() { _ = r.c.cmd.Process.Kill() }}}
+	})
+	if got.record.SelfTest != "ok" || got.record.Steps != 2 || got.record.Restore == nil || !strings.HasPrefix(got.record.Restore.By, "the dead-man") {
+		t.Fatalf("run: %v %+v\n%s", got.err, got.record, got.term)
+	}
+	stopped := `THE CAPTURE STOPPED at \d\d:\d\d:\d\d: the helper doesn't answer \(the helper: [^)]+\): its dead-man restores the run; what you do now isn't recorded`
+	for name, re := range map[string]string{
+		"after the ask": `asked: Connect\..*\n\d\d:\d\d:\d\d ` + stopped + `\n`,
+		"before the next prompt": `\n\d\d:\d\d:\d\d ` + stopped + `\n\d\d:\d\d:\d\d Look up a name\. Then type your note, if any, ` +
+			`and press Enter \(budget: 1m\d+s left\): `,
+	} {
+		if !regexp.MustCompile(re).MatchString(got.term) {
+			t.Errorf("%s: no match for %s in\n%s", name, re, got.term)
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(got.path, "recording-stopped.txt")); err != nil || !regexp.MustCompile(stopped).Match(b) {
+		t.Errorf("recording-stopped.txt: %s %v", b, err)
 	}
 }
 

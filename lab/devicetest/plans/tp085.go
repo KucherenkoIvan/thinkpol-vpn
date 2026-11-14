@@ -16,7 +16,12 @@ import (
 // Nothing here names the exit: the owner's notes and the capture say
 // which server and names were used. Under the presets every name goes
 // through the tunnel (GeoIP never decides a name), so the direct name
-// needs a domain or domain-suffix rule that says direct.
+// needs a domain or domain-suffix rule that says direct. It runs with the
+// thinkpol service installed, whose agent always runs: its restore waits
+// the full 60 s for no thinkpol process and notes it, which asks nothing
+// (the listing's last lines and the line before the restore say so).
+// Each ask's prompt says how much of the budget is left, and before and
+// after each, a marker checks the capture still records.
 func tp085() plan.Plan {
 	ask := func(name, text string, ops ...plan.Op) plan.Step {
 		return plan.Step{Name: name, Ops: append([]plan.Op{plan.Ask(text)}, ops...)}

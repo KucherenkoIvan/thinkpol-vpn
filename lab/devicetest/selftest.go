@@ -89,7 +89,7 @@ func (r *runner) checkCapture(ctx context.Context, c plan.Capture) captureCheck 
 	if err := r.runCaptureCheck(ctx, c.Filter, &res); err != nil {
 		res.Why = err.Error()
 	} else {
-		res.OK = true
+		res.OK, r.capIface = true, res.Iface
 	}
 	res.Took = time.Since(start).Round(time.Millisecond).String()
 	return res
@@ -101,7 +101,8 @@ func (r *runner) runCaptureCheck(ctx context.Context, filter string, res *captur
 		return err
 	}
 	defer func() { _ = neg.Close(); _ = pos.Close() }()
-	res.Filter = controlFilter(filter, strconv.Itoa(neg.LocalAddr().(*net.UDPAddr).Port))
+	r.negPort = neg.LocalAddr().(*net.UDPAddr).Port
+	res.Filter = controlFilter(filter, strconv.Itoa(r.negPort))
 	if _, err := r.c.call(safety.Request{Op: safety.OpCaptureStart, Iface: res.Iface, Filter: res.Filter}); err != nil {
 		return fmt.Errorf("start: %w", err)
 	}

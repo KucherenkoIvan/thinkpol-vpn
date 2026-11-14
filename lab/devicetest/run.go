@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -49,6 +50,19 @@ type runner struct {
 	// deadmanWait is how long a run with no answer from its helper waits
 	// for the dead-man's result (default deadmanResultWait).
 	deadmanWait time.Duration
+	// deadline is when the dead-man's budget runs out, at the earliest:
+	// the budget from just before the helper started.
+	deadline time.Time
+	// capIface and negPort are the capture's interface, once the
+	// self-test saw it record, and the self-test's negative marker's
+	// source port, which its filter excludes.
+	capIface string
+	negPort  int
+	// notRecording is why the run stopped recording, once an ask's check
+	// found it ("" while it records).
+	notRecording string
+	// lastUndo is what the newest undo_last did, or why it failed.
+	lastUndo string
 }
 
 // verdictUnknown: neither the helper nor the dead-man gave a result.
@@ -149,6 +163,9 @@ func (r *runner) run(ctx context.Context, base string) error {
 		rec.Stopped = err.Error()
 	}
 	rec.Steps = steps
+	if restoreWaitNote != "" {
+		ev.Logf("restoring: %s", restoreWaitNote)
+	}
 	res, rerr := r.c.restore()
 	if res == nil {
 		res = r.resultFromEvidence()
@@ -172,13 +189,8 @@ func (r *runner) resultFromEvidence() *safety.Result {
 	}
 	r.ev.Logf("the helper gave no result: waiting up to %v for its dead-man's", wait)
 	for deadline := time.Now().Add(wait); ; time.Sleep(500 * time.Millisecond) {
-		m, _ := filepath.Glob(filepath.Join(r.ev.Path, "restore", "result-*.json"))
-		slices.Sort(m) // named by the time they were written
-		if len(m) > 0 {
-			var res safety.Result
-			if b, err := os.ReadFile(m[len(m)-1]); err == nil && json.Unmarshal(b, &res) == nil {
-				return &res
-			}
+		if res, _, ok := r.newestResult(); ok {
+			return res
 		}
 		if time.Now().After(deadline) {
 			break
@@ -186,6 +198,26 @@ func (r *runner) resultFromEvidence() *safety.Result {
 	}
 	return &safety.Result{Verdict: verdictUnknown, By: fmt.Sprintf("nobody: the helper gave no result, nor its dead-man within %v", wait),
 		Notes: []string{"run devicetest restore"}}
+}
+
+// newestResult is the newest restore result in the evidence, with when
+// it was written (its name's nanoseconds).
+func (r *runner) newestResult() (*safety.Result, time.Time, bool) {
+	m, _ := filepath.Glob(filepath.Join(r.ev.Path, "restore", "result-*.json"))
+	slices.SortFunc(m, func(a, b string) int { return cmp.Compare(resultTime(a).UnixNano(), resultTime(b).UnixNano()) })
+	if len(m) == 0 {
+		return nil, time.Time{}, false
+	}
+	var res safety.Result
+	if b, err := os.ReadFile(m[len(m)-1]); err != nil || json.Unmarshal(b, &res) != nil {
+		return nil, time.Time{}, false
+	}
+	return &res, resultTime(m[len(m)-1]), true
+}
+
+func resultTime(path string) time.Time {
+	n, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "result-"), ".json"), 10, 64)
+	return time.Unix(0, n)
 }
 
 func (r *runner) record(list string, start time.Time) runRecord {
@@ -225,6 +257,7 @@ func (r *runner) startHelper() error {
 		return err
 	}
 	r.ev.Logf("starting the helper (root): journal, dead-man (deadline %v), baseline", r.plan.Budget)
+	r.deadline = time.Now().Add(r.plan.Budget)
 	r.c, err = startClient(cmd)
 	return err
 }
@@ -252,9 +285,13 @@ func (r *runner) watchSignals() {
 
 var errStopped = errors.New("stopped by the owner")
 
-// steps runs the plan's steps; it returns how many were recorded.
+// steps runs the plan's steps; it returns how many were recorded. A
+// Ctrl-C during a step ends the run before the next one starts.
 func (r *runner) steps(ctx context.Context) (int, error) {
 	for i, st := range r.plan.Steps {
+		if r.stopped.Load() {
+			return i, errStopped
+		}
 		dir := fmt.Sprintf("steps/%02d-%s", i+1, st.Name)
 		r.ev.Logf("step %d %s", i+1, st.Name)
 		r.ev.AppendJSONL("captures/markers.jsonl", map[string]any{"time": time.Now().UTC(), "step": st.Name, "event": "start"})
@@ -268,25 +305,46 @@ func (r *runner) steps(ctx context.Context) (int, error) {
 	return len(r.plan.Steps), nil
 }
 
+// step runs one step's operations. When one fails, the run stops to ask:
+// continue, or restore and end. A change that failed and was passed over
+// leaves a NOTE.txt in the step's folder: what follows it there was
+// recorded without it, and the step's undo acted on an earlier change.
 func (r *runner) step(ctx context.Context, dir string, st plan.Step) error {
+	var note []string
+	defer func() {
+		if len(note) > 0 {
+			r.ev.WriteFile(dir+"/NOTE.txt", []byte(strings.Join(note, "\n")+"\n"))
+		}
+	}()
 	for j, op := range st.Ops {
 		if r.stopped.Load() {
 			return errStopped
 		}
-		err := r.op(dir, j+1, op)
+		err := r.op(ctx, dir, j+1, op)
+		if op.Kind == plan.OpUndoLast && len(note) > 0 {
+			note = append(note, fmt.Sprintf("Operation %d, the undo, acted on the newest change still made (not this step's, which failed): %s", j+1, r.lastUndo))
+		}
 		if err == nil {
 			continue
 		}
 		r.ev.Logf("STOP: %s failed: %v", describeOp(op), err)
-		answer, _ := r.ev.Ask(r.in, "The plan doesn't say what to do now. Type continue to go on, or press Enter to restore and end the run:")
+		what := "The plan doesn't say what to do now."
+		if op.IfFailed != "" {
+			what = op.IfFailed
+		}
+		answer, _ := r.ev.Ask(r.in, what+" Type continue to go on, or press Enter to restore and end the run:")
 		if answer != "continue" {
 			return fmt.Errorf("%s: %w", describeOp(op), err)
+		}
+		if op.Kind == plan.OpDo {
+			note = append(note, fmt.Sprintf("Operation %d, this step's change (%s), failed and was passed over (continue): %v. "+
+				"What this folder holds after it was recorded without it.", j+1, describeOp(op), err))
 		}
 	}
 	return nil
 }
 
-func (r *runner) op(dir string, n int, op plan.Op) error {
+func (r *runner) op(ctx context.Context, dir string, n int, op plan.Op) error {
 	switch op.Kind {
 	case plan.OpRead:
 		name := fmt.Sprintf("%s/cmd-%03d.%s", dir, n, slug(op.Argv))
@@ -303,14 +361,19 @@ func (r *runner) op(dir string, n int, op plan.Op) error {
 		return err
 	case plan.OpUndoLast:
 		resp, err := r.c.call(safety.Request{Op: safety.OpUndoLast})
+		r.lastUndo = resp.Did
 		if err == nil {
 			r.ev.Logf("  undone: %s", resp.Did)
+		} else {
+			r.lastUndo = "it failed: " + err.Error()
 		}
 		return err
 	case plan.OpAsk:
+		before := r.recording(ctx)
 		asked := time.Now().UTC()
-		note, err := r.ev.Ask(r.in, op.Text+" Then type your note, if any, and press Enter:")
-		rec := map[string]any{"ask": op.Text, "asked": asked, "answered": time.Now().UTC(), "note": note}
+		note, err := r.ev.Ask(r.in, fmt.Sprintf("%s Then type your note, if any, and press Enter (%s):", op.Text, r.budgetLeft()))
+		rec := map[string]any{"ask": op.Text, "asked": asked, "answered": time.Now().UTC(), "note": note,
+			"recording_before": before, "recording_after": r.recording(ctx)}
 		if err != nil {
 			rec["error"] = err.Error()
 		}

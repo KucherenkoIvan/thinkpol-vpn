@@ -20,6 +20,8 @@ func TestAPlanUndoesOnlyItsOwnChanges(t *testing.T) {
 		"an ask":                     {[]Op{Ask("Turn Wi-Fi off.")}, ""},
 		"an ask of nothing":          {[]Op{Ask(" ")}, "one line of text"},
 		"an ask of two lines":        {[]Op{Ask("a\nb")}, "one line of text"},
+		"what to type if it fails":   {[]Op{IfFailed(Do(PfSkip("lo")), "Press Enter."), IfFailed(UndoLast(), "Press Enter.")}, ""},
+		"it in two lines":            {[]Op{Do(PfSkip("lo")), IfFailed(UndoLast(), "a\nb")}, "one line"},
 	} {
 		p := base
 		p.Steps = []Step{{Name: "s", Ops: tc.ops}}

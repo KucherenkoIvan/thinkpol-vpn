@@ -18,7 +18,11 @@ import (
 const childEnv = "TPDT_MAIN_CHILD"
 
 func TestMain(m *testing.M) {
-	if os.Getenv(childEnv) == "" {
+	switch {
+	case os.Getenv(fakeHelperEnv) != "":
+		fakeHelper(os.Stdin, os.Stdout)
+		os.Exit(0)
+	case os.Getenv(childEnv) == "":
 		os.Exit(m.Run())
 	}
 	os.Exit(safety.RootMain(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -80,13 +84,20 @@ func TestTheTP143ListingIsEverythingTheRunMayDo(t *testing.T) {
 	}
 	got := listing(p, "en7")
 	listings := "  root read: pfctl -s Interfaces -v\n  root read: pfctl -s Interfaces -vv\n  root read: pfctl -s info -v\n"
-	undone := "  undo now:  the plan's newest change\n  root read: pfctl -s Interfaces -v\n"
+	undone := "  undo now:  the plan's newest change\n    if it fails: "
+	read := "\n  root read: pfctl -s Interfaces -v\n"
 	for _, want := range []string{
 		"TP-143: ",
 		"budget 5m0s",
 		"step 1 stock\n" + listings + "step 2 skip-on-lo\n  change:    ",
-		listings + undone + "step 3 skip-on-lo0\n  change:    ",
-		listings + undone + "then, and on Ctrl-C",
+		listings + undone + `If the error says "pf listed no skipped interface", type continue (lo0's step runs next). ` +
+			`If it says "pf still lists this run's skip", press Enter: lo0's load would be refused. Anything else: press Enter.` +
+			read + "step 3 skip-on-lo0\n  change:    ",
+		"    if it fails: lo0's load was refused or failed (lo's skip still listed, if lo's undo said so): press Enter. " +
+			"continue would record this step without lo0's skip and retry lo's undo (its NOTE.txt says so).\n" + listings,
+		listings + undone + "If this step's load was refused, this undo was lo's again: press Enter. " +
+			`If the error says "pf listed no skipped interface", press Enter: the run ends LEFT; reboot, then devicetest restore. Anything else: press Enter.` +
+			read + "then, and on Ctrl-C",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the listing lacks %q:\n%s", want, got)
@@ -121,10 +132,14 @@ func TestTheTP085ListingIsEverythingTheRunMayDo(t *testing.T) {
 		"step 3 tunnel-name\n  ask you:   ", "under example.net",
 		"step 4 browse\n  ask you:   ",
 		"step 5 disconnect\n  ask you:   Disconnect",
+		"  before and after each ask, one marker (twice if missed) checks the capture still records\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the listing lacks %q:\n%s", want, got)
 		}
+	}
+	if runtime.GOOS == "darwin" && !strings.Contains(got, `expect the full 60 s and the note "a thinkpol process still runs after 60 s`) {
+		t.Errorf("the listing doesn't say what a restore waits for with the service installed:\n%s", got)
 	}
 	if strings.Contains(got, "change:") || strings.Count(got, "root read:") != 2 || strings.Count(got, "ask you:") != 5 {
 		t.Errorf("want no change, 2 root reads, 5 asks:\n%s", got)
