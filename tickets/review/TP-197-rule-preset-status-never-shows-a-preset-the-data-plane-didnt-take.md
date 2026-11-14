@@ -97,3 +97,4 @@ Review round 2 (go-paranoid delta check), accepted by the orchestrator. The safe
 - 2026-11-15 out of scope: the OS routing table's Enforce has no deadline (osRoutes.enforce), so a route table that hangs holds SetRulePreset's caller (which waits without its ctx once the node took the request) and the data plane's loop until the engine closes; proto/thinkpol/localapi/v1/localapi.proto's SetRulePreset comment still lists neither preset refusal (needs make proto).
 - 2026-11-15 couldn't verify: nothing device-only; platform-independent agent and engine code, covered by unit tests and the lab.
 - 2026-11-15 has-errors → in-progress (round 2 findings R2.1–R2.6 picked up)
+- 2026-11-15 in-progress → review
