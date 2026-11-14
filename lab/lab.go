@@ -471,8 +471,9 @@ func (l *Lab) configure(ctx context.Context) error {
 // node's take their place). Docker's bridge, the Docker VM's end of every
 // lab network, becomes unreachable: its addresses are blackholed, and
 // nftables drops every frame to or from its MAC, which also covers its
-// link-local address. DNS points at nothing, so Docker's resolver never
-// forwards a lookup out; lab nodes find each other through /etc/hosts.
+// link-local address. DNS points at nothing (Docker's resolver, asked
+// directly, forwards to DNSUpstream from the node, where the routes stop
+// it); lab nodes find each other through /etc/hosts.
 // /proc/sys/net becomes writable, so tests and thinkpol can set network
 // sysctls in the node and its namespaces without the rest of /proc/sys.
 // Last, the marker that lets the node's Command start.
