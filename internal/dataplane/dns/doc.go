@@ -208,9 +208,10 @@
 // or a reboot, with nothing kept anywhere else. The rewrite is atomic (a
 // new file, synced, renamed over it); only a file that can't be renamed
 // over (a bind mount, as /etc/resolv.conf often is in containers: EBUSY,
-// EXDEV) is rewritten in place. Restore puts the original back, as a
-// file or the symlink it was; a resolv.conf another program wrote since
-// is left alone.
+// EXDEV) is rewritten in place, and is empty between the open's
+// truncation and the write (RESIDUAL-RISKS.md RR63). Restore puts the
+// original back, as a file or the symlink it was; a resolv.conf another
+// program wrote since is left alone.
 //
 // The file is watched (inotify on its directory, set up before the
 // take-over, and polled every 2 s as a backstop) and taken back if
