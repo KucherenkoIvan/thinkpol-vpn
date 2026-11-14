@@ -49,8 +49,8 @@ branch: "tp-210-flaky-exit-no-handshake-test"
 - **Not fixed: a re-dial storm.** With freezes up to 1 s (the links' DeadAfter), the link closed every 2 s or so, and each WireGuard retry fired at the same resume instant the link was declared dead ("Failed to send handshake initiation: path: no path to the peer"), so no initiation reached the exit for 15 s and the wait step failed (1 of 20). That is fastPaths' 1 s DeadAfter on a machine stalled for whole seconds, a harsher regime than the ticket's failures, which never showed it.
 
 ## Review findings
-- [ ] R1.1 (should-fix) internal/agent/status_test.go:1098-1102: the steady step ignores every problem except the exit one, so it passes real regressions. A data plane restarted every few seconds after map 2 puts health at starting or retrying, which the old step failed on; each restarted engine's first initiation is answered inside 1 s, so the new step passes, and with st.DataPlane nil between restarts ExitsUnanswered is 0 (the same for disconnected, apply_failed and so on). Fix: require st.Connection == Connected and st.DataPlane != nil, and fail on any problem other than no_link_up and neighbor_down (the ones load causes here), besides the exit check. Mutation: health reporting retrying or apply_failed during the steady step must fail it; keep the freeze evidence (the fixed test under the same SIGSTOP freezes).
-- [ ] R1.2 (nit) status_test.go:1092: the failure message reads st.DataPlane.Peers and panics if the data plane is nil when the 15 s run out. Guard it.
+- [x] R1.1 (should-fix) internal/agent/status_test.go:1098-1102: the steady step ignores every problem except the exit one, so it passes real regressions. A data plane restarted every few seconds after map 2 puts health at starting or retrying, which the old step failed on; each restarted engine's first initiation is answered inside 1 s, so the new step passes, and with st.DataPlane nil between restarts ExitsUnanswered is 0 (the same for disconnected, apply_failed and so on). Fix: require st.Connection == Connected and st.DataPlane != nil, and fail on any problem other than no_link_up and neighbor_down (the ones load causes here), besides the exit check. Mutation: health reporting retrying or apply_failed during the steady step must fail it; keep the freeze evidence (the fixed test under the same SIGSTOP freezes).
+- [x] R1.2 (nit) status_test.go:1092: the failure message reads st.DataPlane.Peers and panics if the data plane is nil when the 15 s run out. Guard it.
 
 ## Log
 - 2026-11-12 created in backlog (from TP-048's full labs)
@@ -67,3 +67,7 @@ branch: "tp-210-flaky-exit-no-handshake-test"
 - 2026-11-12 review round 1: R1.1–R1.2
 - 2026-11-12 review → has-errors
 - 2026-11-12 has-errors → in-progress, owner: agent-tp-210
+- 2026-11-12 R1.1–R1.2 (8576942): the steady step requires Connected and a data plane, and fails on any problem but no_link_up and neighbor_down, besides the exit check; peersOf guards the wait step's failure message against a nil data plane
+- 2026-11-14 merged origin/rewrite at 8d19be5 (92f5a95)
+- 2026-11-14 R1.1 mutations on 92f5a95 (a temporary hook in Node.Status, set after the wait step broke out): health retrying (connection connecting) failed the steady step; apply_failed alone (connection connected, degraded) failed it; the data plane gone (nil, health ok) failed it, its message printing no peers instead of panicking (R1.2); unmutated passed
+- 2026-11-14 under the same SIGSTOP freezes (stops of 50 to 700 ms) the fixed test on 92f5a95 passed 20 of 20 (9.1 to 15.1 s)
