@@ -12,24 +12,12 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 )
 
-// tempDir is 0755 whatever the umask, so the checks below see the modes
-// the tests give, not the umask's.
-func tempDir(t *testing.T) string {
-	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return dir
-}
-
 func TestMakeMakesWhatIsMissingAndChecksIt(t *testing.T) {
-	path := filepath.Join(tempDir(t), "a", "b")
+	path := filepath.Join(trusteddirtest.TempDir(t), "a", "b")
 	d, err := Make(path)
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +39,7 @@ func TestMakeMakesWhatIsMissingAndChecksIt(t *testing.T) {
 
 func TestOthersCantChangeTheWay(t *testing.T) {
 	t.Run("an ancestor others can write to", func(t *testing.T) {
-		base := tempDir(t)
+		base := trusteddirtest.TempDir(t)
 		if err := os.Chmod(base, 0o777); err != nil {
 			t.Fatal(err)
 		}
@@ -63,7 +51,7 @@ func TestOthersCantChangeTheWay(t *testing.T) {
 		}
 	})
 	t.Run("a sticky ancestor", func(t *testing.T) {
-		base := tempDir(t)
+		base := trusteddirtest.TempDir(t)
 		if err := os.Chmod(base, 0o777|os.ModeSticky); err != nil {
 			t.Fatal(err)
 		}
@@ -77,7 +65,7 @@ func TestOthersCantChangeTheWay(t *testing.T) {
 		}
 	})
 	t.Run("a symlink on the way", func(t *testing.T) {
-		base := tempDir(t)
+		base := trusteddirtest.TempDir(t)
 		if err := os.Mkdir(filepath.Join(base, "real"), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -94,7 +82,7 @@ func TestOthersCantChangeTheWay(t *testing.T) {
 }
 
 func TestLock(t *testing.T) {
-	dir := tempDir(t)
+	dir := trusteddirtest.TempDir(t)
 	d, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -130,7 +118,7 @@ func TestLock(t *testing.T) {
 // Files in a trusted directory are read and replaced relative to it,
 // never through a symlink, and a reader never blocks on a fifo.
 func TestFilesAreReadAndReplacedInTheDirectory(t *testing.T) {
-	path := tempDir(t)
+	path := trusteddirtest.TempDir(t)
 	d, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +174,7 @@ func TestFilesAreReadAndReplacedInTheDirectory(t *testing.T) {
 // A socket can't be opened at all (EOPNOTSUPP on macOS, ENXIO on Linux):
 // it is no regular file. (A short test name: a socket's path is short.)
 func TestASocketIsRefused(t *testing.T) {
-	path := tempDir(t)
+	path := trusteddirtest.TempDir(t)
 	d, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -206,7 +194,7 @@ func TestASocketIsRefused(t *testing.T) {
 // symlink (itself, never its target) or an empty directory, and leaves a
 // non-empty one.
 func TestEntriesAreListedAndRemovedInTheDirectory(t *testing.T) {
-	path := tempDir(t)
+	path := trusteddirtest.TempDir(t)
 	d, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +245,7 @@ func TestEntriesAreListedAndRemovedInTheDirectory(t *testing.T) {
 // Rename moves an entry within the directory, over what is there, and
 // moves a symlink itself, never its target.
 func TestRenameStaysInTheDirectory(t *testing.T) {
-	path := tempDir(t)
+	path := trusteddirtest.TempDir(t)
 	d, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -302,7 +290,7 @@ func TestRenameStaysInTheDirectory(t *testing.T) {
 // only in that one: its body for this boot, ErrOtherBoot for another,
 // ErrNoBoot when no boot line comes first.
 func TestRecordsAreReadOnlyInTheirBoot(t *testing.T) {
-	path := tempDir(t)
+	path := trusteddirtest.TempDir(t)
 	d, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -348,7 +336,7 @@ func TestRecordsAreReadOnlyInTheirBoot(t *testing.T) {
 // WriteRecord writes only what ReadRecord reads back as written: a
 // header of one comment line and a session of one field.
 func TestARecordIsRefusedWhatWouldNotReadBack(t *testing.T) {
-	path := tempDir(t)
+	path := trusteddirtest.TempDir(t)
 	d, err := Open(path)
 	if err != nil {
 		t.Fatal(err)

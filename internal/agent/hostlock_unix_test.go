@@ -12,13 +12,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 )
 
 // A start takes the host's agent lock once and holds it while the node
 // runs. With the real lock (a file of the test's), taking it again
 // anywhere on the way (as `run` once did, after Adapters) fails the start.
 func TestAStartTakesTheHostLockOnce(t *testing.T) {
-	path := filepath.Join(tempDir(t), "agent.lock")
+	path := filepath.Join(trusteddirtest.TempDir(t), "agent.lock")
 	cleaned := make(chan struct{}, 1)
 	// The lock is real here (a file of the test's); DNS restore is a
 	// fake.
@@ -82,7 +84,7 @@ func TestAStartTakesTheHostLockOnce(t *testing.T) {
 }
 
 func TestOneAgentHoldsTheHostLock(t *testing.T) {
-	path := filepath.Join(tempDir(t), "thinkpol", "agent.lock")
+	path := filepath.Join(trusteddirtest.TempDir(t), "thinkpol", "agent.lock")
 	unlock, err := lockHostAt(path)
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +105,7 @@ func TestOneAgentHoldsTheHostLock(t *testing.T) {
 }
 
 func TestTheHostLockOutlivesNoAgent(t *testing.T) {
-	path := filepath.Join(tempDir(t), "agent.lock")
+	path := filepath.Join(trusteddirtest.TempDir(t), "agent.lock")
 	unlock, err := lockHostAt(path)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +126,7 @@ func TestTheHostLockOutlivesNoAgent(t *testing.T) {
 
 func TestTheHostLockRefusesAPlaceOthersControl(t *testing.T) {
 	t.Run("a directory others can write to", func(t *testing.T) {
-		dir := filepath.Join(tempDir(t), "thinkpol")
+		dir := filepath.Join(trusteddirtest.TempDir(t), "thinkpol")
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -136,7 +138,7 @@ func TestTheHostLockRefusesAPlaceOthersControl(t *testing.T) {
 		}
 	})
 	t.Run("a symlinked directory", func(t *testing.T) {
-		base := tempDir(t)
+		base := trusteddirtest.TempDir(t)
 		if err := os.Mkdir(filepath.Join(base, "real"), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -148,7 +150,7 @@ func TestTheHostLockRefusesAPlaceOthersControl(t *testing.T) {
 		}
 	})
 	t.Run("a symlinked lock file", func(t *testing.T) {
-		dir := tempDir(t)
+		dir := trusteddirtest.TempDir(t)
 		target := filepath.Join(dir, "elsewhere")
 		if err := os.Symlink(target, filepath.Join(dir, "agent.lock")); err != nil {
 			t.Fatal(err)

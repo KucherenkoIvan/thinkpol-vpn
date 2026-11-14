@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 )
 
 func inspectedLines(in Inspection) []string {
@@ -34,7 +36,7 @@ func inspectedLines(in Inspection) []string {
 // directory not made yet holds none; a corrupt record is unreadable, not
 // empty.
 func TestInspectReadsTheRecordedRoutes(t *testing.T) {
-	k, dir := newFakeKernel(), tempDir(t)
+	k, dir := newFakeKernel(), trusteddirtest.TempDir(t)
 	if in := inspectDarwin(k, filepath.Join(dir, "not-yet")); in.RoutesUnreadable != "" || len(in.Routes) != 0 || len(in.Rules) != 0 {
 		t.Fatalf("no directory: %+v", in)
 	}

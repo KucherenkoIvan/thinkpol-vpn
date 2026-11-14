@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/devmap"
 )
 
@@ -17,7 +18,7 @@ import (
 // directory the way TP-012 does: its own key, the space's trust, the map.
 func m0State(t *testing.T, node string) (state, keys string) {
 	t.Helper()
-	dir := tempDir(t)
+	dir := trusteddirtest.TempDir(t)
 	keys, mapFile := filepath.Join(dir, "keys"), filepath.Join(dir, "map.bin")
 	t.Setenv("SERVER_1_IPV4", "192.0.2.10")
 	t.Setenv("SERVER_1_IPV6", "2001:db8::10")
@@ -155,7 +156,7 @@ func TestUpAppliesThePlatformDefaults(t *testing.T) {
 	}
 	t.Setenv("THINKPOL_API_SOCKET", "")
 	_ = os.Unsetenv("THINKPOL_API_SOCKET")
-	envState := filepath.Join(tempDir(t), "env-state")
+	envState := filepath.Join(trusteddirtest.TempDir(t), "env-state")
 	t.Setenv("THINKPOL_STATE_DIR", envState)
 	if cfg, err = agent.LoadConfig(); err != nil {
 		t.Fatal(err)
@@ -222,22 +223,6 @@ func noSecrets(t *testing.T, keys, out string) {
 			}
 		}
 	}
-}
-
-// tempDir is a test's temporary directory by its real path: the node's
-// files are refused behind a symlink, and macOS's temporary directories
-// are under one (/var). It is 0755 whatever the umask: a group-writable
-// directory holds no trusted file.
-func tempDir(t *testing.T) string {
-	t.Helper()
-	d, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(d, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return d
 }
 
 // up's flags are agent.Config's tags: the help names each one's variable,

@@ -16,6 +16,7 @@ import (
 	"github.com/KucherenkoIvan/go-kernel/config"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 )
 
 // unsetTHINKPOL hides the developer's exported THINKPOL_ variables from
@@ -35,7 +36,7 @@ func unsetTHINKPOL(t *testing.T) {
 // (nil: none) as name.
 func settingsDir(t *testing.T, name string, file []byte) string {
 	t.Helper()
-	dir := filepath.Join(tempDir(t), "state")
+	dir := filepath.Join(trusteddirtest.TempDir(t), "state")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

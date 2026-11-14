@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 )
 
 // What LoadState refuses that only Unix can express: symlinks, FIFOs,
@@ -71,7 +73,7 @@ func TestLoadStateRefusesUntrustedFiles(t *testing.T) {
 			return ""
 		}, "chmod go-w"},
 		{"a map in a directory others can write", false, func(t *testing.T, s *testSpace, dir string) string {
-			other := filepath.Join(tempDir(t), "maps")
+			other := filepath.Join(trusteddirtest.TempDir(t), "maps")
 			if err := os.Mkdir(other, 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -138,7 +140,7 @@ func TestLoadStatePassesThroughStickyAncestors(t *testing.T) {
 func TestLoadStateTakesAMapFromElsewhere(t *testing.T) {
 	s := newTestSpace(t)
 	dir := s.stateDir(t, s.b, 1)
-	other := filepath.Join(tempDir(t), "maps")
+	other := filepath.Join(trusteddirtest.TempDir(t), "maps")
 	if err := os.Mkdir(other, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +157,7 @@ func TestLoadStateTakesAMapFromElsewhere(t *testing.T) {
 // A FIFO put where the map was never blocks the watcher, so it never
 // blocks shutdown either.
 func TestTheWatcherNeverBlocksOnAFIFO(t *testing.T) {
-	dir := tempDir(t)
+	dir := trusteddirtest.TempDir(t)
 	path := filepath.Join(dir, MapFileName)
 	fifo(t, path)
 	reload := make(chan os.Signal, 1)

@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/grpclog"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 )
 
 // failingState is node's state directory with a map Prepare refuses.
@@ -68,7 +69,7 @@ func TestOnlyAKnownDevicesFailedStartKeepsTheTrace(t *testing.T) {
 		"a device by its node file": {[]string{"-state", withNodeFile(failingState(t, "server-1"), "device")}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(tempDir(t), agent.CrashTraceFile)
+			path := filepath.Join(trusteddirtest.TempDir(t), agent.CrashTraceFile)
 			crashTracePath = func() string { return path }
 			t.Cleanup(func() { crashTracePath = agent.CrashTracePath })
 			if err := os.WriteFile(path, []byte("panic: the previous run\n"), 0o600); err != nil {
@@ -102,7 +103,7 @@ func TestUpRoutesItsLog(t *testing.T) {
 	up := func(t *testing.T, stderr io.Writer, extra ...string) {
 		t.Helper()
 		// -service needs a socket; the start fails before it is made.
-		args := append([]string{"-state", failingState(t, "server-1"), "-api-socket", filepath.Join(tempDir(t), "api.sock")}, extra...)
+		args := append([]string{"-state", failingState(t, "server-1"), "-api-socket", filepath.Join(trusteddirtest.TempDir(t), "api.sock")}, extra...)
 		if err := runUp(context.Background(), env{stdin: strings.NewReader(""), stdout: io.Discard, stderr: stderr}, args); !isPrepareError(err) {
 			t.Fatalf("the start failed with %v, not in Prepare", err)
 		}
@@ -117,7 +118,7 @@ func TestUpRoutesItsLog(t *testing.T) {
 	})
 	for _, service := range []bool{false, true} {
 		t.Run(map[bool]string{false: "a file", true: "a file under -service"}[service], func(t *testing.T) {
-			path := filepath.Join(tempDir(t), "stderr")
+			path := filepath.Join(trusteddirtest.TempDir(t), "stderr")
 			f, err := os.Create(path)
 			if err != nil {
 				t.Fatal(err)

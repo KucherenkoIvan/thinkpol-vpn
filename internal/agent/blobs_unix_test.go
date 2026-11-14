@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 )
 
 // The blob store follows the state directory's rules: its files are
@@ -33,7 +35,7 @@ func TestDiskBlobsFollowTheStateDirectorysRules(t *testing.T) {
 	}
 
 	// A symlink in place of the blob is not followed.
-	elsewhere := filepath.Join(tempDir(t), "ru")
+	elsewhere := filepath.Join(trusteddirtest.TempDir(t), "ru")
 	writeFile(t, elsewhere, ru, 0o600)
 	if err := os.Remove(file); err != nil {
 		t.Fatal(err)

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -170,7 +171,7 @@ func trustFile(tr netmap.Trust) string {
 // stateDir lays out node k's state directory with a map at version.
 func (s *testSpace) stateDir(t *testing.T, k NodeKeys, version uint64) string {
 	t.Helper()
-	dir := filepath.Join(tempDir(t), "state")
+	dir := filepath.Join(trusteddirtest.TempDir(t), "state")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -189,22 +190,6 @@ func writeFile(t *testing.T, path string, data []byte, perm os.FileMode) {
 	if err := os.Chmod(path, perm); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// tempDir is a test's temporary directory by its real path: the node's
-// files are refused behind a symlink, and macOS's temporary directories
-// are under one (/var). It is 0755 whatever the umask: a group-writable
-// directory holds no trusted file.
-func tempDir(t *testing.T) string {
-	t.Helper()
-	d, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(d, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return d
 }
 
 // withList gives the space a GeoIP list named name: in the header, and

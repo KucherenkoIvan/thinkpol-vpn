@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 )
 
 // Under the service (-service) a device comes back, in the
@@ -21,7 +23,7 @@ func TestARestartInTheSameBootKeepsTheLastConnectRequest(t *testing.T) {
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
 	ctx := context.Background()
-	dir := filepath.Join(tempDir(t), "thinkpol")
+	dir := filepath.Join(trusteddirtest.TempDir(t), "thinkpol")
 	// The service, the device's connect-on-boot on or off ("": run by
 	// hand); startDevice's connect argument (-connect) is given the other
 	// way, to show it isn't read.
@@ -166,7 +168,7 @@ func TestConnectOnBootIsTheDevicesToggle(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
-	dir := filepath.Join(tempDir(t), "thinkpol")
+	dir := filepath.Join(trusteddirtest.TempDir(t), "thinkpol")
 	var state string
 	service := func(boot string) deviceOpt {
 		return deviceOpt{prepare: func(c *Config, p *Platform) {
