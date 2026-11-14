@@ -133,9 +133,9 @@ type tuning struct {
 	dnsListen netip.Addr
 	// exitDeadline replaces dataplane.ExitHandshakeDeadline (0: it).
 	exitDeadline time.Duration
-	// setRules, if set, stands in for Engine.SetRules (tests: a layout
-	// that fails, or waits).
-	setRules func(*dataplane.Engine, rules.Local) error
+	// tableFault is the engine's TableFault (tests: a layout that fails
+	// before the router takes the new table).
+	tableFault func() error
 }
 
 // RetryAfter is how long a data plane waits before retrying an Apply, a
@@ -228,8 +228,8 @@ type connectRequest struct {
 // or fails having changed nothing.
 // done gets take's error or what enforcing them said
 // (rules.ErrPresetUnavailable: enforced failing closed;
-// ErrPresetNotEnforced: stored, but not laid out yet) and must have room
-// for it.
+// ErrPresetNotEnforced, ErrPresetIncomplete: stored, but laying it out
+// failed) and must have room for it.
 type rulesRequest struct {
 	take func() (rules.Local, error)
 	done chan<- error
@@ -278,8 +278,8 @@ type runner struct {
 	// retryAt is when to retry a failed Apply or start (zero: nothing to
 	// retry).
 	retryAt time.Time
-	// rulesPending is set while the engine hasn't laid out dp.Rules
-	// (SetRules failed): the retry hands them over again.
+	// rulesPending is set while laying out dp.Rules failed (SetRules):
+	// the engine holds them, and the retry's Apply lays them out.
 	rulesPending bool
 }
 
@@ -396,6 +396,7 @@ func (r *runner) engineConfig(p startPorts, resolver *dns.Server) dataplane.Engi
 		Log:          r.dp.Log,
 		Forward:      r.dp.Forward,
 		Rules:        r.dp.Rules,
+		TableFault:   r.dp.tuning.tableFault,
 	}
 	if p.ifc != nil {
 		cfg.Interface = overlayInterface{p.ifc}
@@ -543,10 +544,8 @@ func (r *runner) loop(ctx context.Context) error {
 // takeRules has the data plane take the rules req asks for: stored
 // first (a store that fails changes nothing), then handed to the engine
 // (and kept for every later start), then reported. Status shows the
-// preset as enforced only once the engine's router enforces it
-// (statusWith): when laying it out fails, the preset is stored and shown
-// as not enforced yet, and the retry hands it over again;
-// ErrPresetNotEnforced says so.
+// preset as enforced only while the engine's router enforces it
+// (statusWith); layOutRules says what a failed layout left.
 func (r *runner) takeRules(req rulesRequest) error {
 	l, err := req.take()
 	if err != nil {
@@ -554,29 +553,38 @@ func (r *runner) takeRules(req rulesRequest) error {
 	}
 	r.dp.Rules = l
 	if r.engine != nil {
+		r.dp.report.set(func(p *report) { p.switching = l.Preset.String() })
 		err = r.layOutRules()
 	}
-	r.dp.report.set(func(p *report) { p.preset = l.Preset.String() })
+	r.dp.report.set(func(p *report) { p.preset, p.switching = l.Preset.String(), "" })
 	r.publish()
 	return err
 }
 
 // layOutRules has the engine enforce dp.Rules. A failure other than an
-// unavailable preset (enforced failing closed) leaves the router on the
-// previous rules: retried, and ErrPresetNotEnforced wrapping it.
+// unavailable preset (enforced failing closed) is retried by the next
+// Apply, which lays out the rules the engine kept; it is told apart by
+// where it left the router: ErrPresetNotEnforced on the previous preset,
+// ErrPresetIncomplete on the new one with the rest of the layout (an
+// exit's device, the OS routing table) missing.
 func (r *runner) layOutRules() error {
-	var err error
-	if f := r.dp.tuning.setRules; f != nil {
-		err = f(r.engine, r.dp.Rules)
-	} else {
-		err = r.engine.SetRules(r.dp.Rules)
-	}
-	r.rulesPending = err != nil && !errors.Is(err, rules.ErrPresetUnavailable)
-	if !r.rulesPending {
+	err := r.engine.SetRules(r.dp.Rules)
+	st := r.engine.Status()
+	if err == nil || errors.Is(err, rules.ErrPresetUnavailable) {
+		// A retry left by a failed layout has nothing left to do, unless
+		// an Apply failed too.
+		if r.rulesPending && st.LastApplyError == "" {
+			r.retryAt = time.Time{}
+		}
+		r.rulesPending = false
 		return err
 	}
+	r.rulesPending = true
 	r.retryAt = time.Now().Add(r.dp.tuning.retryAfter)
 	r.dp.Log.Warn("laying out the rules failed, retrying", "preset", r.dp.Rules.Preset, "in", r.dp.tuning.retryAfter, "err", path.RedactError(err))
+	if st.Rules.Preset == r.dp.Rules.Preset {
+		return fmt.Errorf("%w: %w", ErrPresetIncomplete, err)
+	}
 	return fmt.Errorf("%w: %w", ErrPresetNotEnforced, err)
 }
 
@@ -591,7 +599,7 @@ func (r *runner) publish() {
 	r.dp.report.set(func(p *report) {
 		p.engine, p.version, p.removed, p.retrying, p.listeners, p.conn, p.dns =
 			r.engine, r.follow.cur.Header().Version, r.follow.removed, !r.retryAt.IsZero(), n, r.conn.state, r.guard.problem
-		p.mismatch = r.follow.mismatch
+		p.mismatch, p.layoutFailed = r.follow.mismatch, r.rulesPending
 		p.dnsNoUpstream = r.noUpstream()
 		p.exitDeadline = r.dp.tuning.exitDeadline
 	})
@@ -764,9 +772,9 @@ func (r *runner) tryStart(ctx context.Context) {
 	r.tell(EventConnected)
 }
 
-// apply applies the current section, then lays out the rules whose
-// layout failed (rulesPending): never the other way round, so a section's
-// revocations don't wait for the rules.
+// apply applies the current section, with the rules the engine holds:
+// a successful Apply also lays out rules whose layout failed
+// (rulesPending).
 func (r *runner) apply(ctx context.Context) {
 	if err := r.engine.Apply(ctx, r.follow.section); err != nil {
 		r.retryAt = time.Now().Add(r.dp.tuning.retryAfter)
@@ -774,12 +782,13 @@ func (r *runner) apply(ctx context.Context) {
 			"step", r.engine.Status().LastApplyError, "in", r.dp.tuning.retryAfter, "err", path.RedactError(err))
 		return
 	}
+	if r.rulesPending {
+		r.rulesPending = false
+		r.dp.Log.Info("rules laid out", "preset", r.dp.Rules.Preset)
+	}
 	r.retryAt = time.Time{}
 	r.pointSystem()
 	r.applied()
-	if r.rulesPending {
-		_ = r.layOutRules() // its failure is retried and logged
-	}
 }
 
 // reloadRules compiles the rules again with the lists held now.

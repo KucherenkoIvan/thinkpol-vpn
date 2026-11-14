@@ -25,7 +25,6 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -722,12 +721,14 @@ func TestARulePresetSetWhileDisconnectedIsTakenByTheConnect(t *testing.T) {
 	wantPreset(t, b.node, "all-but-domestic")
 }
 
-// errLayout is a layout that fails (tuning.setRules).
+// errLayout is a layout that fails (tuning.tableFault, the route
+// table's).
 var errLayout = errors.New("laying out failed")
 
-// A preset whose layout fails is stored and shown as not enforced while
-// the router keeps the previous one; the caller hears it, the data plane
-// retries, and once the layout succeeds the preset is enforced.
+// A preset whose layout fails before the router takes it is stored and
+// shown as not enforced while the router keeps the previous one; the
+// caller hears it, the retry's Apply keeps failing while the router does,
+// and once it can the Apply lays out the rules the engine kept.
 func TestARulePresetWhoseLayoutFailsIsRetried(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
@@ -735,12 +736,12 @@ func TestARulePresetWhoseLayoutFailsIsRetried(t *testing.T) {
 	var failing atomic.Bool
 	var tries atomic.Int32
 	b := startDevice(t, s, reg, true, deviceOpt{tuning: func(tu *tuning) {
-		tu.setRules = func(e *dataplane.Engine, l rules.Local) error {
+		tu.tableFault = func() error {
 			if failing.Load() {
 				tries.Add(1)
 				return errLayout
 			}
-			return e.SetRules(l)
+			return nil
 		}
 	}})
 	b.connection(t, Connected)
@@ -751,8 +752,8 @@ func TestARulePresetWhoseLayoutFailsIsRetried(t *testing.T) {
 	notEnforced := func() {
 		t.Helper()
 		st := b.node.Status()
-		if st.RulePreset != "all-but-domestic" || st.RulesEnforced || st.PresetUnavailable || !st.Retrying ||
-			!slices.Contains(st.Health().Problems, ProblemPresetNotEnforced) {
+		if st.RulePreset != "all-but-domestic" || st.RulesEnforced || st.PresetUnavailable || st.RulesIncomplete || !st.Retrying ||
+			!slices.Contains(st.Health().Problems, ProblemPresetNotEnforced) || slices.Contains(st.Health().Problems, ProblemPresetIncomplete) {
 			t.Fatalf("status %+v, health %+v", st, st.Health())
 		}
 		if p := st.DataPlane.Rules.Preset.String(); p != "space" {
@@ -765,9 +766,132 @@ func TestARulePresetWhoseLayoutFailsIsRetried(t *testing.T) {
 	failing.Store(false)
 	eventually(t, func() bool { st := b.node.Status(); return st.RulesEnforced && !st.Retrying })
 	wantPreset(t, b.node, "all-but-domestic")
-	if h := b.node.Status().Health(); slices.Contains(h.Problems, ProblemPresetNotEnforced) {
-		t.Fatalf("health %+v", h)
+	if st := b.node.Status(); st.RulesIncomplete || slices.Contains(st.Health().Problems, ProblemPresetNotEnforced) ||
+		slices.Contains(st.Health().Problems, ProblemPresetIncomplete) {
+		t.Fatalf("status %+v, health %+v", st, st.Health())
 	}
+}
+
+// heldRouteTable is a device's route table whose Enforce can be held
+// (each tells entered what Status shows then, and waits for release) or
+// made to fail.
+type heldRouteTable struct {
+	node       *Node
+	hold, fail atomic.Bool
+	enforces   atomic.Int32
+	entered    chan Status
+	release    chan struct{}
+}
+
+func newHeldRouteTable() *heldRouteTable {
+	return &heldRouteTable{entered: make(chan Status), release: make(chan struct{})}
+}
+
+func (h *heldRouteTable) opt() deviceOpt {
+	return deviceOpt{
+		prepare: func(_ *Config, p *Platform) {
+			p.NewRouteTable = func(*slog.Logger, routetable.Guard) (RouteEnforcer, error) { return h, nil }
+		},
+		node: func(n *Node) { h.node = n },
+	}
+}
+
+func (h *heldRouteTable) Enforce(context.Context, routetable.Want) error {
+	if h.hold.Load() {
+		h.entered <- h.node.Status()
+		<-h.release
+	}
+	if h.fail.Load() {
+		h.enforces.Add(1)
+		return errLayout
+	}
+	return nil
+}
+
+func (h *heldRouteTable) Status() routetable.Status {
+	if h.fail.Load() {
+		return routetable.Status{Error: routetable.ErrorApply}
+	}
+	return routetable.Status{Enforced: true}
+}
+
+func (h *heldRouteTable) Close() error { return nil }
+
+// A preset the router took, whose OS routing table then fails, is in
+// place: the caller hears that the rest of its layout failed, not that
+// the previous preset stays, and Status shows the preset enforced with
+// what is missing, until the retry's Apply lays it out.
+func TestARulePresetWhoseRouteTableFailsIsInPlace(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	h := newHeldRouteTable()
+	b := startDevice(t, s, reg, true, h.opt())
+	b.connection(t, Connected)
+	h.fail.Store(true)
+	err := b.node.SetRulePreset(context.Background(), "all-but-domestic")
+	if !errors.Is(err, ErrPresetIncomplete) || !errors.Is(err, errLayout) || errors.Is(err, ErrPresetNotEnforced) {
+		t.Fatalf("got %v, want ErrPresetIncomplete wrapping the route table's error", err)
+	}
+	inPlace := func() {
+		t.Helper()
+		st := b.node.Status()
+		h := st.Health()
+		if st.RulePreset != "all-but-domestic" || !st.RulesEnforced || !st.RulesIncomplete || !st.Retrying ||
+			!slices.Contains(h.Problems, ProblemPresetIncomplete) || !slices.Contains(h.Problems, ProblemRouteTable) ||
+			slices.Contains(h.Problems, ProblemPresetNotEnforced) {
+			t.Fatalf("status %+v, health %+v", st, h)
+		}
+		if p := st.DataPlane.Rules.Preset.String(); p != "all-but-domestic" {
+			t.Fatalf("the data plane enforces %q", p)
+		}
+	}
+	inPlace()
+	n := h.enforces.Load()
+	eventually(t, func() bool { return h.enforces.Load() >= n+2 }) // retried
+	inPlace()
+	h.fail.Store(false)
+	eventually(t, func() bool { st := b.node.Status(); return !st.RulesIncomplete && !st.Retrying })
+	wantPreset(t, b.node, "all-but-domestic")
+	if st := b.node.Status(); !st.RulesEnforced || slices.Contains(st.Health().Problems, ProblemPresetIncomplete) {
+		t.Fatalf("status %+v, health %+v", st, st.Health())
+	}
+}
+
+// A later preset laid out in full ends the retry a failed layout left:
+// Status isn't retrying meanwhile.
+func TestALaterRulePresetEndsTheFailedLayoutsRetry(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	var failing atomic.Bool
+	b := startDevice(t, s, reg, true, deviceOpt{tuning: func(tu *tuning) {
+		tu.retryAfter = time.Hour // the retry never comes in this test
+		tu.tableFault = func() error {
+			if failing.Load() {
+				return errLayout
+			}
+			return nil
+		}
+	}})
+	b.connection(t, Connected)
+	ctx := context.Background()
+	failing.Store(true)
+	if err := b.node.SetRulePreset(ctx, "all-but-domestic"); !errors.Is(err, ErrPresetNotEnforced) {
+		t.Fatalf("got %v, want ErrPresetNotEnforced", err)
+	}
+	if st := b.node.Status(); !st.Retrying {
+		t.Fatalf("status %+v", st)
+	}
+	failing.Store(false)
+	if err := b.node.SetRulePreset(ctx, "everything"); err != nil && !errors.Is(err, ErrPresetUnavailable) {
+		t.Fatal(err)
+	}
+	st := b.node.Status()
+	if st.Retrying || !st.RulesEnforced || st.RulesIncomplete || st.Health().Level != HealthOK && slices.Contains(st.Health().Problems, ProblemRetrying) {
+		t.Fatalf("status %+v, health %+v", st, st.Health())
+	}
+	wantPreset(t, b.node, "everything")
 }
 
 // blockDeviceFile makes storing the device file fail until the returned
@@ -832,53 +956,45 @@ func TestARulePresetStoreThatFailsWhileStoppedChangesNothing(t *testing.T) {
 	wantPreset(t, n, "everything")
 }
 
-// heldRules is a tuning.setRules that, before the engine's SetRules,
-// tells entered the preset Status shows then and waits for release.
-type heldRules struct {
-	node    *Node
-	entered chan string
-	release chan struct{}
-}
-
-func newHeldRules() *heldRules {
-	return &heldRules{entered: make(chan string, 1), release: make(chan struct{})}
-}
-
-func (h *heldRules) opt() deviceOpt {
-	return deviceOpt{
-		node: func(n *Node) { h.node = n },
-		tuning: func(tu *tuning) {
-			tu.setRules = func(e *dataplane.Engine, l rules.Local) error {
-				h.entered <- h.node.Status().RulePreset
-				<-h.release
-				return e.SetRules(l)
-			}
-		},
-	}
-}
-
-// Status shows a preset only once the engine has it, and SetRulePreset
-// returns only then: checked while the engine's SetRules waits.
-func TestARulePresetIsShownOnceTheEngineHasIt(t *testing.T) {
+// While the data plane switches presets, Status shows what the router
+// enforces, enforced, at every step of the OS routing table's change
+// (the engine unlocked): never the previous preset as not enforced once
+// the router took the new one. SetRulePreset returns only once it is
+// all laid out.
+func TestARulePresetIsShownOnceTheRouterHasIt(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
-	h := newHeldRules()
+	h := newHeldRouteTable()
 	b := startDevice(t, s, reg, true, h.opt())
 	b.connection(t, Connected)
+	h.hold.Store(true)
 	set := make(chan error, 1)
 	go func() { set <- b.node.SetRulePreset(context.Background(), "all-but-domestic") }()
-	if shown := <-h.entered; shown != "space" {
-		t.Errorf("status showed %q before the engine had it", shown)
-	}
 	var err error
-	select {
-	case err = <-set:
-		t.Errorf("SetRulePreset returned %v before the engine had it", err)
-		close(h.release)
-	default:
-		close(h.release)
-		err = <-set
+	held := 0
+	for done := false; !done; {
+		select {
+		case st := <-h.entered:
+			held++
+			if p := st.DataPlane.Rules.Preset.String(); st.RulePreset != p || !st.RulesEnforced ||
+				slices.Contains(st.Health().Problems, ProblemPresetNotEnforced) {
+				t.Errorf("enforce %d: status shows %q (enforced %v, health %+v) while the router enforces %q", held, st.RulePreset, st.RulesEnforced, st.Health(), p)
+			}
+			select {
+			case err = <-set:
+				t.Errorf("SetRulePreset returned %v before the route table took it", err)
+				done = true
+			default:
+			}
+			h.release <- struct{}{}
+		case err = <-set:
+			done = true
+		}
+	}
+	h.hold.Store(false)
+	if held == 0 {
+		t.Fatal("the switch never changed the route table")
 	}
 	if err != nil && !errors.Is(err, ErrPresetUnavailable) {
 		t.Fatal(err)
@@ -892,9 +1008,10 @@ func TestARulePresetCallerThatGivesUpAfterTheTakeHearsTheOutcome(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
-	h := newHeldRules()
+	h := newHeldRouteTable()
 	b := startDevice(t, s, reg, true, h.opt())
 	b.connection(t, Connected)
+	h.hold.Store(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	set := make(chan error, 1)
 	go func() { set <- b.node.SetRulePreset(ctx, "all-but-domestic") }()
@@ -903,7 +1020,8 @@ func TestARulePresetCallerThatGivesUpAfterTheTakeHearsTheOutcome(t *testing.T) {
 	// Time for a caller that wrongly waits on its ctx to see it end
 	// while the reply can't have come yet.
 	time.Sleep(100 * time.Millisecond)
-	close(h.release)
+	h.hold.Store(false)
+	h.release <- struct{}{}
 	if err := <-set; err != nil && !errors.Is(err, ErrPresetUnavailable) {
 		t.Fatalf("got %v, want the outcome", err)
 	}
@@ -916,9 +1034,10 @@ func TestASecondRulePresetCallGivesUpOnItsCtx(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
-	h := newHeldRules()
+	h := newHeldRouteTable()
 	b := startDevice(t, s, reg, true, h.opt())
 	b.connection(t, Connected)
+	h.hold.Store(true)
 	first := make(chan error, 1)
 	go func() { first <- b.node.SetRulePreset(context.Background(), "all-but-domestic") }()
 	<-h.entered
@@ -936,7 +1055,8 @@ func TestASecondRulePresetCallGivesUpOnItsCtx(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Error("the second call outwaited its ctx")
 	}
-	close(h.release)
+	h.hold.Store(false)
+	h.release <- struct{}{}
 	if err := <-first; err != nil && !errors.Is(err, ErrPresetUnavailable) {
 		t.Fatal(err)
 	}

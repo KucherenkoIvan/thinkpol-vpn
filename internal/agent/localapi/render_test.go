@@ -9,7 +9,8 @@ import (
 )
 
 // The rule preset line says whether the data plane enforces the preset:
-// not yet while disconnected, nor while laying it out is retried.
+// not yet while disconnected, nor while laying it out is retried; and
+// whether the rest of its layout is retried.
 func TestTheRulePresetLineSaysWhetherItIsEnforced(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -19,7 +20,10 @@ func TestTheRulePresetLineSaysWhetherItIsEnforced(t *testing.T) {
 		{"enforced", &localapiv1.Status{RulePreset: "everything", RulesEnforced: true, DataPlane: &localapiv1.DataPlane{}}, "rule preset:\teverything\n"},
 		{"disconnected", &localapiv1.Status{RulePreset: "everything"}, "rule preset:\teverything (applies once connected)\n"},
 		{"layout retried", &localapiv1.Status{RulePreset: "everything", DataPlane: &localapiv1.DataPlane{}},
-			"rule preset:\teverything (not enforced yet: laying out its routes failed, retrying)\n"},
+			"rule preset:\teverything (not enforced yet: laying it out failed, retrying)\n"},
+		{"in place, the rest retried", &localapiv1.Status{RulePreset: "everything", RulesEnforced: true, DataPlane: &localapiv1.DataPlane{},
+			Health: &localapiv1.Health{Problems: []string{"rule_preset_incomplete"}}},
+			"rule preset:\teverything (in place; laying out the rest of it failed, retrying)\n"},
 		{"unavailable", &localapiv1.Status{RulePreset: "everything", RulesEnforced: true, RulePresetUnavailable: true, DataPlane: &localapiv1.DataPlane{}},
 			"rule preset:\teverything (unavailable in this space: failing closed)\n"},
 	} {

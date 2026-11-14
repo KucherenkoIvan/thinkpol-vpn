@@ -50,12 +50,16 @@ type Status struct {
 	// RulePreset is a device's rule preset (DeviceFile; "space" when it
 	// chose none); RulesEnforced is set while its data plane's router
 	// enforces that preset (unset while disconnected, and while laying it
-	// out failed and is retried: ProblemPresetNotEnforced), and
+	// out failed before the router took it: ProblemPresetNotEnforced),
 	// PresetUnavailable when the map can't build the preset, which is then
-	// enforced failing closed.
+	// enforced failing closed, and RulesIncomplete while the router
+	// enforces it but laying out the rest of it failed and is retried
+	// (ProblemPresetIncomplete). While the data plane switches presets,
+	// RulePreset is the new one as soon as the router enforces it.
 	RulePreset        string
 	RulesEnforced     bool
 	PresetUnavailable bool
+	RulesIncomplete   bool
 	// ConnectOnBoot is a device's connect-on-boot (DeviceFile): whether
 	// the service connects it at a boot's first start.
 	ConnectOnBoot bool
@@ -213,6 +217,10 @@ type report struct {
 	// connectOnBoot its connect-on-boot.
 	preset        string
 	connectOnBoot bool
+	// switching is the preset the data plane is laying out ("" when
+	// none); layoutFailed is set while laying out preset failed (retried).
+	switching    string
+	layoutFailed bool
 	// killSwitch is a device's kill switch (Status.KillSwitch).
 	killSwitch KillSwitchStatus
 	// lastRun is what the previous run left in the crash trace file
@@ -304,9 +312,16 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		st := *dp
 		s.DataPlane, s.Interface = &st, p.engine.TUNName()
 		// The router may still enforce the previous preset: Status shows
-		// the stored one, enforced only once the router is on it.
-		s.RulesEnforced = s.RulePreset == st.Rules.Preset.String()
+		// the stored one, enforced only once the router is on it. A switch
+		// whose router took the new preset shows it while the OS routing
+		// table catches up, with the engine unlocked.
+		routed := st.Rules.Preset.String()
+		if p.switching != "" && routed == p.switching {
+			s.RulePreset = routed
+		}
+		s.RulesEnforced = s.RulePreset == routed
 		s.PresetUnavailable = s.RulesEnforced && st.Rules.PresetUnavailable
+		s.RulesIncomplete = s.RulesEnforced && p.layoutFailed
 		var problem error
 		if p.dns != nil {
 			problem = p.dns()
@@ -426,8 +441,14 @@ const (
 	// ranges' direct routes).
 	ProblemPresetUnavailable Problem = "rule_preset_unavailable"
 	// ProblemPresetNotEnforced: laying out the device's rule preset
-	// failed (retried): the router keeps the previous preset meanwhile.
+	// failed before the router took it (retried): the router keeps the
+	// preset it had meanwhile (Status.DataPlane.Rules).
 	ProblemPresetNotEnforced Problem = "rule_preset_not_enforced"
+	// ProblemPresetIncomplete: the router enforces the device's rule
+	// preset, but laying out the rest of it failed (retried): a chain's
+	// exit without its device drops that chain's traffic, and an OS
+	// routing table that failed has its own problem meanwhile.
+	ProblemPresetIncomplete Problem = "rule_preset_incomplete"
 	// ProblemRouteTable: the OS routing table doesn't hold the rules now
 	// (putting it back failed): traffic may go around the tunnel.
 	ProblemRouteTable Problem = "route_table_not_enforced"
@@ -595,6 +616,9 @@ func (s Status) dataPlaneProblems(add func(HealthLevel, Problem)) {
 	}
 	if !s.RulesEnforced && s.RulePreset != "" {
 		add(HealthDegraded, ProblemPresetNotEnforced)
+	}
+	if s.RulesIncomplete {
+		add(HealthDegraded, ProblemPresetIncomplete)
 	}
 	routeTableProblems(dp.RouteTable, add)
 	if s.DNSUnprotected {

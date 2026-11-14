@@ -40,6 +40,8 @@ type fakeNode struct {
 	mu         sync.Mutex
 	st         agent.Status
 	connectErr error
+	// spacePresetErr is what SetRulePreset("space") returns.
+	spacePresetErr error
 	// diag is what Diagnose reports besides the status; host records
 	// what it was last asked for.
 	diag agent.Diagnostics
@@ -69,7 +71,7 @@ func (n *fakeNode) SetRulePreset(_ context.Context, preset string) error {
 		return agent.ErrPresetUnavailable
 	}
 	if preset == "space" {
-		return fmt.Errorf("%w: laying out failed", agent.ErrPresetNotEnforced)
+		return n.spacePresetErr
 	}
 	if preset != "everything" {
 		return agent.ErrUnknownPreset
@@ -237,8 +239,16 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 	if _, err := c.SetRulePreset(ctx, "all-but-domestic"); !errors.Is(err, ErrPresetUnavailable) {
 		t.Fatalf("got %v, want ErrPresetUnavailable", err)
 	}
-	if _, err := c.SetRulePreset(ctx, "space"); !errors.Is(err, ErrPresetNotEnforced) {
-		t.Fatalf("got %v, want ErrPresetNotEnforced", err)
+	for _, tc := range []struct{ node, want error }{
+		{agent.ErrPresetNotEnforced, ErrPresetNotEnforced},
+		{agent.ErrPresetIncomplete, ErrPresetIncomplete},
+	} {
+		s.node.mu.Lock()
+		s.node.spacePresetErr = fmt.Errorf("%w: laying out failed", tc.node)
+		s.node.mu.Unlock()
+		if _, err := c.SetRulePreset(ctx, "space"); !errors.Is(err, tc.want) {
+			t.Fatalf("got %v, want %v", err, tc.want)
+		}
 	}
 	if _, err := c.SetRulePreset(ctx, "nope"); !errors.Is(err, ErrUnknownPreset) {
 		t.Fatalf("got %v, want ErrUnknownPreset", err)

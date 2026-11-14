@@ -241,7 +241,10 @@ func (e *Engine) ruleRoutes(egresses map[string]*router.Egress) []router.Route {
 // SetRules replaces the device's own rule choice (its local file) and
 // enforces the result at once, without waiting for a map. A preset the
 // map can't build is enforced failing closed (see rules.PresetRules) and
-// reported with rules.ErrPresetUnavailable.
+// reported with rules.ErrPresetUnavailable. When laying the result out
+// fails, the engine keeps l all the same: the next Apply lays it out.
+// Where the failure leaves the router (on the previous rules, or on l
+// with the rest of the layout missing) is in Status's Rules.
 func (e *Engine) SetRules(l rules.Local) error {
 	e.serial.Lock()
 	defer e.serial.Unlock()
@@ -295,6 +298,11 @@ func (e *Engine) recompileRules() error {
 // setTable gives the router the table for what runs now; Status reports
 // the rules that table enforces.
 func (e *Engine) setTable() error {
+	if f := e.cfg.TableFault; f != nil {
+		if err := f(); err != nil {
+			return err
+		}
+	}
 	t := e.table()
 	if err := e.router.SetTable(t); err != nil {
 		return err

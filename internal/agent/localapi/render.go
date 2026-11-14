@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	localapiv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/localapi/v1"
 )
 
@@ -280,7 +281,9 @@ func writeDeviceSettings(line func(string, ...any), st *localapiv1.Status) {
 		case st.GetRulePresetUnavailable():
 			p += " (unavailable in this space: failing closed)"
 		case !st.GetRulesEnforced() && st.GetDataPlane() != nil:
-			p += " (not enforced yet: laying out its routes failed, retrying)"
+			p += " (not enforced yet: laying it out failed, retrying)"
+		case slices.Contains(st.GetHealth().GetProblems(), string(agent.ProblemPresetIncomplete)):
+			p += " (in place; laying out the rest of it failed, retrying)"
 		case !st.GetRulesEnforced():
 			p += " (applies once connected)"
 		}

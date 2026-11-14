@@ -298,8 +298,10 @@ func (n *Node) Disconnect(ctx context.Context) error {
 // choice is stored and shown, for the next start. ErrUnknownPreset for
 // another name; ErrPresetUnavailable when the space's map can't build the
 // preset, which is then kept and enforced failing closed (see
-// rules.PresetRules); ErrPresetNotEnforced when laying it out failed: it
-// is kept, shown as not enforced yet, and retried; ErrServerMode on a
+// rules.PresetRules); ErrPresetNotEnforced when laying it out failed
+// before the router took it, ErrPresetIncomplete when the router took it
+// but laying out the rest failed: either way it is kept, Status shows
+// what the router enforces, and the layout is retried; ErrServerMode on a
 // server.
 func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	if n.Mode() == ModeServer {
@@ -325,9 +327,10 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 		return ctx.Err()
 	}
 	// Taken: every goroutine that receives rulesRequests replies in the
-	// same step, after a file write and one Engine.SetRules (a layout,
-	// bounded by the engine's own route table change, under its ctx), so
-	// the wait is short and the caller hears what happened, not its ctx.
+	// same step, after a file write and one Engine.SetRules, so the wait
+	// is bounded by that engine call (its OS routing table change has no
+	// deadline of its own; only the engine's Close ends it) and the
+	// caller hears what happened, not its ctx.
 	return <-done
 }
 
