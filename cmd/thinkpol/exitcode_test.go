@@ -79,9 +79,9 @@ func TestTheNeedsRootErrorsAreOneType(t *testing.T) {
 func TestEveryRefusalHasAnExitCode(t *testing.T) {
 	known := map[string]bool{}
 	for _, r := range localapi.Refusals() {
-		known[r.Code] = true
-		if _, ok := refusalExits[r.Code]; !ok {
-			t.Errorf("refusal %s has no exit code in refusalExits", r.Code)
+		known[r.Code()] = true
+		if _, ok := refusalExits[r.Code()]; !ok {
+			t.Errorf("refusal %s has no exit code in refusalExits", r.Code())
 		}
 	}
 	for code := range refusalExits {

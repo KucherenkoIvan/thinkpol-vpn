@@ -113,7 +113,7 @@ func NewGRPCServer(shutdown context.Context, o Options, p Policy) *grpc.Server {
 		opts = append(opts, grpckit.WithLogger(o.Log))
 	}
 	for _, r := range refusals {
-		opts = append(opts, grpckit.WithErrorCode(r.err.Code, r.code))
+		opts = append(opts, grpckit.WithErrorCode(r.err.code, r.code))
 	}
 	srv := grpckit.NewServer(opts...)
 	localapiv1.RegisterLocalServiceServer(srv, &server{node: o.Node, logs: o.Logs, version: o.Version, policy: p, shutdown: shutdown.Done()})

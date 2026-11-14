@@ -291,7 +291,7 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 	if _, err := c.SetConnectOnBoot(ctx, true); !errors.Is(err, ErrServerMode) {
 		t.Fatalf("connect-on-boot on a server: %v, want ErrServerMode", err)
 	}
-	if on, err := c.ConnectOnBoot(ctx); !errors.Is(err, ErrServerMode) || err.Error() != refusalMsg(ErrServerMode) {
+	if on, err := c.ConnectOnBoot(ctx); !errors.Is(err, ErrServerMode) || err.Error() != refusalMsg(ErrServerMode, "") {
 		t.Fatalf("connect-on-boot shown on a server: %v, %v; want ErrServerMode", on, err)
 	}
 	s.node.mu.Lock()
@@ -539,7 +539,7 @@ func TestAnUnknownMembershipIsUnavailable(t *testing.T) {
 				t.Fatalf("raw status: %v, want %s", raw, tc.code)
 			}
 			if _, err := c.Status(ctx); !errors.Is(err, tc.want) || IsPermission(err) {
-				t.Fatalf("status: %v, want %s", err, tc.want.Code)
+				t.Fatalf("status: %v, want %s", err, tc.want.code)
 			}
 		})
 	}

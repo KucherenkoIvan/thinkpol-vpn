@@ -49,18 +49,18 @@ var exitCodes = []struct {
 // refusalExits is each local API refusal's code (localapi.Refusals, which
 // a test holds this to: a new refusal without a row fails it).
 var refusalExits = map[string]int{
-	localapi.ErrPermissionDenied.Code:      exitNoPerm,
-	localapi.ErrRootOnly.Code:              exitNoPerm,
-	localapi.ErrMembershipUnknown.Code:     exitTempFail,
-	localapi.ErrMembershipCheckFailed.Code: exitFailure,
-	localapi.ErrServerMode.Code:            exitFailure,
-	localapi.ErrNotRunning.Code:            exitUnavailable,
-	localapi.ErrPresetUnavailable.Code:     exitFailure,
-	localapi.ErrUnknownPreset.Code:         exitUsage,
-	localapi.ErrDNSUnprotected.Code:        exitFailure,
-	localapi.ErrServiceDown.Code:           exitUnavailable,
-	localapi.ErrStartFailed.Code:           exitFailure,
-	localapi.ErrKillSwitchNotEnforced.Code: exitFailure,
+	localapi.ErrPermissionDenied.Code():      exitNoPerm,
+	localapi.ErrRootOnly.Code():              exitNoPerm,
+	localapi.ErrMembershipUnknown.Code():     exitTempFail,
+	localapi.ErrMembershipCheckFailed.Code(): exitFailure,
+	localapi.ErrServerMode.Code():            exitFailure,
+	localapi.ErrNotRunning.Code():            exitUnavailable,
+	localapi.ErrPresetUnavailable.Code():     exitFailure,
+	localapi.ErrUnknownPreset.Code():         exitUsage,
+	localapi.ErrDNSUnprotected.Code():        exitFailure,
+	localapi.ErrServiceDown.Code():           exitUnavailable,
+	localapi.ErrStartFailed.Code():           exitFailure,
+	localapi.ErrKillSwitchNotEnforced.Code(): exitFailure,
 }
 
 // exitCode is the code a command that returned err exits with: 0 for
@@ -76,7 +76,7 @@ func exitCode(err error) int {
 	}
 	var refusal localapi.Error
 	if errors.As(err, &refusal) {
-		if code, ok := refusalExits[refusal.Code]; ok {
+		if code, ok := refusalExits[refusal.Code()]; ok {
 			return code
 		}
 	}

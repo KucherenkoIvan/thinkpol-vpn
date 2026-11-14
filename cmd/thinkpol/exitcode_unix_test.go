@@ -18,6 +18,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/devmap"
 )
 
 // exitNode is a device with status st whose every change fails with err
@@ -181,6 +182,27 @@ func TestEveryCommandExitsBySysexits(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Key directories that lack one file each: a file directly in a named
+	// directory is a named input, whichever it is.
+	without := func(file string) string {
+		d := tempDir(t)
+		entries, err := os.ReadDir(keys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			info, err := e.Info()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if e.Name() != file {
+				if err := os.WriteFile(filepath.Join(d, e.Name()), readTestFile(t, filepath.Join(keys, e.Name())), info.Mode().Perm()); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return d
+	}
 	source := filepath.Join(dir, "dbip.csv")
 	if err := os.WriteFile(source, []byte(dbipFixture), 0o644); err != nil {
 		t.Fatal(err)
@@ -209,6 +231,8 @@ func TestEveryCommandExitsBySysexits(t *testing.T) {
 		exitRow{name: "dev map build: bad arguments", args: []string{"dev", "map", "build", "-keys", keys}, code: exitUsage},
 		exitRow{name: "dev map build: missing spec", args: []string{"dev", "map", "build", "-keys", keys, "-out", mapFile, missing}, code: exitNoInput},
 		exitRow{name: "dev map build: missing key directory", args: []string{"dev", "map", "build", "-keys", filepath.Join(dir, "nokeys"), "-out", mapFile, spec}, code: exitNoInput},
+		exitRow{name: "dev map build: missing space key", args: []string{"dev", "map", "build", "-keys", without(devmap.SpaceKeyFile), "-out", mapFile, spec}, code: exitNoInput},
+		exitRow{name: "dev map build: missing node key", args: []string{"dev", "map", "build", "-keys", without(devmap.NodePublicFile("device-b")), "-out", mapFile, spec}, code: exitNoInput},
 		exitRow{name: "dev map build: missing output directory", args: []string{"dev", "map", "build", "-keys", keys, "-out", filepath.Join(dir, "nodir", "map.bin"), spec}, code: exitFailure},
 		exitRow{name: "dev map rotate: success", args: []string{"dev", "map", "rotate", "-keys", keys, "-out", mapFile, spec}, code: exitOK},
 		exitRow{name: "dev map rotate: bad arguments", args: []string{"dev", "map", "rotate", "-keys", keys}, code: exitUsage},

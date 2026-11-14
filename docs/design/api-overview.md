@@ -247,7 +247,7 @@ The deadline is three of WireGuard's initiations in a row, which it sends 5 s ap
 
 ### TP-167: exit codes and the setting shape
 
-Every command exits by BSD `sysexits.h` ([verdict](#exit-codes-f4)). One table maps what a command failed with to its code, first match first (`exitCodes`, then `refusalExits` for the local API's refusals by code, `cmd/thinkpol/exitcode.go`); a command returns an error, never a number. Only typed errors are matched, never an errno alone: a test fails if a local API refusal has no code there.
+Every command exits by BSD `sysexits.h` ([verdict](#exit-codes-f4)). One table maps what a command failed with to its code, first match first (`exitCodes`, then `refusalExits` for the local API's refusals by code, `cmd/thinkpol/exitcode.go`); a command returns an error, never a number. Only typed errors are matched, never an errno alone: a test fails if a local API refusal has no code there, and the refusals are one list in the localapi package (`Refusals`), outside which no refusal code can be built.
 
 | Exit | When | What maps to it |
 |---|---|---|

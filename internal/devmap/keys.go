@@ -502,9 +502,9 @@ func LoadKeys(dir string, s *Spec) (Keys, error) {
 		pub, err := ReadNodePublic(path)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			errs = append(errs, &Error{File: s.File, Pos: n.Pos, Msg: fmt.Sprintf("%s: no keys in %s (make them with `thinkpol dev keygen node -out %s %s`)", n.Name, path, dir, n.Name)})
+			errs = append(errs, &Error{File: s.File, Pos: n.Pos, Msg: fmt.Sprintf("%s: no keys in %s (make them with `thinkpol dev keygen node -out %s %s`)", n.Name, path, dir, n.Name), Err: err})
 		case err != nil:
-			errs = append(errs, &Error{File: s.File, Pos: n.Pos, Msg: fmt.Sprintf("%s: %v", n.Name, err)})
+			errs = append(errs, &Error{File: s.File, Pos: n.Pos, Msg: fmt.Sprintf("%s: %v", n.Name, err), Err: err})
 		default:
 			k.Nodes[n.Name] = pub
 		}

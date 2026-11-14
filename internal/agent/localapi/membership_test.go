@@ -5,15 +5,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/KucherenkoIvan/go-kernel/grpckit"
 	"google.golang.org/grpc/peer"
 
 	localapiv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/localapi/v1"
@@ -449,39 +455,145 @@ func TestACallerThatLeftIsNotRefused(t *testing.T) {
 	}
 }
 
-// Every refusal the server sends has its wording, and none of the
-// wording points at the log, which only root may read. The permission
-// refusals keep their prefix; the dial-time refusal says what the per-call
-// one says.
+// Every refusal has its wording, a detailed one with the verb its detail
+// fills, and none of the wording points at the log, which only root may
+// read. The permission refusals and service_down keep their prefixes;
+// the dial-time refusal says what the per-call one says.
 func TestRefusalWording(t *testing.T) {
-	declared := []Error{ErrPermissionDenied, ErrRootOnly, ErrMembershipUnknown, ErrMembershipCheckFailed, ErrServerMode, ErrNotRunning, ErrPresetUnavailable, ErrUnknownPreset, ErrDNSUnprotected}
-	if len(refusals) != len(declared) {
-		t.Errorf("%d rows for %d refusals", len(refusals), len(declared))
-	}
-	if all := Refusals(); len(all) != len(declared)+3 {
-		t.Errorf("Refusals: %d, want the %d the server sends and the client's 3", len(all), len(declared))
-	}
-	for _, e := range declared {
-		if refusalMsg(e) == e.Code {
-			t.Errorf("%s has no wording", e.Code)
-		}
-	}
-	msgs := []string{serviceDownMsg, startFailedMsg, killSwitchNotEnforcedMsg}
+	seen := map[string]bool{}
 	for _, r := range refusals {
-		msgs = append(msgs, r.msg)
-	}
-	for _, msg := range msgs {
-		if strings.Contains(msg, "log") {
-			t.Errorf("points at root's log: %q", msg)
+		if r.err.code == "" || seen[r.err.code] {
+			t.Errorf("refusal %q: empty or listed twice", r.err.code)
+		}
+		seen[r.err.code] = true
+		if r.msg == "" || r.detailed != strings.Contains(r.msg, "%") {
+			t.Errorf("%s: wording %q, detailed %v", r.err.code, r.msg, r.detailed)
+		}
+		if strings.Contains(r.msg, "log") {
+			t.Errorf("points at root's log: %q", r.msg)
 		}
 	}
 	for _, e := range []Error{ErrPermissionDenied, ErrRootOnly} {
-		if !strings.HasPrefix(refusalMsg(e), "permission denied") {
-			t.Errorf("%s: %q", e.Code, refusalMsg(e))
+		if !strings.HasPrefix(refusalMsg(e, ""), "permission denied") {
+			t.Errorf("%s: %q", e.code, refusalMsg(e, ""))
 		}
 	}
+	if msg := refusalMsg(ErrServiceDown, ""); !strings.HasPrefix(msg, "the thinkpol service") {
+		t.Errorf("service_down: %q", msg)
+	}
 	err := dialError("x.sock", &net.OpError{Op: "dial", Err: os.ErrPermission})
-	if !errors.Is(err, ErrPermissionDenied) || !strings.HasPrefix(err.Error(), refusalMsg(ErrPermissionDenied)) || !strings.Contains(err.Error(), "x.sock") {
+	if !errors.Is(err, ErrPermissionDenied) || !strings.HasPrefix(err.Error(), refusalMsg(ErrPermissionDenied, "")) || !strings.Contains(err.Error(), "x.sock") {
 		t.Errorf("dial: %v", err)
 	}
+}
+
+// No refusal code exists outside the list: every Error literal in the
+// package is a value declared at the top of errors.go, each of them a
+// row of refusals (Refusals), or the one withDetail builds from one of
+// them. An Error built anywhere else would reach a client, and the CLI's
+// exit table, as a code nothing names.
+func TestEveryRefusalIsDeclaredInTheList(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	declared := map[string]bool{}
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		allowed := map[*ast.CompositeLit]bool{}
+		for _, d := range f.Decls {
+			switch d := d.(type) {
+			case *ast.GenDecl:
+				if name != "errors.go" || d.Tok != token.VAR {
+					continue
+				}
+				for _, spec := range d.Specs {
+					for _, v := range spec.(*ast.ValueSpec).Values {
+						if lit, ok := v.(*ast.CompositeLit); ok && isError(lit) {
+							allowed[lit] = true
+							declared[literalCode(t, fset, lit)] = true
+						}
+					}
+				}
+			case *ast.FuncDecl:
+				if name == "errors.go" && d.Name.Name == "withDetail" && d.Recv != nil {
+					ast.Inspect(d, func(n ast.Node) bool {
+						if lit, ok := n.(*ast.CompositeLit); ok && isError(lit) {
+							allowed[lit] = true
+						}
+						return true
+					})
+				}
+			}
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			if lit, ok := n.(*ast.CompositeLit); ok && isError(lit) && !allowed[lit] {
+				t.Errorf("%s: an Error built outside the refusals declared in errors.go", fset.Position(lit.Pos()))
+			}
+			return true
+		})
+	}
+	listed := map[string]bool{}
+	for _, e := range Refusals() {
+		listed[e.code] = true
+		if !declared[e.code] {
+			t.Errorf("Refusals has %s, which errors.go doesn't declare", e.code)
+		}
+	}
+	for code := range declared {
+		if !listed[code] {
+			t.Errorf("refusal %s is declared but not in refusals", code)
+		}
+	}
+}
+
+// The client finds each refusal in what the server sends, with a detail
+// or without, so none reaches a caller as a bare code; a code that isn't
+// a refusal stays no refusal.
+func TestTheClientFindsEveryRefusalInItsCode(t *testing.T) {
+	c := &Client{}
+	for _, e := range Refusals() {
+		for _, code := range []string{e.code, e.code + ":tun"} {
+			err := c.explain(&grpckit.RemoteDomainError{Code: code})
+			var got Error
+			if !errors.As(err, &got) || got != e {
+				t.Errorf("%s: %v, want %s", code, err, e.code)
+			}
+		}
+	}
+	if err := c.explain(&grpckit.RemoteDomainError{Code: "start_failed:tun"}); !strings.Contains(err.Error(), `step "tun"`) {
+		t.Errorf("start_failed:tun says %q", err)
+	}
+	var e Error
+	if err := c.explain(&grpckit.RemoteDomainError{Code: "made_up"}); errors.As(err, &e) {
+		t.Errorf("made_up is the refusal %s", e.code)
+	}
+}
+
+func isError(lit *ast.CompositeLit) bool {
+	id, ok := lit.Type.(*ast.Ident)
+	return ok && id.Name == "Error"
+}
+
+// literalCode is a declared refusal's code: Error{code: "..."}.
+func literalCode(t *testing.T, fset *token.FileSet, lit *ast.CompositeLit) string {
+	t.Helper()
+	for _, el := range lit.Elts {
+		if kv, ok := el.(*ast.KeyValueExpr); ok {
+			if b, ok := kv.Value.(*ast.BasicLit); ok && b.Kind == token.STRING {
+				if code, err := strconv.Unquote(b.Value); err == nil {
+					return code
+				}
+			}
+		}
+	}
+	t.Errorf("%s: a declared refusal without a literal code", fset.Position(lit.Pos()))
+	return ""
 }

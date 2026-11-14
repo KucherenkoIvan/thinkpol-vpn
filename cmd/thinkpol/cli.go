@@ -224,10 +224,10 @@ func run(ctx context.Context, e env, args []string) int {
 // reads which refusal it was from stderr; empty when the API named none.
 func codeSuffix(err error) string {
 	var refusal localapi.Error
-	if !errors.As(err, &refusal) || refusal.Code == "" {
+	if !errors.As(err, &refusal) || refusal.Code() == "" {
 		return ""
 	}
-	return " [" + refusal.Code + "]"
+	return " [" + refusal.Code() + "]"
 }
 
 func isHelp(arg string) bool {

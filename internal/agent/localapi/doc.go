@@ -127,9 +127,11 @@
 // retrying doesn't fix). A caller that hangs up during the lookup isn't refused:
 // it gets its context's end, logged at debug; when that end is the
 // caller's own deadline, grpckit also logs "rpc deadline exceeded" at
-// warn. The wording is in errors.go
-// only ([refusals], and the client's own errors' beside it), which the
-// client's dial-time refusal shares, and none of it points at the log,
+// warn. Every refusal, the client's own service_down included, is a row
+// of errors.go's [refusals], with its wording, which the client's
+// dial-time refusal shares: [Error]'s code can't be set anywhere else, a
+// detail (`start_failed:<step>`) only rides on a listed code, and a test
+// fails on an Error built elsewhere. None of the wording points at the log,
 // which only root may read; both permission refusals begin with
 // "permission denied". Every refusal is logged with its method and code;
 // one with credentials also has the caller's uid, the level the call

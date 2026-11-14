@@ -178,7 +178,7 @@ func (p Policy) allow(ctx context.Context, log *slog.Logger, method string) erro
 	}
 	c, ok := callerFrom(ctx)
 	if !ok {
-		log.Info("local API call refused: no peer credentials", "method", method, "refusal", ErrPermissionDenied.Code)
+		log.Info("local API call refused: no peer credentials", "method", method, "refusal", ErrPermissionDenied.code)
 		return ErrPermissionDenied
 	}
 	if need == AccessAdmin && !p.isAdmin(c) {
@@ -213,7 +213,7 @@ func (p Policy) allow(ctx context.Context, log *slog.Logger, method string) erro
 // looked up, if anything (extra: what c has, why the OS couldn't say).
 // The membership refusals are warnings, the others are routine.
 func (p Policy) logRefusal(ctx context.Context, log *slog.Logger, refusal Error, method string, c Caller, need Access, extra ...any) {
-	attrs := []any{"method", method, "refusal", refusal.Code, "uid", c.UID, "needs", need.String(), "recorded_groups", len(c.GIDs)}
+	attrs := []any{"method", method, "refusal", refusal.code, "uid", c.UID, "needs", need.String(), "recorded_groups", len(c.GIDs)}
 	if p.HasGroup {
 		attrs = append(attrs, "group", p.Group)
 	}
