@@ -61,28 +61,77 @@ func TestRemovedPeersAreForgotten(t *testing.T) {
 	if len(h.late) != 1 || !h.late[peerName(kept)] {
 		t.Errorf("late %v", h.late)
 	}
-	if pending, last := h.of(kept); len(h.pending) != 1 || len(h.initiated) != 1 || pending.IsZero() || last.IsZero() {
-		t.Errorf("pending %v, initiated %v", h.pending, h.initiated)
+	if len(h.unanswered) != 1 || h.pendingSince(kept).IsZero() {
+		t.Errorf("unanswered %v", h.unanswered)
 	}
 }
 
-// The last initiation moves with every one sent, while the pending time
-// stays at the first unanswered one; a completed handshake clears only
-// the pending time.
-func TestTheLastInitiationMovesWithEachOne(t *testing.T) {
+// A peer pending from before some moment (its link coming back) is graded
+// from the first initiation since: none while WireGuard sends nothing,
+// then the next one, at WireGuard's own pace. A completed handshake clears
+// them all.
+func TestTheFirstInitiationSinceAMomentSkipsOnesBeforeIt(t *testing.T) {
 	h := newHandshakes(nil)
+	clock := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	h.now = func() time.Time { return clock }
 	var k netmap.WireGuardKey
 	k[0] = 1
-	h.verbosef("%v - Sending handshake initiation", fakePeer(peerName(k)))
-	first, _ := h.of(k)
-	time.Sleep(10 * time.Millisecond)
-	h.verbosef("%v - Sending handshake initiation", fakePeer(peerName(k)))
-	pending, last := h.of(k)
-	if pending != first || !last.After(first) {
-		t.Fatalf("pending %v (first %v), last initiation %v", pending, first, last)
+	initiate := func(after time.Duration) time.Time {
+		clock = clock.Add(after)
+		h.verbosef("%v - Sending handshake initiation", fakePeer(peerName(k)))
+		return clock
+	}
+	first := initiate(0)
+	retry := initiate(RekeyTimeout)
+	linkUp := retry.Add(time.Second)
+	if got := h.firstSince(k, linkUp); !got.IsZero() {
+		t.Fatalf("nothing sent since the link came up, got %v", got)
+	}
+	// WireGuard gave up; traffic resumes long after the link came back.
+	next := initiate(time.Minute)
+	if got := h.firstSince(k, linkUp); got != next {
+		t.Errorf("since the link came up: %v, want %v", got, next)
+	}
+	initiate(RekeyTimeout)
+	if got := h.firstSince(k, linkUp); got != next {
+		t.Errorf("since the link came up, after a retry: %v, want %v", got, next)
+	}
+	if got := h.firstSince(k, first); got != first || h.pendingSince(k) != first {
+		t.Errorf("since the first: %v, pending since %v, want %v", got, h.pendingSince(k), first)
 	}
 	h.verbosef("%v - Received handshake response", fakePeer(peerName(k)))
-	if p, l := h.of(k); !p.IsZero() || l != last {
-		t.Errorf("after the response: pending %v, last initiation %v (was %v)", p, l, last)
+	if got := h.firstSince(k, first); !got.IsZero() || !h.pendingSince(k).IsZero() {
+		t.Errorf("after the response: %v, pending since %v", got, h.pendingSince(k))
+	}
+}
+
+// A peer WireGuard keeps retrying for long keeps its first initiation and
+// the latest ones: a moment among those dropped gets the oldest kept,
+// over 70 s old like the true one.
+func TestAPeerRetriedForLongKeepsItsFirstAndLatestInitiations(t *testing.T) {
+	h := newHandshakes(nil)
+	clock := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	h.now = func() time.Time { return clock }
+	var k netmap.WireGuardKey
+	k[0] = 1
+	var sent []time.Time
+	for range 100 {
+		h.verbosef("%v - Sending handshake initiation", fakePeer(peerName(k)))
+		sent = append(sent, clock)
+		clock = clock.Add(RekeyTimeout)
+	}
+	last := sent[len(sent)-1]
+	if got := h.pendingSince(k); got != sent[0] {
+		t.Errorf("pending since %v, want the first, %v", got, sent[0])
+	}
+	if got := h.firstSince(k, sent[90].Add(-time.Second)); got != sent[90] {
+		t.Errorf("among the latest: %v, want %v", got, sent[90])
+	}
+	got := h.firstSince(k, sent[10].Add(-time.Second))
+	if got.Before(sent[10]) || last.Sub(got) < 70*time.Second {
+		t.Errorf("among those dropped: %v, want one from %v on and 70 s before the last, %v", got, sent[10], last)
+	}
+	if n := len(h.unanswered[peerName(k)]); n != keptInitiations {
+		t.Errorf("%d kept", n)
 	}
 }

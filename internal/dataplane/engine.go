@@ -509,10 +509,13 @@ type PeerStatus struct {
 	// HandshakePendingSince is when the first initiation to the peer
 	// still unanswered was sent (wg.PeerStatus.HandshakePendingSince).
 	HandshakePendingSince time.Time
-	// LastInitiation is when the last initiation to the peer was sent
-	// (wg.PeerStatus.LastInitiation).
-	LastInitiation   time.Time
-	RxBytes, TxBytes uint64
+	// FirstInitiationSinceLinkUp is when the first initiation to the peer
+	// still unanswered and sent since its first hop's link came up went
+	// out (wg.Device.FirstInitiationSince): zero while the first hop is
+	// down, and while nothing was sent since it came up, whatever was
+	// pending before.
+	FirstInitiationSinceLinkUp time.Time
+	RxBytes, TxBytes           uint64
 }
 
 // ExitHandshakeDeadline is how long a handshake initiation to an exit may
@@ -558,6 +561,13 @@ func (e *Engine) statusLocked() Status {
 
 		InterfaceReapplies: e.ifcReapplies,
 	}
+	now := time.Now()
+	linkUp := make(map[path.NodeID]time.Time, len(s.Neighbors))
+	for _, n := range s.Neighbors {
+		if n.Up {
+			linkUp[n.Node] = now.Add(-n.UpFor)
+		}
+	}
 	s.Rules.Skipped = slices.Clone(s.Rules.Skipped)
 	if e.ipv6Off != nil {
 		s.IPv6Off = ipv6OffCode(e.ipv6Off)
@@ -573,10 +583,13 @@ func (e *Engine) statusLocked() Status {
 			r := reported[p.Key]
 			ps := PeerStatus{
 				ID: p.ID, Device: name, Addresses: slices.Clone(p.Addresses), Exit: name == exitDevice(p.ID),
-				LastHandshake: r.LastHandshake, HandshakePendingSince: r.HandshakePendingSince, LastInitiation: r.LastInitiation, RxBytes: r.RxBytes, TxBytes: r.TxBytes,
+				LastHandshake: r.LastHandshake, HandshakePendingSince: r.HandshakePendingSince, RxBytes: r.RxBytes, TxBytes: r.TxBytes,
 			}
 			if hop, _, ok := d.wg.Bind().Current(path.NodeID(p.ID)); ok {
 				ps.FirstHop = netmap.NodeID(hop)
+				if up, ok := linkUp[hop]; ok {
+					ps.FirstInitiationSinceLinkUp = d.wg.FirstInitiationSince(p.Key, up)
+				}
 			}
 			s.Peers = append(s.Peers, ps)
 		}

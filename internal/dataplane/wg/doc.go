@@ -28,11 +28,13 @@
 // initiates only for traffic: a peer nothing was sent to has nothing
 // pending. Once pending, it stays so until a handshake completes, even if
 // the traffic stops and WireGuard gives up retrying: a peer that went
-// silent isn't taken for one that answers. The status also says when the
-// last initiation was sent (PeerStatus.LastInitiation), so a reader can
-// tell a peer still being tried from one WireGuard gave up on before
-// something changed. A peer WireGuard removes, or adds back with the same
-// key, starts afresh.
+// silent isn't taken for one that answers. The device also says when the
+// first initiation still unanswered since a given moment went out
+// (Device.FirstInitiationSince), so a reader can grade a peer from the
+// first initiation sent since its link came back rather than from one
+// that predates it, and tell a peer still being tried from one WireGuard
+// gave up on before then. A peer WireGuard removes, or adds back with the
+// same key, starts afresh.
 //
 // This depends on three of wireguard-go's messages, matched by substring:
 // "Sending handshake initiation" sets it, and "Received handshake
