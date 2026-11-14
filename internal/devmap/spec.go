@@ -135,7 +135,12 @@ type Error struct {
 	File string
 	Pos  Pos
 	Msg  string
+	// Err is the failure it reports, if one is wrapped (a key file that
+	// couldn't be read): errors.As finds its path error.
+	Err error
 }
+
+func (e *Error) Unwrap() error { return e.Err }
 
 func (e *Error) Error() string {
 	if e.Pos.Line == 0 {

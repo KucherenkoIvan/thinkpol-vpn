@@ -1,6 +1,6 @@
 # thinkpol-vpn — API overview: CLI and local API reference
 
-> **Since this snapshot (TP-166):** the node file `node.json` and the device file `device.json` exist, `rules.local` is carried into `device.json` and removed, connect-on-boot is the member's toggle (`thinkpol connect-on-boot on|off`, local API `SetConnectOnBoot`), the service runs `up -service` with no `THINKPOL_CONNECT_ON_BOOT`, `service connect-on-boot` and `service install -connect-on-boot` are refused, a bad configuration exits 78, and `diag` reports systemd drop-ins. [Configuration](configuration.md) is current; what follows is not updated.
+> **Since this snapshot (TP-166):** the node file `node.json` and the device file `device.json` exist, `rules.local` is carried into `device.json` and removed, connect-on-boot is the member's toggle (`thinkpol connect-on-boot on|off`, local API `SetConnectOnBoot`), the service runs `up -service` with no `THINKPOL_CONNECT_ON_BOOT`, `service connect-on-boot` and `service install -connect-on-boot` are refused, `diag` reports systemd drop-ins, and (TP-167) [exit codes](api-overview.md#tp-167-exit-codes-and-the-setting-shape) are sysexits. [Configuration](configuration.md) is current; what follows is not updated.
 
 The CLI and local API half of the [API overview](api-overview.md) (TP-139), split out to keep each file under the design docs' 50 KB limit. The overview has the summary, the configuration, the on-disk state, the planned surface and the consistency findings (`Fn` below). Where the examples come from: [API overview](api-overview.md), first paragraphs. As there, the code wins where this file disagrees with it.
 
@@ -534,7 +534,7 @@ Errors:
 
 | Situation | Message (after `thinkpol service install: `) | Exit |
 |---|---|---|
-| not root | `the service is the host's: run this as root (sudo)` | 1 |
+| not root | `the service is the host's: run it as root (sudo)` | 1 |
 | Linux without systemd | `this host doesn't run systemd (no /run/systemd/system): run thinkpol up under your own service manager` | 1 |
 | macOS without `/Library/LaunchDaemons` | `no /Library/LaunchDaemons: this isn't macOS's launchd` | 1 |
 | no keys or map yet | `this node can't run yet: state directory: open /var/lib/thinkpol: no such file or directory` | 1 |
@@ -596,7 +596,7 @@ connect-on-boot on: from the next boot
 Errors:
 
 - `the service is not installed`
-- `the service is the host's: run this as root (sudo)` (setting it as alice, though she is in the group)
+- `the service is the host's: run it as root (sudo)` (setting it as alice, though she is in the group)
 - `the service's definition was changed by hand: /etc/systemd/system/thinkpol.service isn't what thinkpol service install writes; install again`
 - an argument other than `on` or `off` is a usage error, exit 2
 

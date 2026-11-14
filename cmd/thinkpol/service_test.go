@@ -14,7 +14,7 @@ func TestTheServicesConnectOnBootSaysWhatReplacedIt(t *testing.T) {
 		{"service", "connect-on-boot", "on"},
 	} {
 		code, _, stderr := runCLI(t, args...)
-		if code != 1 || !strings.Contains(stderr, "thinkpol connect-on-boot [on|off]") {
+		if code != exitUsage || !strings.Contains(stderr, "thinkpol connect-on-boot [on|off]") {
 			t.Errorf("%v: exit %d\n%s", args, code, stderr)
 		}
 	}
@@ -27,7 +27,7 @@ func TestConnectOnBootIsOnOrOff(t *testing.T) {
 		for _, values := range [][]string{{"yes"}, {"true"}, {"on", "off"}} {
 			args := append([]string{cmd, "-socket", "/nonexistent/api.sock"}, values...)
 			code, _, stderr := runCLI(t, args...)
-			if code != 2 || !strings.Contains(stderr, "[on|off]") {
+			if code != exitUsage || !strings.Contains(stderr, "[on|off]") {
 				t.Errorf("%v: exit %d\n%s", args, code, stderr)
 			}
 		}
