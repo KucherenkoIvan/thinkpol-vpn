@@ -20,7 +20,7 @@ The rest of the CLI's one set of rules: machine codes are spelled one way, every
 - **Naming (F5):** machine codes and enumerated values snake_case everywhere: rename `route-table` (a route's owner in `diag`) to `route_table` and `inbound link` (a skip item) to `inbound_link`. Human text uses words; presets and flags stay kebab-case.
 - **Setting shape (F6), the rest:** `<setting> [value]` for every other setting. `rules preset` with no argument prints the current preset.
 - **Flags (F7):** toggles take `on|off`; plain booleans only for output switches (`-json`, `-f`). `-socket` everywhere, with `up -api-socket` kept as an alias. `-out` everywhere, with `diag -o` kept as an alias. `up -h` shows flag types as the other commands do.
-- **`-json` (F12)** on every command that prints a status or a list (`connect`, `disconnect`, `rules preset`, `spaces`, `service connect-on-boot` or its replacement), in TP-168's JSON convention.
+- **`-json` (F12)** on every command that prints a status or a list (`connect`, `disconnect`, `rules preset`, `spaces`, `service connect-on-boot` or its replacement, `rollback`), in TP-168's JSON convention.
 - **F9:** the refusal message is worded per call, or generic ("your user may not do that: …"), never "only root may do that" for a member.
 - **F10:** usage errors print one line saying what was wrong before the synopsis; drop the `config: validation:` prefix.
 - **F11:** asked-for help (`help`, `-h`, `-help`, `--help`) goes to stdout with exit 0; usage errors stay on stderr.
@@ -52,3 +52,4 @@ The rest of the CLI's one set of rules: machine codes are spelled one way, every
 
 ## Log
 - 2026-11-07 created in backlog (split from TP-167)
+- 2026-11-12 scope: `rollback` (TP-134) added to the `-json` line: it prints a list of parts

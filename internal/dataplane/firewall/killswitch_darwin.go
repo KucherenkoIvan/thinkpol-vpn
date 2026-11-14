@@ -25,6 +25,11 @@ const (
 	killSwitchHeader = "# thinkpol firewall: the pf enable reference (pfctl -E) the kill switch holds; released with pfctl -X"
 )
 
+// KillSwitchPlace is where the host holds the kill switch, as a report
+// names it: the anchor, and the pf reference that keeps pf enabled for
+// it with its record.
+const KillSwitchPlace = "the pf anchor " + KillSwitchAnchor + ", its pf reference and record"
+
 // KillSwitch keeps everything but KillSwitchRules from leaving the
 // device, both families, with a pf anchor, KillSwitchAnchor, and its two
 // tables (what passes, and NoDNS), loaded together by one `pfctl -a <anchor> -f - -o none`

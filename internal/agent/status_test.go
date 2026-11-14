@@ -75,6 +75,7 @@ func startDevice(t *testing.T, s *testSpace, reg *transport.Registry, connect bo
 	if err != nil {
 		t.Fatal(err)
 	}
+	n.takeConnectChoice() // as Adapters does, under the host lock
 	rn.status = n.Status
 	d := &deviceNode{runningNode: rn, node: n, failTUN: failTUN, events: newHeardEvents(t)}
 	n.Subscribe(d.events.add)
