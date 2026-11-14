@@ -1109,6 +1109,183 @@ func TestAnExitThatNeverHandshakesIsExitNoHandshake(t *testing.T) {
 	}
 }
 
+// An exit still pending when its first hop re-dials, with WireGuard silent
+// for longer than the deadline after the link came back, is graded from
+// the first initiation sent since: that one isn't unanswered the moment it
+// leaves, only once it has gone the deadline without an answer. WireGuard
+// retries every RekeyTimeout (5 s) for 90 s after traffic stops, so the
+// injected 1 s deadline stands in for 15 s of silence after WireGuard gave
+// up.
+func TestAnExitPendingAcrossARedialIsGradedFromTheNextInitiation(t *testing.T) {
+	s := newTestSpace(t)
+	net := &severable{memoryNetwork: memory.NewNetwork(memory.Datagram)}
+	reg, err := transport.NewRegistry(net)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.deviceChains, s.serverEgress = []netmap.Chain{{Name: "nl", Exit: s.a.ID}}, true
+	r, err := netmap.ParseRule("default -> chain:nl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.deviceRules = []netmap.Rule{r}
+	deaf, err := netmap.Verify(s.buildEditing(t, 1, s.a, func(sec *netmap.Section) { sec.Peers = nil }), s.trust())
+	if err != nil {
+		t.Fatal(err)
+	}
+	startNode(t, reg, s.a, deaf)
+	const deadline = time.Second
+	b := startDevice(t, s, reg, true, deviceOpt{tuning: func(t *tuning) { t.exitDeadline = deadline }})
+	b.connection(t, Connected)
+
+	// Traffic until the deaf exit is flagged, then none: WireGuard keeps
+	// retrying on its own.
+	b4, _ := overlay(2)
+	for seq := uint16(1); !slices.Contains(b.node.Status().Health().Problems, ProblemExitNoHandshake); seq++ {
+		if seq > 150 {
+			t.Fatalf("the deaf exit never flagged: %+v", b.node.Status().Health())
+		}
+		if ch := b.ch.Load(); ch != nil {
+			select {
+			case ch.Outbound <- packettest.Echo(b4, netip.MustParseAddr("192.0.2.80"), 1, seq, nil):
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// The link drops right after a retry and comes back well before the
+	// next one, RekeyTimeout later.
+	retried := len(initiations(b.log.String()))
+	eventually(t, func() bool { return len(initiations(b.log.String())) > retried })
+	net.sever(true)
+	eventually(t, func() bool { return slices.Contains(b.node.Status().Health().Problems, ProblemNoLinkUp) })
+	net.sever(false)
+	var linkUp time.Time
+	eventually(t, func() bool {
+		st := b.node.Status()
+		for _, n := range neighborsOf(st) {
+			if n.Up {
+				linkUp = time.Now().Add(-n.UpFor)
+				return true
+			}
+		}
+		return false
+	})
+
+	// Graded from the first initiation since the link came up, never
+	// before it has gone the deadline unanswered; the deaf exit then is.
+	const late = 200 * time.Millisecond // how late a poll may see the initiation
+	var sent time.Time
+	for until := time.Now().Add(15 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		st := b.node.Status()
+		flagged := st.ExitsUnanswered != 0 || slices.Contains(st.Health().Problems, ProblemExitNoHandshake)
+		if sent.IsZero() {
+			for _, at := range initiations(b.log.String()) {
+				if !at.Before(linkUp) {
+					sent = at
+					break
+				}
+			}
+		}
+		switch {
+		case flagged && sent.IsZero():
+			t.Fatalf("flagged with no initiation since the link came up at %v: %+v, peers %+v", linkUp, st.Health(), peersOf(st))
+		case flagged && time.Since(sent) < deadline-late:
+			t.Fatalf("flagged %v after the first initiation since the link came up (%v of silence before it): %+v, peers %+v",
+				time.Since(sent), sent.Sub(linkUp), st.Health(), peersOf(st))
+		case flagged:
+			if gap := sent.Sub(linkUp); gap <= deadline {
+				t.Fatalf("the first initiation went out %v after the link came up, not past the deadline: the trigger wasn't reproduced", gap)
+			}
+			if h := st.Health(); h.Level != HealthDown || st.ExitsUnanswered != 1 {
+				t.Fatalf("the deaf exit unanswered past the deadline: %+v, %d unanswered", h, st.ExitsUnanswered)
+			}
+			t.Logf("first initiation %v after the link came up, flagged %v after it", sent.Sub(linkUp), time.Since(sent))
+			return
+		case time.Now().After(until):
+			t.Fatalf("not flagged by %v; first initiation since the link came up at %v: %+v, peers %+v", time.Now(), sent, st.Health(), peersOf(st))
+		}
+	}
+}
+
+// initiations are the times WireGuard sent a handshake initiation, from
+// the node's debug log.
+func initiations(log string) []time.Time {
+	var out []time.Time
+	for line := range strings.Lines(log) {
+		if !strings.Contains(line, "Sending handshake initiation") {
+			continue
+		}
+		_, rest, ok := strings.Cut(line, "time=")
+		if !ok {
+			continue
+		}
+		v, _, _ := strings.Cut(rest, " ")
+		if at, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			out = append(out, at)
+		}
+	}
+	return out
+}
+
+// neighborsOf returns st's data plane neighbors, none without a data plane.
+func neighborsOf(st Status) []path.NeighborStatus {
+	if st.DataPlane == nil {
+		return nil
+	}
+	return st.DataPlane.Neighbors
+}
+
+// severable is a memory network whose dialed links the test can cut:
+// severed, it closes every link dialed through it and refuses new dials.
+type severable struct {
+	*memoryNetwork
+	mu      sync.Mutex
+	severed bool
+	links   []transport.Link
+}
+
+// memoryNetwork lets severable embed memory.Network without its field
+// hiding the Network method.
+type memoryNetwork = memory.Network
+
+func (n *severable) Dialer() transport.Dialer { return n }
+
+func (n *severable) Dial(ctx context.Context, endpoint string, cfg transport.DialConfig) (transport.Link, error) {
+	refused := fmt.Errorf("memory: dial %s: severed", endpoint)
+	n.mu.Lock()
+	severed := n.severed
+	n.mu.Unlock()
+	if severed {
+		return nil, refused
+	}
+	l, err := n.memoryNetwork.Dial(ctx, endpoint, cfg)
+	if err != nil {
+		return nil, err
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.severed {
+		_ = l.Close()
+		return nil, refused
+	}
+	n.links = append(n.links, l)
+	return l, nil
+}
+
+func (n *severable) sever(on bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.severed = on
+	if on {
+		for _, l := range n.links {
+			_ = l.Close()
+		}
+		n.links = nil
+	}
+}
+
 // peersOf returns st's data plane peers, none without a data plane.
 func peersOf(st Status) []dataplane.PeerStatus {
 	if st.DataPlane == nil {
