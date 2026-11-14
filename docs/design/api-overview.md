@@ -405,7 +405,7 @@ The same thing appears as `route_table` (a step), `route-table` (an owner) and `
 
 ### F8. Settings that a member sets need root, while connect doesn't
 
-Alice, in the group, may connect, disconnect and change the rule preset. She may not set connect-on-boot: "the service is the host's: run this as root (sudo)". PRD D5 is a member's toggle.
+Alice, in the group, may connect, disconnect and change the rule preset. She may not set connect-on-boot: "the service is the host's: run it as root (sudo)". PRD D5 is a member's toggle.
 
 - **Suggested verdict: change**, together with F2.
 

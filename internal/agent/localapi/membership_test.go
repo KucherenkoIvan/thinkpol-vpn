@@ -363,7 +363,7 @@ func TestRefusalsSayWhy(t *testing.T) {
 	}{
 		{"a member asks for the log", ok, []uint32{4242}, localapiv1.LocalService_TailLogs_FullMethodName, ErrRootOnly, []string{"level=INFO", "refusal=root_only", "needs=admin"}},
 		{"a stranger asks for the status", &fakeMembership{}, sixteenGroups, status, ErrPermissionDenied, []string{"level=INFO", "refusal=permission_denied", "has=none"}},
-		{"the OS can't say, for the status", down, sixteenGroups, status, ErrMembershipUnknown, []string{"level=WARN", "refusal=membership_unknown", "opendirectoryd is down"}},
+		{"asking the OS fails, for the status", down, sixteenGroups, status, ErrMembershipCheckFailed, []string{"level=WARN", "refusal=membership_check_failed", "opendirectoryd is down"}},
 		{"the OS doesn't answer in time", timedOut, sixteenGroups, status, ErrMembershipUnknown, []string{"level=WARN", "refusal=membership_unknown", "no answer within"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -373,7 +373,7 @@ func TestRefusalsSayWhy(t *testing.T) {
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
-			if wantPerm := tc.want != ErrMembershipUnknown; IsPermission(err) != wantPerm {
+			if wantPerm := tc.want != ErrMembershipUnknown && tc.want != ErrMembershipCheckFailed; IsPermission(err) != wantPerm {
 				t.Errorf("IsPermission(%v) = %v", err, !wantPerm)
 			}
 			for _, want := range tc.inLog {
@@ -439,7 +439,7 @@ func TestACallerThatLeftIsNotRefused(t *testing.T) {
 			ctx, cancel := tc.leave(callerCtx(Caller{UID: 1001, GIDs: sixteenGroups}), asked)
 			defer cancel()
 			err := p.allow(ctx, refusalLog(&buf), localapiv1.LocalService_GetStatus_FullMethodName)
-			if !errors.Is(err, tc.want) || errors.Is(err, ErrMembershipUnknown) {
+			if !errors.Is(err, tc.want) || errors.Is(err, ErrMembershipUnknown) || errors.Is(err, ErrMembershipCheckFailed) {
 				t.Errorf("got %v; want %v, no refusal", err, tc.want)
 			}
 			if strings.Contains(buf.String(), "level=WARN") || strings.Contains(buf.String(), "refused") {
@@ -454,16 +454,19 @@ func TestACallerThatLeftIsNotRefused(t *testing.T) {
 // refusals keep their prefix; the dial-time refusal says what the per-call
 // one says.
 func TestRefusalWording(t *testing.T) {
-	declared := []Error{ErrPermissionDenied, ErrRootOnly, ErrMembershipUnknown, ErrServerMode, ErrNotRunning, ErrPresetUnavailable, ErrUnknownPreset, ErrDNSUnprotected}
+	declared := []Error{ErrPermissionDenied, ErrRootOnly, ErrMembershipUnknown, ErrMembershipCheckFailed, ErrServerMode, ErrNotRunning, ErrPresetUnavailable, ErrUnknownPreset, ErrDNSUnprotected}
 	if len(refusals) != len(declared) {
 		t.Errorf("%d rows for %d refusals", len(refusals), len(declared))
+	}
+	if all := Refusals(); len(all) != len(declared)+3 {
+		t.Errorf("Refusals: %d, want the %d the server sends and the client's 3", len(all), len(declared))
 	}
 	for _, e := range declared {
 		if refusalMsg(e) == e.Code {
 			t.Errorf("%s has no wording", e.Code)
 		}
 	}
-	msgs := []string{serviceDownMsg, startFailedMsg}
+	msgs := []string{serviceDownMsg, startFailedMsg, killSwitchNotEnforcedMsg}
 	for _, r := range refusals {
 		msgs = append(msgs, r.msg)
 	}

@@ -101,7 +101,7 @@ type Options struct {
 
 var (
 	// ErrNeedsRoot: CheckRoot refused a caller that isn't root.
-	ErrNeedsRoot = errors.New("the service is the host's: run this as root (sudo)")
+	ErrNeedsRoot = &agent.NeedsRootError{Why: "the service is the host's"}
 	// ErrNotInstalled: no service definition.
 	ErrNotInstalled = errors.New("the service is not installed")
 	// ErrDefinitionChanged: a definition that isn't what install writes

@@ -167,9 +167,10 @@ func (p Policy) access(ctx context.Context, c Caller) (Access, error) {
 // logs a refusal with the caller's uid and the group it was checked
 // against (not its groups: only how many the kernel recorded). A root-only
 // call is refused as ErrRootOnly before any group is looked up; a caller
-// whose membership the OS couldn't settle is refused as
-// ErrMembershipUnknown; a caller that left during the lookup is refused
-// nothing, and gets its context's end.
+// whose membership the OS didn't settle in time is refused as
+// ErrMembershipUnknown, and one it failed to settle otherwise as
+// ErrMembershipCheckFailed; a caller that left during the lookup is
+// refused nothing, and gets its context's end.
 func (p Policy) allow(ctx context.Context, log *slog.Logger, method string) error {
 	need, ok := methodAccess[method]
 	if !ok {
@@ -196,8 +197,13 @@ func (p Policy) allow(ctx context.Context, log *slog.Logger, method string) erro
 		return ctx.Err()
 	}
 	if err != nil {
-		p.logRefusal(ctx, log, ErrMembershipUnknown, method, c, need, "has", got.String(), "membership_err", err)
-		return ErrMembershipUnknown
+		refusal := ErrMembershipCheckFailed
+		if errors.Is(err, context.DeadlineExceeded) {
+			// No answer in time: the next lookup may get one.
+			refusal = ErrMembershipUnknown
+		}
+		p.logRefusal(ctx, log, refusal, method, c, need, "has", got.String(), "membership_err", err)
+		return refusal
 	}
 	p.logRefusal(ctx, log, ErrPermissionDenied, method, c, need, "has", got.String())
 	return ErrPermissionDenied
@@ -205,7 +211,7 @@ func (p Policy) allow(ctx context.Context, log *slog.Logger, method string) erro
 
 // logRefusal logs c's call of method refused as refusal, with what was
 // looked up, if anything (extra: what c has, why the OS couldn't say).
-// ErrMembershipUnknown is a warning, the others are routine.
+// The membership refusals are warnings, the others are routine.
 func (p Policy) logRefusal(ctx context.Context, log *slog.Logger, refusal Error, method string, c Caller, need Access, extra ...any) {
 	attrs := []any{"method", method, "refusal", refusal.Code, "uid", c.UID, "needs", need.String(), "recorded_groups", len(c.GIDs)}
 	if p.HasGroup {
@@ -213,7 +219,7 @@ func (p Policy) logRefusal(ctx context.Context, log *slog.Logger, refusal Error,
 	}
 	attrs = append(attrs, extra...)
 	level := slog.LevelInfo
-	if refusal == ErrMembershipUnknown {
+	if refusal == ErrMembershipUnknown || refusal == ErrMembershipCheckFailed {
 		level = slog.LevelWarn
 	}
 	log.Log(ctx, level, "local API call refused", attrs...)

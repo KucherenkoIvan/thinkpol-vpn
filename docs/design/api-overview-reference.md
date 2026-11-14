@@ -534,7 +534,7 @@ Errors:
 
 | Situation | Message (after `thinkpol service install: `) | Exit |
 |---|---|---|
-| not root | `the service is the host's: run this as root (sudo)` | 1 |
+| not root | `the service is the host's: run it as root (sudo)` | 1 |
 | Linux without systemd | `this host doesn't run systemd (no /run/systemd/system): run thinkpol up under your own service manager` | 1 |
 | macOS without `/Library/LaunchDaemons` | `no /Library/LaunchDaemons: this isn't macOS's launchd` | 1 |
 | no keys or map yet | `this node can't run yet: state directory: open /var/lib/thinkpol: no such file or directory` | 1 |
@@ -596,7 +596,7 @@ connect-on-boot on: from the next boot
 Errors:
 
 - `the service is not installed`
-- `the service is the host's: run this as root (sudo)` (setting it as alice, though she is in the group)
+- `the service is the host's: run it as root (sudo)` (setting it as alice, though she is in the group)
 - `the service's definition was changed by hand: /etc/systemd/system/thinkpol.service isn't what thinkpol service install writes; install again`
 - an argument other than `on` or `off` is a usage error, exit 2
 

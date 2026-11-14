@@ -27,7 +27,8 @@ import (
 // returns is sanitized (every string disarmed for a terminal) and its
 // errors are explained for a person; errors.Is finds ErrPermissionDenied,
 // ErrRootOnly, ErrNotRunning, ErrServerMode and the other refusals in them
-// ([IsPermission] either of the first two), and Dial's ErrServiceDown.
+// ([IsPermission] either of the first two; [Refusals] lists them all), and
+// Dial's ErrServiceDown.
 type Client struct {
 	conn *grpc.ClientConn
 	api  localapiv1.LocalServiceClient
@@ -247,6 +248,9 @@ func (c *Client) explain(err error) error {
 	if errors.As(err, &remote) {
 		if step, ok := strings.CutPrefix(remote.Code, startFailedPrefix); ok {
 			return &clientError{fmt.Sprintf(startFailedMsg, agent.Sanitize(step)), ErrStartFailed}
+		}
+		if reason, ok := strings.CutPrefix(remote.Code, killSwitchNotEnforcedPrefix); ok {
+			return &clientError{fmt.Sprintf(killSwitchNotEnforcedMsg, agent.Sanitize(reason)), ErrKillSwitchNotEnforced}
 		}
 		for _, r := range refusals {
 			if remote.Code == r.err.Code {

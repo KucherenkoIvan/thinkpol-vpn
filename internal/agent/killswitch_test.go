@@ -315,6 +315,61 @@ func TestAFailingKillSwitchIsReportedAndRetried(t *testing.T) {
 	eventually(t, func() bool { return b.node.Status().KillSwitch.Enforced })
 }
 
+// A toggle answers for the kill switch it leaves: one not as meant
+// (applying or removing it failed) is a KillSwitchNotEnforcedError with
+// Status's reason, the toggle stored all the same; a node that stopped
+// stores it for its next start and says ErrNotRunning.
+func TestAToggleSaysWhetherTheKillSwitchIsEnforced(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	host := &memKillSwitches{}
+	b := startDevice(t, s, reg, false, withKillSwitch(host, nil))
+	ctx := context.Background()
+	b.connection(t, Disconnected)
+
+	notEnforced := func(err error, want KillSwitchError) bool {
+		var ne *KillSwitchNotEnforcedError
+		return errors.As(err, &ne) && ne.Reason == want && errors.Is(err, ErrKillSwitchNotEnforced)
+	}
+	host.failWith(errors.New("nftables says no"))
+	if err := b.node.SetKillSwitch(ctx, true); !notEnforced(err, KillSwitchApplyFailed) {
+		t.Fatalf("on while applying fails: %v, want %s", err, KillSwitchApplyFailed)
+	}
+	if st := b.node.Status().KillSwitch; !st.On || st.Enforced {
+		t.Errorf("status %+v, want on, not enforced", st)
+	}
+	host.failWith(nil)
+	if err := b.node.SetAllowLAN(ctx, false); err != nil {
+		t.Fatalf("allow-LAN off once applying works: %v", err)
+	}
+	inPlace(t, host, "down")
+	host.failCloseWith(errors.New("nftables says no"))
+	if err := b.node.SetKillSwitch(ctx, false); !notEnforced(err, KillSwitchRemoveFailed) {
+		t.Fatalf("off while removing fails: %v, want %s", err, KillSwitchRemoveFailed)
+	}
+	host.failCloseWith(nil)
+	if err := b.node.SetKillSwitch(ctx, false); err != nil {
+		t.Fatalf("off once removing works: %v", err)
+	}
+	inPlace(t, host, "none")
+
+	b.stop()
+	select {
+	case <-b.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the node didn't stop")
+	}
+	b.done <- nil // for the cleanup
+	if err := b.node.SetKillSwitch(ctx, true); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("on with the node stopped: %v, want ErrNotRunning", err)
+	}
+	data, err := os.ReadFile(filepath.Join(b.node.cfg.StateDir, DeviceFile))
+	if err != nil || !strings.Contains(string(data), `"kill_switch": true`) {
+		t.Errorf("the stopped node's toggle isn't stored: %s, %v", data, err)
+	}
+}
+
 // The node file's kill switch keys are the defaults until a member sets a
 // toggle; the device file keeps a member's toggles, and writes them only
 // once set.
