@@ -371,7 +371,10 @@ func setResolvConfTimed(path, uplink string, c SystemConfig, timing resolvConfTi
 	if err != nil {
 		return nil, err
 	}
-	go r.watch(tell)
+	// Watched before it returns: a change right after the take-over is
+	// seen at once, not at the poll.
+	changes, closeWatch := watchFile(r.path)
+	go r.watch(tell, changes, closeWatch)
 	return r, nil
 }
 
@@ -550,14 +553,14 @@ func rewriteResolvConf(path string, f resolvConfFile, content []byte) error {
 
 // watch takes the file back whenever another program writes it: a file
 // renamed into the path at once, any other write once it settles
-// (resolvConfTiming).
-func (r *resolvConf) watch(first func()) {
+// (resolvConfTiming). changes are the file's change events (watchFile),
+// closed with closeWatch when it returns.
+func (r *resolvConf) watch(first func(), changes <-chan bool, closeWatch func()) {
 	defer close(r.stopped)
+	defer closeWatch()
 	if first != nil {
 		first()
 	}
-	changes, closeWatch := watchFile(r.path)
-	defer closeWatch()
 	poll := time.NewTicker(r.timing.check)
 	defer poll.Stop()
 	// quiet fires once a settling write has been quiet for the settle, or
