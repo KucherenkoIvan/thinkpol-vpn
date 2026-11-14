@@ -4,8 +4,11 @@ package reality
 
 import (
 	"errors"
+	"io"
 	"net"
+	"os"
 	"syscall"
+	"time"
 )
 
 // targetReset waits on c, whose FIN was read, until its peer resets it
@@ -41,4 +44,51 @@ func targetReset(c net.Conn) bool {
 		return true
 	})
 	return reset
+}
+
+// writeRearming writes p to c, each write(2) that makes progress
+// re-arming c's write deadline to timeout from then, as nginx's
+// send_timeout runs between two successive writes: a deadline set once
+// for all of p would bound the time a slow reader takes to drain it,
+// cutting one that keeps reading. Capping each write instead would be
+// exact only below the share of the send buffer whose freeing wakes a
+// writer (a third on Linux), and the kernel resizes that buffer as it
+// goes. The poller still does the waiting, so c's Close ends it as it
+// ends c.Write.
+func writeRearming(c net.Conn, p []byte, timeout time.Duration) (int, error) {
+	sc, ok := c.(syscall.Conn)
+	if !ok {
+		return writeRearmingByDeadline(c, p, timeout)
+	}
+	rc, err := sc.SyscallConn()
+	if err != nil {
+		return writeRearmingByDeadline(c, p, timeout)
+	}
+	_ = c.SetWriteDeadline(time.Now().Add(timeout))
+	written := 0
+	var werr error
+	err = rc.Write(func(fd uintptr) bool {
+		for written < len(p) {
+			n, err := syscall.Write(int(fd), p[written:])
+			switch {
+			case n > 0:
+				written += n
+				_ = c.SetWriteDeadline(time.Now().Add(timeout))
+			case errors.Is(err, syscall.EINTR):
+			case errors.Is(err, syscall.EAGAIN):
+				return false
+			case err != nil:
+				werr = os.NewSyscallError("write", err)
+				return true
+			default:
+				werr = io.ErrShortWrite
+				return true
+			}
+		}
+		return true
+	})
+	if werr == nil {
+		werr = err
+	}
+	return written, werr
 }

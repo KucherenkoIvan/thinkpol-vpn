@@ -15,11 +15,12 @@ import (
 )
 
 // The lab image's camouflage site: nginx with the certificate the lab CA
-// signed (lab.StartCamouflage runs the same on the camouflage node).
+// signed, configured from the lab's own file (lab.StartCamouflage runs
+// the same on the camouflage node; this package may not import the lab).
 const (
 	labSiteName = "camouflage.example.net"
 	labSiteCert = "/etc/lab/camouflage/cert.pem"
-	labSiteKey  = "/etc/lab/camouflage/key.pem"
+	labSiteConf = "../../../../lab/camouflage.nginx.conf"
 )
 
 // startLabSite runs the lab's camouflage site on a loopback port of this
@@ -30,6 +31,10 @@ func startLabSite(t *testing.T) string {
 	if err != nil {
 		nginx = "/usr/sbin/nginx"
 	}
+	tmpl, err := os.ReadFile(labSiteConf)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -37,28 +42,7 @@ func startLabSite(t *testing.T) string {
 	addr := ln.Addr().String()
 	_ = ln.Close()
 	dir := t.TempDir()
-	conf := fmt.Sprintf(`worker_processes 1;
-pid %[1]s/nginx.pid;
-error_log stderr;
-events {}
-http {
-  access_log off;
-  client_body_temp_path %[1]s;
-  proxy_temp_path %[1]s;
-  fastcgi_temp_path %[1]s;
-  uwsgi_temp_path %[1]s;
-  scgi_temp_path %[1]s;
-  server {
-    listen %[2]s ssl http2;
-    server_name %[3]s;
-    ssl_certificate %[4]s;
-    ssl_certificate_key %[5]s;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    root /var/www/html;
-    index index.html index.nginx-debian.html;
-  }
-}
-`, dir, addr, labSiteName, labSiteCert, labSiteKey)
+	conf := fmt.Sprintf(string(tmpl), dir, fmt.Sprintf("    listen %s ssl http2;\n", addr), labSiteName)
 	path := filepath.Join(dir, "nginx.conf")
 	if err := os.WriteFile(path, []byte(conf), 0o600); err != nil {
 		t.Fatal(err)

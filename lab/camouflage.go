@@ -2,6 +2,7 @@ package lab
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -18,6 +19,14 @@ const (
 	CamouflageAltName = "www.example.net"
 	CamouflagePort    = 443
 )
+
+// camouflageConf is the camouflage site's nginx configuration, a
+// template of its temporary files' directory, its listen lines and its
+// server names. A file, so a reality listener's test in a lab node, whose
+// package may not import the lab, runs the same site.
+//
+//go:embed camouflage.nginx.conf
+var camouflageConf string
 
 // StartCamouflage runs the lab's camouflage site on Upstream's camouflage
 // node: nginx as an ordinary HTTPS site, TLS 1.2 and 1.3 (nginx 1.22
@@ -50,27 +59,7 @@ func StartCamouflage(t testing.TB, l *Lab) []netip.AddrPort {
 	for _, a := range addrs {
 		fmt.Fprintf(&listen, "    listen %s ssl http2;\n", a)
 	}
-	conf := fmt.Sprintf(`worker_processes 1;
-pid %[1]s/nginx.pid;
-error_log stderr;
-events {}
-http {
-  access_log off;
-  client_body_temp_path %[1]s;
-  proxy_temp_path %[1]s;
-  fastcgi_temp_path %[1]s;
-  uwsgi_temp_path %[1]s;
-  scgi_temp_path %[1]s;
-  server {
-%[2]s    server_name %[3]s %[4]s;
-    ssl_certificate /etc/lab/camouflage/cert.pem;
-    ssl_certificate_key /etc/lab/camouflage/key.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    root /var/www/html;
-    index index.html index.nginx-debian.html;
-  }
-}
-`, dir, listen.String(), CamouflageName, CamouflageAltName)
+	conf := fmt.Sprintf(camouflageConf, dir, listen.String(), CamouflageName+" "+CamouflageAltName)
 	node.WriteFile(t, dir+"/nginx.conf", []byte(conf))
 	node.Start(t, "nginx", "-c", dir+"/nginx.conf", "-g", "daemon off;")
 	Eventually(t, 30*time.Second, func() error {

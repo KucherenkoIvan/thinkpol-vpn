@@ -264,6 +264,49 @@ func TestAClientThatNeverReadsFreesItsSpliceSlot(t *testing.T) {
 	}
 }
 
+// tcpPair is a connected pair of loopback TCP connections: the one
+// accepted, then the one dialled.
+func tcpPair(t *testing.T) (accepted, dialled *net.TCPConn) {
+	t.Helper()
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	dialled, err = net.DialTCP("tcp", nil, ln.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err = ln.AcceptTCP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = accepted.Close()
+		_ = dialled.Close()
+	})
+	return accepted, dialled
+}
+
+// A target reset before the splice of a pair decided elsewhere could send
+// it a byte resets the client, as the site's own reset would reach it.
+func TestATargetResetBeforeAJoinedSpliceResetsTheClient(t *testing.T) {
+	clientEnd, client := tcpPair(t)
+	target, site := tcpPair(t)
+	_ = site.SetLinger(0)
+	_ = site.Close()
+	_ = target.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := target.Read(make([]byte, 1)); !isReset(err) {
+		t.Fatalf("the target's reset: %v", err)
+	}
+	_ = target.SetReadDeadline(time.Time{})
+	spliceJoined(clientEnd, target, time.Minute, time.Minute, []byte("GET / HTTP/1.1\r\n\r\n"), nil)
+	_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := client.Read(make([]byte, 1)); !isReset(err) {
+		t.Errorf("the client's read: %v, want a reset", err)
+	}
+}
+
 // An idle stranger holds a slot among the connections being decided for
 // helloTimeout at most, then stays spliced to the target, which ends it
 // as the site would: it can't keep members' hellos from being decided

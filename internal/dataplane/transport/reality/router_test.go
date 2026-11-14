@@ -292,7 +292,8 @@ func TestWhatTheRouterRefusesIsSplicedWholeToTheTarget(t *testing.T) {
 // any answer, isn't a dialer's (a dialer sends nothing more until the
 // ServerHello): it is spliced to the target raw and whole, a stranger.
 // The hello and what follows it reach the target as the client's reads
-// returned them, not split at the record header.
+// returned them, not split at the record header. Its hello is still
+// checked: a replay of a captured stream is reported as one.
 func TestAHelloWithBytesAfterItIsSplicedAsAStranger(t *testing.T) {
 	tr := newTransport(Options{})
 	k := newKeys(t)
@@ -312,6 +313,13 @@ func TestAHelloWithBytesAfterItIsSplicedAsAStranger(t *testing.T) {
 		t.Fatal(err)
 	}
 	stream := tp.captured()[0]
+	if v := seen.verdict(t); v != transport.StreamRouted {
+		t.Fatalf("the dialer's verdict %d, want StreamRouted", v)
+	}
+	probe(t, seen.addr(), stream)
+	if v := seen.verdict(t); v != transport.StreamReplayed {
+		t.Fatalf("the captured stream replayed: verdict %d, want StreamReplayed", v)
+	}
 
 	fresh := startShared(t, tr, theTarget(t), k, map[transport.SpaceID][]transport.PeerLink{a: {peerLink(id)}})
 	probe(t, fresh.addr(), stream)
@@ -464,6 +472,27 @@ func TestPastTheSpliceBoundAStrangerIsClosedAndMembersAreRouted(t *testing.T) {
 		if _, err := c.Read(make([]byte, 1)); !isTimeout(err) {
 			t.Fatalf("a spliced stranger was dropped: %v", err)
 		}
+	}
+}
+
+// Past the listener's bound on connections being decided a stranger is
+// closed and reported bound-closed, as past the splice bound.
+func TestPastTheMirrorBoundAStrangerIsClosedAndReportedBoundClosed(t *testing.T) {
+	tr := newTransport(Options{})
+	tg := newIdleTarget(t, time.Minute, nil)
+	n := listenShared(t, tr, tg, newKeys(t))
+	n.ln.(*publicListener).gate.mirrors = make(chan struct{}, 1)
+	n.serve(t, nil)
+	probe(t, n.addr(), nil)
+	if tg.connWith(nil) == nil {
+		t.Fatal("the idle stranger's target was never dialled")
+	}
+	stranger := probe(t, n.addr(), []byte("GET / HTTP/1.1\r\n\r\n"))
+	if d := closedWithin(t, stranger, 5*time.Second); d > 2*time.Second {
+		t.Fatalf("the stranger past the bound was closed after %v", d)
+	}
+	if v := n.verdict(t); v != transport.StreamBoundClosed {
+		t.Fatalf("the stranger past the bound: verdict %d, want %d (bound-closed)", v, transport.StreamBoundClosed)
 	}
 }
 

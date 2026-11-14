@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -294,6 +295,45 @@ func sessionIDOf(i int) []byte {
 	return b
 }
 
+// admits is c.admit's verdict.
+func (c *replayCache) admits(id shortID, sessionID []byte, sent uint32, now time.Time) bool {
+	admitted, _ := c.admit(id, sessionID, sent, now)
+	return admitted
+}
+
+// A hello admitted while a refresh prunes its space's cache is
+// remembered, whichever goes first: its replay is refused, never let
+// through because it went into a cache prune dropped. The window is a
+// few instructions wide: the race detector's scheduling finds it within
+// these rounds, a plain run rarely does.
+func TestAHelloAdmittedWhileItsSpaceIsPrunedIsRemembered(t *testing.T) {
+	at := time.Unix(1_800_000_000, 0)
+	sent := uint32(at.Unix())
+	space := randomSpace()
+	for i := range 5000 {
+		r := newReplays(time.Minute)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var admitted bool
+		wg.Go(func() {
+			<-start
+			admitted = r.admit(space, shortID{1}, sessionIDOf(i), sent, at)
+		})
+		wg.Go(func() {
+			<-start
+			r.prune(nil, at)
+		})
+		close(start)
+		wg.Wait()
+		if !admitted {
+			t.Fatalf("round %d: a fresh hello refused", i)
+		}
+		if r.admit(space, shortID{1}, sessionIDOf(i), sent, at) {
+			t.Fatalf("round %d: the replay of a hello admitted while its space was pruned admitted", i)
+		}
+	}
+}
+
 // The replay cache admits a session id once, forgets what left the
 // window, and so admits again once time moves on.
 func TestTheReplayCacheAdmitsOnceAndForgetsWhatLeftTheWindow(t *testing.T) {
@@ -302,20 +342,20 @@ func TestTheReplayCacheAdmitsOnceAndForgetsWhatLeftTheWindow(t *testing.T) {
 	at := time.Unix(1_800_000_000, 0)
 	sent := uint32(at.Unix())
 	id := shortID{1}
-	if !c.admit(id, sessionIDOf(0), sent, at) || c.admit(id, sessionIDOf(0), sent, at) {
+	if !c.admits(id, sessionIDOf(0), sent, at) || c.admits(id, sessionIDOf(0), sent, at) {
 		t.Fatal("a session id admitted other than once")
 	}
-	if c.admit(id, sessionIDOf(1), sent-uint32(window/time.Second)-1, at) {
+	if c.admits(id, sessionIDOf(1), sent-uint32(window/time.Second)-1, at) {
 		t.Error("a hello sealed before the window admitted")
 	}
 	for i := 1; i < replayShare; i++ {
-		c.admit(id, sessionIDOf(i), sent, at)
+		c.admits(id, sessionIDOf(i), sent, at)
 	}
-	if c.admit(id, sessionIDOf(replayShare), sent, at) {
+	if c.admits(id, sessionIDOf(replayShare), sent, at) {
 		t.Fatal("a full share admitted")
 	}
 	later := at.Add(window + time.Second)
-	if !c.admit(id, sessionIDOf(replayShare), uint32(later.Unix()), later) {
+	if !c.admits(id, sessionIDOf(replayShare), uint32(later.Unix()), later) {
 		t.Error("a full share still refuses once its entries left the window")
 	}
 }
@@ -329,14 +369,14 @@ func TestOneShortIDFillsOnlyItsOwnReplayShare(t *testing.T) {
 	flood, other := shortID{1}, shortID{2}
 	admitted := 0
 	for i := range maxRemembered {
-		if c.admit(flood, sessionIDOf(i), sent, at) {
+		if c.admits(flood, sessionIDOf(i), sent, at) {
 			admitted++
 		}
 	}
 	if admitted != replayShare {
 		t.Errorf("one short id admitted %d hellos, want its share, %d", admitted, replayShare)
 	}
-	if !c.admit(other, sessionIDOf(0), sent, at) {
+	if !c.admits(other, sessionIDOf(0), sent, at) {
 		t.Error("another short id's fresh hello refused")
 	}
 }
@@ -350,18 +390,18 @@ func TestASealAheadOfTheClockHoldsOnlyItself(t *testing.T) {
 	ahead := uint32(at.Add(window).Unix())
 	for n := range maxRemembered / replayShare {
 		id := shortID{byte(n), byte(n >> 8), 1}
-		if !c.admit(id, sessionIDOf(0), ahead, at) {
+		if !c.admits(id, sessionIDOf(0), ahead, at) {
 			t.Fatalf("short id %d: a hello sealed at the window's edge refused", n)
 		}
 		for i := 1; i < replayShare; i++ {
-			c.admit(id, sessionIDOf(i), uint32(at.Unix()), at)
+			c.admits(id, sessionIDOf(i), uint32(at.Unix()), at)
 		}
 	}
-	if c.admit(shortID{9}, sessionIDOf(0), uint32(at.Unix()), at) {
+	if c.admits(shortID{9}, sessionIDOf(0), uint32(at.Unix()), at) {
 		t.Fatal("a full cache admitted")
 	}
 	later := at.Add(window + time.Second)
-	if !c.admit(shortID{9}, sessionIDOf(0), uint32(later.Unix()), later) {
+	if !c.admits(shortID{9}, sessionIDOf(0), uint32(later.Unix()), later) {
 		t.Error("a full cache still refuses once all but the hellos sealed ahead left the window")
 	}
 }

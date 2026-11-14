@@ -61,9 +61,11 @@
 // the other direction ends once it was idle for 5 s, which REALITY's
 // server doesn't do (a client that stays silent after the site closed
 // would hold both connections for good; an answer that keeps flowing
-// isn't cut). Every write of a splice is bounded to 60 s, nginx's
-// send_timeout: a client that stops reading is cut then, both
-// connections closed, rather than holding its splice for good. Closing
+// isn't cut). A splice's write may wait 60 s without progress, nginx's
+// send_timeout, which runs between two successive writes, each that makes
+// progress starting it again: a client that stops reading is cut 60 s
+// after its last progress, both connections closed, rather than holding
+// its splice for good, and one that reads slowly isn't cut. Closing
 // the listener ends its splices, cancels its dials to the target and
 // waits for both. A standalone listener (a device-mode node's) gives the
 // hello at most 10 s from accept, as the supervisor's routing deadline
@@ -80,7 +82,7 @@
 // (the write and idle bounds above). Past either, a new connection is
 // closed, and the caller told so (StreamBoundClosed). Kept apart,
 // strangers holding splices open (an HTTP keep-alive a minute, or
-// readers stalled up to the write bound) close only other strangers,
+// readers stalled for up to the write bound) close only other strangers,
 // never a member's hello; but a stranger closed right after its hello
 // where the site would answer is a camouflage tell, so filling the splice
 // bound is one, not only unfairness. What still starves members is a
@@ -96,10 +98,11 @@
 // credential dialling faster than any device would fills its own share
 // only, and a space's map listing enough credentials to fill its cache
 // refuses its own hellos, never another space's, and learns nothing of
-// another space's traffic. Each entry is forgotten when its own sealed
-// time leaves the window; a space's cache once it left the table and
-// remembers nothing fresh. A replayed hello is spliced like any failed
-// authentication.
+// another space's traffic. A hello is checked under its space's cache
+// alone, so one space's full cache doesn't hold up another's hellos.
+// Each entry is forgotten when its own sealed time leaves the window; a
+// space's cache once it left the table and remembers nothing fresh. A
+// replayed hello is spliced like any failed authentication.
 //
 // Two peer links sharing a short id are both rejected, not one guessed,
 // with one exception for links of different spaces (a shared listener's

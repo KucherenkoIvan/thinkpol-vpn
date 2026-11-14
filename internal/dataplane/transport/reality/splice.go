@@ -17,10 +17,12 @@ import (
 // listener reads it at Listen.
 var spliceLinger = 5 * time.Second
 
-// spliceWriteTimeout bounds each write of a splice, nginx's send_timeout:
-// a client that stops reading (a zero window its kernel keeps
-// acknowledging) would otherwise hold its splice, and its slot, for good.
-// A write past it closes both connections. A listener reads it at Listen.
+// spliceWriteTimeout bounds how long a splice's write waits without
+// progress, nginx's send_timeout (between two successive writes, each
+// that makes progress resetting it): a client that stops reading (a zero
+// window its kernel keeps acknowledging) would otherwise hold its splice,
+// and its slot, for good, while one that reads slowly isn't cut. A write
+// past it closes both connections. A listener reads it at Listen.
 var spliceWriteTimeout = 60 * time.Second
 
 // mirror is a connection whose target was dialled at accept, before the
@@ -282,7 +284,7 @@ func (m *mirror) endDirection(dst *idleConn, err error) {
 
 // idleConn is a spliced connection whose reads, once idleAfter set a
 // timeout, each end after that long without data, and whose writes each
-// end after writeTimeout.
+// end once they waited writeTimeout without progress.
 type idleConn struct {
 	net.Conn
 	timeout      atomic.Int64 // a time.Duration; 0 is none
@@ -297,10 +299,26 @@ func (c *idleConn) Read(p []byte) (int, error) {
 }
 
 func (c *idleConn) Write(p []byte) (int, error) {
-	if c.writeTimeout > 0 {
-		_ = c.SetWriteDeadline(time.Now().Add(c.writeTimeout))
+	if c.writeTimeout <= 0 {
+		return c.Conn.Write(p)
 	}
-	return c.Conn.Write(p)
+	return writeRearming(c.Conn, p, c.writeTimeout)
+}
+
+// writeRearmingByDeadline is writeRearming for a connection without a
+// descriptor: each write that timed out having made progress gets another
+// timeout, so a write stalls between timeout and twice that after its
+// last progress.
+func writeRearmingByDeadline(c net.Conn, p []byte, timeout time.Duration) (int, error) {
+	written := 0
+	for {
+		_ = c.SetWriteDeadline(time.Now().Add(timeout))
+		n, err := c.Write(p[written:])
+		written += n
+		if err == nil || n == 0 || !isTimeout(err) {
+			return written, err
+		}
+	}
 }
 
 // idleAfter bounds every read from now on, one already waiting included,
@@ -335,6 +353,9 @@ func spliceJoined(client, target net.Conn, linger, writeTimeout time.Duration, t
 	m := newPair(client, target, linger, writeTimeout)
 	m.state = spliced
 	if err := m.forward(toTarget); err != nil {
+		if isReset(err) {
+			m.abortClient()
+		}
 		m.closeBoth()
 		return
 	}

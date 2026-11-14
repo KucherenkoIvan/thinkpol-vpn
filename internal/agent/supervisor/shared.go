@@ -262,9 +262,12 @@ func (s *shared) setSpaces(inbound map[transport.SpaceID]map[string][]transport.
 // gains a transport its Listeners, old and new transports listed, before
 // setSpaces routes the new links: a member routed first would reach a
 // worker that doesn't know the listener and be closed. The send doesn't
-// block; the caller signals every changed space anyway, which sends the
-// final listing, and a dialer routed while a full socket delayed it
-// retries. s.mu held.
+// wait for room in the control socket (a full one drops it), but it
+// takes the socket's write lock, which the session's own sends hold
+// while they wait for room: a backed-up worker stalls it, s.mu held,
+// while those sends wait, each for up to StopTimeout. The caller signals
+// every changed space anyway, which sends the final listing, and a
+// dialer routed while a full socket dropped it retries. s.mu held.
 func (s *shared) announceGained(old, now map[transport.SpaceID]map[string]bool, changed []transport.SpaceID) {
 	var gaining []transport.SpaceID
 	transition := maps.Clone(old)

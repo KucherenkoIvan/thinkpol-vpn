@@ -17,8 +17,8 @@ const (
 	maxMirrors = 1024
 	// maxSplices bounds the connections one listener keeps spliced to its
 	// target at once, each for as long as both ends keep it going (a
-	// write stalled past spliceWriteTimeout, or one side idle past
-	// spliceLinger once the other ended, closes it); more are closed.
+	// write without progress for spliceWriteTimeout, or one side idle
+	// past spliceLinger once the other ended, closes it); more are closed.
 	// Apart from maxMirrors, so strangers holding splices open never stop
 	// a member's hello being decided.
 	maxSplices = 1024
