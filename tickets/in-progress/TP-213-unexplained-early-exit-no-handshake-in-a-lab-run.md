@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-210]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-213"
+branch: "tp-213-early-exit-no-handshake"
 ---
 
 ## Goal
@@ -34,3 +34,4 @@ The `exit_no_handshake` that TestAnExitThatNeverHandshakesIsExitNoHandshake rais
 
 ## Log
 - 2026-11-14 created in backlog (from TP-210)
+- 2026-11-15 backlog → in-progress, owner: agent-tp-213
