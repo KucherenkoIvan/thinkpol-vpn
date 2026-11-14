@@ -36,11 +36,12 @@ func platform() agent.Platform {
 		RestoreDNS:    dns.RestoreSystem,
 		ConnectRecord: agent.HostConnectRecord(),
 		Inspect: agent.Inspector{
-			Interface: netcfg.InspectInterface,
-			Routes:    netcfg.Inspect,
-			Guard:     inspectGuard,
-			DNS:       dns.Inspect,
-			DropIns:   service.HostDropIns,
+			Interface:  netcfg.InspectInterface,
+			Routes:     netcfg.Inspect,
+			Guard:      inspectGuard,
+			KillSwitch: inspectKillSwitch,
+			DNS:        dns.Inspect,
+			DropIns:    service.HostDropIns,
 		},
 	}
 }
