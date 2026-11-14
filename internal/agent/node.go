@@ -32,8 +32,9 @@ type Node struct {
 	logs  Logs
 	// plat is what the node needs of its host.
 	plat Platform
-	// conn is a device's connection, moved only by the goroutine that
-	// runs the node. bootChoice: it keeps its connect choice and started
+	// conn is a device's connection, set as the node starts, under the
+	// host lock (takeConnectChoice), then moved only by the goroutine
+	// that runs the node. bootChoice: it keeps its connect choice and started
 	// as configured, with no record of this boot, so its start records
 	// that choice (a restart in this boot then follows it, whatever the
 	// configuration says by then).
@@ -115,17 +116,26 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 		killSwitchRequests: make(chan chan struct{}),
 		ks:                 killSwitchKeeper{newKS: plat.NewKillSwitch, log: logs.Logger},
 	}
-	connect, recorded := startConnected(cfg, st.Device.ConnectOnBoot, plat.ConnectRecord, logs)
-	mismatch := modeMismatch(cfg.Mode, st)
-	n.conn, n.bootChoice = newConnection(connect, st.Removed || mismatch), !recorded && keepsConnect(cfg)
-	n.choice = !n.conn.disconnected()
 	n.device = st.Device
 	n.report = report{mode: cfg.Mode, space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed,
-		mismatch: mismatch, conn: n.conn.state, preset: n.device.Rules.Preset.String(), connectOnBoot: n.device.ConnectOnBoot}
+		mismatch: modeMismatch(cfg.Mode, st), preset: n.device.Rules.Preset.String(), connectOnBoot: n.device.ConnectOnBoot}
 	if ks := n.killSwitchSettings(); cfg.Mode != ModeServer {
 		n.report.killSwitch = KillSwitchStatus{On: ks.on, AllowLAN: ks.allowLAN, Error: KillSwitchNotApplied}
 	}
 	return n, nil
+}
+
+// takeConnectChoice sets whether the device starts connected
+// (startConnected). Adapters calls it under the host lock, which
+// `thinkpol rollback` records the boot's choice under: a start reads the
+// record after a rollback's, or runs before the rollback can take the
+// lock.
+func (n *Node) takeConnectChoice() {
+	connect, recorded := startConnected(n.cfg, n.state.Device.ConnectOnBoot, n.plat.ConnectRecord, n.logs)
+	n.conn = newConnection(connect, n.state.Removed || modeMismatch(n.cfg.Mode, n.state))
+	n.bootChoice = !recorded && keepsConnect(n.cfg)
+	n.choice = !n.conn.disconnected()
+	n.report.set(func(p *report) { p.conn = n.conn.state })
 }
 
 // keepsConnect is whether the node keeps its connect choice for the boot:
@@ -513,6 +523,7 @@ func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
+	n.takeConnectChoice()
 	// Under the host lock, so two starts never carry it over at once.
 	if err := n.carryLocalRules(); err != nil {
 		unlock()

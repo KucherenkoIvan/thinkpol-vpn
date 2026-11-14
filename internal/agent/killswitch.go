@@ -75,7 +75,7 @@ const killSwitchStopTimeout = 10 * time.Second
 // switch in place (the toggle, or the crash posture while meant up), and
 // what the kill-switch command's help says: a stop leaves it, as a crash
 // does (docs/design/security.md, "A stop is not a disconnect").
-const KillSwitchStopNote = "a stop leaves the kill switch in place, as a crash does: only the entries (and the LAN with allow-LAN) are reachable until the agent runs again; to stop with traffic going direct, run `thinkpol kill-switch off` and `thinkpol disconnect` first, or `thinkpol service uninstall`"
+const KillSwitchStopNote = "a stop leaves the kill switch in place, as a crash does: only the entries (and the LAN with allow-LAN) are reachable until the agent runs again; to stop with traffic going direct, run `thinkpol kill-switch off` and `thinkpol disconnect` first; once it is stopped or dead, `sudo thinkpol rollback` removes it"
 
 // warnLeftInPlace warns, as the node returns, when it leaves the kill
 // switch in place, applied without error or not.

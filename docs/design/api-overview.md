@@ -129,8 +129,8 @@ The operator creates it, or the dev runbook does. It must be owned by root or th
 | File | Written by | Mode (lab) | Read by |
 |---|---|---|---|
 | directory | node | 0700 root | — |
-| `agent.lock` | node: one agent per host | 0600 root | node, `service install`, `service uninstall` |
-| `connect` | node, only with connect-on-boot set: the boot's connect choice | 0600 | node at start |
+| `agent.lock` | node: one agent per host | 0600 root | node, `service install`, `service uninstall`, `rollback` |
+| `connect` | node, under the service: the boot's connect choice; `rollback`, recording it down | 0600 | node at start, under `agent.lock` |
 | `netcfg/<dev>-<ino>.<owner>.lock` (Linux) | node: one configurator per owner and namespace | 0600 | node |
 | `netcfg/` lock and route record per owner (macOS) | node | — | node; `diag` |
 | `forwarding.json` | a server's supervisor, only when it turned forwarding on | 0600 | the next supervisor, after a crash |
@@ -223,7 +223,7 @@ The node file `node.json` and the device file `device.json` exist, `rules.local`
 | `status`, `Status.kill_switch` | `kill switch: on, allow-LAN off (in place)`, or `(held by the crash posture while the connection is meant up)`, or `(not enforced: apply_failed, retrying)` (the codes: `apply_failed`, `remove_failed`, `unsupported`), or `(not applied yet)` before the agent's first apply (`not_applied`, which the health leaves to the start); JSON `on`, `allow_lan`, `active`, `enforced`, `error` |
 | health | `kill_switch_not_enforced` (degraded): putting it in place or removing it failed, retried every 10 s; `kill_switch_unsupported` (degraded): the OS can't hold it while it should be in |
 
-The captive-portal pause is not built: a separate M2 ticket (owner, 2026-11-09). TP-167 aligns the exit codes.
+There is no captive-portal pause (owner, 2026-11-12): behind a portal the member turns the kill switch off and back on, and the tray makes the off state unmissable (TP-049; RR17). TP-167 aligns the exit codes.
 ### TP-141: a device's crash trace
 
 | Surface | Behaviour |
@@ -322,7 +322,7 @@ The lab already uses a drop-in to hold off a restart (`lab/service_test.go`). So
 
 PRD D5 and the M5 tray need a connect-on-boot toggle. D4 needs a kill-switch toggle, and D8 needs the CLI to cover everything the tray does. Only the third path works for an unprivileged tray.
 
-- **Suggested verdict: change.** Settings a member toggles (connect-on-boot, the kill switch, allow-LAN, pause) go through the local API and are stored by the service, as the rule preset is. Settings an operator sets go to F1's home.
+- **Suggested verdict: change.** Settings a member toggles (connect-on-boot, the kill switch, allow-LAN) go through the local API and are stored by the service, as the rule preset is. Settings an operator sets go to F1's home.
 
 ### F3. `status -json` and `diag` speak different JSON
 
@@ -485,7 +485,7 @@ The owner's session on the findings above. The findings stay as they were found:
 
 ### Configuration (F1, F2, F8)
 
-- **Three levels.** Network: the signed map, each node getting only its own part. Node: operator settings (mode, interface, MTU, DNS upstream, TP-111's capability ceiling, kill-switch defaults) in one root-owned file in the state directory, 0600 in a 0700 directory, operating settings only, read by `up`. Device: a member's toggles on a device (connect-on-boot, kill switch, allow-LAN, pause, rule preset), changed through the local API by a member of the access group and stored by the service in a small file next to the node file, replacing `rules.local`.
+- **Three levels.** Network: the signed map, each node getting only its own part. Node: operator settings (mode, interface, MTU, DNS upstream, TP-111's capability ceiling, kill-switch defaults) in one root-owned file in the state directory, 0600 in a 0700 directory, operating settings only, read by `up`. Device: a member's toggles on a device (connect-on-boot, kill switch, allow-LAN, rule preset), changed through the local API by a member of the access group and stored by the service in a small file next to the node file, replacing `rules.local`.
 - **Precedence:** flags, then env, then the node file, then defaults. The map can only narrow what the node allows; device toggles choose within what the node and the map allow.
 - **Connect-on-boot** is a member's toggle: the service always starts at boot, and the stored toggle decides whether it connects. No root needed.
 - **File format:** JSON, one format for both files (owner, 2026-11-07; this revises the session's first answer, `key = value` lines, because nesting is expected).

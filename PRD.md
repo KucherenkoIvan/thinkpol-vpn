@@ -61,7 +61,7 @@ Scale is small on purpose: a handful of servers, up to ~20 devices per space, a 
 **Everyday use**
 - As a member, I click the tray icon to connect or disconnect, and see whether I'm connected, through which chain, and whether something is wrong.
 - As a member, I choose what goes through the tunnel: everything, everything except domestic sites (the default), or my own rules on top of the space's defaults.
-- As a member, I turn on the kill switch so nothing leaks when the tunnel drops, and still log into hotel Wi-Fi (allow-LAN, temporary pause).
+- As a member, I turn on the kill switch so nothing leaks when the tunnel drops, and still log into hotel Wi-Fi with allow-LAN or with the switch off, which the tray makes impossible to miss.
 - As a member on "everything" or "all but domestic", I'm not exposed when the agent crashes: nothing leaks until it is back, without my having changed a setting.
 - As a member, I turn on connect-on-boot (off by default).
 - As a member, I reach my other devices (SSH to my desktop, a file share) by name, wherever they are.
@@ -146,7 +146,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | D1 | Runs on macOS, Linux, Windows | must | M1 (macOS, Linux), M5 (Windows) |
 | D2 | Privileged background service + unprivileged tray app; the tray app talks to the service locally | must | M5 |
 | D3 | Tray: connect/disconnect, status (chain, entry in use, health), space switcher, rule preset switcher | must | M5 |
-| D4 | Kill switch toggle (default off): when on and the tunnel is down, nothing leaves except traffic to entry nodes; allow-LAN option; temporary pause. After an agent crash the device **fails closed by default** under the "everything" and "all but domestic" presets (opt-out); a deliberate disconnect follows the toggle | must | M2 (macOS, Linux), M5 (Windows) |
+| D4 | Kill switch toggle (default off): when on and the tunnel is down, nothing leaves except traffic to entry nodes; allow-LAN option. Its off state is made unmissable: the tray's colour and notifications (TP-049), and status shows it (owner, 2026-11-12). After an agent crash the device **fails closed by default** under the "everything" and "all but domestic" presets (opt-out); a deliberate disconnect follows the toggle | must | M2 (macOS, Linux), M5 (Windows) |
 | D5 | Connect-on-boot toggle (default off) | must | M2 (macOS, Linux), M5 (tray toggle, Windows) |
 | D6 | No IPv6 leaks: IPv6 goes through the tunnel or is blocked while connected, and stays blocked after a crash, but for the rows of [RESIDUAL-RISKS.md](RESIDUAL-RISKS.md) whose Breaks column names D6 | must | M1 (Linux); macOS device proof once a network with native IPv6 is available (TP-096) |
 | D7 | Join a space from an invite link or QR code without a terminal; the device stays pending until the admin approves it | must | M5 |
