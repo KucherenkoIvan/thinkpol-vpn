@@ -503,7 +503,7 @@ func TestAStartNarrowsTheKillSwitchBeforeRestoringTheHost(t *testing.T) {
 // the next start comes up disconnected and removes it. Only the slow
 // case: a start that fails at once serves the local API for
 // milliseconds, so a disconnect almost never reaches it (`sudo thinkpol
-// rollback`, TP-134, or the uninstall is the way out then).
+// rollback` or the uninstall is the way out then).
 func TestADisconnectWaitedOutThroughAFailingStartIsHonouredAtTheNextStart(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
