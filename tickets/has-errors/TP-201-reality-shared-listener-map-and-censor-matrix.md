@@ -82,6 +82,13 @@ Round 2 (2026-11-12):
 - [x] R2.2 (should-fix, distinguisher) after the target's FIN reality resets the client two writes later than the site would: keep reading the target after its FIN and abort the client at once on its reset or a failed write to it; check what the lab's nginx does on a failed handshake; restore the 2-write bound in TestBeforeTheHelloATargetsWholeCloseResetsTheClient; prove the same reset/EPIPE write index against lab.StartCamouflage directly and through reality
 - [x] R2.3 (should-fix) the standalone listener's serve reads the hello with no deadline, so idle strangers hold mirror slots until the target gives up: helloTimeout on the read (its timeout splices to the target). Test; RR38 covers device-mode listeners
 - [x] R2.4 (nits) (a) connections closed by the mirror or splice bounds counted separately (bound-closed), not as Unauthenticated; (b) replay admit vs a concurrent refresh dropping the space: close the race; (c) setSpaces updates the router before the worker gets its Listeners message: send Listeners first, or say why not and that a client retry recovers
+Round 3 (2026-11-14):
+- [ ] R3.1 (should-fix) idleConn.Write's 60 s bound covers a whole 32 KB write, not nginx's send_timeout (between two successive writes, reset by progress): a slow reader that keeps reading is cut at 60 s (a camouflage tell); the deadline resets on progress. Test: a slow reader making progress past the bound stays connected, a reader that stops still frees its slot (injected small bounds); mutation: one deadline per Write → it fails
+- [ ] R3.2 (nit) spliceJoined: forward(toTarget) failing on the target's reset closes the client normally; abortClient on a reset there too
+- [ ] R3.3 (nit) replays.admit holds the global lock across the space's admit (a full cache scan at maxRemembered): look c up under r.mu, admit under c.mu only, prune marks a dropped cache dead and admit retries. Test: admit and prune of one space racing (-race) never lose an admitted hello
+- [ ] R3.4 (nit) shared.go's "The send doesn't block" is false (TrySend takes the fd's write lock, held by SendTimeout): make it true or correct it and state the bound
+- [ ] R3.5 (nits, tests that can't fail) (a) a replay of a hello with bytes after it, to the same listener, is StreamReplayed (mutation: no authenticate at splice.go:143); (b) the mirror bound's bound-closed verdict asserted (mutation: gate.go's mirror bound returns turnedAway)
+- [ ] R3.6 (nit) nginx_test.go copies lab.StartCamouflage's nginx config: use the lab's own config, or a test that fails when the two differ
 
 ## Log
 - 2026-11-08 created in backlog (split from TP-087, owner-approved)
@@ -129,3 +136,4 @@ Round 2 (2026-11-12):
 - 2026-11-14 full make lab-test on d0cfc51: lab phase ok (lab 755 s, censor, ip, labctl, prototypes; every matrix cell matched its expectation, reality's rows as on 40f2692, active prober's random 1000 closed as the reference's), node phase failed only in internal/agent TestAnExitThatNeverHandshakesIsExitNoHandshake (the known flake TP-210 is fixing; 38 other packages passed, reality's among them); make lab-gotest PKG=./internal/agent/ on d0cfc51 then passed, that test included. lab/RESULTS.md regenerated and not committed. Not verified: our listener against a stock Xray client; the 1024/1024 bounds under a real flood (unit tests with injected bounds only)
 - 2026-11-14 has-errors → in-progress (round 2 findings R2.x picked up), owner: agent-tp-201
 - 2026-11-14 in-progress → review
+- 2026-11-14 review → has-errors (round 3 findings R3.x)
