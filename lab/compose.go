@@ -134,7 +134,7 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 				"com.docker.network.bridge.gateway_mode_ipv4":    "routed",
 				"com.docker.network.bridge.gateway_mode_ipv6":    "routed",
 			},
-			IPAM:       ipam,
+			IPAM: ipam,
 		}
 	}
 	for _, n := range topo.Nodes {
