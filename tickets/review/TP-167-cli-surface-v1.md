@@ -60,8 +60,8 @@ Round 2 (go-paranoid delta check), with the orchestrator's decisions. R1.2, R1.3
 - [x] R2.4 (nit, predates the branch) devmap/keys.go: a missing <node>.pub in an existing key directory drops the path error and exits 1, while a missing space.key there exits 66. Wrap the path error so both exit 66; add a row.
 
 Round 3 (orchestrator's check): R2.1–R2.4 closed, no defect; merge, with two nits.
-- [ ] R3.1 internal/agent/localapi/membership_test.go: the AST test catches only composite literals of the type named Error; `e := ErrNotRunning; e.code = "x"; return e` inside the package and `type alias = Error; alias{code: "x"}` get past it. Flag any assignment to a `.code` field outside errors.go, and a composite literal of any type whose underlying type is Error. Mutation-check both.
-- [ ] R3.2 internal/agent/node.go awaitSection and agent/doc.go: when a map moves a waiting device into or out of mismatch, publish() updates ModeMismatch but not the kill switch status, so Status is stale for up to killSwitchReapply (10 s); toggles are unaffected. Refresh the kill switch status in that publish (test, mutation), or say in doc.go that the status catches up within the re-apply interval.
+- [x] R3.1 internal/agent/localapi/membership_test.go: the AST test catches only composite literals of the type named Error; `e := ErrNotRunning; e.code = "x"; return e` inside the package and `type alias = Error; alias{code: "x"}` get past it. Flag any assignment to a `.code` field outside errors.go, and a composite literal of any type whose underlying type is Error. Mutation-check both.
+- [x] R3.2 internal/agent/node.go awaitSection and agent/doc.go: when a map moves a waiting device into or out of mismatch, publish() updates ModeMismatch but not the kill switch status, so Status is stale for up to killSwitchReapply (10 s); toggles are unaffected. Refresh the kill switch status in that publish (test, mutation), or say in doc.go that the status catches up within the re-apply interval.
 
 ## Log
 - 2026-11-07 created in backlog
@@ -109,3 +109,6 @@ Round 3 (orchestrator's check): R2.1–R2.4 closed, no defect; merge, with two n
 - 2026-11-15 couldn't verify: the not_applied refusal end to end in the lab (a node removed, then made a server); covered by agent and CLI unit tests
 - 2026-11-15 in-progress → review
 - 2026-11-15 review round 3: merge, nits R3.1–R3.2
+- 2026-11-15 R3.1: TestEveryRefusalIsDeclaredInTheList also flags an assignment to (or the address of) a `.code` field outside errors.go, and a composite literal of Error, of any type whose underlying type is Error (an alias or a defined type, at any scope, through a chain of them), or with a `code` key (an elided type); errors.go's Error comment says so
+- 2026-11-15 R3.2: awaitSection takes a map through takeWaitingMap (node.go), which keeps the kill switch at once when the map moves the waiting node into or out of mismatch, so the status the publish shows has the role's kill switch with it; agent/doc.go already says so (not_applied from then on). TestTheKillSwitchStatusFollowsAMismatchAtOnce: removed and on (enforced), made a server (not_applied at once), removed again (enforced at once)
+- 2026-11-15 mutations, all killed: R3.1 (TestEveryRefusalIsDeclaredInTheList, a temporary file in the package) `e := ErrNotRunning; e.code = "x"; return e`, `type alias = Error; alias{code: "x"}`, `type defined Error; defined{}`; R3.2 (TestTheKillSwitchStatusFollowsAMismatchAtOnce) no refresh, a refresh only into mismatch

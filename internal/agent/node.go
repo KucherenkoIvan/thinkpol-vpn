@@ -728,17 +728,11 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 				maps = nil
 				continue
 			}
-			wasMismatch := f.mismatch
-			taken, _, back := f.take(env)
+			taken, back := n.takeWaitingMap(ctx, &f, env)
 			if !taken {
 				continue
 			}
 			if f.out() {
-				if f.mismatch != wasMismatch {
-					// The kill switch's status follows the role now,
-					// not at the next re-apply.
-					keepKillSwitch(ctx, !n.conn.disconnected())
-				}
 				publish() // still out, on a newer map
 				if back {
 					sayBack()
@@ -756,6 +750,19 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			return true
 		}
 	}
+}
+
+// takeWaitingMap is f.take for awaitSection: a map that moves the node
+// into or out of mismatch, while it still waits, keeps the kill switch at
+// once, so the status the next publish shows has both, not a kill switch
+// status from the other role until the next re-apply.
+func (n *Node) takeWaitingMap(ctx context.Context, f *mapFollower, env []byte) (taken, back bool) {
+	wasMismatch := f.mismatch
+	taken, _, back = f.take(env)
+	if taken && f.out() && f.mismatch != wasMismatch {
+		n.keepRemovedKillSwitch(ctx, f.mismatch, !n.conn.disconnected())
+	}
+	return taken, back
 }
 
 // keepRemovedKillSwitch keeps a device's kill switch while it waits for a
