@@ -27,11 +27,11 @@ What a full lab and `make test` hit on such a host (measured 2026-11-14):
 - Changing the host: everything is fixed in the repo.
 
 ## Acceptance
-- [ ] The lab's nodes declare what they need, as they declare `apparmor=unconfined` in `lab/compose.go`: a seccomp setting that allows `pivot_root`, the narrowest that works, with the reason in a comment and `lab/README.md`.
-- [ ] The hermetic DNS check holds on both Docker versions with no weaker oracle: the cause of the embedded resolver's answers is found and sealed in the lab's own setup; the test's tripwire is not loosened.
-- [ ] Tests pass under umask 0002 and 0022: tests set the permissions they mean (explicit modes, Chmod) instead of inheriting the umask; the agent, under a root umask of 0002, doesn't create its own state or trusted directories group-writable and then refuse them (fixed here if it does and the fix is small, else named).
-- [ ] `TestTheNodeFileIsStrictJSON` passes on Go 1.26.11 and 1.27.x: it asserts the error's meaning, not the stdlib's message text or position.
-- [ ] A full `make lab-test` passes on a Linux Docker 29 host without umask or `GOTOOLCHAIN` overrides, and on Docker Desktop 27.
+- [x] The lab's nodes declare what they need, as they declare `apparmor=unconfined` in `lab/compose.go`: a seccomp setting that allows `pivot_root`, the narrowest that works, with the reason in a comment and `lab/README.md`.
+- [x] The hermetic DNS check holds on both Docker versions with no weaker oracle: the cause of the embedded resolver's answers is found and sealed in the lab's own setup; the test's tripwire is not loosened.
+- [x] Tests pass under umask 0002 and 0022: tests set the permissions they mean (explicit modes, Chmod) instead of inheriting the umask; the agent, under a root umask of 0002, doesn't create its own state or trusted directories group-writable and then refuse them (fixed here if it does and the fix is small, else named).
+- [x] `TestTheNodeFileIsStrictJSON` passes on Go 1.26.11 and 1.27.x: it asserts the error's meaning, not the stdlib's message text or position.
+- [x] A full `make lab-test` passes on a Linux Docker 29 host without umask or `GOTOOLCHAIN` overrides, and on Docker Desktop 27.
 
 ## Notes
 Causes, from Docker's source (moby `docker-v29.9.3`, `v27.3.1`) and measured on a Linux Docker 29.9.3 host:
@@ -46,3 +46,14 @@ Causes, from Docker's source (moby `docker-v29.9.3`, `v27.3.1`) and measured on 
 ## Log
 - 2026-11-14 created (orchestrator's measurements on a Linux Docker 29 host)
 - 2026-11-14 backlog → in-progress, owner: agent-tp-211
+- 2026-11-14 lab/seccomp.json (Docker 29's default profile plus pivot_root with CAP_SYS_ADMIN) declared by every node (lab/compose.go); TestSeccompProfileAllowsPivotRootOnlyWithSysAdmin and TestRenderCompose check the profile and the option. Mutations: the rule's caps emptied, TestSeccompProfile… fails; the option dropped (pushed mutation commit 34bd7e6/675e763, reverted in 7545d26), TestWorkersAreSandboxed fails on Docker 29 with "worker: sandbox: pivot_root: operation not permitted"; restored, it passes
+- 2026-11-14 every node's nameserver is lab.DNSUpstream (192.0.2.254): Docker's resolver forwards outside names from the node, where the sealing stops them; TestSmoke/hermetic also checks the router sees the forwarded query arrive from the device and nothing leave. Mutation: the nameserver emptied (same mutation commits), on Docker 29 "answered an outside name with NOERROR" and "the router saw 0 forwarded queries"; TestRenderCompose fails on the DNS field too
+- 2026-11-14 lab networks in the routed gateway mode (Docker 28+'s raw PREROUTING drop under br_netfilter); before it (d4b350f) TestSmoke/ipv4 and /ipv6 failed on Docker 29 with "router: no matching packet"; after, TestSmoke, TestLabsAreIsolated, TestIPv4OnlyNetwork and TestCommandStartsSealed pass there and on Docker Desktop 27
+- 2026-11-14 tests' trusted temp directories chmod 0755 (internal/agent and cmd/thinkpol tempDir, trusteddir's tempDir, the service tests' fake host); under umask 0002 make test failed 117 tests in 4 packages before, none after. Mutation: trusteddir's chmod removed, 9 tests fail under umask 002 and pass under 022. Product checked: its own directories and files have explicit modes the umask only narrows, so no product change
+- 2026-11-14 TestTheNodeFileIsStrictJSON asserts "invalid JSON at byte " (a position, not its value); passes on go1.26.11 and go1.27.4. Mutation: the product's message changed to "near byte", the test fails
+- 2026-11-14 TestForgedICMPErrorsAreRefused reads conntrack over netlink (the stock kernel has no CONFIG_NF_CONNTRACK_PROCFS); passes 3/3 on Docker 29. Mutation: the match's ports swapped (5185d2d, reverted in 506e62b), it fails "the root's conntrack flow expired before the forged errors were counted"
+- 2026-11-14 the systemd lab tests signal the agent's process alone (signalAgent, --kill-whom=main): with the whole-unit kill, systemd 252 failed it with EIO on Linux 7.0 in 4 of 6 runs; after, the four systemd tests pass 2/2 on Docker 29
+- 2026-11-14 at 48ba0b4, on a Linux Docker 29.9.3 host (kernel 7.0, AppArmor on, br_netfilter loaded) with the account's umask 0002 and its Go 1.27.4 (no umask or GOTOOLCHAIN override): make lint green, make test green (and again under umask 0022), full make lab-test green with LAB_TIMEOUT=60m (lab/ took 2775s; two runs with the default 20m timed out in the censor matrix, which alone takes 1247s there and passes); full make lab-test green on Docker Desktop 27.3.1 at 48ba0b4 with the defaults
+- 2026-11-14 merged origin/rewrite (TP-210: internal/agent/status_test.go and tickets) after the lab runs; at d424bb0 on the Linux Docker 29 host, no overrides: make lint green, make test green, make lab-gotest PKG=./internal/agent green. Not run again in full on the merge: it brought only TP-210's test change and tickets
+- 2026-11-14 couldn't verify: the routed gateway mode on a Docker 27 Linux host with br_netfilter (only Docker Desktop 27 and Linux Docker 29 were run); the systemd kill EIO is attributed to systemd 252's cgroup walk from its error path, not traced in the kernel
+- 2026-11-14 in-progress → review
