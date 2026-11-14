@@ -43,7 +43,7 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 | [Local API](api-overview-reference.md#local-api) (reference file) | the socket, the two gates, every call with its access and its shapes, refusals |
 | [Configuration](#configuration) | every key, its default and where it is documented; input files; lab variables |
 | [On-disk state](#on-disk-state) | every file the node, the service and the dev tools write or read |
-| [Built since the snapshot](#built-since-the-snapshot) | what TP-140, TP-166, TP-141, TP-111 and TP-195 added |
+| [Built since the snapshot](#built-since-the-snapshot) | what TP-140, TP-166, TP-111, TP-048, TP-141, TP-195 and TP-167 added |
 | [Planned, not built](#planned-not-built) | what TP-183 and TP-133 propose |
 | [Consistency findings](#consistency-findings) | F1–F21 with suggested verdicts |
 | [Verdicts (owner, 2026-11-07)](#verdicts-owner-2026-11-07) | the decided conventions: configuration levels, status versus diag, exit codes, naming |
@@ -223,7 +223,8 @@ The node file `node.json` and the device file `device.json` exist, `rules.local`
 | `status`, `Status.kill_switch` | `kill switch: on, allow-LAN off (in place)`, or `(held by the crash posture while the connection is meant up)`, or `(not enforced: apply_failed, retrying)` (the codes: `apply_failed`, `remove_failed`, `unsupported`), or `(not applied yet)` before the agent's first apply (`not_applied`, which the health leaves to the start); JSON `on`, `allow_lan`, `active`, `enforced`, `error` |
 | health | `kill_switch_not_enforced` (degraded): putting it in place or removing it failed, retried every 10 s; `kill_switch_unsupported` (degraded): the OS can't hold it while it should be in |
 
-There is no captive-portal pause (owner, 2026-11-12): behind a portal the member turns the kill switch off and back on, and the tray makes the off state unmissable (TP-049; RR17). TP-167 aligns the exit codes.
+There is no captive-portal pause (owner, 2026-11-12): behind a portal the member turns the kill switch off and back on, and the tray makes the off state unmissable (TP-049; RR17). Exit codes: [TP-167](#tp-167-exit-codes-and-the-setting-shape).
+
 ### TP-141: a device's crash trace
 
 | Surface | Behaviour |
@@ -243,6 +244,29 @@ Answered: the path (`crash-trace`), the field names (`last_run`, `last_run_crash
 | `status`, `diag` | show it with the existing rendering |
 
 The deadline is three of WireGuard's initiations in a row, which it sends 5 s apart (REKEY_TIMEOUT) while it has traffic for the exit, so one lost packet doesn't flip health; it is also how long WireGuard waits on a session that stopped hearing back (KEEPALIVE_TIMEOUT + REKEY_TIMEOUT). A session that dies under traffic is noticed after about 30 s: WireGuard re-initiates once it has heard nothing back for 15 s, then the deadline runs. The age of the last handshake is no test: no persistent keepalive is set, so an idle exit's last handshake grows old on a healthy device. That is also what still reads ok: an exit nothing was sent to, and every peer that isn't an exit, direct or relayed (RR48). An exit once flagged stays flagged after traffic stops, until a handshake completes: reading ok for an exit that went silent would be the worse mistake.
+
+### TP-167: exit codes and the setting shape
+
+Every command exits by BSD `sysexits.h` ([verdict](#exit-codes-f4)). One table maps what a command failed with to its code, first match first (`exitCodes`, `cmd/thinkpol/exitcode.go`); a command returns an error, never a number.
+
+| Exit | When | What maps to it |
+|---|---|---|
+| 0 | the requested state was reached | success; `-h`, `help` |
+| 1 | not reached, or reached in part; a change made through the local API prints the status as it is now, then the error | `dns_not_protected` (connected, the tunnel stays up), `rule_preset_unavailable` (kept, enforced failing closed), `server_mode`, `start_failed`, and anything not named below |
+| 64 | bad arguments | no command, an unknown command or group, a bad flag (where Go's `flag` exits 2), wrong arguments, a removed form (`service connect-on-boot`, `service install -connect-on-boot`), `unknown_rule_preset` |
+| 66 | a named input is missing | `ENOENT` on a file a command was named or reads by default: `up`'s map, key or trust file, a spec, a key directory, a lists source, the map `dev map rotate` replaces |
+| 69 | the service isn't running | `service_down` (nothing listens at the socket), `not_running` (the service answers, its node doesn't run) |
+| 75 | busy, try again | another agent holds the host (`up`, `rollback`); `membership_unknown` (the OS couldn't say whether the caller is in the group) |
+| 77 | permission denied | `permission_denied`, `root_only`; `rollback` and `service install`, `service uninstall` not run as root; any other `EACCES` or `EPERM` a command returns |
+| 78 | bad configuration | a node file, environment or flag value `up` can't run with (`agent.ConfigError`) |
+
+| Surface | Behaviour |
+|---|---|
+| stderr | `thinkpol <cmd>: <message>`; a local API refusal (or the client's `service_down`, `start_failed`) ends with its code: `thinkpol connect: connected, but DNS is not protected: … the tunnel stays up [dns_not_protected]` |
+| a change not reached | `connect`, `disconnect`, `rules preset`, and a setting given a value: on exit 1 the current status goes to stdout, the error to stderr. Other failures print nothing to stdout |
+| `kill-switch [on\|off]`, `connect-on-boot [on\|off]` (and `allow-lan`) | `<setting> [value]`: no value prints the setting alone (`kill-switch: off, allow-LAN off`), a value sets it and prints the status. TP-048 and TP-166 built them so; no other forms exist |
+
+Answered (implementer, open to the owner): `server_mode` is 1, not 78 (a server isn't misconfigured; the call means nothing there); `membership_unknown` is 75 (it says to try again); a missing output directory is 66 too (`ENOENT` doesn't say which way a path was used).
 
 ## Planned, not built
 

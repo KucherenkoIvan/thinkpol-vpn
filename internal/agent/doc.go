@@ -168,7 +168,7 @@
 // directory on the way counts, and why that rules out macOS's /var/run).
 //
 // A second `thinkpol up` exits with "another thinkpol agent is running on
-// this host" and changes nothing. Its start-time cleanups (putting back a
+// this host" (EX_TEMPFAIL, 75) and changes nothing. Its start-time cleanups (putting back a
 // resolver configuration a crash left, clearing a crashed run's route
 // table and overlay routes) would otherwise undo the running agent's.
 //

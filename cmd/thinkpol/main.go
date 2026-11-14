@@ -4,7 +4,9 @@
 // Each command lives in its own file and registers itself from init (see
 // cli.go), so adding a command never touches shared code. Command files are
 // composition roots: they parse flags, build adapters and call into
-// internal/, nothing more.
+// internal/, nothing more. A command returns an error and never picks its
+// exit code: exitCode (exitcode.go) maps every failure to BSD sysexits,
+// the contract scripts branch on.
 package main
 
 import (
