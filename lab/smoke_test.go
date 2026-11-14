@@ -180,8 +180,9 @@ func TestSmoke(t *testing.T) {
 		wantNoLookup(t, device, "an outside name on a device", "getent", "hosts", "example.com")
 		// Asked directly, Docker's resolver answers a lab name (the
 		// control) and forwards an outside one to the node's own
-		// nameserver, lab.DNSUpstream, from the node itself: the router
-		// sees the query arrive from the device, has no route on and lets
+		// nameserver, lab.DeadEndNameserver, from the node itself: the
+		// router sees the query arrive from the device, has no onward
+		// route and lets
 		// nothing out, and the answer is SERVFAIL once the forward fails
 		// (the client waits longer than Docker's 4s forward timeout). A
 		// query the router never sees was forwarded from somewhere the
@@ -200,7 +201,7 @@ func TestSmoke(t *testing.T) {
 		if got := dockerDNS(lab.Router); got != "NOERROR" {
 			t.Fatalf("Docker's resolver answers %s for a lab name, so the next check proves nothing", got)
 		}
-		forwarded := router.Capture(t, "udp port 53 and host "+lab.DNSUpstream)
+		forwarded := router.Capture(t, "udp port 53 and host "+lab.DeadEndNameserver)
 		if got := dockerDNS("example.com"); got != "SERVFAIL" {
 			t.Errorf("Docker's resolver answered an outside name with %s, want SERVFAIL (forwarding failed)", got)
 		}

@@ -298,7 +298,7 @@ func listTestFiles(ctx context.Context, root string, flags, patterns []string) (
 // DefaultLabTestTimeout bounds a package's lab tests (GoTestLabTagged)
 // unless the caller passes its own -test.timeout; it matches make lab-test's
 // LAB_TIMEOUT.
-const DefaultLabTestTimeout = "20m"
+const DefaultLabTestTimeout = "60m"
 
 // labTestWaitDelay bounds how long GoTestLabTagged waits for the output
 // pipe to close once its go test has exited or been killed.

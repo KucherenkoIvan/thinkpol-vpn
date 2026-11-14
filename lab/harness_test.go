@@ -102,8 +102,8 @@ func TestRenderCompose(t *testing.T) {
 		if svc.Labels[LabelLab] != "1" || svc.Privileged || svc.Platform != "linux/arm64" {
 			t.Errorf("service %s: labels %v, privileged %v, platform %q", name, svc.Labels, svc.Privileged, svc.Platform)
 		}
-		if !slices.Contains(svc.SecurityOpt, "seccomp=/checkout/lab/seccomp.json") || !slices.Equal(svc.DNS, []string{DNSUpstream}) {
-			t.Errorf("service %s: security options %v, nameservers %v", name, svc.SecurityOpt, svc.DNS)
+		if !slices.Contains(svc.SecurityOpt, "seccomp=/checkout/lab/seccomp.json") || !slices.Equal(svc.DNS, []string{DeadEndNameserver}) {
+			t.Errorf("service %s: security options %v, nameservers %v; want seccomp=/checkout/lab/seccomp.json among them, nameservers [%s]", name, svc.SecurityOpt, svc.DNS, DeadEndNameserver)
 		}
 	}
 	router := f.Services[Router]
@@ -121,41 +121,78 @@ func TestRenderCompose(t *testing.T) {
 	}
 }
 
-// The nodes' seccomp profile denies by default, as Docker's does, and
-// allows pivot_root only with CAP_SYS_ADMIN.
 func TestSeccompProfileAllowsPivotRootOnlyWithSysAdmin(t *testing.T) {
-	data, err := os.ReadFile(filepath.Base(seccompProfile))
+	root, err := Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, seccompProfilePath))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var profile struct {
-		DefaultAction string `json:"defaultAction"`
-		Syscalls      []struct {
-			Names    []string `json:"names"`
-			Action   string   `json:"action"`
-			Includes struct {
-				Caps []string `json:"caps"`
-			} `json:"includes"`
-		} `json:"syscalls"`
+		DefaultAction string                       `json:"defaultAction"`
+		Syscalls      []map[string]json.RawMessage `json:"syscalls"`
 	}
 	if err := json.Unmarshal(data, &profile); err != nil {
 		t.Fatal(err)
 	}
-	if profile.DefaultAction != "SCMP_ACT_ERRNO" || len(profile.Syscalls) < 30 {
-		t.Fatalf("default action %s with %d rules: not Docker's default profile", profile.DefaultAction, len(profile.Syscalls))
+	// The profile must still be Docker's default: deny unless a rule allows.
+	if profile.DefaultAction != "SCMP_ACT_ERRNO" {
+		t.Fatalf("default action %s, want SCMP_ACT_ERRNO", profile.DefaultAction)
 	}
-	var rules int
+	const sysAdminOnly = `{"action":"SCMP_ACT_ALLOW","includes":{"caps":["CAP_SYS_ADMIN"]}}`
+	// What Docker's default (moby/profiles seccomp v0.2.4) allows of the
+	// syscalls that matter most to the lab's isolation, each rule without
+	// its names; an errno rule allows nothing and isn't listed.
+	dockerAllows := map[string][]string{
+		"mount":      {sysAdminOnly},
+		"unshare":    {sysAdminOnly},
+		"setns":      {sysAdminOnly},
+		"bpf":        {sysAdminOnly, `{"action":"SCMP_ACT_ALLOW","includes":{"caps":["CAP_BPF"]}}`},
+		"clone3":     {sysAdminOnly},
+		"keyctl":     nil,
+		"ptrace":     {`{"action":"SCMP_ACT_ALLOW","includes":{"minKernel":"4.8"}}`, `{"action":"SCMP_ACT_ALLOW","includes":{"caps":["CAP_SYS_PTRACE"]}}`},
+		"pivot_root": {sysAdminOnly},
+	}
+	allows := map[string][]string{}
+	pivotRules := 0
 	for _, r := range profile.Syscalls {
-		if !slices.Contains(r.Names, "pivot_root") {
+		var names []string
+		if err := json.Unmarshal(r["names"], &names); err != nil {
+			t.Fatal(err)
+		}
+		delete(r, "names")
+		cond, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(names, "pivot_root") {
+			pivotRules++
+			if !slices.Equal(names, []string{"pivot_root"}) {
+				t.Errorf("the pivot_root rule also names %v", names)
+			}
+		}
+		var action string
+		if err := json.Unmarshal(r["action"], &action); err != nil {
+			t.Fatal(err)
+		}
+		if action == "SCMP_ACT_ERRNO" {
 			continue
 		}
-		rules++
-		if r.Action != "SCMP_ACT_ALLOW" || !slices.Equal(r.Includes.Caps, []string{"CAP_SYS_ADMIN"}) {
-			t.Errorf("pivot_root rule: %s with caps %v, want SCMP_ACT_ALLOW with CAP_SYS_ADMIN", r.Action, r.Includes.Caps)
+		for _, n := range names {
+			if _, ok := dockerAllows[n]; ok {
+				allows[n] = append(allows[n], string(cond))
+			}
 		}
 	}
-	if rules != 1 {
-		t.Errorf("%d rules name pivot_root, want 1", rules)
+	if pivotRules != 1 {
+		t.Errorf("%d rules name pivot_root, want 1", pivotRules)
+	}
+	for name, want := range dockerAllows {
+		if got := allows[name]; !slices.Equal(got, want) {
+			t.Errorf("%s allowed by %q, want %q", name, got, want)
+		}
 	}
 }
 

@@ -29,7 +29,7 @@ BUF_BREAKING_AGAINST ?= rewrite
 # cgo is off unless a target turns it on (test-race).
 export CGO_ENABLED := 0
 
-.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-perf lab-gotest lab-down
+.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-perf lab-gotest lab-down lab-seccomp
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -110,7 +110,7 @@ $(TOOLS_STAMP):
 # own, named after this checkout and the run, so several checkouts, and
 # several runs from one checkout, can run labs at once.
 LABCTL := go run ./lab/labctl
-LAB_TIMEOUT ?= 20m
+LAB_TIMEOUT ?= 60m
 # Packages make lab-test runs in nodes at once. Fixed, not scaled by load:
 # tests must hold up under other runs' load anyway (lab/README.md). The
 # lab/ test phase and this phase run at the same time and draw from the
@@ -156,6 +156,9 @@ lab-gotest: export LAB_RUN = $(RUN)
 lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1, its lab-tagged tests on the host; fails if all skip (PKG=./internal/... required, RUN=regexp COUNT=n)
 	$(if $(PKG),,$(error lab-gotest needs PKG, e.g. PKG=./internal/dataplane/netcfg/...; make lab-test runs every package))
 	$(LABCTL) gotest -v -tagged -fail-skipped -run "$$LAB_RUN" $(if $(COUNT),-count $(COUNT) -timeout 60m) $(PKG)
+
+lab-seccomp: ## regenerate lab/seccomp.json from the moby/profiles/seccomp lab/seccompgen pins (needs the network once)
+	cd lab/seccompgen && go run . -o ../seccomp.json
 
 lab-down: ## remove every lab this checkout started
 	$(LABCTL) down

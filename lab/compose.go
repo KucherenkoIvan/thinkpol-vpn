@@ -17,22 +17,26 @@ const (
 	SrcDir = "/src"
 )
 
-// DNSUpstream is the nameserver every node gives Docker's embedded resolver
-// (127.0.0.11), an address outside the lab. Docker forwards a name it doesn't
-// know to the nameservers it read from the host's resolv.conf, and asks them
-// from the host's network namespace, where the sealing can't reach (Docker
-// 29 every one of them, Docker 27 only loopback ones such as
+// DeadEndNameserver is the nameserver every node gives Docker's embedded
+// resolver (127.0.0.11): an address nothing answers. Docker forwards a name
+// it doesn't know to the nameservers it read from the host's resolv.conf,
+// and asks them from the host's network namespace, where the sealing can't
+// reach (Docker 29 every one of them, Docker 27 only loopback ones such as
 // systemd-resolved's). A container's own nameservers it asks from the
 // container's namespace, through the node's routes, which the sealing leaves
-// no way out.
-const DNSUpstream = "192.0.2.254"
+// no way out. It is in 198.18.0.0/15, reserved for benchmarking (RFC 2544),
+// not in the documentation ranges lab tests assign inside nodes: no lab
+// network or test may reach it (subnetPool refuses a pool that contains it,
+// TestOnlyTheNodesUseTheDeadEndNameserver checks the code).
+const DeadEndNameserver = "198.18.0.53"
 
-// seccompProfile, under the checkout, is Docker's default seccomp profile
-// (Docker 29's, moby/profiles seccomp v0.2.4) plus one rule: pivot_root with
-// CAP_SYS_ADMIN, which the default never allows and every worker sandbox
-// needs. Docker Desktop runs containers without seccomp, so only a Linux
-// host shows the denial. Compose reads the file on the host.
-var seccompProfile = filepath.Join("lab", "seccomp.json")
+// seccompProfilePath, relative to the checkout, is Docker's default seccomp
+// profile plus one rule: pivot_root with CAP_SYS_ADMIN, which the default
+// never allows and every worker sandbox needs. make lab-seccomp generates it
+// (lab/seccompgen) from the pinned moby/profiles/seccomp. Docker Desktop
+// runs containers without seccomp, so only a Linux host shows the denial.
+// Compose reads the file on the host.
+var seccompProfilePath = filepath.Join("lab", "seccomp.json")
 
 // Labels on every container and network of a lab. The harness tears down
 // only projects whose every container and network carries LabelLab.
@@ -128,7 +132,11 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 			// Where the host has br_netfilter, that sees frames a node sends
 			// to the router for a node on another lab network: every packet
 			// the router would forward. "routed" has no such rule, and no
-			// NAT; Docker 27 knows it too ("nat-unprotected" it doesn't).
+			// NAT; Docker 27.0+ accepts it, while "nat-unprotected", the
+			// other mode without the rule, needs 28.
+			// enable_ip_masquerade=false is redundant with "routed" and kept
+			// on purpose: a second guard if the gateway mode is ever
+			// ignored or changed.
 			DriverOpts: map[string]string{
 				"com.docker.network.bridge.enable_ip_masquerade": "false",
 				"com.docker.network.bridge.gateway_mode_ipv4":    "routed",
@@ -168,9 +176,9 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 			CapAdd: []string{"NET_ADMIN", "NET_RAW", "SYS_ADMIN"},
 			// Docker's AppArmor profile, where the host has AppArmor, denies
 			// the mounts that network namespaces need, even with SYS_ADMIN.
-			// Its default seccomp profile denies pivot_root (seccompProfile).
-			SecurityOpt: []string{"apparmor=unconfined", "seccomp=" + filepath.Join(root, seccompProfile)},
-			DNS:         []string{DNSUpstream},
+			// Its default seccomp profile denies pivot_root (seccompProfilePath).
+			SecurityOpt: []string{"apparmor=unconfined", "seccomp=" + filepath.Join(root, seccompProfilePath)},
+			DNS:         []string{DeadEndNameserver},
 			Devices:     []string{"/dev/net/tun"},
 			Environment: env,
 			Labels:      labels,

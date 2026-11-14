@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -60,8 +61,7 @@ func TestTheNodeFileIsStrictJSON(t *testing.T) {
 			"kill_switch": true, "allow_lan": true, "fail_closed_after_crash": false}`, ""},
 		{"empty file", "", "empty: write {}"},
 		{"blank file", " \n\t\n", "empty: write {}"},
-		// The byte it names is encoding/json's, which Go releases count differently.
-		{"invalid JSON", `{"mode": }`, "invalid JSON at byte "},
+		{"invalid JSON", `{"mode": }`, "invalid JSON"},
 		{"a trailing comma", `{"mode": "device",}`, "invalid JSON"},
 		{"cut short", `{"mode": "device"`, "invalid JSON"},
 		{"not an object", `["mode"]`, "want a JSON object"},
@@ -105,6 +105,13 @@ func TestTheNodeFileIsStrictJSON(t *testing.T) {
 		if !errors.As(err, new(*ConfigError)) {
 			t.Errorf("%s: %v is no ConfigError", tc.name, err)
 		}
+	}
+
+	// The byte is encoding/json's, which Go releases count differently: any
+	// number will do, a number it must be.
+	_, err := ReadNodeFile(settingsDir(t, NodeFile, []byte(`{"mode": }`)))
+	if want := regexp.MustCompile(`invalid JSON at byte \d+: `); err == nil || !want.MatchString(err.Error()) {
+		t.Errorf("invalid JSON: got %v, want it to match %s", err, want)
 	}
 }
 
