@@ -213,9 +213,10 @@
 // is left alone.
 //
 // The file is watched (inotify on its directory, set up before the
-// take-over returns, and polled every 2 s as a backstop) and taken back if another program rewrites it, at once or
-// once the write settles (below); what that program wrote becomes the
-// new original, and the resolvers it names the domestic upstream.
+// take-over, and polled every 2 s as a backstop) and taken back if
+// another program rewrites it, at once or once the write settles
+// (below); what that program wrote becomes the new original, and the
+// resolvers it names the domestic upstream.
 // resolved's stubs (127.0.0.53, 127.0.0.54) are never used as a direct
 // upstream: a file naming only them falls back to resolved's uplink
 // file, and if that yields nothing the previous upstreams are kept (and the log says to set `-dns-upstream`). Behind

@@ -307,6 +307,117 @@ func TestResolvConfAFileRenamedInIsTakenAtOnce(t *testing.T) {
 	checkInPlaceRenewal(t, path, r, told)
 }
 
+// withWatchHook runs hook with the file at path when the watch of a
+// resolv.conf begins, then sets up the real watch.
+func withWatchHook(t *testing.T, hook func(path string)) {
+	t.Helper()
+	setUp := watchResolvConf
+	t.Cleanup(func() { watchResolvConf = setUp })
+	watchResolvConf = func(path string) (<-chan bool, func()) {
+		hook(path)
+		return setUp(path)
+	}
+}
+
+// The watch begins before the take-over writes the file, and so before
+// it returns: another program's file renamed in right after the
+// take-over (reacting to the new TUN) is seen at once, not at the poll.
+func TestResolvConfIsWatchedBeforeTheTakeOverWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var atWatch []byte
+	watched := false
+	withWatchHook(t, func(path string) {
+		b, _ := os.ReadFile(path)
+		mu.Lock()
+		defer mu.Unlock()
+		atWatch, watched = b, true
+	})
+	r, err := setResolvConfTimed(path, "", testSystem, resolvConfTiming{check: time.Hour, settle: time.Hour, settleMax: time.Hour})
+	mu.Lock()
+	gotWatched, gotAtWatch := watched, string(atWatch)
+	mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	if !gotWatched {
+		t.Fatal("not watched yet when the take-over returned")
+	}
+	if gotAtWatch != isp {
+		t.Fatalf("watched only after the take-over wrote the file; it held:\n%s", gotAtWatch)
+	}
+	if !managedWith(t, path, isp) {
+		t.Fatalf("not taken over:\n%s", readString(t, path))
+	}
+}
+
+// The take-over's own write raises a change event, the watch being set
+// up before it: the watch reads it as the node's own file, writes
+// nothing (no event follows it) and reports no problem.
+func TestResolvConfTheTakeOverOwnEventIsNotAnotherProgramsWrite(t *testing.T) {
+	hasChangeEvents(t)
+	var mu sync.Mutex
+	events := 0
+	forwarded := make(chan struct{}, 64)
+	ctx := t.Context()
+	setUp := watchResolvConf
+	t.Cleanup(func() { watchResolvConf = setUp })
+	watchResolvConf = func(path string) (<-chan bool, func()) {
+		ch, closeWatch := setUp(path)
+		mine := make(chan bool) // unbuffered: a send ends once the watch took it
+		go func() {
+			for {
+				var renamed bool
+				select {
+				case renamed = <-ch:
+				case <-ctx.Done():
+					return
+				}
+				mu.Lock()
+				events++
+				mu.Unlock()
+				select {
+				case mine <- renamed:
+					forwarded <- struct{}{}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+		return mine, closeWatch
+	}
+	path, r, _ := startInPlace(t, resolvConfTiming{check: time.Hour, settle: time.Hour, settleMax: time.Hour})
+	written, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-forwarded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the take-over's own write raised no change event the watch took")
+	}
+	time.Sleep(300 * time.Millisecond) // a rewrite of its own would raise another
+	mu.Lock()
+	n := events
+	mu.Unlock()
+	if n != 1 {
+		t.Errorf("%d change events after the take-over, want its own one only: the watch wrote the file again", n)
+	}
+	if fi, err := os.Lstat(path); err != nil || !os.SameFile(fi, written) || !fi.ModTime().Equal(written.ModTime()) {
+		t.Errorf("the file was written again after the take-over (err %v)", err)
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem %v", p)
+	}
+	if !managedWith(t, path, isp) {
+		t.Errorf("not the take-over's file:\n%s", readString(t, path))
+	}
+}
+
 // A file created at the path is another file than the node's before its
 // first byte is written (rm then `cat >`, an editor writing a new file,
 // install): the change event of its creation and the poll find it new
@@ -747,10 +858,10 @@ func failPartway(t *testing.T, r *resolvConf, cut func(content []byte) int) (suc
 		func() int { mu.Lock(); defer mu.Unlock(); return n }
 }
 
-// readBetweenRewrites reads the file at path with r.mu held, as the watch
+// readUnderLock reads the file at path with r.mu held, as the watch
 // does: a failing rewrite the poll retries truncates the file before it
 // writes it, and a read in between finds it empty.
-func readBetweenRewrites(t *testing.T, r *resolvConf, path string) string {
+func readUnderLock(t *testing.T, r *resolvConf, path string) string {
 	t.Helper()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -811,7 +922,7 @@ func TestResolvConfRestoreAfterARewriteFailedPartwayPutsBackTheWholeOriginal(t *
 	if n := tries(); n > 10 {
 		t.Errorf("%d rewrites tried in 500 ms with a 100 ms poll: retried on its own change events", n)
 	}
-	got := readBetweenRewrites(t, r, path)
+	got := readUnderLock(t, r, path)
 	if m := parseResolvConf([]byte(got)); !m.managed || string(m.original) == isp {
 		t.Fatalf("the file is not cut inside the original:\n%s", got)
 	}
