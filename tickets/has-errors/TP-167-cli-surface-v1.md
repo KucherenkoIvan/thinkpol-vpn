@@ -53,6 +53,12 @@ Round 1 (go-paranoid, go-style, pocket-torvalds), with the orchestrator's decisi
 - [x] R1.8 docs and comments: exitFailure's comment, api-overview.md's Contents row → the TP-167 section, a Notes line in TP-181 (split the reference, fix its stale exit codes), the statusLine comment, agent/doc.go's long line, the branch in the in-progress Log line.
 - [x] R1.9 (nit) `up -h`/`up -bogus` may drop a KeepOnlyOnADevice error behind flag.ErrHelp/errUsagePrinted: check whether it's reachable; fix with a test or Log why not.
 
+Round 2 (go-paranoid delta check), with the orchestrator's decisions. R1.2, R1.3, R1.5, R1.6, R1.7 and R1.9 closed.
+- [ ] R2.1 in awaitSection's mismatch state setToggle trusts a stale kill-switch status: a device node removed from its space enforces (error ""), a newer map makes it a server (mismatch), keepRemovedKillSwitch stops, `done` stays closed, so `kill-switch on`/`off` exit 0 with no rules or the old block on the host. While mismatched, publish `not_applied` (or setToggle checks ModeMismatch) so the toggles refuse and exit 1. Test the removed-then-server sequence, mutation-checked.
+- [ ] R2.2 (nit) agent/doc.go still says `kill-switch off` reports success in the mismatch state; contradicts localapi/doc.go and, after R2.1, the code.
+- [ ] R2.3 the refusal coverage test sees only the `refusals` rows and three hand-added client codes; a new Error{Code: …} without a row exits 1 with no [code] and the test passes. Make a refusal code impossible to build outside the list (named constants in one place that Refusals() returns, constructors take them, a test fails on an Error literal with a code built elsewhere). If TP-197 is on origin/rewrite, merge it and map `rule_preset_not_enforced` → 1 with the status.
+- [ ] R2.4 (nit, predates the branch) devmap/keys.go: a missing <node>.pub in an existing key directory drops the path error and exits 1, while a missing space.key there exits 66. Wrap the path error so both exit 66; add a row.
+
 ## Log
 - 2026-11-07 created in backlog
 - 2026-11-07 split (owner's MVP cut): exit codes and the kill-switch/connect-on-boot setting shape stay; the rest → TP-181
@@ -86,3 +92,4 @@ Round 1 (go-paranoid, go-style, pocket-torvalds), with the orchestrator's decisi
 - 2026-11-15 has-errors → in-progress, owner: agent-tp-167, branch: tp-167-cli-surface-v1 (round 1 findings)
 - 2026-11-15 in-progress → review
 - 2026-11-15 merged origin/rewrite (TP-201) after the move to review: 3b92143 `make lint` green, `make test` green (umask 022, no failures), full `make lab-test` green (lab phase and 39 in-node packages); the ticket stays in review
+- 2026-11-15 review → has-errors (round 2 findings R2.1–R2.4)
