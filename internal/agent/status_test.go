@@ -819,13 +819,17 @@ func TestARulePresetStoreThatFailsWhileStoppedChangesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(n.stopped)
+	ctx := context.Background()
+	if err := n.SetRulePreset(ctx, "everything"); err != nil {
+		t.Fatal(err)
+	}
 	unblock := blockDeviceFile(t, dir)
-	err = n.SetRulePreset(context.Background(), "all-but-domestic")
+	err = n.SetRulePreset(ctx, "all-but-domestic")
 	unblock()
 	if err == nil {
 		t.Fatal("a store that failed was taken")
 	}
-	wantPreset(t, n, "space")
+	wantPreset(t, n, "everything")
 }
 
 // heldRules is a tuning.setRules that, before the engine's SetRules,
@@ -867,13 +871,16 @@ func TestARulePresetIsShownOnceTheEngineHasIt(t *testing.T) {
 	if shown := <-h.entered; shown != "space" {
 		t.Errorf("status showed %q before the engine had it", shown)
 	}
+	var err error
 	select {
-	case err := <-set:
+	case err = <-set:
 		t.Errorf("SetRulePreset returned %v before the engine had it", err)
+		close(h.release)
 	default:
+		close(h.release)
+		err = <-set
 	}
-	close(h.release)
-	if err := <-set; err != nil && !errors.Is(err, ErrPresetUnavailable) {
+	if err != nil && !errors.Is(err, ErrPresetUnavailable) {
 		t.Fatal(err)
 	}
 	wantPreset(t, b.node, "all-but-domestic")
