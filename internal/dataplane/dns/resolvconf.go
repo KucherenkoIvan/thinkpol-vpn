@@ -380,8 +380,25 @@ func setResolvConfTimed(path, uplink string, c SystemConfig, timing resolvConfTi
 		closeWatch()
 		return nil, err
 	}
-	go r.watch(tell, startWatch(own), closeWatch)
+	changes := startWatch(own)
+	// The start counts the changes queued during the take-over, and
+	// inotify merges an event into the one queued just before it (another
+	// program's rename into the path right after the take-over's own is
+	// one event): what is at the path once the watch has started says
+	// whether another program wrote it meanwhile.
+	r.mu.Lock()
+	now, nerr := readResolvConfFile(r.path)
+	written := r.isWritten(now, nerr)
+	r.mu.Unlock()
+	go r.watch(tell, !written, changes, closeWatch)
 	return r, nil
+}
+
+// isWritten says f is the file the last apply left at the path, as it
+// left it. r.mu is held.
+func (r *resolvConf) isWritten(f resolvConfFile, ferr error) bool {
+	return ferr == nil && f.read && bytes.Equal(f.content, r.written) &&
+		f.info != nil && r.writtenInfo != nil && os.SameFile(f.info, r.writtenInfo)
 }
 
 // watchResolvConf is watchFile; a variable so a test can see when the
@@ -437,7 +454,11 @@ func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error
 		return tell, err
 	}
 	r.written, r.failedWrite = content, nil
-	if fi, err := os.Lstat(r.path); err == nil {
+	if bytes.Equal(content, f.content) {
+		// Nothing was written (rewriteResolvConf): a stat now could find
+		// another program's file renamed in since the read.
+		r.writtenInfo = f.info
+	} else if fi, err := os.Lstat(r.path); err == nil {
 		r.writtenInfo = fi
 	}
 	return tell, nil
@@ -564,8 +585,9 @@ func rewriteResolvConf(path string, f resolvConfFile, content []byte) error {
 // watch takes the file back whenever another program writes it: a file
 // renamed into the path at once, any other write once it settles
 // (resolvConfTiming). changes are the file's change events from
-// watchFile's start; watch calls closeWatch when it returns.
-func (r *resolvConf) watch(first func(), changes <-chan bool, closeWatch func()) {
+// watchFile's start; changed says the file changed before it, judged
+// first. watch calls closeWatch when it returns.
+func (r *resolvConf) watch(first func(), changed bool, changes <-chan bool, closeWatch func()) {
 	defer close(r.stopped)
 	defer closeWatch()
 	if first != nil {
@@ -577,18 +599,20 @@ func (r *resolvConf) watch(first func(), changes <-chan bool, closeWatch func())
 	// at the settle's cap.
 	quiet := time.NewTimer(r.timing.settle)
 	quiet.Stop()
-	for {
-		changed, renamed, quietEnded := false, false, false
-		select {
-		case <-r.stop:
-			return
-		case renamed = <-changes:
-			changed = true
-		case <-r.wake:
-			changed = true
-		case <-poll.C:
-		case <-quiet.C:
-			quietEnded = true
+	for ; ; changed = false {
+		renamed, quietEnded := false, false
+		if !changed {
+			select {
+			case <-r.stop:
+				return
+			case renamed = <-changes:
+				changed = true
+			case <-r.wake:
+				changed = true
+			case <-poll.C:
+			case <-quiet.C:
+				quietEnded = true
+			}
 		}
 		// Read under r.mu: an apply on a bind mount rewrites in place, and
 		// its half-written file must not look like another program's.
