@@ -59,6 +59,7 @@ type node struct {
 	routes  dataplane.RouteTable                // for EngineConfig.RouteTable
 	standIn func(netmap.BlobKind, string) (netmap.BlobRef, []byte, bool)
 	dns     dataplane.Resolver // for EngineConfig.DNS
+	clock   func() time.Time   // for path.Options.Now; nil: the real one
 	engine  *dataplane.Engine
 	stack   *stack
 }
@@ -113,8 +114,10 @@ func (nd *node) start(t *testing.T, net *memory.Network) {
 		t.Fatal(err)
 	}
 	ch := tuntest.NewChannelTUN()
+	paths := fastPaths
+	paths.Now = nd.clock
 	e, err := dataplane.NewEngine(dataplane.EngineConfig{
-		ID: nd.id, Space: testSpace, WireGuardKey: nd.key, Registry: reg, TUN: ch.TUN(), Path: fastPaths, Blobs: nd.blobs, StandIn: nd.standIn, DNS: nd.dns,
+		ID: nd.id, Space: testSpace, WireGuardKey: nd.key, Registry: reg, TUN: ch.TUN(), Path: paths, Blobs: nd.blobs, StandIn: nd.standIn, DNS: nd.dns,
 		Forward:    nd.forward,
 		RouteTable: nd.routes,
 	})
@@ -407,6 +410,41 @@ func TestStatusQuotesNothingFromTheMap(t *testing.T) {
 		if strings.Contains(text, secret) {
 			t.Fatalf("status quotes %q from the map:\n%s", secret, text)
 		}
+	}
+}
+
+// A peer's first initiation since its first hop came up is asked from the
+// neighbor's UpSince, never from the read's clock less UpFor: the path
+// clock stands still, so the link stays up for zero time while real time
+// passes, and only UpSince still predates the initiation sent since.
+func TestTheFirstInitiationSinceLinkUpIsFromTheNeighborsUpSince(t *testing.T) {
+	net := memory.NewNetwork(memory.Datagram)
+	a := newSpaceNode("device-a", 1, "")
+	s := newSpaceNode("server-1", 2, "192.0.2.2:4500")
+	link(a, s)
+	peer(a, s, s) // s doesn't peer a back: a's initiations go unanswered
+	frozen := time.Now()
+	a.clock = func() time.Time { return frozen }
+	s.start(t, net)
+	a.start(t, net)
+	if tryPing(a, s.v4, 100*time.Millisecond) {
+		t.Fatal("a peer s doesn't know answered")
+	}
+	var st dataplane.Status
+	deadline := time.Now().Add(wait)
+	for {
+		st = a.engine.Status()
+		if len(st.Peers) == 1 && st.Peers[0].FirstHop == s.id && !st.Peers[0].HandshakePendingSince.IsZero() && len(st.Neighbors) == 1 && st.Neighbors[0].Up {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no unanswered initiation over an up link: %+v", st)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n, p := st.Neighbors[0], st.Peers[0]; n.UpFor != 0 || !n.UpSince.Before(p.HandshakePendingSince) || p.FirstInitiationSinceLinkUp != p.HandshakePendingSince {
+		t.Fatalf("up for %v since %v; initiation pending since %v, first since the link came up %v",
+			n.UpFor, n.UpSince, p.HandshakePendingSince, p.FirstInitiationSinceLinkUp)
 	}
 }
 
