@@ -18,7 +18,8 @@ import (
 // map: route-table enforcement, the OS resolving through the node), then a
 // second `thinkpol up` on the same device, connected and disconnected: the
 // two starts whose cleanups (the resolv.conf restore, the route-table
-// clear) would undo the running agent's. device-a's OS resolves through
+// clear) would undo the running agent's; then `thinkpol rollback`, which
+// runs the same cleanups. device-a's OS resolves through
 // /etc/resolv.conf, device-b's through systemd-resolved. The second agent
 // exits saying another one runs, without a write to resolv.conf, a change
 // to resolved's links, or a routing, address or link change; the first
@@ -55,7 +56,8 @@ func TestASecondAgentChangesNothing(t *testing.T) {
 }
 
 // secondAgentChangesNothing connects n, then runs a second agent on it
-// (connected, then disconnected) and checks that both are refused and that
+// (connected, then disconnected) and a rollback, and checks that each is
+// refused and that
 // nothing changed: resolv.conf (its content, inode and modification time:
 // a write the first agent took back shows too), the links, addresses,
 // routes and rules (ip monitor, between two markers of the test's own),
@@ -96,11 +98,15 @@ func secondAgentChangesNothing(t *testing.T, n *lab.Node, exit netip.Addr, extra
 
 	before := state()
 	from := marker("31998")
-	for _, args := range [][]string{{"thinkpol", "up"}, {"thinkpol", "up", "-connect=false"}} {
+	for _, args := range [][]string{{"thinkpol", "up"}, {"thinkpol", "up", "-connect=false"}, {"thinkpol", "rollback"}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		res, err := n.Exec(ctx, args...)
 		cancel()
-		if err == nil || res.ExitCode != 1 || !strings.Contains(res.Stderr, "another thinkpol agent is running on this host") {
+		want, code := "another thinkpol agent is running on this host", 1
+		if args[1] == "rollback" {
+			want, code = "another thinkpol process holds the host", 75
+		}
+		if err == nil || res.ExitCode != code || !strings.Contains(res.Stderr, want) {
 			t.Errorf("%s: %v (exit %d)\n%s%s", strings.Join(args, " "), err, res.ExitCode, res.Stdout, res.Stderr)
 		}
 	}

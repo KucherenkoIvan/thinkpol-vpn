@@ -58,6 +58,15 @@ func register(c command) {
 // run with (an *agent.ConfigError). The table of exit codes is TP-167's.
 const exitConfig = 78
 
+// exitTempFail is EX_TEMPFAIL (sysexits.h): busy, try again; a command's
+// tempFailError (the host lock held).
+const exitTempFail = 75
+
+// tempFailError makes run exit with exitTempFail.
+type tempFailError struct{ error }
+
+func (e tempFailError) Unwrap() error { return e.error }
+
 var (
 	// errUsage from a command makes run print the command's synopsis and
 	// exit with status 2.
@@ -171,6 +180,9 @@ func run(ctx context.Context, e env, args []string) int {
 		case errors.As(err, new(*agent.ConfigError)):
 			_, _ = fmt.Fprintf(e.stderr, "thinkpol %s: %v\n", c.path, err)
 			return exitConfig
+		case errors.As(err, new(tempFailError)):
+			_, _ = fmt.Fprintf(e.stderr, "thinkpol %s: %v\n", c.path, err)
+			return exitTempFail
 		default:
 			_, _ = fmt.Fprintf(e.stderr, "thinkpol %s: %v\n", c.path, err)
 			return 1

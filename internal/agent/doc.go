@@ -206,8 +206,9 @@
 // Failing closed costs this: a device that crashed while connected and
 // comes back on a map that makes it a server keeps what the crashed run
 // left (its resolver configuration, the route table's rules, its kill
-// switch) until a map makes it a device again, or `thinkpol service
-// uninstall` clears the host ([Platform.ClearHost]); `thinkpol
+// switch) until a map makes it a device again, or `thinkpol rollback`
+// ([Rollback]) or `thinkpol service uninstall` clears the host
+// ([Platform.ClearHost]) while no agent runs; `thinkpol
 // disconnect` and `thinkpol kill-switch off` in that state clear none of
 // it, and report success: the toggle is stored and the connection down,
 // as asked, but the host is left alone. A mismatch is told to no subscriber: no event says it
@@ -283,10 +284,14 @@
 // first start of a boot (no record, or one of an earlier boot) connects
 // if connect-on-boot is on and records that; each Connect and Disconnect
 // is recorded before it is acted on, and a Connect that fails, leaving the
-// device down, records it down again. A later start in the same boot
-// follows the record: a crash and the service's restart neither drop a
-// connected member (whose traffic would go direct) nor undo their
-// disconnect, whatever connect-on-boot says by then. -service needs the
+// device down, records it down again; `thinkpol rollback` records it
+// down too ([Rollback]). A later start in the same boot follows the
+// record: a crash and the service's restart neither drop a connected
+// member (whose traffic would go direct) nor undo their disconnect or
+// rollback, whatever connect-on-boot says by then. A start reads the
+// record under the host's agent lock ([Node.Adapters]), which rollback
+// writes it under: a start whose process began while a rollback ran
+// either is refused the lock or reads the rollback's record. -service needs the
 // local API, without which nothing could change the choice (Validate
 // refuses it). Run by hand, without it, -connect decides every start and
 // nothing is recorded. A record that can't be written is logged and the
@@ -354,14 +359,17 @@
 // whenever rules are in place, an apply that put them there but failed
 // ([firewall.ErrKillSwitchInPlace]) included.
 // Only a deliberate disconnect with the toggle off (or no crash posture),
-// a start that comes up so, or `service uninstall` ([Platform.ClearHost])
-// removes it. A disconnect is recorded for the boot before the node hears
+// a start that comes up so, `rollback` ([Rollback]) or `service
+// uninstall` ([Platform.ClearHost]) removes it. A disconnect is recorded for the boot before the node hears
 // of it ([Node.Disconnect]), so one sent while a slow first start hangs,
 // and waited on until it fails, is honoured by the next start; one whose
 // caller gives up while the node runs puts the node's own choice back. A
 // start that fails at once serves the local API for milliseconds, so
-// there the way out is `sudo thinkpol rollback` (TP-134) or `service
-// uninstall`. A mode mismatch leaves a previous run's kill switch alone
+// there the way out is `sudo thinkpol rollback` ([Rollback]: under the
+// host lock, the boot's connect choice recorded down, so the service's
+// next start comes up disconnected, then the agent's start-time cleanup,
+// the kill switch with it; the member choosing no tunnel over failing
+// closed) or `service uninstall`. A mode mismatch leaves a previous run's kill switch alone
 // (above); until the node applies it, the status says it isn't applied
 // yet (`not_applied`, which the health leaves to the start). A failure is
 // logged, retried at the next turn or within 10 s, and in the status
@@ -447,7 +455,7 @@
 //     thinkpol-api), on disk.
 //   - Under the service (-service), a device's connect choice for
 //     the boot ([ConnectRecordFile], above), next to the agent's lock,
-//     stamped with the boot session.
+//     stamped with the boot session; `thinkpol rollback` writes it too.
 //   - On macOS, records under /private/var/db/thinkpol: netcfg's route
 //     records (netcfg/<owner>.routes, next to <owner>.lock), which list
 //     the routes it added, the link endpoints' addresses among them, and
