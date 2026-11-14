@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: []
 refs: [D8, docs/design/api-overview.md#verdicts-owner-2026-11-07]
-owner: ""
-branch: ""
+owner: "agent-tp-167"
+branch: "tp-167-cli-surface-v1"
 ---
 
 ## Goal
@@ -39,3 +39,4 @@ Before M2 adds the kill-switch setting, scripts can branch on the CLI's exit cod
 ## Log
 - 2026-11-07 created in backlog
 - 2026-11-07 split (owner's MVP cut): exit codes and the kill-switch/connect-on-boot setting shape stay; the rest → TP-181
+- 2026-11-14 backlog → in-progress, owner: agent-tp-167
