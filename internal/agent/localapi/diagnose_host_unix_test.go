@@ -273,7 +273,7 @@ func TestDialTimedOut(t *testing.T) {
 	timeout := &net.OpError{Op: "dial", Net: "unix", Err: os.ErrDeadlineExceeded}
 	for err, want := range map[error]bool{
 		fmt.Errorf("connecting: %w", timeout): true,
-		fmt.Errorf("connecting: %w", &net.OpError{Op: "dial", Net: "unix", Err: os.NewSyscallError("connect", syscall.EAGAIN)}): true,
+		fmt.Errorf("connecting: %w", &net.OpError{Op: "dial", Net: "unix", Err: os.NewSyscallError("connect", syscall.EAGAIN)}):       true,
 		fmt.Errorf("connecting: %w", &net.OpError{Op: "dial", Net: "unix", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}): false,
 		errors.New("something else"): false,
 	} {
