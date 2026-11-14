@@ -24,6 +24,7 @@ Each area's design is a file of its own under `docs/design/`; this file is the e
 | [Server agent](docs/design/server-agent.md) | the supervisor, one worker per space, egress |
 | [Routing](docs/design/routing.md) | routing rules, the route table, DNS, lists |
 | [Desktop client](docs/design/desktop-client.md) | the client and the local API |
+| [Windows](docs/design/windows.md) | the Windows device (M5, TP-047, TP-076): a design for review, not built: WFP kill switch and its crash posture, DNS, the service, the named-pipe local API, ticket split |
 | [Control plane](docs/design/control-plane.md) | the controller, the signed map, joining, kernel usage |
 | [Censor lab](docs/design/lab.md) | the lab and its censor modules |
 | [Milestones](docs/design/milestones.md) | the done-when checks, out of scope |
