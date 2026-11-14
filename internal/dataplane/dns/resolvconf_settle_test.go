@@ -797,12 +797,17 @@ func TestResolvConfRestoreAfterARewriteFailedPartwayPutsBackTheWholeOriginal(t *
 	if err := r.Update(next); err == nil {
 		t.Fatal("the injected failure is lost")
 	}
+	updated := time.Now()
 	time.Sleep(500 * time.Millisecond)
 	if n := tries(); n > 10 {
 		t.Errorf("%d rewrites tried in 500 ms with a 100 ms poll: retried on its own change events", n)
 	}
-	if m := parseResolvConf([]byte(readString(t, path))); !m.managed || string(m.original) == isp {
-		t.Fatalf("the file is not cut inside the original:\n%s", readString(t, path))
+	before := tries()
+	readAt := time.Since(updated)
+	got := readString(t, path)
+	after := tries()
+	if m := parseResolvConf([]byte(got)); !m.managed || string(m.original) == isp {
+		t.Fatalf("TRACE read at +%v, %d bytes %q, tries %d before the read and %d after; the file now:\n%s", readAt, len(got), got, before, after, readString(t, path))
 	}
 	restoredTo(t, path, r, isp)
 }
