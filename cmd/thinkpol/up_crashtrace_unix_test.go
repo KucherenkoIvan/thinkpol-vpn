@@ -106,7 +106,7 @@ func TestUpExitsByATraceItCouldNotDrop(t *testing.T) {
 	keepUpGlobals(t)
 	for _, args := range [][]string{{"-h"}, {"-bogus"}, {"now"}} {
 		t.Run(args[0], func(t *testing.T) {
-			dir := tempDir(t)
+			dir := trusteddirtest.TempDir(t)
 			path := filepath.Join(dir, agent.CrashTraceFile)
 			crashTracePath = func() string { return path }
 			t.Cleanup(func() { crashTracePath = agent.CrashTracePath })
