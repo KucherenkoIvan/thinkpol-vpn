@@ -600,7 +600,7 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 				return slices.ContainsFunc(flows, func(f *netlink.ConntrackFlow) bool {
 					o := f.Forward
 					return o.Protocol == syscall.IPPROTO_UDP && o.SrcIP.Equal(upRoot4.AsSlice()) && o.DstIP.Equal(internet4.AsSlice()) &&
-						o.SrcPort == probePort && o.DstPort == rootPort
+						o.SrcPort == rootPort && o.DstPort == probePort
 				})
 			}
 			if !bound {
