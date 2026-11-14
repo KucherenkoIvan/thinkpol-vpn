@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"time"
-
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
 )
 
 func init() {
@@ -24,8 +21,5 @@ func runConnect(ctx context.Context, e env, args []string) error {
 	}
 	defer func() { _ = c.Close() }()
 	st, err := c.Connect(ctx)
-	if err != nil {
-		return err
-	}
-	return localapi.WriteStatus(e.stdout, st, time.Now())
+	return writeChange(ctx, e, c, st, err)
 }

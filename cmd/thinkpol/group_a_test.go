@@ -40,7 +40,7 @@ func TestHiddenCommandRuns(t *testing.T) {
 
 func TestGroupPrefixListsItsCommands(t *testing.T) {
 	code, _, stderr := runCLI(t, "t")
-	if code != 2 || !strings.Contains(stderr, "usage: thinkpol t <command>") ||
+	if code != exitUsage || !strings.Contains(stderr, "usage: thinkpol t <command>") ||
 		!strings.Contains(stderr, "  t a") || !strings.Contains(stderr, "  t b") ||
 		strings.Contains(stderr, "version") || strings.Contains(stderr, "t hidden") {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
@@ -49,7 +49,7 @@ func TestGroupPrefixListsItsCommands(t *testing.T) {
 
 func TestUnknownCommandInGroup(t *testing.T) {
 	code, _, stderr := runCLI(t, "t", "c")
-	if code != 2 || !strings.Contains(stderr, `unknown command "t c"`) || !strings.Contains(stderr, "  t b") {
+	if code != exitUsage || !strings.Contains(stderr, `unknown command "t c"`) || !strings.Contains(stderr, "  t b") {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 }
@@ -63,7 +63,7 @@ func TestFlagHelpExitsZero(t *testing.T) {
 
 func TestBadFlagIsUsageError(t *testing.T) {
 	code, _, stderr := runCLI(t, "t", "a", "-bogus")
-	if code != 2 || !strings.Contains(stderr, "-bogus") || strings.Count(stderr, "usage: thinkpol t a") != 1 {
+	if code != exitUsage || !strings.Contains(stderr, "-bogus") || strings.Count(stderr, "usage: thinkpol t a") != 1 {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 }
