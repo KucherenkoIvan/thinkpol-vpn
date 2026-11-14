@@ -34,11 +34,11 @@ var (
 // touched.
 type rollbackRefused struct{ Err error }
 
-func (rollbackRefused) Error() string {
+func (r rollbackRefused) Error() string {
 	return "another thinkpol process holds the host: a running agent, or a service install, uninstall or rollback; " +
 		"rollback only undoes what a dead agent left. An install, uninstall or rollback: run this again once it ends. " +
 		"A running agent: `thinkpol kill-switch off` and `thinkpol disconnect` take its tunnel down, " +
-		"or stop it (a stop leaves the kill switch in place) and run this again"
+		"or stop it (a stop leaves the kill switch in place) and run this again. The host lock: " + r.Err.Error()
 }
 
 func (r rollbackRefused) Unwrap() error { return r.Err }

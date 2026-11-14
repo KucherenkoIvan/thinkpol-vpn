@@ -603,7 +603,7 @@ Errors:
 
 For a member whose agent died and won't come back, or was stopped with the kill switch in place (a stop fails closed like a crash: [security.md](security.md#kill-switch)). Run as root, it takes the host lock and refuses while another thinkpol process holds it (a running agent, or a service install, uninstall or rollback), touching nothing. Holding it, it:
 
-- records this boot's connect choice as down (the [connect record](api-overview.md#on-disk-state)), first, so a rollback cut short (Ctrl-C, a timeout) still settles it: a service's next start in this boot comes up disconnected instead of putting the crash posture's kill switch back, and its own start-time cleanup finishes the job. Only the kill-switch toggle, on, puts the kill switch back at that start, in the down shape. A start reads the record under the same lock, so one the service manager began while rollback ran either waits its turn and reads rollback's record or is refused the lock;
+- records this boot's connect choice as down (the [connect record](api-overview.md#on-disk-state)), first, so a rollback cut short (killed, or a second Ctrl-C: it doesn't stop at the first, which it ignores) still settles it: a service's next start in this boot comes up disconnected instead of putting the crash posture's kill switch back, and its own start-time cleanup finishes the job. Only the kill-switch toggle, on, puts the kill switch back at that start, in the down shape. A start reads the record under the same lock, and taking it never waits: one the service manager began while rollback ran is refused the lock, and the service manager's next restart reads rollback's record;
 - runs the agent's start-time cleanup, as `service uninstall` does (`agent.Platform.ClearHost`): a server's leftovers (only where a server runs: Linux), the route table's routes, rules and IPv6 leak guard, the overlay's routes, and the resolver configuration a crashed run changed;
 - removes the kill switch, whatever left it: the nftables table `inet thinkpol-killswitch` on Linux; on macOS the anchor `com.apple/001.thinkpol-killswitch`, the pf reference that keeps pf enabled for it, and that reference's record.
 
@@ -626,11 +626,11 @@ Exit codes:
 
 - 0: nothing of a dead agent's is left, and the choice is recorded.
 - 1: a part failed: it prints `LEFT: <part>: <error>` instead of `none left`, the last line is missing, and the error is ``part of what a dead agent left is still on the host (above): fix what failed and run `sudo thinkpol rollback` again``. Or, on a device, the record failed: `NOT RECORDED: this boot's connect choice: <error>; a service's next start in this boot may connect and put the kill switch back`, with ``this boot's connect choice wasn't recorded (above): a service's next start in this boot may connect and put the kill switch back; fix what failed and run `sudo thinkpol rollback` again``. A human looks at what failed.
-- 75 (EX_TEMPFAIL): refused, nothing touched, nothing on stdout; stop the service (or wait for the install, uninstall or rollback) and run it again:
+- 75 (EX_TEMPFAIL): refused, nothing touched, nothing on stdout; the error ends with the host lock's own, naming the lock file; stop the service (or wait for the install, uninstall or rollback) and run it again:
 
 ```
 $ sudo thinkpol rollback
-thinkpol rollback: another thinkpol process holds the host: a running agent, or a service install, uninstall or rollback; rollback only undoes what a dead agent left. An install, uninstall or rollback: run this again once it ends. A running agent: `thinkpol kill-switch off` and `thinkpol disconnect` take its tunnel down, or stop it (a stop leaves the kill switch in place) and run this again
+thinkpol rollback: another thinkpol process holds the host: a running agent, or a service install, uninstall or rollback; rollback only undoes what a dead agent left. An install, uninstall or rollback: run this again once it ends. A running agent: `thinkpol kill-switch off` and `thinkpol disconnect` take its tunnel down, or stop it (a stop leaves the kill switch in place) and run this again. The host lock: another thinkpol agent is running on this host (it holds /run/thinkpol/agent.lock)
 ```
 
 Not root: `rollback changes the host's routing, firewall and resolvers: run it as root (sudo)`, exit 1. Text output only for now: `-json` is TP-181's.

@@ -95,11 +95,14 @@ func (k notingKillSwitch) Close() error {
 	return k.KillSwitch.Close()
 }
 
-// notingRecord is the host's connect record, whose Save notes it and
-// fails with the host's failRecord, keeping what was recorded.
+// notingRecord is the host's connect record, whose Load and Save note
+// it; Save fails with the host's failRecord, keeping what was recorded.
 type notingRecord struct{ h *deadAgentHost }
 
-func (r notingRecord) Load() (bool, bool, error) { return r.h.rec.Load() }
+func (r notingRecord) Load() (bool, bool, error) {
+	r.h.note("record load")
+	return r.h.rec.Load()
+}
 
 func (r notingRecord) Save(connect bool) error {
 	r.h.note(fmt.Sprintf("record %v", connect))
@@ -155,8 +158,9 @@ func TestRollbackIsRefusedWhileAnotherProcessHoldsTheHost(t *testing.T) {
 	h.otherAgent = true
 	r, err := rollback(h.platform(), t.TempDir())
 	var refused rollbackRefused
-	if !errors.Is(err, ErrAnotherAgent) || !errors.As(err, &refused) || !strings.Contains(err.Error(), "another thinkpol process holds the host") {
-		t.Fatalf("rollback: %v, want ErrAnotherAgent, refused", err)
+	if !errors.Is(err, ErrAnotherAgent) || !errors.As(err, &refused) || !strings.Contains(err.Error(), "another thinkpol process holds the host") ||
+		!strings.HasSuffix(err.Error(), "(it holds the test's lock)") {
+		t.Fatalf("rollback: %v, want ErrAnotherAgent, refused, ending with what holds the lock", err)
 	}
 	if r != nil || h.notes() != "" {
 		t.Errorf("refused, it still cleared or recorded %q (report %+v)", h.notes(), r)
@@ -408,6 +412,9 @@ func TestAStartPreparedBeforeARollbackFollowsTheRollback(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatal(err)
+	}
+	if notes := h.notes(); !strings.Contains(notes, "record load held=true") || strings.Contains(notes, "record load held=false") {
+		t.Errorf("the start didn't read the connect choice under the host lock; noted:\n%s", notes)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
