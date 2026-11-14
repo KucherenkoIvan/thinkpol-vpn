@@ -93,3 +93,4 @@ Round 2 (go-paranoid delta check), with the orchestrator's decisions. R1.2, R1.3
 - 2026-11-15 in-progress → review
 - 2026-11-15 merged origin/rewrite (TP-201) after the move to review: 3b92143 `make lint` green, `make test` green (umask 022, no failures), full `make lab-test` green (lab phase and 39 in-node packages); the ticket stays in review
 - 2026-11-15 review → has-errors (round 2 findings R2.1–R2.4)
+- 2026-11-15 has-errors → in-progress, owner: agent-tp-167, branch: tp-167-cli-surface-v1 (round 2 findings)
