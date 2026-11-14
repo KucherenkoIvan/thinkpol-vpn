@@ -33,6 +33,10 @@ var (
 	// ErrNotRunning: the service answers, but its node isn't running.
 	ErrNotRunning        = Error{Code: "not_running"}
 	ErrPresetUnavailable = Error{Code: "rule_preset_unavailable"}
+	// ErrPresetNotEnforced: the preset is stored, but laying out its
+	// routes failed; the router keeps the previous preset until a retry
+	// lays it out.
+	ErrPresetNotEnforced = Error{Code: "rule_preset_not_enforced"}
 	ErrUnknownPreset     = Error{Code: "unknown_rule_preset"}
 	ErrDNSUnprotected    = Error{Code: "dns_not_protected"}
 )
@@ -54,6 +58,7 @@ var refusals = []struct {
 	{ErrServerMode, codes.FailedPrecondition, "this node is a server: it serves its spaces whenever it runs"},
 	{ErrNotRunning, codes.Unavailable, "the node is not running"},
 	{ErrPresetUnavailable, codes.FailedPrecondition, "this space can't build that preset (no chain, or no domestic list): it is kept, and enforced failing closed"},
+	{ErrPresetNotEnforced, codes.Unavailable, "the preset is stored, but laying out its routes failed: the previous preset stays enforced until a retry succeeds (see the status)"},
 	{ErrUnknownPreset, codes.InvalidArgument, "no such rule preset: space, everything or all-but-domestic"},
 	{ErrDNSUnprotected, codes.FailedPrecondition, "connected, but DNS is not protected: the system may resolve names outside the tunnel; the tunnel stays up"},
 }

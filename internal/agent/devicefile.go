@@ -117,6 +117,12 @@ var ErrUnknownPreset = errors.New("agent: no such rule preset")
 // or no domestic list): the choice is kept and enforced failing closed.
 var ErrPresetUnavailable = rules.ErrPresetUnavailable
 
+// ErrPresetNotEnforced is a preset stored and shown, whose routes the
+// data plane failed to lay out: the router keeps the previous rules until
+// a retry lays them out (Status: RulesEnforced unset while connected,
+// ProblemPresetNotEnforced).
+var ErrPresetNotEnforced = errors.New("agent: rule preset stored, but not enforced yet")
+
 // parseLocalRules reads LocalRulesFile.
 func parseLocalRules(text []byte) (rules.Local, error) {
 	var l rules.Local

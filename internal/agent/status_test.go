@@ -25,6 +25,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
@@ -654,16 +655,16 @@ func TestARulePresetSetBeforeTheNodeRunsIsTaken(t *testing.T) {
 			defer cancel()
 			set <- n.SetRulePreset(ctx, "all-but-domestic")
 		}()
-		// The request waits for the data plane, holding presetMu:
-		// nothing is stored or shown until the data plane takes it.
-		eventually(t, func() bool {
-			if n.presetMu.TryLock() {
-				n.presetMu.Unlock()
-				return false
+		// While SetRulePreset waits for the data plane, nothing is
+		// stored or shown.
+		for deadline := time.Now().Add(100 * time.Millisecond); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			select {
+			case err := <-set:
+				t.Fatalf("SetRulePreset returned %v before the data plane ran", err)
+			default:
 			}
-			return true
-		})
-		wantPreset(t, n, "space")
+			wantPreset(t, n, "space")
+		}
 	}})
 	select {
 	case err := <-set:
@@ -717,6 +718,220 @@ func TestARulePresetSetWhileDisconnectedIsTakenByTheConnect(t *testing.T) {
 	}
 	if st := b.connection(t, Connected); st.DataPlane == nil {
 		t.Fatalf("status %+v", st)
+	}
+	wantPreset(t, b.node, "all-but-domestic")
+}
+
+// errLayout is a layout that fails (tuning.setRules).
+var errLayout = errors.New("laying out failed")
+
+// A preset whose layout fails is stored and shown as not enforced while
+// the router keeps the previous one; the caller hears it, the data plane
+// retries, and once the layout succeeds the preset is enforced.
+func TestARulePresetWhoseLayoutFailsIsRetried(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	var failing atomic.Bool
+	var tries atomic.Int32
+	b := startDevice(t, s, reg, true, deviceOpt{tuning: func(tu *tuning) {
+		tu.setRules = func(e *dataplane.Engine, l rules.Local) error {
+			if failing.Load() {
+				tries.Add(1)
+				return errLayout
+			}
+			return e.SetRules(l)
+		}
+	}})
+	b.connection(t, Connected)
+	failing.Store(true)
+	if err := b.node.SetRulePreset(context.Background(), "all-but-domestic"); !errors.Is(err, ErrPresetNotEnforced) || !errors.Is(err, errLayout) {
+		t.Fatalf("got %v, want ErrPresetNotEnforced wrapping the layout's error", err)
+	}
+	notEnforced := func() {
+		t.Helper()
+		st := b.node.Status()
+		if st.RulePreset != "all-but-domestic" || st.RulesEnforced || st.PresetUnavailable || !st.Retrying ||
+			!slices.Contains(st.Health().Problems, ProblemPresetNotEnforced) {
+			t.Fatalf("status %+v, health %+v", st, st.Health())
+		}
+		if p := st.DataPlane.Rules.Preset.String(); p != "space" {
+			t.Fatalf("the data plane enforces %q", p)
+		}
+	}
+	notEnforced()
+	eventually(t, func() bool { return tries.Load() >= 3 }) // retried
+	notEnforced()
+	failing.Store(false)
+	eventually(t, func() bool { st := b.node.Status(); return st.RulesEnforced && !st.Retrying })
+	wantPreset(t, b.node, "all-but-domestic")
+	if h := b.node.Status().Health(); slices.Contains(h.Problems, ProblemPresetNotEnforced) {
+		t.Fatalf("health %+v", h)
+	}
+}
+
+// blockDeviceFile makes storing the device file fail until the returned
+// func is called: its temporary file's name is taken by a directory.
+func blockDeviceFile(t *testing.T, dir string) func() {
+	t.Helper()
+	tmp := filepath.Join(dir, "."+DeviceFile+".new")
+	if err := os.Mkdir(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		if err := os.Remove(tmp); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A store that fails while the data plane runs changes nothing: the
+// caller hears it, and Status, the device file and the data plane keep
+// the preset (and the own rules) they had.
+func TestARulePresetStoreThatFailsChangesNothing(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	b := startDevice(t, s, reg, true)
+	b.connection(t, Connected)
+	ctx := context.Background()
+	if err := b.node.SetRulePreset(ctx, "all-but-domestic"); err != nil && !errors.Is(err, ErrPresetUnavailable) {
+		t.Fatal(err)
+	}
+	unblock := blockDeviceFile(t, b.node.cfg.StateDir)
+	err := b.node.SetRulePreset(ctx, "everything")
+	unblock()
+	if err == nil || errors.Is(err, ErrPresetNotEnforced) || errors.Is(err, ErrPresetUnavailable) {
+		t.Fatalf("got %v, want the store's error", err)
+	}
+	wantPreset(t, b.node, "all-but-domestic")
+	if st := b.node.Status(); !st.RulesEnforced {
+		t.Fatalf("status %+v", st)
+	}
+}
+
+// A store that fails with no data plane running changes nothing either.
+func TestARulePresetStoreThatFailsWhileStoppedChangesNothing(t *testing.T) {
+	s := newTestSpace(t)
+	dir := s.stateDir(t, s.b, 1)
+	n, err := Prepare(testConfig(dir), Logs{}, testPlatform())
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(n.stopped)
+	unblock := blockDeviceFile(t, dir)
+	err = n.SetRulePreset(context.Background(), "all-but-domestic")
+	unblock()
+	if err == nil {
+		t.Fatal("a store that failed was taken")
+	}
+	wantPreset(t, n, "space")
+}
+
+// heldRules is a tuning.setRules that, before the engine's SetRules,
+// tells entered the preset Status shows then and waits for release.
+type heldRules struct {
+	node    *Node
+	entered chan string
+	release chan struct{}
+}
+
+func newHeldRules() *heldRules {
+	return &heldRules{entered: make(chan string, 1), release: make(chan struct{})}
+}
+
+func (h *heldRules) opt() deviceOpt {
+	return deviceOpt{
+		node: func(n *Node) { h.node = n },
+		tuning: func(tu *tuning) {
+			tu.setRules = func(e *dataplane.Engine, l rules.Local) error {
+				h.entered <- h.node.Status().RulePreset
+				<-h.release
+				return e.SetRules(l)
+			}
+		},
+	}
+}
+
+// Status shows a preset only once the engine has it, and SetRulePreset
+// returns only then: checked while the engine's SetRules waits.
+func TestARulePresetIsShownOnceTheEngineHasIt(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	h := newHeldRules()
+	b := startDevice(t, s, reg, true, h.opt())
+	b.connection(t, Connected)
+	set := make(chan error, 1)
+	go func() { set <- b.node.SetRulePreset(context.Background(), "all-but-domestic") }()
+	if shown := <-h.entered; shown != "space" {
+		t.Errorf("status showed %q before the engine had it", shown)
+	}
+	select {
+	case err := <-set:
+		t.Errorf("SetRulePreset returned %v before the engine had it", err)
+	default:
+	}
+	close(h.release)
+	if err := <-set; err != nil && !errors.Is(err, ErrPresetUnavailable) {
+		t.Fatal(err)
+	}
+	wantPreset(t, b.node, "all-but-domestic")
+}
+
+// A caller whose ctx ends after the node took its request hears what
+// happened, not its ctx's error.
+func TestARulePresetCallerThatGivesUpAfterTheTakeHearsTheOutcome(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	h := newHeldRules()
+	b := startDevice(t, s, reg, true, h.opt())
+	b.connection(t, Connected)
+	ctx, cancel := context.WithCancel(context.Background())
+	set := make(chan error, 1)
+	go func() { set <- b.node.SetRulePreset(ctx, "all-but-domestic") }()
+	<-h.entered
+	cancel()
+	// Time for a caller that wrongly waits on its ctx to see it end
+	// while the reply can't have come yet.
+	time.Sleep(100 * time.Millisecond)
+	close(h.release)
+	if err := <-set; err != nil && !errors.Is(err, ErrPresetUnavailable) {
+		t.Fatalf("got %v, want the outcome", err)
+	}
+	wantPreset(t, b.node, "all-but-domestic")
+}
+
+// A second SetRulePreset waits for the first only as long as its ctx
+// lets it, and changes nothing.
+func TestASecondRulePresetCallGivesUpOnItsCtx(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	h := newHeldRules()
+	b := startDevice(t, s, reg, true, h.opt())
+	b.connection(t, Connected)
+	first := make(chan error, 1)
+	go func() { first <- b.node.SetRulePreset(context.Background(), "all-but-domestic") }()
+	<-h.entered
+	second := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		second <- b.node.SetRulePreset(ctx, "everything")
+	}()
+	select {
+	case err := <-second:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("second: got %v, want its ctx's error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("the second call outwaited its ctx")
+	}
+	close(h.release)
+	if err := <-first; err != nil && !errors.Is(err, ErrPresetUnavailable) {
+		t.Fatal(err)
 	}
 	wantPreset(t, b.node, "all-but-domestic")
 }

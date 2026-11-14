@@ -48,7 +48,9 @@ type Status struct {
 	// Egress is a server's (nil on a device).
 	Egress *supervisor.EgressInfo
 	// RulePreset is a device's rule preset (DeviceFile; "space" when it
-	// chose none); RulesEnforced is set while its data plane runs them, and
+	// chose none); RulesEnforced is set while its data plane's router
+	// enforces that preset (unset while disconnected, and while laying it
+	// out failed and is retried: ProblemPresetNotEnforced), and
 	// PresetUnavailable when the map can't build the preset, which is then
 	// enforced failing closed.
 	RulePreset        string
@@ -298,7 +300,10 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		}
 		st := *dp
 		s.DataPlane, s.Interface = &st, p.engine.TUNName()
-		s.RulesEnforced, s.PresetUnavailable = true, st.Rules.PresetUnavailable
+		// The router may still enforce the previous preset: Status shows
+		// the stored one, enforced only once the router is on it.
+		s.RulesEnforced = s.RulePreset == st.Rules.Preset.String()
+		s.PresetUnavailable = s.RulesEnforced && st.Rules.PresetUnavailable
 		var problem error
 		if p.dns != nil {
 			problem = p.dns()
@@ -417,6 +422,9 @@ const (
 	// preset, so it is enforced failing closed (no internet but the local
 	// ranges' direct routes).
 	ProblemPresetUnavailable Problem = "rule_preset_unavailable"
+	// ProblemPresetNotEnforced: laying out the device's rule preset
+	// failed (retried): the router keeps the previous preset meanwhile.
+	ProblemPresetNotEnforced Problem = "rule_preset_not_enforced"
 	// ProblemRouteTable: the OS routing table doesn't hold the rules now
 	// (putting it back failed): traffic may go around the tunnel.
 	ProblemRouteTable Problem = "route_table_not_enforced"
@@ -581,6 +589,9 @@ func (s Status) dataPlaneProblems(add func(HealthLevel, Problem)) {
 	}
 	if s.PresetUnavailable {
 		add(HealthDegraded, ProblemPresetUnavailable)
+	}
+	if !s.RulesEnforced && s.RulePreset != "" {
+		add(HealthDegraded, ProblemPresetNotEnforced)
 	}
 	routeTableProblems(dp.RouteTable, add)
 	if s.DNSUnprotected {

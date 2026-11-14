@@ -299,13 +299,20 @@
 // decides.
 //
 // A rule preset chosen through the local API ([Node.SetRulePreset]) is
-// taken by the goroutine that runs the node: it stores the preset in
-// [DeviceFile], hands it to the engine ([dataplane.Engine.SetRules]) at
-// once, and only then has Status show it. Status and the device file
-// never show a preset the data plane doesn't follow: a request the node
-// never took (its caller gave up first) changes nothing, and a store
-// that fails leaves the old preset everywhere. Every start takes the
-// stored preset as [dataplane.EngineConfig.Rules].
+// taken by the goroutine that runs the data plane: it stores the preset
+// in [DeviceFile], hands it to the engine ([dataplane.Engine.SetRules])
+// at once, and only then has Status show it. With no data plane running
+// (the node waits for a section, or stopped) it is stored and shown, and
+// the next start takes it: every start takes the stored preset as
+// [dataplane.EngineConfig.Rules]. A request the node never took (its
+// caller gave up first) changes nothing, and a store that fails leaves
+// the old preset everywhere. Status says the preset is enforced
+// (RulesEnforced) only while the engine's router enforces that preset
+// ([dataplane.RuleStatus.Preset]). When laying it out fails, the router
+// keeps the previous preset: the stored one is shown as not enforced yet
+// ([ProblemPresetNotEnforced]), the caller gets [ErrPresetNotEnforced],
+// and the data plane hands it over again at its retry, after applying the
+// section, until it is laid out.
 //
 // The device file ([DeviceFile], device.json in the state directory) is
 // the member's toggles ([DeviceSettings]), as strict as the node file, 0600:

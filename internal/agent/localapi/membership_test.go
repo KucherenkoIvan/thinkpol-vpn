@@ -454,7 +454,7 @@ func TestACallerThatLeftIsNotRefused(t *testing.T) {
 // refusals keep their prefix; the dial-time refusal says what the per-call
 // one says.
 func TestRefusalWording(t *testing.T) {
-	declared := []Error{ErrPermissionDenied, ErrRootOnly, ErrMembershipUnknown, ErrServerMode, ErrNotRunning, ErrPresetUnavailable, ErrUnknownPreset, ErrDNSUnprotected}
+	declared := []Error{ErrPermissionDenied, ErrRootOnly, ErrMembershipUnknown, ErrServerMode, ErrNotRunning, ErrPresetUnavailable, ErrPresetNotEnforced, ErrUnknownPreset, ErrDNSUnprotected}
 	if len(refusals) != len(declared) {
 		t.Errorf("%d rows for %d refusals", len(refusals), len(declared))
 	}

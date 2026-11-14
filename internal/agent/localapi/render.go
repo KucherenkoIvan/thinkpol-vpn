@@ -279,6 +279,8 @@ func writeDeviceSettings(line func(string, ...any), st *localapiv1.Status) {
 		switch {
 		case st.GetRulePresetUnavailable():
 			p += " (unavailable in this space: failing closed)"
+		case !st.GetRulesEnforced() && st.GetDataPlane() != nil:
+			p += " (not enforced yet: laying out its routes failed, retrying)"
 		case !st.GetRulesEnforced():
 			p += " (applies once connected)"
 		}

@@ -86,7 +86,7 @@ The levels then combine by narrowing:
 
 | Setting | Level | Takes effect |
 |---|---|---|
-| rule preset | device | at once: the call returns once the node stored it and its data plane follows it; until then neither `device.json` nor the status shows it, and a call given up before the node took it changes nothing (TP-197) |
+| rule preset | device | at once: the call returns once the node stored it and its data plane follows it; with no data plane running, once stored, for the next start. Until then neither `device.json` nor the status shows it, and a call given up before the node took it changes nothing. If laying out its routes fails, it stays stored, the status shows it as not enforced yet (`rule_preset_not_enforced`, retried) while the previous preset stays enforced, and the call is refused with `rule_preset_not_enforced` |
 | connect-on-boot | device | at the next boot; a start later in the same boot, and the running node, are left as they are |
 | kill switch, allow-LAN | device | at once: the call returns once the node put the kill switch in place or removed it (TP-048) |
 | node file settings | node | at the next start of `up` (TP-166: none is reloaded while running; SIGHUP re-reads only the map) |

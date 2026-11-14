@@ -61,11 +61,11 @@ type Node struct {
 	// plane, under settingsMu).
 	settingsMu sync.Mutex
 	device     DeviceSettings
-	// presetMu has one SetRulePreset at a time: a stopped node's store
-	// and its report keep one order. Never held with settingsMu while it
-	// waits: the request's take, on the node's goroutine, takes
-	// settingsMu.
-	presetMu      sync.Mutex
+	// presetTurn (one slot) has one SetRulePreset at a time, waited for
+	// under the caller's ctx: a stopped node's store and its report keep
+	// one order. Never held with settingsMu while it waits: the request's
+	// take, on the node's goroutine, takes settingsMu.
+	presetTurn    chan struct{}
 	rulesRequests chan rulesRequest
 	// killSwitchRequests asks the node's goroutine to act on a kill
 	// switch toggle stored (SetKillSwitch, SetAllowLAN); it closes the
@@ -113,7 +113,7 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	}
 	n := &Node{
 		cfg: cfg, state: st, logs: logs, plat: plat, dnsUpstreams: upstreams,
-		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
+		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest), presetTurn: make(chan struct{}, 1),
 		killSwitchRequests: make(chan chan struct{}),
 		ks:                 killSwitchKeeper{newKS: plat.NewKillSwitch, log: logs.Logger},
 	}
@@ -291,13 +291,16 @@ func (n *Node) Disconnect(ctx context.Context) error {
 // "everything", "all-but-domestic"), keeping its own rules. The goroutine
 // that runs the node takes the choice: it stores it in DeviceFile (only
 // the service writes it), has the data plane follow it, then Status shows
-// it, before SetRulePreset returns. A caller that gives up (its ctx ends)
-// before the node took the request changed nothing; one that gives up
-// after finds the choice taken. A node that stopped only stores it, for
-// its next start. ErrUnknownPreset for another name;
-// ErrPresetUnavailable when the space's map can't build the preset,
-// which is then kept and enforced failing closed (see
-// rules.PresetRules); ErrServerMode on a server.
+// it, before SetRulePreset returns. A caller whose ctx ends before the
+// node took the request (waiting for another SetRulePreset, too) changed
+// nothing and gets the ctx's error; once taken, it gets the outcome. With
+// no data plane running (a node that waits for a section, or stopped) the
+// choice is stored and shown, for the next start. ErrUnknownPreset for
+// another name; ErrPresetUnavailable when the space's map can't build the
+// preset, which is then kept and enforced failing closed (see
+// rules.PresetRules); ErrPresetNotEnforced when laying it out failed: it
+// is kept, shown as not enforced yet, and retried; ErrServerMode on a
+// server.
 func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	if n.Mode() == ModeServer {
 		return ErrServerMode
@@ -306,8 +309,12 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrUnknownPreset, err)
 	}
-	n.presetMu.Lock()
-	defer n.presetMu.Unlock()
+	select {
+	case n.presetTurn <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-n.presetTurn }()
 	take := func() (rules.Local, error) { return n.storePreset(p) }
 	done := make(chan error, 1)
 	select {
@@ -317,12 +324,11 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	// Taken: every goroutine that receives rulesRequests replies in the
+	// same step, after a file write and one Engine.SetRules (a layout,
+	// bounded by the engine's own route table change, under its ctx), so
+	// the wait is short and the caller hears what happened, not its ctx.
+	return <-done
 }
 
 // takeIdle takes the rules req asks for while no data plane runs (the

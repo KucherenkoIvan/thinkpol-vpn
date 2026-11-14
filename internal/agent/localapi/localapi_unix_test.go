@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"net"
@@ -66,6 +67,9 @@ func (n *fakeNode) SetRulePreset(_ context.Context, preset string) error {
 	defer n.mu.Unlock()
 	if preset == "all-but-domestic" {
 		return agent.ErrPresetUnavailable
+	}
+	if preset == "space" {
+		return fmt.Errorf("%w: laying out failed", agent.ErrPresetNotEnforced)
 	}
 	if preset != "everything" {
 		return agent.ErrUnknownPreset
@@ -232,6 +236,9 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 	}
 	if _, err := c.SetRulePreset(ctx, "all-but-domestic"); !errors.Is(err, ErrPresetUnavailable) {
 		t.Fatalf("got %v, want ErrPresetUnavailable", err)
+	}
+	if _, err := c.SetRulePreset(ctx, "space"); !errors.Is(err, ErrPresetNotEnforced) {
+		t.Fatalf("got %v, want ErrPresetNotEnforced", err)
 	}
 	if _, err := c.SetRulePreset(ctx, "nope"); !errors.Is(err, ErrUnknownPreset) {
 		t.Fatalf("got %v, want ErrUnknownPreset", err)
