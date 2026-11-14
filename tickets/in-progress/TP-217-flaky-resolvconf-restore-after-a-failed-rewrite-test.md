@@ -91,3 +91,5 @@ Review round 2 (delta check, adversarial): R1.2–R1.5 closed; no leaks found; o
 - 2026-11-15 merged origin/rewrite at 702f2fe (aacb234); RESIDUAL-RISKS.md's duplicate rows renumbered (79d07df): reality's RR57 is RR64 and its RR58 is RR65, with their references in docs, code comments and TP-201; the kill switch's RR57 and RR58 keep their numbers
 - 2026-11-15 out of scope, not fixed: after a real rewrite apply still stats the path (writtenInfo), so another program's file renamed in between the node's rename and that stat is taken for the node's own file and settles instead of being taken at once (a window of microseconds; replace could return the new file's info from before its rename)
 - 2026-11-15 on 79d07df: `make lint` and `make test` green (umask 022); go test -race of the package's TestResolvConf tests, 10 runs on Linux, passed
+- 2026-11-15 full `make lab-test` green on 53c6715 (GOFLAGS=-p=2, LAB_P=1, under the full-lab lock): lab phase and 39 packages
+- 2026-11-15 has-errors → in-progress (round 2 findings R2.1–R2.5 fixed)
