@@ -434,7 +434,7 @@ func TestTheFirstInitiationSinceLinkUpIsFromTheNeighborsUpSince(t *testing.T) {
 	deadline := time.Now().Add(wait)
 	for {
 		st = a.engine.Status()
-		if len(st.Peers) == 1 && !st.Peers[0].HandshakePendingSince.IsZero() && len(st.Neighbors) == 1 && st.Neighbors[0].Up {
+		if len(st.Peers) == 1 && st.Peers[0].FirstHop == s.id && !st.Peers[0].HandshakePendingSince.IsZero() && len(st.Neighbors) == 1 && st.Neighbors[0].Up {
 			break
 		}
 		if time.Now().After(deadline) {
