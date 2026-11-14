@@ -109,27 +109,35 @@ func TestAFullQueueDrops(t *testing.T) {
 
 func TestHandedStreams(t *testing.T) {
 	s := newSharedListeners(&recordingSender{})
-	ls := s.update([]ipc.Listener{{ID: 3, Transport: "tls", Stream: true, Address: "192.0.2.1:443"}, {ID: 4, Transport: "udp", Address: "192.0.2.1:443"}})
+	ls := s.update([]ipc.Listener{{ID: 3, Transport: "reality", Stream: true, Address: "192.0.2.1:443", Handoff: []byte("settings")}, {ID: 4, Transport: "udp", Address: "192.0.2.1:443"}})
+	if string(ls[0].Handoff) != "settings" {
+		t.Fatalf("handoff settings %q", ls[0].Handoff)
+	}
 	mine, theirs := net.Pipe()
 	defer func() { _ = theirs.Close() }()
-	s.stream(3, mine, []byte("hello"))
+	target, far := net.Pipe()
+	defer func() { _ = far.Close() }()
+	s.stream(3, transport.StreamHandoff{Conn: mine, Consumed: []byte("hello"), Target: target, TargetRead: []byte("early")})
 	select {
 	case st := <-ls[0].streams:
-		if st.Conn != mine || string(st.Consumed) != "hello" {
+		if st.Conn != mine || string(st.Consumed) != "hello" || st.Target != target || string(st.TargetRead) != "early" {
 			t.Fatalf("got %+v", st)
 		}
 	default:
 		t.Fatal("no stream")
 	}
-	// To a datagram listener or an unknown one: closed.
+	// To a datagram listener or an unknown one: closed, its target too.
 	for _, id := range []uint32{4, 99} {
 		a, b := net.Pipe()
-		s.stream(id, a, nil)
-		_ = b.SetReadDeadline(time.Now().Add(time.Second))
-		if _, err := b.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
-			t.Fatalf("listener %d: the connection stayed open (%v)", id, err)
+		c, d := net.Pipe()
+		s.stream(id, transport.StreamHandoff{Conn: a, Target: c})
+		for _, far := range []net.Conn{b, d} {
+			_ = far.SetReadDeadline(time.Now().Add(time.Second))
+			if _, err := far.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatalf("listener %d: a connection stayed open (%v)", id, err)
+			}
+			_ = far.Close()
 		}
-		_ = b.Close()
 	}
 }
 
@@ -160,7 +168,7 @@ func TestListenServesTheTransport(t *testing.T) {
 	_ = s.datagram(datagram(9, "198.51.100.7:4000", "x"))
 	a, b := net.Pipe()
 	defer func() { _ = b.Close() }()
-	s.stream(1, a, nil)
+	s.stream(1, transport.StreamHandoff{Conn: a})
 	if got := s.drops(); got != (SharedDrops{UnknownListener: 2}) {
 		t.Fatalf("drops %+v, want 2 for unknown listeners", got)
 	}

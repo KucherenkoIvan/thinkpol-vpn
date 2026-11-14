@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"time"
 )
 
@@ -128,6 +129,22 @@ type DialConfig struct {
 	Settings []byte
 	// Shaping is how this end shapes what it sends.
 	Shaping Shaping
+}
+
+// ParseEndpoint checks an endpoint of the map, what a dialer dials: an IP
+// literal and a port, neither of them unset (no unspecified address, no
+// port 0), as every transport reads endpoints. An IPv4-mapped address is
+// returned as IPv4. Listen addresses have their own rule: an unspecified
+// address there binds every address of its family.
+func ParseEndpoint(endpoint string) (netip.AddrPort, error) {
+	ap, err := netip.ParseAddrPort(endpoint)
+	if err != nil {
+		return ap, fmt.Errorf("%q is not an IP literal and port: %w", endpoint, err)
+	}
+	if ap.Port() == 0 || ap.Addr().IsUnspecified() {
+		return ap, fmt.Errorf("%q: no address or port", endpoint)
+	}
+	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()), nil
 }
 
 // Dialer opens links. One dialer serves every link of its transport.

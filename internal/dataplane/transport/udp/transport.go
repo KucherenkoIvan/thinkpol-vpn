@@ -69,8 +69,8 @@ func (t *Transport) Overhead(s transport.Shaping) int { return Overhead + s.Padd
 
 // CheckEndpoint implements transport.Transport.
 func (t *Transport) CheckEndpoint(endpoint string, cfg transport.DialConfig) error {
-	if _, err := parseEndpoint(endpoint); err != nil {
-		return err
+	if _, err := transport.ParseEndpoint(endpoint); err != nil {
+		return fmt.Errorf("udp: endpoint: %w", err)
 	}
 	if len(cfg.Credential) < MinSecretSize {
 		return fmt.Errorf("udp: credential is %d bytes, need at least %d", len(cfg.Credential), MinSecretSize)
@@ -94,10 +94,12 @@ func checkInbound(pl transport.PeerLink) error {
 	return proto.Unmarshal(pl.Settings, &transportv1.UdpInboundSettings{})
 }
 
-func parseEndpoint(endpoint string) (netip.AddrPort, error) {
-	ap, err := netip.ParseAddrPort(endpoint)
+// parseListenAddress reads a listener's address: an IP literal and port,
+// where an unspecified address binds every address of its family.
+func parseListenAddress(address string) (netip.AddrPort, error) {
+	ap, err := netip.ParseAddrPort(address)
 	if err != nil {
-		return ap, fmt.Errorf("udp: endpoint %q is not an IP literal and port: %w", endpoint, err)
+		return ap, fmt.Errorf("udp: listen address %q is not an IP literal and port: %w", address, err)
 	}
 	return ap, nil
 }
@@ -114,7 +116,7 @@ func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admi
 // ListenPacket implements transport.PacketRoutable: the socket Listen would
 // listen on, for a shared listener to read.
 func (t *Transport) ListenPacket(ctx context.Context, cfg transport.ListenConfig) (*net.UDPConn, error) {
-	ap, err := parseEndpoint(cfg.Address)
+	ap, err := parseListenAddress(cfg.Address)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +138,7 @@ func (t *Transport) ListenPacket(ctx context.Context, cfg transport.ListenConfig
 // dialer whose clock runs behind, after every worker restart or listener
 // reopen, and the datagrams the Router queued for it before it started.
 func (t *Transport) ListenForwarded(pc net.PacketConn, admission transport.Admission) (transport.Listener, error) {
-	return newListener(t, pc, admission.Peers, admission.Camouflage, startRule{}), nil
+	return newListener(t, pc, admission.Peers, admission.Camouflage, transport.StartRule{}), nil
 }
 
 // listenNetwork binds one address family, as the map's listeners mean it:

@@ -67,7 +67,7 @@ func parseListen(b []byte) (listenSettings, error) {
 		return s, invalid("private key: %v", err)
 	}
 	s.key = key
-	if s.target, err = parseAddrPort(pb.GetTarget()); err != nil {
+	if s.target, err = transport.ParseEndpoint(pb.GetTarget()); err != nil {
 		return s, invalid("target: %v", err)
 	}
 	if len(pb.GetServerNames()) == 0 {
@@ -124,17 +124,4 @@ func parseInbound(b []byte) error {
 		return invalid("inbound settings: %v", err)
 	}
 	return nil
-}
-
-// parseAddrPort accepts an IP literal and a port, as the map's endpoints
-// are: nodes never resolve names.
-func parseAddrPort(s string) (netip.AddrPort, error) {
-	ap, err := netip.ParseAddrPort(s)
-	if err != nil {
-		return ap, err
-	}
-	if ap.Port() == 0 || !ap.Addr().IsValid() || ap.Addr().IsUnspecified() {
-		return ap, fmt.Errorf("%s: no address or port", s)
-	}
-	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()), nil
 }

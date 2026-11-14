@@ -4524,9 +4524,13 @@ type PublicListener struct {
 	NoSpace           uint64                 `protobuf:"varint,4,opt,name=no_space,json=noSpace,proto3" json:"no_space,omitempty"`
 	StreamsOverloaded uint64                 `protobuf:"varint,5,opt,name=streams_overloaded,json=streamsOverloaded,proto3" json:"streams_overloaded,omitempty"`
 	// Peer links the transport refused to route.
-	Rejected      uint32 `protobuf:"varint,6,opt,name=rejected,proto3" json:"rejected,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Rejected uint32 `protobuf:"varint,6,opt,name=rejected,proto3" json:"rejected,omitempty"`
+	// Connections the transport closed past its own bounds (reality's
+	// connections being decided or spliced): a flood, or splices pinned
+	// open.
+	StreamsBoundClosed uint64 `protobuf:"varint,7,opt,name=streams_bound_closed,json=streamsBoundClosed,proto3" json:"streams_bound_closed,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *PublicListener) Reset() {
@@ -4597,6 +4601,13 @@ func (x *PublicListener) GetStreamsOverloaded() uint64 {
 func (x *PublicListener) GetRejected() uint32 {
 	if x != nil {
 		return x.Rejected
+	}
+	return 0
+}
+
+func (x *PublicListener) GetStreamsBoundClosed() uint64 {
+	if x != nil {
+		return x.StreamsBoundClosed
 	}
 	return 0
 }
@@ -4971,14 +4982,15 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"readySince\x129\n" +
 	"\n" +
 	"restart_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\trestartAt\x12\x1b\n" +
-	"\tlast_exit\x18\x06 \x01(\tR\blastExit\"\xd6\x01\n" +
+	"\tlast_exit\x18\x06 \x01(\tR\blastExit\"\x88\x02\n" +
 	"\x0ePublicListener\x12\x1c\n" +
 	"\ttransport\x18\x01 \x01(\tR\ttransport\x12\x16\n" +
 	"\x06routed\x18\x02 \x01(\x04R\x06routed\x12(\n" +
 	"\x0funauthenticated\x18\x03 \x01(\x04R\x0funauthenticated\x12\x19\n" +
 	"\bno_space\x18\x04 \x01(\x04R\anoSpace\x12-\n" +
 	"\x12streams_overloaded\x18\x05 \x01(\x04R\x11streamsOverloaded\x12\x1a\n" +
-	"\brejected\x18\x06 \x01(\rR\brejected*>\n" +
+	"\brejected\x18\x06 \x01(\rR\brejected\x120\n" +
+	"\x14streams_bound_closed\x18\a \x01(\x04R\x12streamsBoundClosed*>\n" +
 	"\x04Mode\x12\x14\n" +
 	"\x10MODE_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vMODE_DEVICE\x10\x01\x12\x0f\n" +

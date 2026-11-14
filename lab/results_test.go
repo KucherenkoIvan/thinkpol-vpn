@@ -80,6 +80,10 @@ func TestCensorMatrix(t *testing.T) {
 		}
 
 		want := cc.want(tr.name)
+		held := cc.hold > 0 && tr.hold != nil
+		if held {
+			tr.hold(t, l, target, cc.hold)
+		}
 		if cc.settle {
 			// An active module judges a connection after it has crossed:
 			// the first probe shows it the transport, the cell is the
@@ -92,6 +96,20 @@ func TestCensorMatrix(t *testing.T) {
 		}
 		got := tr.probe(t, l, target, want == "pass")
 		cell.result, cell.detail = score(got)
+		if held {
+			// The probe after the hold crosses on a redialled connection
+			// even if the censor cut the one it held: what it blocked
+			// during the hold is the cell's verdict.
+			if how, err := blockedBy(t, l, c, cc.watch, crossed{}, true); err == nil {
+				cell.result, cell.detail = "fail", fmt.Sprintf("the censor %s the connection held for %v", how, cc.hold)
+			} else if cell.result == "pass" {
+				cell.detail = strings.TrimPrefix(fmt.Sprintf("%s; held %v first", cell.detail, cc.hold), "; ")
+			}
+			if err := judgedFromTheStart(t, l, c, cc.watch); err != nil {
+				cell.result, cell.detail = "error", "the censor didn't frame the held connection"
+				t.Fatal(err)
+			}
+		}
 
 		if c != nil {
 			if err := c.healthy(t); err != nil {
@@ -213,6 +231,11 @@ func checkMatrix(cases []censorCase, rows []transport) error {
 			if cc.report == "prober" && !tr.udp && !isReferenceOrControl(tr.name) && cc.verdictSays[tr.name] == "" {
 				return fmt.Errorf("%s is a TCP gate row, but censor case %q doesn't say what the prober's verdict on it must say (verdictSays)", tr.name, cc.name)
 			}
+			// The comparison needs the site's answer: unlisted, a TLS gate
+			// row whose site dial timed out ("not compared") would pass.
+			if cc.report == "server-hello" && tr.tls && !isReferenceOrControl(tr.name) && cc.verdictSays[tr.name] == "" {
+				return fmt.Errorf("%s is a TLS gate row, but censor case %q doesn't say what the server-hello verdict on it must say (verdictSays)", tr.name, cc.name)
+			}
 		}
 	}
 	return nil
@@ -225,16 +248,18 @@ func isReferenceOrControl(row string) bool {
 }
 
 // TestCheckMatrix: the matrix as written passes its own checks; a TCP
-// gate row missing from the prober case's verdictSays, a row tuning a
-// report module without a verdictSays entry, and a row tuning a module
-// that doesn't exist each fail the run.
+// gate row missing from the prober case's verdictSays, a TLS gate row
+// missing from the server-hello case's, a row tuning a report module
+// without a verdictSays entry, and a row tuning a module that doesn't
+// exist each fail the run.
 func TestCheckMatrix(t *testing.T) {
 	if err := checkMatrix(censorCases, transports); err != nil {
 		t.Fatalf("the matrix: %v", err)
 	}
 	on := func(*testing.T, *lab.Lab) []censor.ModuleConfig { return nil }
-	prober := censorCase{name: "active prober", modules: on, report: "prober", verdictSays: map[string]string{"gate-a": "TLS: the server"}}
-	cases := []censorCase{{name: "off"}, prober}
+	prober := censorCase{name: "active prober", modules: on, report: "prober", verdictSays: map[string]string{"gate-a": "TLS: the server", "tls-gate": "TLS: the server"}}
+	serverHello := censorCase{name: "server-hello", modules: on, report: "server-hello", verdictSays: map[string]string{"tls-gate": "server hello matches the site"}}
+	cases := []censorCase{{name: "off"}, prober, serverHello}
 	for _, c := range []struct {
 		name    string
 		rows    []transport
@@ -246,6 +271,8 @@ func TestCheckMatrix(t *testing.T) {
 		{"tuned reference row, unlisted", []transport{{name: rowRelayTCP, moduleSettings: map[string]map[string]any{"prober": {"upstreamTell": "report"}}}}, "doesn't say what its verdict must say"},
 		{"tuned, listed", []transport{{name: "gate-a", moduleSettings: map[string]map[string]any{"prober": {"upstreamTell": "report"}}}}, ""},
 		{"misspelt module", []transport{{name: "gate-a", moduleSettings: map[string]map[string]any{"probr": {"upstreamTell": "report"}}}}, "no censor module"},
+		{"listed TLS gate row, TLS rows that aren't gate rows", []transport{{name: "tls-gate", tls: true}, {name: rowHTTPS, tls: true}, {name: rowRelayTCP, tls: true}}, ""},
+		{"unlisted TLS gate row", []transport{{name: "gate-a", tls: true}}, "gate-a is a TLS gate row"},
 	} {
 		err := checkMatrix(cases, c.rows)
 		switch {
@@ -323,6 +350,11 @@ type censorCase struct {
 	// blocker is the module a cell expected to fail must find blocking
 	// in the verdict log.
 	blocker string
+	// hold keeps the tunnel of a row with a hold (a TLS-shaped transport)
+	// in use this long before the probe, and the cell fails if watch, a
+	// module of the case, blocked its connection meanwhile.
+	hold  time.Duration
+	watch string
 	// upstream runs the cell in lab.Upstream: the camouflage site behind
 	// the router.
 	upstream bool
@@ -457,8 +489,10 @@ var censorCases = []censorCase{
 	{name: "ip-blocklist (entry)", expect: allFail(), blocker: "ip-blocklist",
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig { return entryIPBlocklist(t, l) }},
 	// Reset, its default: plain TCP, OpenVPN over TCP and the rest name
-	// no site; the relay's clients name the site it relays to.
-	{name: "sni-blocklist (entry)", expect: map[string]string{rowHTTPS: "fail", rowRelayTCP: "fail"}, blocker: "sni-blocklist",
+	// no site; the relay's clients name the site it relays to, and so do
+	// reality's, whose server-1 also checks its target under that name:
+	// a censor blocking the site's name blocks reality with it.
+	{name: "sni-blocklist (entry)", expect: map[string]string{rowHTTPS: "fail", rowRelayTCP: "fail", rowReality: "fail"}, blocker: "sni-blocklist",
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			return []censor.ModuleConfig{{Name: "sni-blocklist", Settings: json.RawMessage(`{"names": ["` + httpsName + `"]}`)}}
 		}},
@@ -472,14 +506,16 @@ var censorCases = []censorCase{
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			return []censor.ModuleConfig{{Name: "openvpn-fingerprint", Settings: json.RawMessage(`{}`)}}
 		}},
-	// An M2 gate check (docs/design/milestones.md): no row carries
-	// WireGuard in TLS yet, so every row passes. A TLS-shaped transport's
-	// pass means something only when its probe runs long enough for the
-	// rhythm to show: three rekeys (up to 7 minutes, up to about 10
-	// minutes when batched), or three idle keepalives.
-	{name: "wireguard-rhythm", modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
-		return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{}`)}}
-	}},
+	// An M2 gate check (docs/design/milestones.md). A TLS-shaped
+	// transport's pass means something only when its probe runs long
+	// enough for the rhythm to show: three rekeys (up to 7 minutes, up to
+	// about 10 minutes when batched), or three idle keepalives. So reality,
+	// which doesn't batch, holds its tunnel in use for 7.5 minutes first,
+	// with its default settings; the other rows aren't TLS and pass.
+	{name: "wireguard-rhythm", hold: 450 * time.Second, watch: "wireguard-rhythm",
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+			return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{}`)}}
+		}},
 	// M2 gate checks (docs/design/milestones.md). Wu et al.'s exemptions
 	// on each connection's first data, UDP's first datagram too: thinkpol's
 	// udp sends random bytes first (exempt by chance about once in 400
@@ -498,24 +534,32 @@ var censorCases = []censorCase{
 	// against nginx on the camouflage node: the https row's nginx answers
 	// every probe and the TLS handshake as it does; the echo server and
 	// OpenVPN don't; the relay answers as the site does, the site's own
-	// answers, and shows the upstream tell.
+	// answers, and shows the upstream tell. So does reality, which splices
+	// every probe to its target; its tell is reported, not flagged (owner,
+	// 2026-11-09: REALITY's design can't avoid it), and its verdict must
+	// show the tell was looked for. The prober counts the tell by the
+	// probed address: reality's target is one IPv4 address, so a link over
+	// IPv6 dials it from server-1's IPv4 address and the report reads
+	// "connections to the reference during 0 of n probes"; a censor that
+	// knows both addresses are one host sees it anyway (RR31).
 	{name: "active prober", expect: map[string]string{rowRandomTCP: "fail", rowOpenVPNTCP: "fail", rowRelayTCP: "fail"}, blocker: "prober",
 		upstream: true, settle: true, report: "prober",
-		verdictSays: map[string]string{rowHTTPS: "TLS: the server", rowRelayTCP: "upstream tell: a connection"},
+		verdictSays: map[string]string{rowHTTPS: "TLS: the server", rowRelayTCP: "upstream tell: a connection", rowReality: "to the reference during"},
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
-			camouflage := startCamouflage(t, l)
+			camouflage := lab.StartCamouflage(t, l)
 			return []censor.ModuleConfig{
 				{Name: "fully-encrypted", Settings: json.RawMessage(`{"tagOnly": true}`)},
 				{Name: "prober", Settings: proberSettings(t, l, camouflage)},
 			}
 		}},
-	// The https and relay rows' ClientHellos name the camouflage site:
-	// their server hellos are compared with the site's answer to the same
-	// ClientHello (the relay's is the site's own).
+	// The https, relay and reality rows' ClientHellos name the camouflage
+	// site: their server hellos are compared with the site's answer to the
+	// same ClientHello (the relay's is the site's own, reality's REALITY's
+	// imitation of it).
 	{name: "server-hello", upstream: true, settle: true, report: "server-hello",
-		verdictSays: map[string]string{rowHTTPS: "server hello matches the site", rowRelayTCP: "server hello matches the site"},
+		verdictSays: map[string]string{rowHTTPS: "server hello matches the site", rowRelayTCP: "server hello matches the site", rowReality: "server hello matches the site"},
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
-			camouflage := startCamouflage(t, l)
+			camouflage := lab.StartCamouflage(t, l)
 			b, err := json.Marshal(map[string]map[string]string{"sites": {httpsName: camouflage[0].String()}})
 			if err != nil {
 				t.Fatal(err)
@@ -565,6 +609,13 @@ type transport struct {
 	// run, and so does a row tuning a case's report module without being
 	// in its verdictSays (checkMatrix).
 	moduleSettings map[string]map[string]any
+	// tls: the row's underlay connection is TLS whose ClientHello names
+	// the camouflage site, so the server-hello comparison has something
+	// to compare (checkMatrix).
+	tls bool
+	// hold, if set, keeps the transport in use for a while (a case's
+	// hold) before the probe.
+	hold func(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration)
 }
 
 // withRowSettings is the case's module configs with a row's overrides
@@ -643,13 +694,14 @@ func TestWithRowSettings(t *testing.T) {
 
 var transports = []transport{
 	{name: rowPlainTCP, setup: setupPlainTCP, probe: probePlainTCP, sawFlows: sawPlainTCP},
-	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPSOn(443), sawFlows: sawHTTPS},
+	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPSOn(443), sawFlows: sawHTTPS, tls: true},
 	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP, udp: true, oneUnderlay: true},
 	{name: rowWireGuard, setup: setupWireGuard, probe: probeUDP, sawFlows: sawWireGuard, udp: true},
 	{name: rowOpenVPNUDP, setup: openVPN{"udp"}.setup, probe: openVPN{"udp"}.probe, sawFlows: openVPN{"udp"}.sawFlows, udp: true},
 	{name: rowOpenVPNTCP, setup: openVPN{"tcp"}.setup, probe: openVPN{"tcp"}.probe, sawFlows: openVPN{"tcp"}.sawFlows},
 	{name: rowRandomTCP, setup: setupRandom, probe: probeRandom, sawFlows: sawRandom},
-	{name: rowRelayTCP, setup: setupRelay, probe: probeHTTPSOn(relayRowPort), sawFlows: sawRelay, upstream: true},
+	{name: rowRelayTCP, setup: setupRelay, probe: probeHTTPSOn(relayRowPort), sawFlows: sawRelay, upstream: true, tls: true},
+	realityRow,
 }
 
 // probeWindow is how long a probe retries a family that should cross; one
