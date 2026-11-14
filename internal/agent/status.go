@@ -169,8 +169,9 @@ var ErrServerMode = errors.New("agent: a server node always serves its spaces")
 // may leave outside it (Status.DNSUnprotected).
 var ErrDNSUnprotected = errors.New("agent: connected, but the system may resolve names outside the tunnel")
 
-// ErrNotRunning is Connect, Disconnect or a kill switch toggle on a node
-// that isn't running.
+// ErrNotRunning is Connect, Disconnect, a kill switch toggle or a rule
+// preset on a node that isn't running (a toggle or preset is stored for
+// its next start).
 var ErrNotRunning = errors.New("agent: the node is not running")
 
 // StartError is a data plane that failed to start on Connect. Step names
@@ -315,9 +316,10 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		// The router may still enforce the previous preset: Status shows
 		// the stored one, enforced only once the router is on it. A switch
 		// whose router took the new preset shows it while the OS routing
-		// table catches up, with the engine unlocked.
+		// table catches up, with the engine unlocked; choosing the stored
+		// preset again is no switch, so its failed layout stays shown.
 		routed := st.Rules.Preset.String()
-		switched := p.switching != "" && routed == p.switching
+		switched := p.switching != "" && p.switching != p.preset && routed == p.switching
 		if switched {
 			s.RulePreset = routed
 		}

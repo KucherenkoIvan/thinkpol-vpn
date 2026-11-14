@@ -793,7 +793,7 @@ Limits: 32 connections and 16 calls per connection. All watchers share one statu
 | `Connect` | unary | control | `{}` | `{ status: Status }` once up | `server_mode`, `not_running`, `dns_not_protected`, `start_failed:<step>` |
 | `Disconnect` | unary | control | `{}` | `{ status: Status }` once down | `server_mode`, `not_running` |
 | `ListSpaces` | unary | control | `{}` | `{ spaces: [ { id, active } ] }` (always one, active) | — |
-| `SetRulePreset` | unary | control | `{ preset: string }` | `{ status: Status }` | `unknown_rule_preset`, `rule_preset_unavailable` (stored anyway), `rule_preset_not_enforced` (stored, the router keeps the preset it had until a retry lays it out), `rule_preset_incomplete` (stored and in place, the rest of its layout retried), `server_mode` |
+| `SetRulePreset` | unary | control | `{ preset: string }` | `{ status: Status }` | `unknown_rule_preset`, `rule_preset_unavailable` (stored anyway), `rule_preset_not_enforced` (stored, the router keeps the preset it had until a retry lays it out), `rule_preset_incomplete` (stored and in place, the rest of its layout retried), `not_running` (stored for the next start), `server_mode` |
 | `TailLogs` | server stream | admin | `{ lines: uint32 (0: 100), follow: bool }` | stream of `{ lines: [string], missed: uint64 }` | — |
 | `Diagnose` | unary | control (host parts: admin) | `{}` | `{ diagnostics: Diagnostics }` | — |
 

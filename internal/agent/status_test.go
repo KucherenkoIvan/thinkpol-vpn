@@ -763,6 +763,11 @@ func TestARulePresetWhoseLayoutFailsIsRetried(t *testing.T) {
 	notEnforced()
 	eventually(t, func() bool { return tries.Load() >= 3 }) // retried
 	notEnforced()
+	// The same failure is warned of once, then logged at debug.
+	if log := b.log.String(); strings.Count(log, `level=WARN msg="applying the map failed`) != 1 ||
+		!strings.Contains(log, `level=DEBUG msg="applying the map failed`) {
+		t.Fatalf("the failing retries' log:\n%s", log)
+	}
 	failing.Store(false)
 	eventually(t, func() bool { st := b.node.Status(); return st.RulesEnforced && !st.Retrying })
 	wantPreset(t, b.node, "all-but-domestic")
@@ -894,6 +899,94 @@ func TestALaterRulePresetEndsTheFailedLayoutsRetry(t *testing.T) {
 	wantPreset(t, b.node, "everything")
 }
 
+// A map whose Apply fails while a failed layout waits for its retry is
+// still retried once a later preset is laid out in full (SetRules runs
+// none of the Apply's steps), and at once: the switch brings the retry
+// forward, so apply_failed ends as soon as the Apply can run.
+func TestAFailedMapApplyIsRetriedAfterAPresetSwitch(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	var failing atomic.Bool
+	b := startDevice(t, s, reg, true, deviceOpt{tuning: func(tu *tuning) {
+		tu.retryAfter = time.Hour // only the switch brings the retry
+		tu.tableFault = func() error {
+			if failing.Load() {
+				return errLayout
+			}
+			return nil
+		}
+	}})
+	b.connection(t, Connected)
+	ctx := context.Background()
+	failing.Store(true)
+	if err := b.node.SetRulePreset(ctx, "all-but-domestic"); !errors.Is(err, ErrPresetNotEnforced) {
+		t.Fatalf("got %v, want ErrPresetNotEnforced", err)
+	}
+	b.maps <- s.build(t, 2)
+	eventually(t, func() bool {
+		st := b.node.Status()
+		return st.MapVersion == 2 && st.DataPlane.LastApplyError != "" && slices.Contains(st.Health().Problems, ProblemApplyFailed)
+	})
+	failing.Store(false)
+	if err := b.node.SetRulePreset(ctx, "everything"); err != nil && !errors.Is(err, ErrPresetUnavailable) {
+		t.Fatal(err)
+	}
+	eventually(t, func() bool { st := b.node.Status(); return st.DataPlane.LastApplyError == "" && !st.Retrying })
+	if st := b.node.Status(); !st.RulesEnforced || st.RulesIncomplete || slices.Contains(st.Health().Problems, ProblemApplyFailed) {
+		t.Fatalf("status %+v, health %+v", st, st.Health())
+	}
+	wantPreset(t, b.node, "everything")
+}
+
+// Choosing again the preset whose layout is incomplete is no switch:
+// while it is laid out again, Status still shows it incomplete.
+func TestARulePresetChosenAgainStaysIncompleteWhileLaidOut(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	h := newHeldRouteTable()
+	b := startDevice(t, s, reg, true, h.opt())
+	b.connection(t, Connected)
+	h.fail.Store(true)
+	if err := b.node.SetRulePreset(context.Background(), "all-but-domestic"); !errors.Is(err, ErrPresetIncomplete) {
+		t.Fatalf("got %v, want ErrPresetIncomplete", err)
+	}
+	shown, err := switchHeld(t, b, h, "all-but-domestic")
+	if !errors.Is(err, ErrPresetIncomplete) {
+		t.Fatalf("again: got %v, want ErrPresetIncomplete", err)
+	}
+	for _, st := range shown {
+		if st.RulePreset != "all-but-domestic" || !st.RulesEnforced || !st.RulesIncomplete {
+			t.Fatalf("while laid out again: status %+v", st)
+		}
+	}
+}
+
+// A preset set on a node that stopped is stored and shown for its next
+// start, and the caller hears that the node isn't running.
+func TestARulePresetSetOnAStoppedNodeIsStoredForItsNextStart(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	b := startDevice(t, s, reg, true)
+	b.connection(t, Connected)
+	b.stop()
+	select {
+	case <-b.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the node didn't stop")
+	}
+	b.done <- nil // for the cleanup
+	if err := b.node.SetRulePreset(context.Background(), "all-but-domestic"); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("got %v, want ErrNotRunning", err)
+	}
+	wantPreset(t, b.node, "all-but-domestic")
+	if n, err := Prepare(b.node.cfg, Logs{}, testPlatform()); err != nil || n.Status().RulePreset != "all-but-domestic" {
+		t.Fatalf("restart: %v", err)
+	}
+}
+
 // blockDeviceFile makes storing the device file fail until the returned
 // func is called: its temporary file's name is taken by a directory.
 func blockDeviceFile(t *testing.T, dir string) func() {
@@ -944,14 +1037,14 @@ func TestARulePresetStoreThatFailsWhileStoppedChangesNothing(t *testing.T) {
 	}
 	close(n.stopped)
 	ctx := context.Background()
-	if err := n.SetRulePreset(ctx, "everything"); err != nil {
-		t.Fatal(err)
+	if err := n.SetRulePreset(ctx, "everything"); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("got %v, want ErrNotRunning", err)
 	}
 	unblock := blockDeviceFile(t, dir)
 	err = n.SetRulePreset(ctx, "all-but-domestic")
 	unblock()
-	if err == nil {
-		t.Fatal("a store that failed was taken")
+	if err == nil || errors.Is(err, ErrNotRunning) {
+		t.Fatalf("got %v, want the store's error", err)
 	}
 	wantPreset(t, n, "everything")
 }

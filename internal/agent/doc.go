@@ -307,7 +307,8 @@
 // in [DeviceFile], hands it to the engine ([dataplane.Engine.SetRules])
 // at once, and only then has Status show it. With no data plane running
 // (the node waits for a section, or stopped) it is stored and shown, and
-// the next start takes it: every start takes the stored preset as
+// the next start takes it (a stopped node says [ErrNotRunning], as a kill
+// switch toggle does): every start takes the stored preset as
 // [dataplane.EngineConfig.Rules]. A request the node never took (its
 // caller gave up first) changes nothing, and a store that fails leaves
 // the old preset everywhere. Status says the preset is enforced

@@ -295,7 +295,8 @@ func (n *Node) Disconnect(ctx context.Context) error {
 // node took the request (waiting for another SetRulePreset, too) changed
 // nothing and gets the ctx's error; once taken, it gets the outcome. With
 // no data plane running (a node that waits for a section, or stopped) the
-// choice is stored and shown, for the next start. ErrUnknownPreset for
+// choice is stored and shown, for the next start; a stopped node says
+// ErrNotRunning, as a kill switch toggle does. ErrUnknownPreset for
 // another name; ErrPresetUnavailable when the space's map can't build the
 // preset, which is then kept and enforced failing closed (see
 // rules.PresetRules); ErrPresetNotEnforced when laying it out failed
@@ -322,7 +323,10 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	select {
 	case n.rulesRequests <- rulesRequest{take: take, done: done}:
 	case <-n.stopped:
-		return n.takeIdle(rulesRequest{take: take})
+		if err := n.takeIdle(rulesRequest{take: take}); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: the rule preset is stored for its next start", ErrNotRunning)
 	case <-ctx.Done():
 		return ctx.Err()
 	}

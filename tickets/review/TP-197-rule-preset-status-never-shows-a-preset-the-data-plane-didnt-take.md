@@ -52,6 +52,13 @@ Review round 2 (go-paranoid delta check), accepted by the orchestrator. The safe
 - [x] R2.5 (nit) each retry of a failing layout logs "map applied" at Info; a later successful preset leaves the old retryAt: clear it on success, log the retried layout quieter.
 - [x] R2.6 (nit) rule_preset_not_enforced uses gRPC Unavailable: use FailedPrecondition unless the localapi's refusal convention says otherwise.
 
+Review round 3 (orchestrator's delta check), accepted by the orchestrator. R2.1–R2.6 are closed and the safety property held; fix these, then merge.
+- [ ] R3.1 (should-fix) `rules preset` on a stopped node exits 0 (node.go: the stopped case stores the preset and returns nil; the 69 row in TestEveryCommandExitsBySysexits comes only from the fake node): store the preset (the next start uses it), then return ErrNotRunning, as the kill switch toggle does, its message saying it was stored for the next start; a running node with no data plane still returns nil; test on a real stopped Node (ErrNotRunning, status and device.json show the stored preset).
+- [ ] R3.2 (should-fix) dataplane.go: dropping `st.LastApplyError == ""` from the successful layout's retry clearing passes every test (TestALaterRulePresetEndsTheFailedLayoutsRetry never fails an Apply): a successful preset switch would cancel a failed map Apply's retry until the next map; test a map Apply failing, a switch succeeding, the map still retried.
+- [ ] R3.3 (nit) takeRules sets the preset and clears switching before publish() copies rulesPending into the report, so a Status read between them can show the new preset with the previous one's layout failure (or complete when it isn't): set layoutFailed in the same report.set.
+- [ ] R3.4 (nit) once the first retry failed, LastApplyError keeps the retry after a later successful switch and apply_failed shows for up to another RetryAfter: clear it when the switch's Apply succeeds if that's correct (a failed map Apply must still be retried); a failing layout logs "applying the map failed" at Warn every RetryAfter: warn once per streak, then Debug.
+- [ ] R3.5 (nit) status.go, the `!switched` term: choosing again the preset the router already runs hides "incomplete" during the new layout; fix it if it's one line, else comment why it's acceptable.
+
 ## Log
 - 2026-11-07 created in backlog
 - 2026-11-14 backlog → in-progress, owner: agent-tp-197
@@ -98,3 +105,4 @@ Review round 2 (go-paranoid delta check), accepted by the orchestrator. The safe
 - 2026-11-15 couldn't verify: nothing device-only; platform-independent agent and engine code, covered by unit tests and the lab.
 - 2026-11-15 has-errors → in-progress (round 2 findings R2.1–R2.6 picked up)
 - 2026-11-15 in-progress → review
+- 2026-11-15 review round 3: fix R3.1–R3.2, nits R3.3–R3.5, then merge

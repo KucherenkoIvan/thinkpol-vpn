@@ -281,6 +281,16 @@ type runner struct {
 	// rulesPending is set while laying out dp.Rules failed (SetRules):
 	// the engine holds them, and the retry's Apply lays them out.
 	rulesPending bool
+	// applyFailed is the failure of the Applies failing in a row (the
+	// map's version and the step), warned of once; zero after one
+	// succeeds.
+	applyFailed failedApply
+}
+
+// failedApply is an Apply's failure, as warned of once.
+type failedApply struct {
+	version uint64
+	step    dataplane.Step
 }
 
 // tunMTU is the TUN's MTU: the overlay's, below the engine's per-link
@@ -334,7 +344,7 @@ func (r *runner) start(ctx context.Context) error {
 	}
 	r.pointSystem()
 	r.listeners = newListenerSet(engine, r.dp.Log, r.dp.tuning.retryAfter)
-	r.retryAt, r.rulesPending = time.Time{}, false
+	r.retryAt, r.rulesPending, r.applyFailed = time.Time{}, false, failedApply{}
 	r.applied()
 	return nil
 }
@@ -556,7 +566,9 @@ func (r *runner) takeRules(req rulesRequest) error {
 		r.dp.report.set(func(p *report) { p.switching = l.Preset.String() })
 		err = r.layOutRules()
 	}
-	r.dp.report.set(func(p *report) { p.preset, p.switching = l.Preset.String(), "" })
+	// layoutFailed goes with the preset: publish would leave a moment
+	// showing this preset with the previous one's layout failure.
+	r.dp.report.set(func(p *report) { p.preset, p.switching, p.layoutFailed = l.Preset.String(), "", r.rulesPending })
 	r.publish()
 	return err
 }
@@ -571,9 +583,14 @@ func (r *runner) layOutRules() error {
 	err := r.engine.SetRules(r.dp.Rules)
 	st := r.engine.Status()
 	if err == nil || errors.Is(err, rules.ErrPresetUnavailable) {
-		// A retry left by a failed layout has nothing left to do, unless
-		// an Apply failed too.
-		if r.rulesPending && st.LastApplyError == "" {
+		switch {
+		case st.LastApplyError != "" && !r.retryAt.IsZero():
+			// An Apply failed too, and SetRules runs none of its steps,
+			// so it stays failed (apply_failed) until its retry succeeds;
+			// that retry comes now, as what failed may have cleared.
+			r.retryAt = time.Now()
+		case r.rulesPending:
+			// A retry left by a failed layout has nothing left to do.
 			r.retryAt = time.Time{}
 		}
 		r.rulesPending = false
@@ -778,10 +795,17 @@ func (r *runner) tryStart(ctx context.Context) {
 func (r *runner) apply(ctx context.Context) {
 	if err := r.engine.Apply(ctx, r.follow.section); err != nil {
 		r.retryAt = time.Now().Add(r.dp.tuning.retryAfter)
-		r.dp.Log.Warn("applying the map failed, retrying", "version", r.follow.cur.Header().Version,
-			"step", r.engine.Status().LastApplyError, "in", r.dp.tuning.retryAfter, "err", path.RedactError(err))
+		failed := failedApply{version: r.follow.cur.Header().Version, step: r.engine.Status().LastApplyError}
+		level := slog.LevelWarn
+		if failed == r.applyFailed {
+			level = slog.LevelDebug // the same failure, retried every RetryAfter
+		}
+		r.applyFailed = failed
+		r.dp.Log.Log(ctx, level, "applying the map failed, retrying", "version", failed.version,
+			"step", failed.step, "in", r.dp.tuning.retryAfter, "err", path.RedactError(err))
 		return
 	}
+	r.applyFailed = failedApply{}
 	if r.rulesPending {
 		r.rulesPending = false
 		r.dp.Log.Info("rules laid out", "preset", r.dp.Rules.Preset)

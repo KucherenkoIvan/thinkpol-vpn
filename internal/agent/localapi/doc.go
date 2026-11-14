@@ -166,7 +166,8 @@
 // (`rule_preset_unavailable`, and the status). One whose layout fails is
 // kept and retried, refused by where the failure left the router
 // (`rule_preset_not_enforced`: the preset it had; `rule_preset_incomplete`:
-// the new one, the rest missing).
+// the new one, the rest missing). A node that isn't running stores it for
+// its next start, refused as not_running.
 //
 // # Diagnostics
 //
