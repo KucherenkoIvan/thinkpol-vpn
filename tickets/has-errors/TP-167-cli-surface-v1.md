@@ -40,6 +40,18 @@ Before M2 adds the kill-switch setting, scripts can branch on the CLI's exit cod
 - Split 2026-11-07 (owner's MVP cut): the snake_case sweep (F5), the other flags and settings (F7, `rules preset`), `-json` everywhere (F12), help on stdout (F11), F9, F10, F13, F14, F16, F17, F19, F20 and the CLI reference moved to TP-181. The lab box's "a message that doesn't say only root" went with F9.
 - If the kill switch (TP-048) hasn't landed when this starts, its setting gets the shape when TP-048 adds it.
 
+## Review findings
+Round 1 (go-paranoid, go-style, pocket-torvalds), with the orchestrator's decisions.
+- [ ] R1.1 (blocker) `kill-switch on`, `allow-lan` (and an off whose removal fails) exit 0 while the kill switch isn't enforced; a stopped node only stores the toggle and exits 0. The server refuses a stored-but-not-enforced toggle with its own code (`kill_switch_not_enforced`, carrying the reason) → 1 with the status; a stopped node → `not_running` → 69. A "succeeded, not enforced" row in the exit-code table, mutation-checked. Same check for `rules preset` (TP-197 owns node.go's preset path).
+- [ ] R1.2 (macOS) `membership_unknown` is sent for any Directory Services error; split it: transient stays `membership_unknown` → 75, permanent gets its own code → 1. Both rows tested; Notes line that `up` → 75 while the service holds the host lock doesn't clear by retrying.
+- [ ] R1.3 any wrapped ENOENT → 66 and EACCES → 77 for every command. 66 only for a typed `inputError` wrapped where a command opens a named input; 77 from permission refusals, needs-root and an unreadable named input; a missing output directory → 1. Table in two tiers (typed first, fallbacks after) with the ConfigError-wrapping-ENOENT comment.
+- [ ] R1.4 nothing ties localapi's refusal list to the exit table: export the refusals, map code → exit explicitly, test that every refusal has an entry.
+- [ ] R1.5 writeChange/machineCode renamed (printOutcome, codeSuffix); the status write's error joined; the second Status call gets its own deadline; an empty code guarded; comment that the status on exit 1 is the verdict's definition.
+- [ ] R1.6 one needs-root error type for rollback and service, matched once, in a file every OS builds; errors.Is on the old sentinels keeps working or every caller updated.
+- [ ] R1.7 exitcode_unix_test.go: row names, the quiet rule, the test-command group, the missing rows (`up` success; "succeeded, not enforced" per setting command), the failure message, exitFailure in main_test.go, the sentence at :510.
+- [ ] R1.8 docs and comments: exitFailure's comment, api-overview.md's Contents row → the TP-167 section, a Notes line in TP-181 (split the reference, fix its stale exit codes), the statusLine comment, agent/doc.go's long line, the branch in the in-progress Log line.
+- [ ] R1.9 (nit) `up -h`/`up -bogus` may drop a KeepOnlyOnADevice error behind flag.ErrHelp/errUsagePrinted: check whether it's reachable; fix with a test or Log why not.
+
 ## Log
 - 2026-11-07 created in backlog
 - 2026-11-07 split (owner's MVP cut): exit codes and the kill-switch/connect-on-boot setting shape stay; the rest → TP-181
@@ -55,3 +67,4 @@ Before M2 adds the kill-switch setting, scripts can branch on the CLI's exit cod
 - 2026-11-15 out of scope: internal/dataplane/dns TestResolvConfAFileRenamedInIsTakenAtOnce failed three times in `make test` under load (once on rewrite d2a4793 too), then passed; not touched here, no ticket filed
 - 2026-11-15 couldn't verify: `up`'s permission (77) in a unit test (needs another user's state directory); macOS's membership_unknown (75) only through a fake Membership
 - 2026-11-15 in-progress → review
+- 2026-11-15 review → has-errors (round 1 findings R1.1–R1.9)
