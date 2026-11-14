@@ -747,6 +747,16 @@ func failPartway(t *testing.T, r *resolvConf, cut func(content []byte) int) (suc
 		func() int { mu.Lock(); defer mu.Unlock(); return n }
 }
 
+// readBetweenRewrites reads the file at path with r.mu held, as the watch
+// does: a failing rewrite the poll retries truncates the file before it
+// writes it, and a read in between finds it empty.
+func readBetweenRewrites(t *testing.T, r *resolvConf, path string) string {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return readString(t, path)
+}
+
 // A rewrite in place that failed partway can leave the file empty or cut
 // inside the header line, which no longer reads as managed: it is the
 // node's own write all the same, retried with the original kept in
@@ -797,17 +807,13 @@ func TestResolvConfRestoreAfterARewriteFailedPartwayPutsBackTheWholeOriginal(t *
 	if err := r.Update(next); err == nil {
 		t.Fatal("the injected failure is lost")
 	}
-	updated := time.Now()
 	time.Sleep(500 * time.Millisecond)
 	if n := tries(); n > 10 {
 		t.Errorf("%d rewrites tried in 500 ms with a 100 ms poll: retried on its own change events", n)
 	}
-	before := tries()
-	readAt := time.Since(updated)
-	got := readString(t, path)
-	after := tries()
+	got := readBetweenRewrites(t, r, path)
 	if m := parseResolvConf([]byte(got)); !m.managed || string(m.original) == isp {
-		t.Fatalf("TRACE read at +%v, %d bytes %q, tries %d before the read and %d after; the file now:\n%s", readAt, len(got), got, before, after, readString(t, path))
+		t.Fatalf("the file is not cut inside the original:\n%s", got)
 	}
 	restoredTo(t, path, r, isp)
 }
