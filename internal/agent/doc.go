@@ -168,9 +168,10 @@
 // directory on the way counts, and why that rules out macOS's /var/run).
 //
 // A second `thinkpol up` exits with "another thinkpol agent is running on
-// this host" and changes nothing. Its start-time cleanups (putting back a
-// resolver configuration a crash left, clearing a crashed run's route
-// table and overlay routes) would otherwise undo the running agent's.
+// this host" (EX_TEMPFAIL, 75) and changes nothing. Its start-time
+// cleanups (putting back a resolver configuration a crash left, clearing
+// a crashed run's route table and overlay routes) would otherwise undo
+// the running agent's.
 //
 // # Device and server
 //
@@ -208,12 +209,15 @@
 // left (its resolver configuration, the route table's rules, its kill
 // switch) until a map makes it a device again, or `thinkpol rollback`
 // ([Rollback]) or `thinkpol service uninstall` clears the host
-// ([Platform.ClearHost]) while no agent runs; `thinkpol
-// disconnect` and `thinkpol kill-switch off` in that state clear none of
-// it, and report success: the toggle is stored and the connection down,
-// as asked, but the host is left alone. A mismatch is told to no subscriber: no event says it
-// starts or ends (nothing subscribes in production yet), only Status and
-// the log.
+// ([Platform.ClearHost]) while no agent runs. `thinkpol disconnect` and
+// `thinkpol kill-switch off` in that state clear none of it: the
+// disconnect reports success (the connection down, as asked, the host
+// left alone); a kill switch toggle is stored and refused as not applied
+// ([KillSwitchNotEnforcedError], `not_applied`), as is one set while a
+// node that waited removed from its space is then made a server: its
+// status says not_applied from then on, whatever it enforced before. A
+// mismatch is told to no subscriber: no event says it starts or ends
+// (nothing subscribes in production yet), only Status and the log.
 //
 // Planned (TP-183): the node's own configuration as a ceiling over what
 // the map asks of it (docs/design/overlay.md "Node agent"). Until it
@@ -373,7 +377,9 @@
 // renewed, and a change from outside repaired, at most about 15 s apart,
 // and a node loop stalled for about 15 s lets them expire); and when a
 // member changes a toggle ([Node.SetKillSwitch], [Node.SetAllowLAN]),
-// which return once it was acted on. A stop is no deliberate disconnect:
+// which return once it was acted on, with a [KillSwitchNotEnforcedError]
+// if the kill switch is then not as meant (the toggle stays), or
+// [ErrNotRunning] from a stopped node (stored for its next start). A stop is no deliberate disconnect:
 // the node returning leaves the down shape in place if it was meant up or
 // the toggle is on, as a crash would, and warns so ([KillSwitchStopNote])
 // whenever rules are in place, an apply that put them there but failed

@@ -11,9 +11,10 @@ import (
 // KillSwitches put in place stays until one of them closes it, as the
 // host's table outlives a run.
 type memKillSwitches struct {
-	mu   sync.Mutex
-	in   *firewall.KillSwitchRules
-	fail error // Apply fails with it
+	mu        sync.Mutex
+	in        *firewall.KillSwitchRules
+	fail      error // Apply fails with it
+	failClose error // Close fails with it
 }
 
 func (h *memKillSwitches) new() KillSwitch { return memKillSwitch{h} }
@@ -37,6 +38,12 @@ func (h *memKillSwitches) failWith(err error) {
 	h.fail = err
 }
 
+func (h *memKillSwitches) failCloseWith(err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.failClose = err
+}
+
 type memKillSwitch struct{ h *memKillSwitches }
 
 func (k memKillSwitch) Apply(_ context.Context, r firewall.KillSwitchRules) error {
@@ -52,6 +59,9 @@ func (k memKillSwitch) Apply(_ context.Context, r firewall.KillSwitchRules) erro
 func (k memKillSwitch) Close() error {
 	k.h.mu.Lock()
 	defer k.h.mu.Unlock()
+	if k.h.failClose != nil {
+		return k.h.failClose
+	}
 	k.h.in = nil
 	return nil
 }

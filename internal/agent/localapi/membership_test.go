@@ -5,15 +5,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/KucherenkoIvan/go-kernel/grpckit"
 	"google.golang.org/grpc/peer"
 
 	localapiv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/localapi/v1"
@@ -363,7 +369,7 @@ func TestRefusalsSayWhy(t *testing.T) {
 	}{
 		{"a member asks for the log", ok, []uint32{4242}, localapiv1.LocalService_TailLogs_FullMethodName, ErrRootOnly, []string{"level=INFO", "refusal=root_only", "needs=admin"}},
 		{"a stranger asks for the status", &fakeMembership{}, sixteenGroups, status, ErrPermissionDenied, []string{"level=INFO", "refusal=permission_denied", "has=none"}},
-		{"the OS can't say, for the status", down, sixteenGroups, status, ErrMembershipUnknown, []string{"level=WARN", "refusal=membership_unknown", "opendirectoryd is down"}},
+		{"asking the OS fails, for the status", down, sixteenGroups, status, ErrMembershipCheckFailed, []string{"level=WARN", "refusal=membership_check_failed", "opendirectoryd is down"}},
 		{"the OS doesn't answer in time", timedOut, sixteenGroups, status, ErrMembershipUnknown, []string{"level=WARN", "refusal=membership_unknown", "no answer within"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -373,7 +379,7 @@ func TestRefusalsSayWhy(t *testing.T) {
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
-			if wantPerm := tc.want != ErrMembershipUnknown; IsPermission(err) != wantPerm {
+			if wantPerm := tc.want != ErrMembershipUnknown && tc.want != ErrMembershipCheckFailed; IsPermission(err) != wantPerm {
 				t.Errorf("IsPermission(%v) = %v", err, !wantPerm)
 			}
 			for _, want := range tc.inLog {
@@ -439,7 +445,7 @@ func TestACallerThatLeftIsNotRefused(t *testing.T) {
 			ctx, cancel := tc.leave(callerCtx(Caller{UID: 1001, GIDs: sixteenGroups}), asked)
 			defer cancel()
 			err := p.allow(ctx, refusalLog(&buf), localapiv1.LocalService_GetStatus_FullMethodName)
-			if !errors.Is(err, tc.want) || errors.Is(err, ErrMembershipUnknown) {
+			if !errors.Is(err, tc.want) || errors.Is(err, ErrMembershipUnknown) || errors.Is(err, ErrMembershipCheckFailed) {
 				t.Errorf("got %v; want %v, no refusal", err, tc.want)
 			}
 			if strings.Contains(buf.String(), "level=WARN") || strings.Contains(buf.String(), "refused") {
@@ -449,36 +455,223 @@ func TestACallerThatLeftIsNotRefused(t *testing.T) {
 	}
 }
 
-// Every refusal the server sends has its wording, and none of the
-// wording points at the log, which only root may read. The permission
-// refusals keep their prefix; the dial-time refusal says what the per-call
-// one says.
+// Every refusal has its wording, a detailed one with the verb its detail
+// fills, and none of the wording points at the log, which only root may
+// read. The permission refusals and service_down keep their prefixes;
+// the dial-time refusal says what the per-call one says.
 func TestRefusalWording(t *testing.T) {
-	declared := []Error{ErrPermissionDenied, ErrRootOnly, ErrMembershipUnknown, ErrServerMode, ErrNotRunning, ErrPresetUnavailable, ErrPresetNotEnforced, ErrPresetIncomplete, ErrUnknownPreset, ErrDNSUnprotected}
-	if len(refusals) != len(declared) {
-		t.Errorf("%d rows for %d refusals", len(refusals), len(declared))
-	}
-	for _, e := range declared {
-		if refusalMsg(e) == e.Code {
-			t.Errorf("%s has no wording", e.Code)
-		}
-	}
-	msgs := []string{serviceDownMsg, startFailedMsg}
+	seen := map[string]bool{}
 	for _, r := range refusals {
-		msgs = append(msgs, r.msg)
-	}
-	for _, msg := range msgs {
-		if strings.Contains(msg, "log") {
-			t.Errorf("points at root's log: %q", msg)
+		if r.err.code == "" || seen[r.err.code] {
+			t.Errorf("refusal %q: empty or listed twice", r.err.code)
+		}
+		seen[r.err.code] = true
+		if r.msg == "" || r.detailed != strings.Contains(r.msg, "%") {
+			t.Errorf("%s: wording %q, detailed %v", r.err.code, r.msg, r.detailed)
+		}
+		if strings.Contains(r.msg, "log") {
+			t.Errorf("points at root's log: %q", r.msg)
 		}
 	}
 	for _, e := range []Error{ErrPermissionDenied, ErrRootOnly} {
-		if !strings.HasPrefix(refusalMsg(e), "permission denied") {
-			t.Errorf("%s: %q", e.Code, refusalMsg(e))
+		if !strings.HasPrefix(refusalMsg(e, ""), "permission denied") {
+			t.Errorf("%s: %q", e.code, refusalMsg(e, ""))
 		}
 	}
+	if msg := refusalMsg(ErrServiceDown, ""); !strings.HasPrefix(msg, "the thinkpol service") {
+		t.Errorf("service_down: %q", msg)
+	}
 	err := dialError("x.sock", &net.OpError{Op: "dial", Err: os.ErrPermission})
-	if !errors.Is(err, ErrPermissionDenied) || !strings.HasPrefix(err.Error(), refusalMsg(ErrPermissionDenied)) || !strings.Contains(err.Error(), "x.sock") {
+	if !errors.Is(err, ErrPermissionDenied) || !strings.HasPrefix(err.Error(), refusalMsg(ErrPermissionDenied, "")) || !strings.Contains(err.Error(), "x.sock") {
 		t.Errorf("dial: %v", err)
 	}
+}
+
+// No refusal code exists outside the list: every Error literal in the
+// package is a value declared at the top of errors.go, each of them a
+// row of refusals (Refusals), or the one withDetail builds from one of
+// them; and nothing outside errors.go sets a code. An Error built or
+// changed anywhere else would reach a client, and the CLI's exit table,
+// as a code nothing names. An Error literal is one of any type whose
+// underlying type is Error (an alias, or a type defined from it), and
+// any literal with a code key (an element whose type is elided).
+func TestEveryRefusalIsDeclaredInTheList(t *testing.T) {
+	names, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	files := map[string]*ast.File{}
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[name] = f
+	}
+	errorTypes := errorTypeNames(files)
+	isError := func(lit *ast.CompositeLit) bool {
+		if id, ok := lit.Type.(*ast.Ident); ok && errorTypes[id.Name] {
+			return true
+		}
+		for _, el := range lit.Elts {
+			if kv, ok := el.(*ast.KeyValueExpr); ok {
+				if id, ok := kv.Key.(*ast.Ident); ok && id.Name == "code" {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	declared := map[string]bool{}
+	for name, f := range files {
+		allowed := map[*ast.CompositeLit]bool{}
+		for _, d := range f.Decls {
+			switch d := d.(type) {
+			case *ast.GenDecl:
+				if name != "errors.go" || d.Tok != token.VAR {
+					continue
+				}
+				for _, spec := range d.Specs {
+					for _, v := range spec.(*ast.ValueSpec).Values {
+						if lit, ok := v.(*ast.CompositeLit); ok && isError(lit) {
+							allowed[lit] = true
+							declared[literalCode(t, fset, lit)] = true
+						}
+					}
+				}
+			case *ast.FuncDecl:
+				if name == "errors.go" && d.Name.Name == "withDetail" && d.Recv != nil {
+					ast.Inspect(d, func(n ast.Node) bool {
+						if lit, ok := n.(*ast.CompositeLit); ok && isError(lit) {
+							allowed[lit] = true
+						}
+						return true
+					})
+				}
+			}
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.CompositeLit:
+				if isError(n) && !allowed[n] {
+					t.Errorf("%s: an Error built outside the refusals declared in errors.go", fset.Position(n.Pos()))
+				}
+			case *ast.AssignStmt:
+				for _, lhs := range n.Lhs {
+					if isCodeField(lhs) && name != "errors.go" {
+						t.Errorf("%s: a code set outside errors.go", fset.Position(lhs.Pos()))
+					}
+				}
+			case *ast.UnaryExpr:
+				if n.Op == token.AND && isCodeField(n.X) && name != "errors.go" {
+					t.Errorf("%s: a code's address taken outside errors.go", fset.Position(n.Pos()))
+				}
+			}
+			return true
+		})
+	}
+	listed := map[string]bool{}
+	for _, e := range Refusals() {
+		listed[e.code] = true
+		if !declared[e.code] {
+			t.Errorf("Refusals has %s, which errors.go doesn't declare", e.code)
+		}
+	}
+	for code := range declared {
+		if !listed[code] {
+			t.Errorf("refusal %s is declared but not in refusals", code)
+		}
+	}
+}
+
+// errorTypeNames are Error and every type in files, at any scope, whose
+// underlying type is Error: an alias of it or a type defined from it,
+// directly or through another such type.
+func errorTypeNames(files map[string]*ast.File) map[string]bool {
+	var specs []*ast.TypeSpec
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			if s, ok := n.(*ast.TypeSpec); ok {
+				specs = append(specs, s)
+			}
+			return true
+		})
+	}
+	names := map[string]bool{"Error": true}
+	for grew := true; grew; {
+		grew = false
+		for _, s := range specs {
+			typ := s.Type
+			for {
+				p, ok := typ.(*ast.ParenExpr)
+				if !ok {
+					break
+				}
+				typ = p.X
+			}
+			if id, ok := typ.(*ast.Ident); ok && names[id.Name] && !names[s.Name.Name] {
+				names[s.Name.Name] = true
+				grew = true
+			}
+		}
+	}
+	return names
+}
+
+// isCodeField reports whether x is a selector of a field named code
+// (e.code). Only errors.go may set one: Error's and the refusals rows'
+// are the package's only code fields.
+func isCodeField(x ast.Expr) bool {
+	for {
+		p, ok := x.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		x = p.X
+	}
+	sel, ok := x.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "code"
+}
+
+// The client finds each refusal in what the server sends, with a detail
+// or without, so none reaches a caller as a bare code; a code that isn't
+// a refusal stays no refusal.
+func TestTheClientFindsEveryRefusalInItsCode(t *testing.T) {
+	c := &Client{}
+	for _, e := range Refusals() {
+		for _, code := range []string{e.code, e.code + ":tun"} {
+			err := c.explain(&grpckit.RemoteDomainError{Code: code})
+			var got Error
+			if !errors.As(err, &got) || got != e {
+				t.Errorf("%s: %v, want %s", code, err, e.code)
+			}
+		}
+	}
+	if err := c.explain(&grpckit.RemoteDomainError{Code: "start_failed:tun"}); !strings.Contains(err.Error(), `step "tun"`) {
+		t.Errorf("start_failed:tun says %q", err)
+	}
+	var e Error
+	if err := c.explain(&grpckit.RemoteDomainError{Code: "made_up"}); errors.As(err, &e) {
+		t.Errorf("made_up is the refusal %s", e.code)
+	}
+}
+
+// literalCode is a declared refusal's code: Error{code: "..."}.
+func literalCode(t *testing.T, fset *token.FileSet, lit *ast.CompositeLit) string {
+	t.Helper()
+	for _, el := range lit.Elts {
+		if kv, ok := el.(*ast.KeyValueExpr); ok {
+			if b, ok := kv.Value.(*ast.BasicLit); ok && b.Kind == token.STRING {
+				if code, err := strconv.Unquote(b.Value); err == nil {
+					return code
+				}
+			}
+		}
+	}
+	t.Errorf("%s: a declared refusal without a literal code", fset.Position(lit.Pos()))
+	return ""
 }

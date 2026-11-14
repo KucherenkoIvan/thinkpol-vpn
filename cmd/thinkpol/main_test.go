@@ -45,21 +45,21 @@ func TestVersionFallsBackToDev(t *testing.T) {
 
 func TestUsageErrorPrintsCommandSynopsis(t *testing.T) {
 	code, _, stderr := runCLI(t, "version", "extra")
-	if code != 2 || !strings.HasPrefix(stderr, "usage: thinkpol version\n") {
+	if code != exitUsage || !strings.HasPrefix(stderr, "usage: thinkpol version\n") {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 }
 
 func TestUnknownCommandFails(t *testing.T) {
 	code, _, stderr := runCLI(t, "nope")
-	if code != 2 || !strings.Contains(stderr, `unknown command "nope"`) {
+	if code != exitUsage || !strings.Contains(stderr, `unknown command "nope"`) {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 }
 
 func TestNoCommandPrintsUsage(t *testing.T) {
 	code, _, stderr := runCLI(t)
-	if code != 2 || !strings.Contains(stderr, "  version") {
+	if code != exitUsage || !strings.Contains(stderr, "  version") {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 }
@@ -110,10 +110,10 @@ func TestWorkerIsHiddenAndNeedsASpace(t *testing.T) {
 	if _, stdout, _ := runCLI(t, "help"); strings.Contains(stdout, "worker") {
 		t.Fatalf("worker listed: %q", stdout)
 	}
-	if code, _, stderr := runCLI(t, "worker"); code != 2 || !strings.HasPrefix(stderr, "usage: thinkpol worker -space <id>") {
+	if code, _, stderr := runCLI(t, "worker"); code != exitUsage || !strings.HasPrefix(stderr, "usage: thinkpol worker -space <id>") {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
-	if code, _, _ := runCLI(t, "worker", "-space", "nothex"); code != 1 {
+	if code, _, _ := runCLI(t, "worker", "-space", "nothex"); code != exitFailure {
 		t.Fatalf("bad space id: exit %d", code)
 	}
 }

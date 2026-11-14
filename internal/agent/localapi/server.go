@@ -113,7 +113,7 @@ func NewGRPCServer(shutdown context.Context, o Options, p Policy) *grpc.Server {
 		opts = append(opts, grpckit.WithLogger(o.Log))
 	}
 	for _, r := range refusals {
-		opts = append(opts, grpckit.WithErrorCode(r.err.Code, r.code))
+		opts = append(opts, grpckit.WithErrorCode(r.err.code, r.code))
 	}
 	srv := grpckit.NewServer(opts...)
 	localapiv1.RegisterLocalServiceServer(srv, &server{node: o.Node, logs: o.Logs, version: o.Version, policy: p, shutdown: shutdown.Done()})
@@ -198,6 +198,7 @@ func (s *server) Disconnect(ctx context.Context, _ *localapiv1.DisconnectRequest
 // failed start only by its step, whose detail went to the node's log.
 func nodeError(err error) error {
 	var se *agent.StartError
+	var ne *agent.KillSwitchNotEnforcedError
 	switch {
 	case errors.Is(err, agent.ErrServerMode):
 		return ErrServerMode
@@ -215,6 +216,8 @@ func nodeError(err error) error {
 		return ErrDNSUnprotected
 	case errors.As(err, &se):
 		return startFailed(se.Step)
+	case errors.As(err, &ne):
+		return killSwitchNotEnforced(ne.Reason)
 	}
 	return err
 }
