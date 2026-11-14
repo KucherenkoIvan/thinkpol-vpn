@@ -1,15 +1,16 @@
 ---
 id: TP-133
 title: "`thinkpol diag` as root without a running agent"
-milestone: later
+milestone: M2
 area: agent
 stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-091]
 refs: [docs/design/desktop-client.md#the-local-api]
-owner: ""
-branch: ""
+needs_human: macos
+owner: "agent-tp-133"
+branch: "tp-133-diag-without-a-running-agent"
 ---
 
 ## Goal
@@ -23,6 +24,7 @@ After a crash (kill -9, power loss) `thinkpol diag` still records what the dead 
 ## Acceptance
 - [ ] lab: SIGKILL a connected device's agent, then `diag -o` as root records its leftover routes, guard and resolver configuration, matching `ip -j`, `nft -j` and resolvectl
 - [ ] a unit test: no agent and no root → an error
+- [ ] macOS: with no agent, root's diag records the guard's and kill switch's pf anchors and references, routes and the resolver configuration, through the agent's own read-only readers; unit tests with fakes; checked for real in the M2 device run (S5)
 - [ ] `make lint`, `make test`, `make lab-test` pass
 
 ## Notes
@@ -35,3 +37,5 @@ After a crash (kill -9, power loss) `thinkpol diag` still records what the dead 
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)
 - 2026-11-07 TP-139 verdicts noted
 - 2026-11-07 milestone → later (owner's MVP cut: diag without an agent: no done-when needs it)
+- 2026-11-15 milestone later → M2 (owner, device-run plan answer 6b: the crash session's evidence comes from diag)
+- 2026-11-15 backlog → in-progress, owner: agent-tp-133
