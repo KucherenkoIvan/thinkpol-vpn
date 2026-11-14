@@ -615,12 +615,17 @@ func (n *Node) Counters() Counters {
 // NeighborStatus is the state of the links to one adjacent node. Status
 // holds no network addresses, so it may go into telemetry.
 type NeighborStatus struct {
-	Node   NodeID
-	Up     bool
-	UpFor  time.Duration
-	RTT    time.Duration
-	Dialed bool // this node dials it (it is in the table's Links)
-	Links  []LinkStatus
+	Node  NodeID
+	Up    bool
+	UpFor time.Duration
+	// UpSince is when it came up (UpFor ago), on the node's clock; zero
+	// when down. Compare it with other instants rather than subtracting
+	// UpFor from a later clock reading, which moves it by the time
+	// between the two.
+	UpSince time.Time
+	RTT     time.Duration
+	Dialed  bool // this node dials it (it is in the table's Links)
+	Links   []LinkStatus
 }
 
 // LinkStatus is one link to an adjacent node.
@@ -666,9 +671,11 @@ func (n *Node) Neighbors() []NeighborStatus {
 		c := Candidate{Hop: nb.id}
 		nb.describe(&c, now)
 		_, dialed := dialing[nb.id]
-		out = append(out, NeighborStatus{
-			Node: nb.id, Up: c.Up, UpFor: c.UpFor, RTT: c.RTT, Dialed: dialed, Links: nb.status(now),
-		})
+		st := NeighborStatus{Node: nb.id, Up: c.Up, UpFor: c.UpFor, RTT: c.RTT, Dialed: dialed, Links: nb.status(now)}
+		if c.Up {
+			st.UpSince = n.wall(now - int64(c.UpFor))
+		}
+		out = append(out, st)
 		delete(dialing, nb.id)
 	}
 	// A dialed node keeps its neighbor once it had a link (pruning spares
