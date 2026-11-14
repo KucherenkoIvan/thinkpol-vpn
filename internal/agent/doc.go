@@ -168,9 +168,10 @@
 // directory on the way counts, and why that rules out macOS's /var/run).
 //
 // A second `thinkpol up` exits with "another thinkpol agent is running on
-// this host" (EX_TEMPFAIL, 75) and changes nothing. Its start-time cleanups (putting back a
-// resolver configuration a crash left, clearing a crashed run's route
-// table and overlay routes) would otherwise undo the running agent's.
+// this host" (EX_TEMPFAIL, 75) and changes nothing. Its start-time
+// cleanups (putting back a resolver configuration a crash left, clearing
+// a crashed run's route table and overlay routes) would otherwise undo
+// the running agent's.
 //
 // # Device and server
 //
@@ -353,7 +354,9 @@
 // renewed, and a change from outside repaired, at most about 15 s apart,
 // and a node loop stalled for about 15 s lets them expire); and when a
 // member changes a toggle ([Node.SetKillSwitch], [Node.SetAllowLAN]),
-// which return once it was acted on. A stop is no deliberate disconnect:
+// which return once it was acted on, with a [KillSwitchNotEnforcedError]
+// if the kill switch is then not as meant (the toggle stays), or
+// [ErrNotRunning] from a stopped node (stored for its next start). A stop is no deliberate disconnect:
 // the node returning leaves the down shape in place if it was meant up or
 // the toggle is on, as a crash would, and warns so ([KillSwitchStopNote])
 // whenever rules are in place, an apply that put them there but failed

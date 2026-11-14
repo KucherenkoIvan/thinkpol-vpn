@@ -30,7 +30,7 @@ func runConnectOnBoot(ctx context.Context, e env, args []string) error {
 		return err
 	}
 	st, err := c.SetConnectOnBoot(ctx, cmd.Arg(0) == "on")
-	return writeChange(ctx, e, c, st, err)
+	return printOutcome(ctx, e, c, st, err)
 }
 
 func onOff(on bool) string {

@@ -9,7 +9,7 @@ import (
 )
 
 func init() {
-	register(command{path: "t b", args: "<word>...", summary: "test command b", run: runTB})
+	registerForTest(command{path: "t b", args: "<word>...", summary: "test command b", run: runTB})
 }
 
 func runTB(_ context.Context, e env, args []string) error {

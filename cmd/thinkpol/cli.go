@@ -117,23 +117,34 @@ func (c apiCommand) dial(e env, args []string, argsOK func(*flag.FlagSet) bool) 
 	return localapi.Dial(*c.socket)
 }
 
-// writeChange prints the status a call that changes the node returned
+// printOutcome prints the status a call that changes the node returned
 // with no error. A call that failed with exitFailure (the state not
-// reached, or reached in part: connected without DNS protection, a preset
-// kept and enforced failing closed) prints the status as it is now, if the
-// service still answers, so the failure is read with where it left the
-// node; err is returned either way.
-func writeChange(ctx context.Context, e env, c *localapi.Client, st *localapiv1.Status, err error) error {
+// reached, or reached in part: connected without DNS protection, a
+// toggle kept while the kill switch isn't enforced, a preset kept and
+// enforced failing closed) prints the status as it is now, if the service
+// still answers within statusAfterFailure: the verdict's 1 is "not
+// reached, with the status printed", so the failure is read with where
+// it left the node. err is returned either way, with the status's
+// printing error, if any.
+func printOutcome(ctx context.Context, e env, c *localapi.Client, st *localapiv1.Status, err error) error {
 	if err == nil {
 		return localapi.WriteStatus(e.stdout, st, time.Now())
 	}
-	if exitCode(err) == exitFailure {
-		if now, serr := c.Status(ctx); serr == nil {
-			_ = localapi.WriteStatus(e.stdout, now, time.Now())
-		}
+	if exitCode(err) != exitFailure {
+		return err
 	}
-	return err
+	sctx, cancel := context.WithTimeout(ctx, statusAfterFailure)
+	defer cancel()
+	now, serr := c.Status(sctx)
+	if serr != nil {
+		return err
+	}
+	return errors.Join(err, localapi.WriteStatus(e.stdout, now, time.Now()))
 }
+
+// statusAfterFailure bounds printOutcome's second call: the failure is
+// told whether or not the status comes.
+const statusAfterFailure = 5 * time.Second
 
 // noArgs and oneArg are apiCommand.dial's usual argsOK.
 func noArgs(fs *flag.FlagSet) bool { return fs.NArg() == 0 }
@@ -183,7 +194,7 @@ func run(ctx context.Context, e env, args []string) int {
 		case errors.Is(err, errUsage):
 			synopsis(e.stderr, c.path)
 		default:
-			_, _ = fmt.Fprintf(e.stderr, "thinkpol %s: %v%s\n", c.path, err, machineCode(err))
+			_, _ = fmt.Fprintf(e.stderr, "thinkpol %s: %v%s\n", c.path, err, codeSuffix(err))
 		}
 		return code
 	}
@@ -209,11 +220,11 @@ func run(ctx context.Context, e env, args []string) int {
 	return exitUsage
 }
 
-// machineCode is the local API's code for err, " [code]", so a script
+// codeSuffix is the local API's code for err, " [code]", so a script
 // reads which refusal it was from stderr; empty when the API named none.
-func machineCode(err error) string {
+func codeSuffix(err error) string {
 	var refusal localapi.Error
-	if !errors.As(err, &refusal) {
+	if !errors.As(err, &refusal) || refusal.Code == "" {
 		return ""
 	}
 	return " [" + refusal.Code + "]"

@@ -45,9 +45,15 @@
 // its device file, and return once the node acted on them: the kill
 // switch put in place, changed or removed as the toggles and the crash
 // posture say, or the attempt failed (Status.kill_switch says which:
-// kill_switch_enforced false and the error's code). A node that isn't
-// running takes them at its next start; a device whose map makes it a
-// server (mode mismatch) stores them and leaves the host alone. GetStatus
+// kill_switch_enforced false and the error's code). A toggle kept while
+// the kill switch is then not as meant is refused as
+// kill_switch_not_enforced:<reason> (the client's
+// [ErrKillSwitchNotEnforced]), so no client takes it for done. A node
+// that isn't running takes them at its next start, refused as
+// not_running; a device whose map makes it a server (mode mismatch)
+// stores them and leaves the host alone, refused as the status says
+// (not_applied before it ever acted).
+// GetStatus
 // shows the toggles and whether the kill switch is in place as meant.
 //
 // # Where the socket is
@@ -113,9 +119,11 @@
 //
 // A refusal says which case it is: permission_denied (neither root nor in
 // the group), root_only (not root or the service's user, and the call is
-// root's) or membership_unknown (the call needs the group and Directory
-// Services couldn't say; refused all the same, with codes.Unavailable, to
-// be tried again). A caller that hangs up during the lookup isn't refused:
+// root's), membership_unknown (the call needs the group and Directory
+// Services didn't answer in time; refused all the same, with
+// codes.Unavailable, to be tried again) or membership_check_failed
+// (asking Directory Services failed otherwise; codes.Internal, which
+// retrying doesn't fix). A caller that hangs up during the lookup isn't refused:
 // it gets its context's end, logged at debug; when that end is the
 // caller's own deadline, grpckit also logs "rpc deadline exceeded" at
 // warn. The wording is in errors.go
@@ -127,8 +135,8 @@
 // needed, the group it was checked against (if there is one) and how many
 // groups the kernel recorded (not which ones), plus, if the group was
 // looked up, the level the caller had and why Directory Services couldn't
-// answer, if it couldn't. membership_unknown is logged at warn, the others
-// at info.
+// answer, if it couldn't. The two membership refusals are logged at
+// warn, the others at info.
 // There is no read-only tier for other users: they can't reach the
 // socket at all.
 //

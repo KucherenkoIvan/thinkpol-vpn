@@ -48,7 +48,7 @@ func TestASettingIsShownWithNoValueAndSetWithOne(t *testing.T) {
 	for _, c := range []struct {
 		setting    string
 		shown      map[string]string // by value: what the bare command prints
-		statusLine string            // the status's line, after the value
+		statusLine string            // the status line's head, which the value follows
 	}{
 		{"kill-switch", map[string]string{"off": "kill-switch: off, allow-LAN off\n", "on": "kill-switch: on, allow-LAN off (in place)\n"}, `kill switch: +`},
 		{"connect-on-boot", map[string]string{"off": "connect-on-boot: off\n", "on": "connect-on-boot: on\n"}, `connect-on-boot: +`},

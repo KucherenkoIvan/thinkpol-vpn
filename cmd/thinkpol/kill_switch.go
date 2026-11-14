@@ -33,5 +33,5 @@ func runKillSwitch(ctx context.Context, e env, args []string) error {
 		return err
 	}
 	st, err := c.SetKillSwitch(ctx, cmd.Arg(0) == "on")
-	return writeChange(ctx, e, c, st, err)
+	return printOutcome(ctx, e, c, st, err)
 }

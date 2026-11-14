@@ -21,5 +21,5 @@ func runConnect(ctx context.Context, e env, args []string) error {
 	}
 	defer func() { _ = c.Close() }()
 	st, err := c.Connect(ctx)
-	return writeChange(ctx, e, c, st, err)
+	return printOutcome(ctx, e, c, st, err)
 }

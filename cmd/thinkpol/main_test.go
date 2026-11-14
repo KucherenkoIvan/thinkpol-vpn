@@ -113,7 +113,7 @@ func TestWorkerIsHiddenAndNeedsASpace(t *testing.T) {
 	if code, _, stderr := runCLI(t, "worker"); code != exitUsage || !strings.HasPrefix(stderr, "usage: thinkpol worker -space <id>") {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
-	if code, _, _ := runCLI(t, "worker", "-space", "nothex"); code != 1 {
+	if code, _, _ := runCLI(t, "worker", "-space", "nothex"); code != exitFailure {
 		t.Fatalf("bad space id: exit %d", code)
 	}
 }

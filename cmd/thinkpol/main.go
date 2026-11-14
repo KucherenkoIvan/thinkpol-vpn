@@ -6,7 +6,9 @@
 // composition roots: they parse flags, build adapters and call into
 // internal/, nothing more. A command returns an error and never picks its
 // exit code: exitCode (exitcode.go) maps every failure to BSD sysexits,
-// the contract scripts branch on.
+// the contract scripts branch on. A command marks the inputs it names
+// (input, inputAt): only those make 66 and 77 of a missing or unreadable
+// file; any other errno is 1.
 package main
 
 import (

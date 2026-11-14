@@ -11,8 +11,17 @@ import (
 // Commands of the "t" group are registered from two files, the way two
 // tickets add `dev …` commands without touching each other.
 func init() {
-	register(command{path: "t a", args: "[-n count]", summary: "test command a", run: runTA})
-	register(command{path: "t hidden", summary: "test command, hidden", hidden: true, run: runTA})
+	registerForTest(command{path: "t a", args: "[-n count]", summary: "test command a", run: runTA})
+	registerForTest(command{path: "t hidden", summary: "test command, hidden", hidden: true, run: runTA})
+}
+
+// testOnly are the commands the tests register: visible, so the listings
+// show them, but not the CLI's (no exit-code rows for them).
+var testOnly = map[string]bool{}
+
+func registerForTest(c command) {
+	register(c)
+	testOnly[c.path] = true
 }
 
 func runTA(_ context.Context, e env, args []string) error {
