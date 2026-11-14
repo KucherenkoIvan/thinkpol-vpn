@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,13 +15,38 @@ import (
 )
 
 // signalAgent sends sig to the agent's process alone, as a crash or a
-// SIGQUIT reaches it; its workers die with it (PR_SET_PDEATHSIG). Not to
+// SIGQUIT reaches it, and waits until every worker it had is gone. Not to
 // the whole unit: systemd 252 (the image's) then walks the unit's
 // cgroup.procs, and on Linux 7.0 that walk fails with EIO while a
-// SIGKILLed agent exits, though the signal landed.
+// SIGKILLed agent exits, though the signal landed. The workers end anyway:
+// each has PR_SET_PDEATHSIG, and with KillMode=mixed systemd kills what is
+// left in the unit's cgroup once the agent is gone, before the restart.
 func signalAgent(t *testing.T, n *lab.Node, sig string) {
 	t.Helper()
+	workers := agentWorkers(t, n)
 	n.MustExec(t, "systemctl", "kill", "--kill-whom=main", "-s", sig, "thinkpol.service")
+	lab.Eventually(t, 10*time.Second, func() error {
+		var alive []string
+		for _, pid := range agentWorkers(t, n) {
+			if slices.Contains(workers, pid) {
+				alive = append(alive, pid)
+			}
+		}
+		if len(alive) > 0 {
+			return fmt.Errorf("SIG%s to the agent: of its workers %v, %v still run", sig, workers, alive)
+		}
+		return nil
+	})
+}
+
+// agentWorkers lists the pids of the server workers running in n.
+func agentWorkers(t *testing.T, n *lab.Node) []string {
+	t.Helper()
+	res, err := execResult(n, pollTimeout, "pgrep", "-f", "^thinkpol worker( |$)")
+	if err != nil && res.ExitCode != 1 { // pgrep's 1: none
+		t.Fatalf("pgrep workers on %s: %v\n%s", n.Name, err, res.Stderr)
+	}
+	return strings.Fields(res.Stdout)
 }
 
 // TestServiceUnderSystemd installs device-a as a service in a node that
