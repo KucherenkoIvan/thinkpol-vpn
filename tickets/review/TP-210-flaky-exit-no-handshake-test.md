@@ -71,3 +71,5 @@ branch: "tp-210-flaky-exit-no-handshake-test"
 - 2026-11-14 merged origin/rewrite at 8d19be5 (92f5a95)
 - 2026-11-14 R1.1 mutations on 92f5a95 (a temporary hook in Node.Status, set after the wait step broke out): health retrying (connection connecting) failed the steady step; apply_failed alone (connection connected, degraded) failed it; the data plane gone (nil, health ok) failed it, its message printing no peers instead of panicking (R1.2); unmutated passed
 - 2026-11-14 under the same SIGSTOP freezes (stops of 50 to 700 ms) the fixed test on 92f5a95 passed 20 of 20 (9.1 to 15.1 s)
+- 2026-11-14 on c7e9edc (origin/rewrite at 8d19be5 merged): `make lint` and `make test` green (umask 022); `make lab-gotest PKG=./internal/agent/ RUN='^TestAnExitThatNeverHandshakesIsExitNoHandshake$' COUNT=20` passed 20 of 20 (9.08 to 9.12 s each); full `make lab-test` green (GOFLAGS=-p=2, LAB_P=1, under the full-lab lock): lab phase and 39 packages
+- 2026-11-14 in-progress → review
