@@ -43,6 +43,17 @@ Causes, from Docker's source (moby `docker-v29.9.3`, `v27.3.1`) and measured on 
 - **umask.** Only the tests' temporary directories were group-writable (`t.TempDir()` makes its subdirectories 0777 less the umask); the shared helpers (`tempDir` in internal/agent and cmd/thinkpol, trusteddir's, the service tests' fake host) now chmod them 0755. The product makes its own directories with explicit modes the umask can only narrow (trusteddir and the agent's `Mkdirat` 0700, files 0600, the local API's directory 0700/0750 and socket chmod'ed), so under a root umask of 0002 it never makes a directory it then refuses: no product change.
 - **Go version.** `TestTheNodeFileIsStrictJSON` now asserts that the error names a byte position, not encoding/json's count of it (Go 1.26.11 says 9, 1.27.4 says 10).
 
+## Review findings
+Round 1 (go-paranoid, go-style, pocket-torvalds), accepted by the orchestrator. No hole in the lab's isolation, the seccomp profile, the DNS sealing or the conntrack change.
+- [ ] R1.1 `LAB_TIMEOUT ?= 20m` contradicts "no overrides": raise the default to 60m (as lab-gotest's), drop the override sentence from lab/README.md, re-run the full lab on Linux Docker 29 with no flags before re-ticking box 5.
+- [ ] R1.2 The umask fix misses the darwin temp-dir helpers that feed trusteddir (firewall's guard_darwin_test.go, netcfg_darwin_test.go): one shared helper (`trusteddirtest.TempDir`: EvalSymlinks, chmod 0755) called by every trusteddir-feeding copy; darwin tests run under umask 0002 and 0022.
+- [ ] R1.3 signalAgent: the workers end by systemd's mixed kill and PDEATHSIG, and nothing checks it. Fix the wording; assert the worker PIDs recorded before the signal are all gone afterwards; mutation-check it. File the follow-up ticket on `systemctl stop`/`restart` and the cgroup.procs EIO.
+- [ ] R1.4 lab/seccomp.json is a hand copy of Docker's default: generate it from the pinned moby/profiles seccomp default plus the pivot_root rule (`make lab-seccomp`, dependency out of the main module), record the source version, replace the length check with checks on the default action, the single pivot_root rule and the dangerous syscalls, and make the profile path independent of the working directory (`seccompProfilePath`).
+- [ ] R1.5 `DNSUpstream = 192.0.2.254` sits in a range lab tests and the subnet pool use, and reads like a real upstream: move it to an address nothing in the lab uses, rename it `DeadEndNameserver`, refuse a subnet pool that contains it, and test that no other lab code uses it.
+- [ ] R1.6 The routed-mode comment is garbled: Docker 27.0+ accepts "routed", "nat-unprotected" needs 28; keep `enable_ip_masquerade=false` with a comment saying why.
+- [ ] R1.7 TestTheNodeFileIsStrictJSON's prefix passes with no number: match `invalid JSON at byte \d+`.
+- [ ] R1.8 Nits: harness_test.go's comment that repeats the test name and a failure message without the wanted value; smoke_test.go "has no onward route"; Scope item 1 says Docker 27 allows pivot_root, which the Notes refute.
+
 ## Log
 - 2026-11-14 created (orchestrator's measurements on a Linux Docker 29 host)
 - 2026-11-14 backlog → in-progress, owner: agent-tp-211
@@ -57,3 +68,4 @@ Causes, from Docker's source (moby `docker-v29.9.3`, `v27.3.1`) and measured on 
 - 2026-11-14 merged origin/rewrite (TP-210: internal/agent/status_test.go and tickets) after the lab runs; at d424bb0 on the Linux Docker 29 host, no overrides: make lint green, make test green, make lab-gotest PKG=./internal/agent green. Not run again in full on the merge: it brought only TP-210's test change and tickets
 - 2026-11-14 couldn't verify: the routed gateway mode on a Docker 27 Linux host with br_netfilter (only Docker Desktop 27 and Linux Docker 29 were run); the systemd kill EIO is attributed to systemd 252's cgroup walk from its error path, not traced in the kernel
 - 2026-11-14 in-progress → review
+- 2026-11-15 review → has-errors (round 1 findings R1.1–R1.8)
