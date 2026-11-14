@@ -54,3 +54,5 @@ The `exit_no_handshake` that TestAnExitThatNeverHandshakesIsExitNoHandshake rais
 - 2026-11-15 no code changed (the trace and the hook removed; none earns a permanent place, the fix being in the grading), so no lab run. Not verified: a natural stall over 10 ms at that point in a lab node without freezes (the lab run's log wasn't kept). For the board: the grading imprecision in Notes, not filed (agents don't file tickets)
 - 2026-11-15 `make lint` and `make test` green on d4d862b (umask 022)
 - 2026-11-15 in-progress → review
+- 2026-11-15 review (orchestrator): investigation accepted; the grading defect in Notes (link-up time graded against time.Now(), not the status read's time) is fixed in TP-212 (scope added from TP-213)
+- 2026-11-15 review → done (merged)
