@@ -170,7 +170,7 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 			// the mounts that network namespaces need, even with SYS_ADMIN.
 			// Its default seccomp profile denies pivot_root (seccompProfile).
 			SecurityOpt: []string{"apparmor=unconfined", "seccomp=" + filepath.Join(root, seccompProfile)}[:1],
-			DNS:         nil,
+			DNS:         []string{},
 			Devices:     []string{"/dev/net/tun"},
 			Environment: env,
 			Labels:      labels,
