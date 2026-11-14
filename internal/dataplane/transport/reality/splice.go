@@ -123,12 +123,13 @@ func (m *mirror) gather(authenticate func(record []byte) bool) (record []byte, a
 		if whole {
 			upto = max(from, have-heldBack)
 		}
-		if werr := m.forward(buf[from:upto]); werr != nil && rerr == nil {
-			rerr = werr
+		readTimedOut := isTimeout(rerr)
+		if werr := m.forward(buf[from:upto]); werr != nil && (rerr == nil || readTimedOut) {
+			rerr, readTimedOut = werr, false
 		}
 		switch {
 		case m.state != gathering:
-		case isTimeout(rerr):
+		case readTimedOut:
 			// The read deadline of whoever routes the connection: the
 			// hello can no longer authenticate, and the connection stays
 			// the target's, whose own timeouts end it.
