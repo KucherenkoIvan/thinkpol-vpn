@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-210]
 refs: [docs/design/api-overview.md#tp-195-health-grades-an-exit-by-its-wireguard-handshake]
-owner: ""
-branch: ""
+owner: "agent-tp-212"
+branch: "tp-212-exit-graded-from-the-first-initiation-since-the-link"
 ---
 
 ## Goal
@@ -36,3 +36,4 @@ An exit whose first hop re-dialed is graded from the first WireGuard initiation 
 
 ## Log
 - 2026-11-14 created in backlog (from TP-210)
+- 2026-11-15 backlog → in-progress, owner: agent-tp-212
