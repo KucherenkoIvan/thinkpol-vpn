@@ -964,7 +964,7 @@ func TestADialThatFailedBesideALinkIsNeighborDown(t *testing.T) {
 // is graded as of its read: what it shows pending for less than the
 // deadline then isn't unanswered, however late the grading.
 func TestExitsAreGradedByTheirHandshakes(t *testing.T) {
-	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2020, 1, 1, 12, 0, 0, 0, time.UTC)
 	const deadline = dataplane.ExitHandshakeDeadline
 	var nl, de, relay, dev netmap.NodeID
 	nl[0], de[0], relay[0], dev[0] = 1, 2, 3, 4
