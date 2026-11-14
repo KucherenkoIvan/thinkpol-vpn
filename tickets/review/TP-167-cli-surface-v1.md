@@ -84,3 +84,4 @@ Round 1 (go-paranoid, go-style, pocket-torvalds), with the orchestrator's decisi
 - 2026-11-15 couldn't verify: the status call's 5 s deadline (no test holds a hung service); kill_switch_not_enforced end to end on a real host (the lab's nftables doesn't fail; covered by agent, localapi and CLI unit tests)
 - 2026-11-15 6f5a702: full `make lab-test` green (lab phase: lab, lab/censor, lab/ip, lab/labctl, reality; 39 in-node packages), TestTheCLIExitsBySysexits and lab/killswitch_test.go's toggles among them
 - 2026-11-15 has-errors → in-progress, owner: agent-tp-167, branch: tp-167-cli-surface-v1 (round 1 findings)
+- 2026-11-15 in-progress → review
