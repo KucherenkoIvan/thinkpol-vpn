@@ -64,11 +64,11 @@ Round 1 (2026-11-12).
 - [x] R1.8 (nits, style) (a) RollbackReport.Write → Print; (b) failingClose → notingKillSwitch, locked/held → otherAgent/held; (c) killSwitchPlace moved next to the firewall's KillSwitchTable/KillSwitchAnchor; (d) the root check moved into agent.Rollback as a sentinel error; (e) the lab test named for the behaviour; (f) refusal returns a nil *RollbackReport, printing a nil report prints nothing
 - [x] R1.9 (notes) (a) TP-132 Notes: its forwarding restore can break Docker started later in the boot, now exposed to device users by rollback; (b) the macOS checklist: an Unrestorable DNS key, and pf enabled by the user before us stays enabled
 Round 2 (2026-11-14): merge, with nits.
-- [ ] R2.1 (nit, tests) `notingRecord.Load` noted nothing, so moving `n.takeConnectChoice()` above `LockHost` in `Adapters` passed every test: Load notes `held` as Save does, and the test asserts the start loaded the record with the lock held (mutation: the call moved above `LockHost`)
-- [ ] R2.2 (nit, tests) cmd `TestRollbackNeedsRootAndNoArguments` on Windows: `os.Geteuid()` is -1, so it isn't skipped, and `agent.Rollback` fails as unsupported (no data plane) before the root check: assert what each OS prints
-- [ ] R2.3 (nit, docs) api-overview-reference.md `rollback`: (a) `LockHost` doesn't wait: a start begun during a rollback is refused, and the service manager's next restart reads the record; (b) rollback ignores the first Ctrl-C (main's NotifyContext), so only a second Ctrl-C or a kill cuts it short
-- [ ] R2.4 (nit) `rollbackRefused.Error()` dropped the wrapped error, so the lock's path wasn't shown: include the holder's detail, keeping `errors.Is(err, ErrAnotherAgent)` and exit 75
-- [ ] R2.5 (note) a Disconnect write-back racing a stop and a rollback: a Notes line
+- [x] R2.1 (nit, tests) `notingRecord.Load` noted nothing, so moving `n.takeConnectChoice()` above `LockHost` in `Adapters` passed every test: Load notes `held` as Save does, and the test asserts the start loaded the record with the lock held (mutation: the call moved above `LockHost`)
+- [x] R2.2 (nit, tests) cmd `TestRollbackNeedsRootAndNoArguments` on Windows: `os.Geteuid()` is -1, so it isn't skipped, and `agent.Rollback` fails as unsupported (no data plane) before the root check: assert what each OS prints
+- [x] R2.3 (nit, docs) api-overview-reference.md `rollback`: (a) `LockHost` doesn't wait: a start begun during a rollback is refused, and the service manager's next restart reads the record; (b) rollback ignores the first Ctrl-C (main's NotifyContext), so only a second Ctrl-C or a kill cuts it short
+- [x] R2.4 (nit) `rollbackRefused.Error()` dropped the wrapped error, so the lock's path wasn't shown: include the holder's detail, keeping `errors.Is(err, ErrAnotherAgent)` and exit 75
+- [x] R2.5 (note) a Disconnect write-back racing a stop and a rollback: a Notes line
 
 ## Log
 - 2026-10-23 created in backlog (TP-082 design answers)
@@ -88,3 +88,6 @@ Round 2 (2026-11-14): merge, with nits.
 - 2026-11-14 has-errors → in-progress
 - 2026-11-14 in-progress → review
 - 2026-11-14 review round 2: merge, nits R2.1–R2.5
+- 2026-11-14 round 2 (ff78a95): R2.1 `notingRecord.Load` notes `held`, and `TestAStartPreparedBeforeARollbackFollowsTheRollback` asserts the start loaded the record with the lock held; R2.2 `TestRollbackNeedsRootAndNoArguments` expects the root error on Linux and macOS and `agent: unsupported` elsewhere (`supported_other.go` refuses before the root check; os.Geteuid is -1 on Windows, so no skip; nothing is touched either way; the Windows test binary compiles); R2.3 api-overview-reference.md: a start begun during a rollback is refused the lock (it never waits) and the service manager's next restart reads the record; only a kill or a second Ctrl-C cuts rollback short; R2.4 `rollbackRefused.Error()` ends with the host lock's error (the lock file), `errors.Is(err, ErrAnotherAgent)` and exit 75 kept, the reference's example updated; lab tests match the refusal's unchanged prefix; R2.5 Notes line
+- 2026-11-14 mutations, each failed its test then restored: `takeConnectChoice` moved above `LockHost` (R2.1: "record load held=false"); the OS condition inverted (R2.2, on macOS: root error where unsupported expected); the lock's error dropped from the refusal (R2.4: refused test). Windows' own run not possible here: reasoned from `supported_other.go` and the CLI's exit 1 for a non-lock error
+- 2026-11-14 runs on ff78a95: make lint (govulncheck included) and make test green (go1.26.11, umask 022); `make lab-gotest PKG=./lab RUN=Rollback` ok. No full lab: the changes are tests, docs and the refusal's text, whose lab assertions match its unchanged prefix
