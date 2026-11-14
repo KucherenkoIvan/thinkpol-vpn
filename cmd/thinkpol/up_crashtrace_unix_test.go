@@ -94,6 +94,43 @@ func TestOnlyAKnownDevicesFailedStartKeepsTheTrace(t *testing.T) {
 	}
 }
 
+// A trace that can't be dropped decides up's exit, even after -h or a
+// bad flag: those would exit 0 or 64 without a word about it (their
+// usage went to the trace file already).
+func TestUpExitsByATraceItCouldNotDrop(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes the file from a read-only directory")
+	}
+	unsetTHINKPOL(t)
+	keepUpGlobals(t)
+	for _, args := range [][]string{{"-h"}, {"-bogus"}, {"now"}} {
+		t.Run(args[0], func(t *testing.T) {
+			dir := tempDir(t)
+			path := filepath.Join(dir, agent.CrashTraceFile)
+			crashTracePath = func() string { return path }
+			t.Cleanup(func() { crashTracePath = agent.CrashTracePath })
+			if err := os.WriteFile(path, []byte("panic: the previous run\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stderr, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = stderr.Close() }()
+			// Not a known device: the file is to be removed, which its
+			// directory refuses.
+			if err := os.Chmod(dir, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+			err = runUp(context.Background(), env{stdin: strings.NewReader(""), stdout: io.Discard, stderr: stderr}, args)
+			if code := exitCode(err); code != exitFailure || err == nil || !strings.Contains(err.Error(), "crash trace") {
+				t.Fatalf("up %s: %v, exit %d; want the trace's failure, exit %d", args[0], err, code, exitFailure)
+			}
+		})
+	}
+}
+
 // up sends grpc's log to the agent's, and under -service sends nothing
 // to a regular file stderr that isn't the trace (PRD S2).
 func TestUpRoutesItsLog(t *testing.T) {
