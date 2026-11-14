@@ -3,6 +3,7 @@ package lab
 import (
 	"encoding/json"
 	"net/netip"
+	"path/filepath"
 )
 
 // Paths inside every node.
@@ -15,6 +16,23 @@ const (
 	// testdata.
 	SrcDir = "/src"
 )
+
+// DNSUpstream is the nameserver every node gives Docker's embedded resolver
+// (127.0.0.11), an address outside the lab. Docker forwards a name it doesn't
+// know to the nameservers it read from the host's resolv.conf, and asks them
+// from the host's network namespace, where the sealing can't reach (Docker
+// 29 every one of them, Docker 27 only loopback ones such as
+// systemd-resolved's). A container's own nameservers it asks from the
+// container's namespace, through the node's routes, which the sealing leaves
+// no way out.
+const DNSUpstream = "192.0.2.254"
+
+// seccompProfile, under the checkout, is Docker's default seccomp profile
+// (Docker 29's, moby/profiles seccomp v0.2.4) plus one rule: pivot_root with
+// CAP_SYS_ADMIN, which the default never allows and every worker sandbox
+// needs. Docker Desktop runs containers without seccomp, so only a Linux
+// host shows the denial. Compose reads the file on the host.
+var seccompProfile = filepath.Join("lab", "seccomp.json")
 
 // Labels on every container and network of a lab. The harness tears down
 // only projects whose every container and network carries LabelLab.
@@ -64,6 +82,7 @@ type composeService struct {
 	Privileged  bool                `json:"privileged,omitempty"`
 	CapAdd      []string            `json:"cap_add"`
 	SecurityOpt []string            `json:"security_opt"`
+	DNS         []string            `json:"dns"`
 	Devices     []string            `json:"devices"`
 	Sysctls     map[string]string   `json:"sysctls,omitempty"`
 	Environment map[string]string   `json:"environment"`
@@ -138,7 +157,9 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 			CapAdd: []string{"NET_ADMIN", "NET_RAW", "SYS_ADMIN"},
 			// Docker's AppArmor profile, where the host has AppArmor, denies
 			// the mounts that network namespaces need, even with SYS_ADMIN.
-			SecurityOpt: []string{"apparmor=unconfined"},
+			// Its default seccomp profile denies pivot_root (seccompProfile).
+			SecurityOpt: []string{"apparmor=unconfined", "seccomp=" + filepath.Join(root, seccompProfile)},
+			DNS:         []string{DNSUpstream},
 			Devices:     []string{"/dev/net/tun"},
 			Environment: env,
 			Labels:      labels,

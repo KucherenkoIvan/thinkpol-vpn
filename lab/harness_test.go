@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -97,6 +99,9 @@ func TestRenderCompose(t *testing.T) {
 		if svc.Labels[LabelLab] != "1" || svc.Privileged || svc.Platform != "linux/arm64" {
 			t.Errorf("service %s: labels %v, privileged %v, platform %q", name, svc.Labels, svc.Privileged, svc.Platform)
 		}
+		if !slices.Contains(svc.SecurityOpt, "seccomp=/checkout/lab/seccomp.json") || !slices.Equal(svc.DNS, []string{DNSUpstream}) {
+			t.Errorf("service %s: security options %v, nameservers %v", name, svc.SecurityOpt, svc.DNS)
+		}
 	}
 	router := f.Services[Router]
 	if router.Sysctls["net.ipv4.ip_forward"] != "1" || router.Sysctls["net.ipv6.conf.all.forwarding"] != "1" {
@@ -110,6 +115,44 @@ func TestRenderCompose(t *testing.T) {
 	}
 	if _, ok := f.Services[DeviceA].Networks[NetServers]; ok {
 		t.Error("device-a is on the servers network")
+	}
+}
+
+// The nodes' seccomp profile denies by default, as Docker's does, and
+// allows pivot_root only with CAP_SYS_ADMIN.
+func TestSeccompProfileAllowsPivotRootOnlyWithSysAdmin(t *testing.T) {
+	data, err := os.ReadFile(filepath.Base(seccompProfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var profile struct {
+		DefaultAction string `json:"defaultAction"`
+		Syscalls      []struct {
+			Names    []string `json:"names"`
+			Action   string   `json:"action"`
+			Includes struct {
+				Caps []string `json:"caps"`
+			} `json:"includes"`
+		} `json:"syscalls"`
+	}
+	if err := json.Unmarshal(data, &profile); err != nil {
+		t.Fatal(err)
+	}
+	if profile.DefaultAction != "SCMP_ACT_ERRNO" || len(profile.Syscalls) < 30 {
+		t.Fatalf("default action %s with %d rules: not Docker's default profile", profile.DefaultAction, len(profile.Syscalls))
+	}
+	var rules int
+	for _, r := range profile.Syscalls {
+		if !slices.Contains(r.Names, "pivot_root") {
+			continue
+		}
+		rules++
+		if r.Action != "SCMP_ACT_ALLOW" || !slices.Equal(r.Includes.Caps, []string{"CAP_SYS_ADMIN"}) {
+			t.Errorf("pivot_root rule: %s with caps %v, want SCMP_ACT_ALLOW with CAP_SYS_ADMIN", r.Action, r.Includes.Caps)
+		}
+	}
+	if rules != 1 {
+		t.Errorf("%d rules name pivot_root, want 1", rules)
 	}
 }
 

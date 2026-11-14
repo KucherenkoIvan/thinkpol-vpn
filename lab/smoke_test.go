@@ -179,11 +179,16 @@ func TestSmoke(t *testing.T) {
 		}
 		wantNoLookup(t, device, "an outside name on a device", "getent", "hosts", "example.com")
 		// Asked directly, Docker's resolver answers a lab name (the
-		// control) and an outside one with SERVFAIL once its forward gets
-		// no answer (about 4s, measured), so the client waits longer. A
-		// tripwire, not a proof of the sealing (the routes and blackholes
-		// above are): SERVFAIL says no answer came back, not that nothing
-		// left. A timeout or any other rcode fails.
+		// control) and forwards an outside one to the node's own
+		// nameserver, lab.DNSUpstream, from the node itself: the router
+		// sees the query arrive from the device, has no route on and lets
+		// nothing out, and the answer is SERVFAIL once the forward fails
+		// (the client waits longer than Docker's 4s forward timeout). A
+		// query the router never sees was forwarded from somewhere the
+		// sealing doesn't reach (the Docker host's namespace). A tripwire,
+		// not a proof of the sealing (the routes and blackholes above
+		// are): SERVFAIL says no answer came back, not that nothing left.
+		// A timeout or any other rcode fails.
 		dockerDNS := func(name string) string {
 			t.Helper()
 			out, err := execRead(device, execTimeout, "labdns", "-server", "127.0.0.11:53", "-timeout", "20s", "-query", name)
@@ -195,8 +200,24 @@ func TestSmoke(t *testing.T) {
 		if got := dockerDNS(lab.Router); got != "NOERROR" {
 			t.Fatalf("Docker's resolver answers %s for a lab name, so the next check proves nothing", got)
 		}
+		forwarded := router.Capture(t, "udp port 53 and host "+lab.DNSUpstream)
 		if got := dockerDNS("example.com"); got != "SERVFAIL" {
 			t.Errorf("Docker's resolver answered an outside name with %s, want SERVFAIL (forwarding failed)", got)
+		}
+		if err := forwarded.Complete(); err != nil {
+			t.Fatal(err)
+		}
+		var arrived, left int
+		for _, p := range forwarded.Packets() {
+			switch {
+			case p.Outgoing:
+				left++
+			case p.Network == lab.NetDevices && p.Src == device.IPv4(lab.NetDevices) && p.DstPort == 53:
+				arrived++
+			}
+		}
+		if arrived == 0 || left != 0 {
+			t.Errorf("the router saw %d forwarded queries arrive from the device (want some) and %d leave (want none)", arrived, left)
 		}
 	})
 
