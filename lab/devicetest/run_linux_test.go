@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -50,12 +51,18 @@ type labRun struct {
 
 func runAsRoot(t *testing.T, p plan.Plan, phys string) labRun {
 	t.Helper()
+	return runAsRootTyping(t, p, phys, "yes\n")
+}
+
+// runAsRootTyping runs p with typed as the owner's terminal input.
+func runAsRootTyping(t *testing.T, p plan.Plan, phys, typed string) labRun {
+	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	var term bytes.Buffer
-	r := &runner{plan: p, phys: phys, in: bufio.NewReader(strings.NewReader("yes\n")), out: &term,
+	r := &runner{plan: p, phys: phys, in: bufio.NewReader(strings.NewReader(typed)), out: &term,
 		helperCommand: func(args []string) (*exec.Cmd, error) {
 			cmd, err := safety.RootCommand(self, args)
 			if cmd != nil {
@@ -134,6 +141,47 @@ func TestAWholeRunRecordsItsEvidenceAndRestoresClean(t *testing.T) {
 	}
 	if !strings.Contains(got.term, "devicetest TP-900 recorded: 1 of 1 steps, selftest ok, restore CLEAN") {
 		t.Errorf("the last line:\n%s", got.term)
+	}
+}
+
+// An ask prints its prompt after the time, waits for the owner's line and
+// keeps it: in the step's folder with when it was asked and answered, in
+// notes.md and in the transcript.
+func TestAnAskWaitsForTheOwnerAndKeepsTheNote(t *testing.T) {
+	iface := labInterface(t)
+	p := plan.Plan{Ticket: "TP-902", Title: "an ask", Budget: 2 * time.Minute,
+		Steps: []plan.Step{{Name: "by-hand", Ops: []plan.Op{
+			plan.Read("ip", "-o", "link", "show"),
+			plan.Ask("Turn Wi-Fi off."),
+			plan.Read("ip", "route", "show"),
+		}}}}
+	got := runAsRootTyping(t, p, iface, "yes\nwifi off at 10:02, a second try\n")
+	if got.err != nil || got.record.Steps != 1 {
+		t.Fatalf("run: %v %+v\n%s", got.err, got.record, got.term)
+	}
+	if !regexp.MustCompile(`(?m)^\d\d:\d\d:\d\d Turn Wi-Fi off\. Then type your note, if any, and press Enter: `).MatchString(got.term) {
+		t.Errorf("no timestamped prompt:\n%s", got.term)
+	}
+	var ask struct {
+		Ask, Note       string
+		Asked, Answered time.Time
+	}
+	b, err := os.ReadFile(filepath.Join(got.path, "steps/01-by-hand/ask-002.json"))
+	if err == nil {
+		err = json.Unmarshal(b, &ask)
+	}
+	if err != nil || ask.Ask != "Turn Wi-Fi off." || ask.Note != "wifi off at 10:02, a second try" ||
+		ask.Asked.IsZero() || ask.Answered.Before(ask.Asked) {
+		t.Errorf("the ask's record: %s %v", b, err)
+	}
+	for _, f := range []string{"notes.md", "harness.log"} {
+		if b, _ := os.ReadFile(filepath.Join(got.path, f)); !bytes.Contains(b, []byte(`Turn Wi-Fi off.`)) ||
+			!bytes.Contains(b, []byte(`"wifi off at 10:02, a second try"`)) {
+			t.Errorf("%s lacks the ask and its note:\n%s", f, b)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(got.path, "steps/01-by-hand/cmd-003.ip-route-show.out")); err != nil {
+		t.Errorf("the read after the ask: %v", err)
 	}
 }
 

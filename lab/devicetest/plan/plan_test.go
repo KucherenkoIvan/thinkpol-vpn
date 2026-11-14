@@ -17,6 +17,9 @@ func TestAPlanUndoesOnlyItsOwnChanges(t *testing.T) {
 		"a change, then its undo":    {[]Op{Do(PfSkip("lo")), Read("pfctl", "-s", "rules"), UndoLast()}, ""},
 		"a change without a kind":    {[]Op{Do(Change{})}, "without a kind"},
 		"an empty read":              {[]Op{Read()}, "empty root read"},
+		"an ask":                     {[]Op{Ask("Turn Wi-Fi off.")}, ""},
+		"an ask of nothing":          {[]Op{Ask(" ")}, "one line of text"},
+		"an ask of two lines":        {[]Op{Ask("a\nb")}, "one line of text"},
 	} {
 		p := base
 		p.Steps = []Step{{Name: "s", Ops: tc.ops}}

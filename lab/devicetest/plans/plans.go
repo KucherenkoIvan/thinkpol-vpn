@@ -11,7 +11,7 @@ import (
 )
 
 // All are the plans.
-func All() []plan.Plan { return []plan.Plan{selfTest(), tp096()} }
+func All() []plan.Plan { return []plan.Plan{selfTest(), tp085(), tp096(), tp143()} }
 
 // selfTest is the self-test alone: the capture checked, no change of a
 // plan's (the self-test's own harmless change goes through the journal and

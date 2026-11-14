@@ -307,6 +307,15 @@ func (r *runner) op(dir string, n int, op plan.Op) error {
 			r.ev.Logf("  undone: %s", resp.Did)
 		}
 		return err
+	case plan.OpAsk:
+		asked := time.Now().UTC()
+		note, err := r.ev.Ask(r.in, op.Text+" Then type your note, if any, and press Enter:")
+		rec := map[string]any{"ask": op.Text, "asked": asked, "answered": time.Now().UTC(), "note": note}
+		if err != nil {
+			rec["error"] = err.Error()
+		}
+		r.ev.WriteJSON(fmt.Sprintf("%s/ask-%03d.json", dir, n), rec)
+		return err
 	}
 	return fmt.Errorf("operation kind %d", op.Kind)
 }

@@ -36,9 +36,9 @@ func listing(p plan.Plan, phys string) string {
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
 	w("%s: %s", p.Ticket, p.Title)
 	w("budget %v: past it the dead-man restores the Mac", p.Budget)
-	w("first, the self-test (%v, before any change): one harmless change through the journal and back,", selfTestBudget)
-	w("  then the capture must see a marker, miss one its filter excludes, and decode with tcpdump -n -A -r")
+	w("first, the self-test (%v, before any change): one harmless change through the journal and back", selfTestBudget)
 	if c := p.Capture; c.Iface != "" {
+		w("  then the capture must see a marker, miss one its filter excludes, and decode with tcpdump -n -A -r")
 		iface := c.Iface
 		if iface == plan.Physical {
 			iface = "the physical interface (" + phys + ")"
@@ -73,6 +73,8 @@ func describeOp(op plan.Op) string {
 		return "change:    " + does
 	case plan.OpUndoLast:
 		return "undo now:  the plan's newest change"
+	case plan.OpAsk:
+		return "ask you:   " + op.Text + " (waits for Enter; your note is saved)"
 	}
 	return fmt.Sprintf("operation %d", op.Kind)
 }

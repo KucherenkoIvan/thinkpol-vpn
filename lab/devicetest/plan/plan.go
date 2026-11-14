@@ -1,7 +1,7 @@
 // Package plan is what a device-test plan is written in: data, not code.
 // A plan lists its steps, and each step its operations: a root read (a
-// listing the core allows), a change (one of the core's kinds), or undoing
-// the newest change now. The runner (lab/devicetest) does exactly what
+// listing the core allows), a change (one of the core's kinds), undoing
+// the newest change now, or asking the owner to do something. The runner (lab/devicetest) does exactly what
 // the plan lists and nothing else; a plan can't run a command or reach
 // the core (depguard), so its listing is everything a run may do. A plan
 // records and never judges: what a run saw is judged afterwards, from
@@ -56,6 +56,8 @@ const (
 	OpDo
 	// OpUndoLast undoes the plan's newest change now, not only at the end.
 	OpUndoLast
+	// OpAsk asks the owner to do something and waits for Enter.
+	OpAsk
 )
 
 // Op is one operation.
@@ -63,6 +65,8 @@ type Op struct {
 	Kind   OpKind
 	Argv   []string
 	Change Change
+	// Text is what an ask asks, one line.
+	Text string
 }
 
 // Change names one of the core's kinds of change, with its parameters.
@@ -79,6 +83,12 @@ func Do(c Change) Op { return Op{Kind: OpDo, Change: c} }
 
 // UndoLast undoes the plan's newest change now.
 func UndoLast() Op { return Op{Kind: OpUndoLast} }
+
+// Ask prints text after the time on the run's one terminal, waits for
+// Enter and saves the line the owner typed before it, a note, in the
+// evidence. The dead-man's budget runs while it waits, and a Ctrl-C stops
+// the run once Enter is pressed.
+func Ask(text string) Op { return Op{Kind: OpAsk, Text: text} }
 
 // PfSkip loads `set skip on iface` before the stock pf rules
 // (/etc/pf.conf); its undo loads the stock rules.
@@ -119,7 +129,9 @@ func (p Plan) Validate() error {
 				return fmt.Errorf("plan %s, step %s: an undo with no change of the plan's before it", p.Ticket, s.Name)
 			case op.Kind == OpUndoLast:
 				made--
-			case op.Kind != OpRead:
+			case op.Kind == OpAsk && (strings.TrimSpace(op.Text) == "" || strings.ContainsAny(op.Text, "\r\n")):
+				return fmt.Errorf("plan %s, step %s: an ask needs one line of text", p.Ticket, s.Name)
+			case op.Kind != OpRead && op.Kind != OpAsk:
 				return fmt.Errorf("plan %s, step %s: operation kind %d", p.Ticket, s.Name, op.Kind)
 			}
 		}

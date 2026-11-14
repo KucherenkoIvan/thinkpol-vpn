@@ -50,8 +50,9 @@
 //     the restore); selftest/ (selftest.json, the capture's copy and its
 //     decode); captures/ (the pcap, tcpdump's stderr, markers.jsonl with
 //     the markers and each step's start and end); steps/NN-name/ (each
-//     root read's .out, .err and .json with its exit status, and `thinkpol
-//     diag` or why there is none); snapshots/ (the baseline and after each
+//     root read's .out, .err and .json with its exit status, each ask's
+//     .json with its times and the owner's note, and `thinkpol diag` or
+//     why there is none); snapshots/ (the baseline and after each
 //     restore, raw); actions/ (what each change ran); restore/ and
 //     journal/. Captures keep 128 bytes a packet and are never deleted:
 //     the evidence is the owner's, kept privately. Root's own state
@@ -75,8 +76,11 @@
 // It is written with lab/devicetest/plan: one capture, and steps, each a
 // list of root reads (plan.Read("pfctl", "-s", "Interfaces", "-v")),
 // changes (plan.Do with one of the core's kinds, e.g.
-// plan.Do(plan.PfSkip("lo"))) and plan.UndoLast, which undoes the plan's
-// own newest change. depguard holds plan and plans to a short list of
+// plan.Do(plan.PfSkip("lo"))), plan.UndoLast, which undoes the plan's
+// own newest change, and asks (plan.Ask("Turn Wi-Fi off.")): what the
+// owner does by hand, a timestamped prompt on the one terminal that waits
+// for Enter and keeps the note typed before it. The dead-man's budget
+// runs while an ask waits. depguard holds plan and plans to a short list of
 // standard packages: a plan can't run a command or reach the core, and the
 // listing is the whole run. A plan records and never judges: no counting,
 // parsing or PASS/FAIL. What a judge decides again and again becomes a Go
