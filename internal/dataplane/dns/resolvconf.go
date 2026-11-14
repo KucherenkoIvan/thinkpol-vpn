@@ -366,17 +366,21 @@ func setResolvConfTimed(path, uplink string, c SystemConfig, timing resolvConfTi
 	r := &resolvConf{path: path, uplink: uplink, timing: timing, cfg: c, untold: startsUntold(c), rewrite: rewriteResolvConf,
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), stopped: make(chan struct{})}
 	// Watched from before the take-over's read: another program's change
-	// right after the take-over is seen at once, not at the poll. Its
-	// event and the take-over's own are one signal, never a rename.
+	// right after the take-over is seen at once, not at the poll.
 	startWatch, closeWatch := watchResolvConf(r.path)
 	r.mu.Lock()
-	tell, err := r.apply(readResolvConfFile(r.path))
+	f, ferr := readResolvConfFile(r.path)
+	tell, err := r.apply(f, ferr)
+	own := 0 // the take-over's own write, if it wrote (rewriteResolvConf)
+	if err == nil && !bytes.Equal(r.written, f.content) {
+		own = 1
+	}
 	r.mu.Unlock()
 	if err != nil {
 		closeWatch()
 		return nil, err
 	}
-	go r.watch(tell, startWatch(), closeWatch)
+	go r.watch(tell, startWatch(own), closeWatch)
 	return r, nil
 }
 
@@ -433,12 +437,7 @@ func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error
 		return tell, err
 	}
 	r.written, r.failedWrite = content, nil
-	// Content already there isn't written (rewriteResolvConf): the file
-	// read is the node's, and a stat now may find another program's file
-	// renamed in since the read.
-	if bytes.Equal(content, f.content) && f.info != nil {
-		r.writtenInfo = f.info
-	} else if fi, err := os.Lstat(r.path); err == nil {
+	if fi, err := os.Lstat(r.path); err == nil {
 		r.writtenInfo = fi
 	}
 	return tell, nil

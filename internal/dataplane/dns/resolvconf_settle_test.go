@@ -98,7 +98,7 @@ func startInPlace(t *testing.T, timing resolvConfTiming) (string, *resolvConf, c
 func hasChangeEvents(t *testing.T) {
 	t.Helper()
 	start, closeWatch := watchFile(filepath.Join(t.TempDir(), "x"))
-	ch := start()
+	ch := start(0)
 	closeWatch()
 	if ch == nil {
 		t.Skip("no change notifications here")
@@ -315,16 +315,16 @@ func withWatchHook(t *testing.T, setUp, started func(path string)) {
 	t.Helper()
 	watch := watchResolvConf
 	t.Cleanup(func() { watchResolvConf = watch })
-	watchResolvConf = func(path string) (func() <-chan bool, func()) {
+	watchResolvConf = func(path string) (func(int) <-chan bool, func()) {
 		if setUp != nil {
 			setUp(path)
 		}
 		start, closeWatch := watch(path)
-		return func() <-chan bool {
+		return func(own int) <-chan bool {
 			if started != nil {
 				started(path)
 			}
-			return start()
+			return start(own)
 		}, closeWatch
 	}
 }
@@ -370,8 +370,8 @@ func TestResolvConfIsWatchedBeforeTheTakeOverWrites(t *testing.T) {
 }
 
 // Another program's file renamed in after the take-over wrote the file,
-// but before the watch started, is not lost to the poll: its event, one
-// signal with the take-over's own, is no rename, so it settles.
+// but before the watch started, is not lost to the poll: its event and
+// the take-over's own are one signal, no rename, so it settles.
 func TestResolvConfAFileRenamedInDuringTheTakeOverIsSeen(t *testing.T) {
 	hasChangeEvents(t)
 	withWatchHook(t, nil, func(path string) { writeFileAtomic(t, path, renewedInPlace) })
@@ -406,36 +406,63 @@ func TestResolvConfAFileCreatedDuringTheTakeOverSettles(t *testing.T) {
 	checkInPlaceRenewal(t, path, r, told)
 }
 
-// The take-over's own write raises a change event, the watch being set
-// up before it: the watch reads it as the node's own file, writes
-// nothing (no event follows it) and reports no problem.
-func TestResolvConfTheTakeOverOwnEventIsNotAnotherProgramsWrite(t *testing.T) {
+// The take-over's own write, the watch being set up before it, raises
+// no signal: the watch doesn't read it as another program's write, and a
+// file renamed in right after the take-over, before the watch's first
+// read, is taken at once (a pending signal for the take-over's own write
+// would make it settle). The watch is held, not yet reading, in the
+// first tell of the upstreams until the file is renamed in.
+func TestResolvConfAFileRenamedInRightAfterTheTakeOverIsTakenAtOnce(t *testing.T) {
+	hasChangeEvents(t)
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	renamedIn := make(chan struct{})
+	told := make(chan []netip.Addr, 64)
+	c := testSystem
+	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) {
+		<-renamedIn
+		told <- a
+	}, true
+	r, err := setResolvConfTimed(path, "", c, resolvConfTiming{check: time.Hour, settle: time.Hour, settleMax: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	writeFileAtomic(t, path, renewedInPlace)
+	close(renamedIn)
+	takenBackWith(t, path, renewedInPlace)
+	if got := lastTold(t, told); !slices.Equal(got, renewedInPlaceServers) {
+		t.Errorf("told %v last, want %v", got, renewedInPlaceServers)
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem %v", p)
+	}
+}
+
+// The take-over's own write leaves the watch nothing to do: no change
+// signal, no rewrite, no problem.
+func TestResolvConfTheTakeOverOwnWriteIsNoChange(t *testing.T) {
 	hasChangeEvents(t)
 	var mu sync.Mutex
-	events := 0
-	forwarded := make(chan struct{}, 64)
+	signals := 0
 	ctx := t.Context()
 	watch := watchResolvConf
 	t.Cleanup(func() { watchResolvConf = watch })
-	watchResolvConf = func(path string) (func() <-chan bool, func()) {
+	watchResolvConf = func(path string) (func(int) <-chan bool, func()) {
 		start, closeWatch := watch(path)
-		return func() <-chan bool {
-			ch := start()
-			mine := make(chan bool) // unbuffered: a send ends once the watch took it
+		return func(own int) <-chan bool {
+			ch := start(own)
+			mine := make(chan bool, 1)
 			go func() {
 				for {
-					var renamed bool
 					select {
-					case renamed = <-ch:
-					case <-ctx.Done():
-						return
-					}
-					mu.Lock()
-					events++
-					mu.Unlock()
-					select {
-					case mine <- renamed:
-						forwarded <- struct{}{}
+					case renamed := <-ch:
+						mu.Lock()
+						signals++
+						mu.Unlock()
+						mine <- renamed
 					case <-ctx.Done():
 						return
 					}
@@ -449,17 +476,12 @@ func TestResolvConfTheTakeOverOwnEventIsNotAnotherProgramsWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-forwarded:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the take-over's own write raised no change event the watch took")
-	}
-	time.Sleep(300 * time.Millisecond) // a rewrite of its own would raise another
+	time.Sleep(300 * time.Millisecond)
 	mu.Lock()
-	n := events
+	n := signals
 	mu.Unlock()
-	if n != 1 {
-		t.Errorf("%d change events after the take-over, want its own one only: the watch wrote the file again", n)
+	if n != 0 {
+		t.Errorf("%d change signals after the take-over, want none: its own write is no change", n)
 	}
 	if fi, err := os.Lstat(path); err != nil || !os.SameFile(fi, written) || !fi.ModTime().Equal(written.ModTime()) {
 		t.Errorf("the file was written again after the take-over (err %v)", err)

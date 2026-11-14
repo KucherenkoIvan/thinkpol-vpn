@@ -256,7 +256,7 @@
 // way a file was written (no file at all; the poll, which has no event;
 // a bind mount, where every write is in place, the node's own too; a
 // change made during the take-over, before the watch starts, whose
-// event is one with the take-over's own rename), the write settles.
+// event can't be told from the take-over's own), the write settles.
 // Problem reports [ErrUnprotected] by one rule, with no model of how
 // the other program writes, once the watch has seen the
 // write: at once on a change event, within the 2 s poll otherwise (a

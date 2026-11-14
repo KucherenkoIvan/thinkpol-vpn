@@ -12,16 +12,19 @@ import (
 
 // watchFile watches the file at path for changes: written and closed,
 // created, or renamed into its directory (inotify on the directory). The
-// watch is set up at once and signals from start on: the changes made
-// before start (the caller's own writes among them) are one signal, never
-// a rename, as whose rename it was can't be told. A signal is true when
-// every change it stands for was a rename into the path: a file renamed
-// in was complete before it got the name, while one created at the path
-// (IN_CREATE fires at the open) may still be being written. start's
-// channel may be nil where that can't be watched; callers poll too. start
-// is called at most once, and closeWatch ends the watch, started or not.
-func watchFile(path string) (start func() <-chan bool, closeWatch func()) {
-	unwatched := func() <-chan bool { return nil }
+// watch is set up at once and signals from start on. own is how many
+// changes the caller made to the file itself since the set-up (each
+// write, renamed in or in place, is one): the changes made before start
+// are dropped when they are no more than own, and are one signal
+// otherwise, never a rename, as whose rename it was can't be told. A
+// signal is true when every change it stands for was a rename into the
+// path: a file renamed in was complete before it got the name, while one
+// created at the path (IN_CREATE fires at the open) may still be being
+// written. start's channel may be nil where that can't be watched;
+// callers poll too. start is called at most once, and closeWatch ends
+// the watch, started or not.
+func watchFile(path string) (start func(own int) <-chan bool, closeWatch func()) {
+	unwatched := func(int) <-chan bool { return nil }
 	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
 		return unwatched, func() {}
@@ -34,8 +37,8 @@ func watchFile(path string) (start func() <-chan bool, closeWatch func()) {
 	ch := make(chan bool, 1)
 	name := filepath.Base(path)
 	buf := make([]byte, 64*(unix.SizeofInotifyEvent+unix.NAME_MAX+1))
-	start = func() <-chan bool {
-		before := false
+	start = func(own int) <-chan bool {
+		before, lost := 0, false
 		for { // the queued events, read before the poller owns the fd
 			n, err := unix.Read(fd, buf)
 			if err == unix.EINTR {
@@ -44,9 +47,12 @@ func watchFile(path string) (start func() <-chan bool, closeWatch func()) {
 			if err != nil || n <= 0 {
 				break
 			}
-			eachChange(buf[:n], name, func(bool) { before = true })
+			eachChange(buf[:n], name, func(mask uint32) {
+				before++
+				lost = lost || mask&unix.IN_Q_OVERFLOW != 0
+			})
 		}
-		if before {
+		if lost || before > own {
 			signal(ch, false)
 		}
 		f = os.NewFile(uintptr(fd), "inotify") // non-blocking: Close ends a Read
@@ -56,7 +62,9 @@ func watchFile(path string) (start func() <-chan bool, closeWatch func()) {
 				if err != nil {
 					return
 				}
-				eachChange(buf[:n], name, func(renamed bool) { signal(ch, renamed) })
+				eachChange(buf[:n], name, func(mask uint32) {
+					signal(ch, mask&unix.IN_MOVED_TO != 0 && mask&unix.IN_Q_OVERFLOW == 0)
+				})
 			}
 		}()
 		return ch
@@ -71,18 +79,16 @@ func watchFile(path string) (start func() <-chan bool, closeWatch func()) {
 	return start, closeWatch
 }
 
-// eachChange calls change for each event in buf that may have changed the
-// file called name, with whether it was a rename into the path.
-func eachChange(buf []byte, name string, change func(renamed bool)) {
+// eachChange calls change with the mask of each event in buf that may
+// have changed the file called name: one about name, or a queue overflow
+// (events were lost, a creation among them maybe).
+func eachChange(buf []byte, name string, change func(mask uint32)) {
 	for off := 0; off+unix.SizeofInotifyEvent <= len(buf); {
 		ev := (*unix.InotifyEvent)(unsafe.Pointer(&buf[off]))
 		nameBytes := buf[off+unix.SizeofInotifyEvent : off+unix.SizeofInotifyEvent+int(ev.Len)]
 		off += unix.SizeofInotifyEvent + int(ev.Len)
-		switch {
-		case ev.Mask&unix.IN_Q_OVERFLOW != 0: // events were lost, a creation among them maybe
-			change(false)
-		case string(trimNUL(nameBytes)) == name:
-			change(ev.Mask&unix.IN_MOVED_TO != 0)
+		if ev.Mask&unix.IN_Q_OVERFLOW != 0 || string(trimNUL(nameBytes)) == name {
+			change(ev.Mask)
 		}
 	}
 }
