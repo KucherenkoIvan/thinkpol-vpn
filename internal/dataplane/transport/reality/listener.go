@@ -23,11 +23,6 @@ const (
 	// targetDialTimeout bounds the dial to the target at accept. A target
 	// that can't be reached closes the connection.
 	targetDialTimeout = 10 * time.Second
-	// helloTimeout bounds reading the ClientHello when an
-	// Admission.Camouflage takes what fails: what doesn't arrive in time
-	// goes to it with whatever did. With reality's own splice, the target's
-	// timeouts are the only ones.
-	helloTimeout = 10 * time.Second
 	// handshakeTimeout bounds REALITY's handshake, which has no deadline
 	// of its own, once the ClientHello authenticated: a dialer holding a
 	// credential that stalls there would hold the connection for good.
@@ -38,6 +33,13 @@ const (
 	detectWait = 10 * time.Second
 )
 
+// helloTimeout bounds reading the ClientHello, from accept: what doesn't
+// arrive in time stays spliced to the target, whose own timeouts end it
+// (no timer of the listener's shows), and frees its slot among the
+// connections being decided; with an Admission.Camouflage it goes there
+// with whatever did arrive. A listener reads it at Listen.
+var helloTimeout = 10 * time.Second
+
 // Listen implements transport.Transport. Whatever fails authentication
 // goes to the admission's camouflage; without one, the connection is
 // mirrored to the listener's target from accept and spliced to it, raw and
@@ -45,64 +47,79 @@ const (
 // certificate verifies for every server name and REALITY learned the
 // target's post-handshake records first.
 func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admission transport.Admission) (transport.Listener, error) {
-	addr, err := netip.ParseAddrPort(cfg.Address)
-	if err != nil || !addr.Addr().IsValid() {
-		return nil, invalid("listen address %q: an IP literal and port", cfg.Address)
-	}
-	ls, err := parseListen(cfg.Settings)
+	ln, ls, err := t.openListener(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	if err := verifyTarget(ctx, ls.target.String(), ls.names, t.targetRoots, detectWait, t.control); err != nil {
-		return nil, err
-	}
-	if err := detect(ctx, upstreamRecords{}, ls.target.String(), ls.names, detectWait); err != nil {
-		return nil, err
-	}
-	lc := net.ListenConfig{Control: t.control}
-	ln, err := lc.Listen(ctx, "tcp", addr.String())
-	if err != nil {
-		return nil, fmt.Errorf("reality: %w", err)
-	}
-	l := &listener{
-		t:        t,
-		ln:       ln,
-		settings: ls,
-		peers:    admission.Peers,
-		camo:     admission.Camouflage,
-		replay:   newReplayCache(ls.window),
-		linger:   spliceLinger,
-		accepted: make(chan accepted),
-		closed:   make(chan struct{}),
-		links:    map[shortID]*link{},
-		live:     map[io.Closer]struct{}{},
-	}
-	links, changed := l.peers.Snapshot()
-	l.apply(links)
-	go l.watch(changed)
+	l := newListener(t, ln, ln.Addr(), ls, admission, helloCheck{t: t, replay: newReplays(ls.window), start: transport.StartedAt(t.now(), t.elapsed)})
 	go l.acceptLoop()
 	return l, nil
 }
 
+// openListener checks a listener of the map and its target (the target's
+// certificate, then REALITY's detection of its records), then listens.
+func (t *Transport) openListener(ctx context.Context, cfg transport.ListenConfig) (net.Listener, listenSettings, error) {
+	addr, err := netip.ParseAddrPort(cfg.Address)
+	if err != nil || !addr.Addr().IsValid() {
+		return nil, listenSettings{}, invalid("listen address %q: an IP literal and port", cfg.Address)
+	}
+	ls, err := parseListen(cfg.Settings)
+	if err != nil {
+		return nil, ls, err
+	}
+	if err := verifyTarget(ctx, ls.target.String(), ls.names, t.targetRoots, detectWait, t.control); err != nil {
+		return nil, ls, err
+	}
+	if err := detect(ctx, upstreamRecords{}, ls.target.String(), ls.names, detectWait); err != nil {
+		return nil, ls, err
+	}
+	lc := net.ListenConfig{Control: t.control}
+	ln, err := lc.Listen(ctx, "tcp", addr.String())
+	if err != nil {
+		return nil, ls, fmt.Errorf("reality: %w", err)
+	}
+	return ln, ls, nil
+}
+
+// newListener is a listener on ln (nil for a worker's Handoff, which is
+// handed its connections) at addr, deciding hellos with check.
+func newListener(t *Transport, ln net.Listener, addr net.Addr, ls listenSettings, admission transport.Admission, check helloCheck) *listener {
+	l := &listener{
+		t:        t,
+		ln:       ln,
+		addr:     addr,
+		settings: ls,
+		peers:    admission.Peers,
+		camo:     admission.Camouflage,
+		check:    check,
+		gate:     newGate(t, ls.target),
+		accepted: make(chan accepted),
+		closed:   make(chan struct{}),
+		links:    map[shortID]*link{},
+	}
+	links, changed := l.peers.Snapshot()
+	l.apply(links)
+	go l.watch(changed)
+	return l
+}
+
 type listener struct {
 	t        *Transport
-	ln       net.Listener
+	ln       net.Listener // nil behind a shared listener
+	addr     net.Addr
 	settings listenSettings
 	peers    transport.Peers
 	camo     transport.Camouflage // nil: the mirror and splice to the target
-	replay   *replayCache
-	linger   time.Duration
+	check    helloCheck
+	gate     *gate // what isn't a link yet, and the splices
 
 	accepted  chan accepted
 	closed    chan struct{}
 	closeOnce sync.Once
 
-	mu       sync.Mutex
-	table    map[shortID]transport.PeerLink
-	refused  map[shortID]error // credentials in the table whose entry reality refuses
-	rejected []transport.PeerError
-	links    map[shortID]*link
-	live     map[io.Closer]struct{} // connections not yet a link, splices, their targets
+	mu    sync.Mutex
+	table table
+	links map[shortID]*link
 }
 
 type accepted struct {
@@ -121,20 +138,20 @@ func (l *listener) Accept(ctx context.Context) (transport.Link, transport.Identi
 	}
 }
 
-func (l *listener) Addr() net.Addr { return l.ln.Addr() }
+func (l *listener) Addr() net.Addr { return l.addr }
 
 func (l *listener) Close() error {
 	var err error
 	l.closeOnce.Do(func() {
 		close(l.closed)
-		err = l.ln.Close()
+		if l.ln != nil {
+			err = l.ln.Close()
+		}
+		l.gate.close()
 		l.mu.Lock()
 		links := make([]*link, 0, len(l.links))
 		for _, lk := range l.links {
 			links = append(links, lk)
-		}
-		for c := range l.live {
-			_ = c.Close()
 		}
 		l.mu.Unlock()
 		for _, lk := range links {
@@ -145,12 +162,11 @@ func (l *listener) Close() error {
 }
 
 // Rejected lists the peer links of the table the listener can't use: ones
-// reality refuses, and every one sharing a short id with another, refused
-// or not (all are dropped, not one guessed).
+// reality refuses, and those sharing a short id with another (newTable).
 func (l *listener) Rejected() []transport.PeerError {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.rejected
+	return l.table.rejected
 }
 
 func (l *listener) watch(changed <-chan struct{}) {
@@ -170,53 +186,22 @@ func (l *listener) watch(changed <-chan struct{}) {
 // (ErrRevoked), links whose entry is now refused close
 // (ErrSettingsRefused), the rest pick up their new shaping.
 func (l *listener) apply(links []transport.PeerLink) {
-	table := make(map[shortID]transport.PeerLink, len(links))
-	refused := map[shortID]error{}
-	shared := map[shortID]bool{}
-	var rejected []transport.PeerError
-	errShared := invalid("a short id another peer link has too")
-	for _, pl := range links {
-		id, err := parseShortID(pl.Verifier)
-		if err == nil {
-			err = l.t.CheckInbound(pl)
-		}
-		if err != nil {
-			if len(pl.Verifier) == ShortIDSize {
-				refused[id] = err
-			}
-			rejected = append(rejected, transport.PeerError{Peer: pl.Peer, Err: err})
-			continue
-		}
-		if first, ok := table[id]; ok {
-			shared[id] = true
-			delete(table, id)
-			rejected = append(rejected, transport.PeerError{Peer: first.Peer, Err: errShared})
-		}
-		if shared[id] {
-			rejected = append(rejected, transport.PeerError{Peer: pl.Peer, Err: errShared})
-			continue
-		}
-		table[id] = pl
-	}
-	for id := range refused {
-		if pl, ok := table[id]; ok {
-			delete(table, id)
-			rejected = append(rejected, transport.PeerError{Peer: pl.Peer, Err: errShared})
-		}
-	}
-
+	l.mu.Lock()
+	prev := l.table.links
+	l.mu.Unlock()
+	tab := newTable(l.t, links, prev)
 	type closing struct {
 		link  *link
 		cause error
 	}
 	var toClose []closing
 	l.mu.Lock()
-	l.table, l.refused, l.rejected = table, refused, rejected
+	l.table = tab
 	for id, lk := range l.links {
-		pl, ok := table[id]
+		pl, ok := tab.links[id]
 		switch {
-		case refused[id] != nil:
-			toClose = append(toClose, closing{lk, fmt.Errorf("%w: %w", transport.ErrSettingsRefused, refused[id])})
+		case tab.refused[id] != nil:
+			toClose = append(toClose, closing{lk, fmt.Errorf("%w: %w", transport.ErrSettingsRefused, tab.refused[id])})
 		case !ok || pl.Peer != lk.peer:
 			toClose = append(toClose, closing{lk, transport.ErrRevoked})
 		default:
@@ -245,33 +230,7 @@ func (l *listener) acceptLoop() {
 			time.Sleep(10 * time.Millisecond) // out of descriptors, say: don't spin
 			continue
 		}
-		if !l.track(conn) {
-			_ = conn.Close()
-			return
-		}
 		go l.serve(conn)
-	}
-}
-
-// track has Close close c; it reports false, and leaves c to the caller,
-// once the listener is closed.
-func (l *listener) track(c io.Closer) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	select {
-	case <-l.closed:
-		return false
-	default:
-	}
-	l.live[c] = struct{}{}
-	return true
-}
-
-func (l *listener) untrack(cs ...io.Closer) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for _, c := range cs {
-		delete(l.live, c)
 	}
 }
 
@@ -284,39 +243,38 @@ func (l *listener) serve(conn net.Conn) {
 		l.serveCamouflaged(conn)
 		return
 	}
-	d := net.Dialer{Control: l.t.control, Timeout: targetDialTimeout}
-	target, err := d.Dial("tcp", l.settings.target.String())
-	if err != nil {
-		l.untrack(conn)
-		_ = conn.Close()
-		return
-	}
-	if !l.track(target) {
-		_ = target.Close()
-		return // Close closed conn
-	}
-	defer l.untrack(conn, target)
-	m := newMirror(conn, target, l.linger)
 	var id shortID
 	var peer transport.Identity
-	record, authenticated, rerr := m.gather(func(record []byte) bool {
+	_ = conn.SetReadDeadline(time.Now().Add(l.gate.helloTimeout))
+	p, d := l.gate.decide(conn, func(record []byte) bool {
 		var ok bool
 		id, peer, ok = l.authenticate(record)
 		return ok
-	})
-	if !authenticated {
-		m.splice(rerr)
+	}, nil)
+	if d != passedOn {
 		return
 	}
-	ht := m.handOff(record)
-	l.handshake(conn, record, id, peer, func(context.Context, string, string) (net.Conn, error) { return ht, nil })
+	defer l.gate.live.untrack(conn, p.target)
+	ht := &handedTarget{Conn: p.target, held: p.held, skip: len(p.record) - heldBack}
+	l.handshake(conn, p.record, id, peer, func(context.Context, string, string) (net.Conn, error) { return ht, nil })
 }
 
 // serveCamouflaged is serve with an Admission.Camouflage: the hello is
 // read whole, or for helloTimeout, before anything is dialled, and what
-// fails goes to the camouflage.
+// fails goes to the camouflage. It counts against the gate's bound on
+// connections being decided.
 func (l *listener) serveCamouflaged(conn net.Conn) {
-	_ = conn.SetReadDeadline(time.Now().Add(helloTimeout))
+	if !take(l.gate.mirrors) {
+		_ = conn.Close()
+		return
+	}
+	decided := sync.OnceFunc(func() { <-l.gate.mirrors })
+	defer decided()
+	if !l.gate.live.track(conn) {
+		_ = conn.Close()
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(l.gate.helloTimeout))
 	record, err := readRecord(conn)
 	_ = conn.SetReadDeadline(time.Time{})
 	var (
@@ -327,12 +285,13 @@ func (l *listener) serveCamouflaged(conn net.Conn) {
 	if err == nil {
 		id, peer, ok = l.authenticate(record)
 	}
+	decided()
 	if !ok {
-		l.untrack(conn)
+		l.gate.live.untrack(conn)
 		l.camo.Stream(conn, record)
 		return
 	}
-	defer l.untrack(conn)
+	defer l.gate.live.untrack(conn)
 	d := &net.Dialer{Control: l.t.control, Timeout: targetDialTimeout}
 	l.handshake(conn, record, id, peer, d.DialContext)
 }
@@ -349,29 +308,39 @@ func (l *listener) handshake(conn net.Conn, record []byte, id shortID, peer tran
 	l.admit(tlsConn, conn, id, peer)
 }
 
+// authenticate checks a whole hello against the listener's own table
+// (helloCheck.check).
 func (l *listener) authenticate(record []byte) (shortID, transport.Identity, bool) {
-	h, err := parseHello(record)
-	if err != nil || !l.settings.names[h.serverName] {
-		return shortID{}, transport.Identity{}, false
-	}
-	s, err := open(l.settings.key, h)
-	if err != nil {
-		return shortID{}, transport.Identity{}, false
-	}
+	id, peer, v := l.check.check(l.settings, record, l.lookup, nil)
+	return id, peer, v == transport.StreamRouted
+}
+
+func (l *listener) lookup(id shortID) (transport.PeerLink, bool) {
 	l.mu.Lock()
-	pl, ok := l.table[s.shortID]
-	l.mu.Unlock()
-	if !ok || !l.replay.admit(s.shortID, h.sessionID, s.sent, l.t.now()) {
-		return shortID{}, transport.Identity{}, false
+	defer l.mu.Unlock()
+	pl, ok := l.table.links[id]
+	return pl, ok
+}
+
+// openHello opens a whole hello's seal: one ClientHello for one of the
+// server names, whose seal opens under the listener's key.
+func (ls listenSettings) openHello(record []byte) (*clientHello, sealedHello, bool) {
+	h, err := parseHello(record)
+	if err != nil || !ls.names[h.serverName] {
+		return nil, sealedHello{}, false
 	}
-	return s.shortID, pl.Peer, true
+	s, err := open(ls.key, h)
+	if err != nil {
+		return nil, sealedHello{}, false
+	}
+	return h, s, true
 }
 
 // admit makes an established connection a link: it replaces the
 // credential's link, if any, and waits for Accept.
 func (l *listener) admit(tlsConn, tcp net.Conn, id shortID, peer transport.Identity) {
 	l.mu.Lock()
-	pl, ok := l.table[id]
+	pl, ok := l.table.links[id]
 	select {
 	case <-l.closed:
 		ok = false

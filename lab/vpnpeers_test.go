@@ -24,7 +24,7 @@ import (
 // httpsName is the name the https row's ClientHello asks for: the
 // camouflage site's, so the prober's TLS comparison and server-hello
 // compare the row's nginx with the site.
-const httpsName = camouflageName
+const httpsName = lab.CamouflageName
 
 // setupHTTPS runs nginx on server-1 as an ordinary site for httpsName, the
 // same server and settings as the camouflage site (startCamouflage): what
@@ -90,7 +90,7 @@ const relayRowPort = 9443
 // that relays what it doesn't recognize does.
 func setupRelay(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	server := l.Node(lab.Server1)
-	startRelay(t, server, relayRowPort, startCamouflage(t, l))
+	startRelay(t, server, relayRowPort, lab.StartCamouflage(t, l))
 	return probeTarget{server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)}, nil
 }
 

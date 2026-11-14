@@ -28,7 +28,9 @@ The `reality` transport's pre-authentication parsing runs in the gatekeeper, not
 
 ## Notes
 - Findings: TP-064 Notes (Q3, gatekeeper).
+- From TP-201 review round 1: the supervisor also checks each reality listener's target as root at every listener open (a certificate-verifying TLS dial per server name, then REALITY's detection of its records), so whoever is on the path to the target feeds bytes to root's x509 and TLS parsers (RR37); proposal: run the target check and the detection in a short-lived sandboxed helper that returns only the verdict and the learned record lengths.
 
 ## Log
 - 2026-10-15 created in backlog (TP-064 findings)
 - 2026-11-07 milestone → later (owner's MVP cut: follows TP-063)
+- 2026-11-12 notes: the target check and detection in a sandboxed helper (TP-201 review round 1)

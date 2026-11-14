@@ -2,6 +2,8 @@ package ipc_test
 
 import (
 	"net/netip"
+	"os"
+	"reflect"
 	"testing"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
@@ -54,18 +56,57 @@ func TestDatagramHeaderRoundTrip(t *testing.T) {
 }
 
 func TestListenersRoundTrip(t *testing.T) {
-	in := []ipc.Listener{{ID: 1, Transport: "udp", Address: "0.0.0.0:443"}, {ID: 7, Transport: "tls", Stream: true, Address: "[::]:443"}}
+	in := []ipc.Listener{{ID: 1, Transport: "udp", Address: "0.0.0.0:443"}, {ID: 7, Transport: "reality", Stream: true, Address: "[::]:443", Handoff: []byte{0, 1, 2}}}
 	m, err := ipc.ListenersMessage(in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	out, err := ipc.DecodeListeners(m)
-	if err != nil || len(out) != 2 || out[0] != in[0] || out[1] != in[1] {
+	if err != nil || !reflect.DeepEqual(out, in) {
 		t.Fatalf("round trip: %+v, %v", out, err)
 	}
 	m, _ = ipc.ListenersMessage(nil)
 	if out, err := ipc.DecodeListeners(m); err != nil || out == nil || len(out) != 0 {
 		t.Fatalf("no listeners: %+v, %v", out, err)
+	}
+}
+
+// A Stream message keeps the consumed bytes and the target's apart, with
+// or without a target descriptor, and refuses a payload whose lengths
+// don't add up.
+func TestStreamRoundTrip(t *testing.T) {
+	files := func(n int) []*os.File {
+		var fs []*os.File
+		for range n {
+			f, err := os.Open(os.DevNull)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = f.Close() })
+			fs = append(fs, f)
+		}
+		return fs
+	}
+	fs := files(2)
+	in := ipc.Stream{Listener: 9, Consumed: []byte("hello"), TargetRead: []byte("early")}
+	s, conn, target, err := ipc.DecodeStream(ipc.StreamMessage(in, fs[0], fs[1]))
+	if err != nil || !reflect.DeepEqual(s, in) || conn != fs[0] || target != fs[1] {
+		t.Fatalf("with a target: %+v %v %v, %v", s, conn, target, err)
+	}
+	in = ipc.Stream{Listener: 3, Consumed: []byte("line\n"), TargetRead: []byte{}}
+	s, conn, target, err = ipc.DecodeStream(ipc.StreamMessage(in, fs[0], nil))
+	if err != nil || !reflect.DeepEqual(s, in) || conn != fs[0] || target != nil {
+		t.Fatalf("without a target: %+v %v %v, %v", s, conn, target, err)
+	}
+	for name, m := range map[string]ipc.Message{
+		"consumed past the payload": {Kind: ipc.KindStream, Payload: []byte{0, 0, 0, 1, 0, 0, 0, 9, 'x'}, Files: files(2)},
+		"target bytes, no target":   {Kind: ipc.KindStream, Payload: []byte{0, 0, 0, 1, 0, 0, 0, 0, 'x'}, Files: files(1)},
+		"no descriptor":             {Kind: ipc.KindStream, Payload: []byte{0, 0, 0, 1, 0, 0, 0, 0}},
+		"three descriptors":         {Kind: ipc.KindStream, Payload: []byte{0, 0, 0, 1, 0, 0, 0, 0}, Files: files(3)},
+	} {
+		if _, _, _, err := ipc.DecodeStream(m); err == nil {
+			t.Errorf("%s: decoded", name)
+		}
 	}
 }
 
