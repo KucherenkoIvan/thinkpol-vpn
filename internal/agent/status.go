@@ -316,12 +316,15 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		// whose router took the new preset shows it while the OS routing
 		// table catches up, with the engine unlocked.
 		routed := st.Rules.Preset.String()
-		if p.switching != "" && routed == p.switching {
+		switched := p.switching != "" && routed == p.switching
+		if switched {
 			s.RulePreset = routed
 		}
 		s.RulesEnforced = s.RulePreset == routed
 		s.PresetUnavailable = s.RulesEnforced && st.Rules.PresetUnavailable
-		s.RulesIncomplete = s.RulesEnforced && p.layoutFailed
+		// A switch the router took is being laid out: an earlier
+		// preset's failed layout isn't its.
+		s.RulesIncomplete = s.RulesEnforced && p.layoutFailed && !switched
 		var problem error
 		if p.dns != nil {
 			problem = p.dns()

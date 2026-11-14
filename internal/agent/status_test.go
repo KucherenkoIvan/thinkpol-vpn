@@ -956,6 +956,37 @@ func TestARulePresetStoreThatFailsWhileStoppedChangesNothing(t *testing.T) {
 	wantPreset(t, n, "everything")
 }
 
+// switchHeld has b switch to preset with every route table Enforce held,
+// and returns what Status showed at each and what SetRulePreset said.
+// SetRulePreset returning while one is held fails t.
+func switchHeld(t *testing.T, b *deviceNode, h *heldRouteTable, preset string) ([]Status, error) {
+	t.Helper()
+	h.hold.Store(true)
+	defer h.hold.Store(false)
+	set := make(chan error, 1)
+	go func() { set <- b.node.SetRulePreset(context.Background(), preset) }()
+	var shown []Status
+	for {
+		select {
+		case st := <-h.entered:
+			shown = append(shown, st)
+			select {
+			case err := <-set:
+				t.Errorf("SetRulePreset returned %v before the route table took it", err)
+				h.release <- struct{}{}
+				return shown, err
+			default:
+			}
+			h.release <- struct{}{}
+		case err := <-set:
+			if len(shown) == 0 {
+				t.Fatal("the switch never changed the route table")
+			}
+			return shown, err
+		}
+	}
+}
+
 // While the data plane switches presets, Status shows what the router
 // enforces, enforced, at every step of the OS routing table's change
 // (the engine unlocked): never the previous preset as not enforced once
@@ -968,38 +999,48 @@ func TestARulePresetIsShownOnceTheRouterHasIt(t *testing.T) {
 	h := newHeldRouteTable()
 	b := startDevice(t, s, reg, true, h.opt())
 	b.connection(t, Connected)
-	h.hold.Store(true)
-	set := make(chan error, 1)
-	go func() { set <- b.node.SetRulePreset(context.Background(), "all-but-domestic") }()
-	var err error
-	held := 0
-	for done := false; !done; {
-		select {
-		case st := <-h.entered:
-			held++
-			if p := st.DataPlane.Rules.Preset.String(); st.RulePreset != p || !st.RulesEnforced ||
-				slices.Contains(st.Health().Problems, ProblemPresetNotEnforced) {
-				t.Errorf("enforce %d: status shows %q (enforced %v, health %+v) while the router enforces %q", held, st.RulePreset, st.RulesEnforced, st.Health(), p)
-			}
-			select {
-			case err = <-set:
-				t.Errorf("SetRulePreset returned %v before the route table took it", err)
-				done = true
-			default:
-			}
-			h.release <- struct{}{}
-		case err = <-set:
-			done = true
+	shown, err := switchHeld(t, b, h, "all-but-domestic")
+	for i, st := range shown {
+		if p := st.DataPlane.Rules.Preset.String(); st.RulePreset != p || !st.RulesEnforced ||
+			slices.Contains(st.Health().Problems, ProblemPresetNotEnforced) {
+			t.Errorf("enforce %d: status shows %q (enforced %v, health %+v) while the router enforces %q", i, st.RulePreset, st.RulesEnforced, st.Health(), p)
 		}
-	}
-	h.hold.Store(false)
-	if held == 0 {
-		t.Fatal("the switch never changed the route table")
 	}
 	if err != nil && !errors.Is(err, ErrPresetUnavailable) {
 		t.Fatal(err)
 	}
 	wantPreset(t, b.node, "all-but-domestic")
+}
+
+// A switch the router took isn't shown incomplete for an earlier preset's
+// failed layout while its own is laid out, and its success ends that.
+func TestARulePresetSwitchIsntShownWithAnEarlierFailedLayout(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	h := newHeldRouteTable()
+	opt := h.opt()
+	opt.tuning = func(tu *tuning) { tu.retryAfter = time.Hour } // only the switch enforces
+	b := startDevice(t, s, reg, true, opt)
+	b.connection(t, Connected)
+	h.fail.Store(true)
+	if err := b.node.SetRulePreset(context.Background(), "all-but-domestic"); !errors.Is(err, ErrPresetIncomplete) {
+		t.Fatalf("got %v, want ErrPresetIncomplete", err)
+	}
+	h.fail.Store(false)
+	shown, err := switchHeld(t, b, h, "everything")
+	for i, st := range shown {
+		if st.RulePreset == "everything" && (st.RulesIncomplete || slices.Contains(st.Health().Problems, ProblemPresetIncomplete)) {
+			t.Errorf("enforce %d: the switch shown incomplete: status %+v, health %+v", i, st, st.Health())
+		}
+	}
+	if err != nil && !errors.Is(err, ErrPresetUnavailable) {
+		t.Fatal(err)
+	}
+	wantPreset(t, b.node, "everything")
+	if st := b.node.Status(); st.RulesIncomplete || st.Retrying {
+		t.Fatalf("status %+v", st)
+	}
 }
 
 // A caller whose ctx ends after the node took its request hears what
