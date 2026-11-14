@@ -418,10 +418,14 @@ func TestResolvConfAFileRenamedInRightAfterTheTakeOverIsTakenAtOnce(t *testing.T
 	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	renamedIn := make(chan struct{})
+	held, renamedIn := make(chan struct{}, 1), make(chan struct{})
 	told := make(chan []netip.Addr, 64)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) {
+		select {
+		case held <- struct{}{}:
+		default:
+		}
 		<-renamedIn
 		told <- a
 	}, true
@@ -430,6 +434,11 @@ func TestResolvConfAFileRenamedInRightAfterTheTakeOverIsTakenAtOnce(t *testing.T
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = r.Restore() })
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watch never told the take-over's upstreams")
+	}
 	writeFileAtomic(t, path, renewedInPlace)
 	close(renamedIn)
 	takenBackWith(t, path, renewedInPlace)
