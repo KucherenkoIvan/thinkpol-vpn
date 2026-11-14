@@ -3,9 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"time"
-
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
 )
 
 func init() {
@@ -33,8 +30,5 @@ func runAllowLAN(ctx context.Context, e env, args []string) error {
 		return err
 	}
 	st, err := c.SetAllowLAN(ctx, cmd.Arg(0) == "on")
-	if err != nil {
-		return err
-	}
-	return localapi.WriteStatus(e.stdout, st, time.Now())
+	return printOutcome(ctx, e, c, st, err)
 }

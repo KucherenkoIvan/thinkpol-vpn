@@ -67,17 +67,20 @@ func TestDevListsBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, args := range [][]string{
-		{"-only", "kz", "-out", out, src},
-		{"-out", out, filepath.Join(dir, "missing.csv")},
-		{"-out", out, filepath.Join(dir, "source.mmdb")},
-		{"-format", "v2fly", "-out", out, src},
+	for _, c := range []struct {
+		args []string
+		code int
+	}{
+		{[]string{"-only", "kz", "-out", out, src}, exitFailure},
+		{[]string{"-out", out, filepath.Join(dir, "missing.csv")}, exitNoInput},
+		{[]string{"-out", out, filepath.Join(dir, "source.mmdb")}, exitFailure},
+		{[]string{"-format", "v2fly", "-out", out, src}, exitFailure},
 	} {
-		if code, _, stderr := runCLI(t, append([]string{"dev", "lists", "build"}, args...)...); code != 1 {
-			t.Errorf("%v: exit %d, stderr %q", args, code, stderr)
+		if code, _, stderr := runCLI(t, append([]string{"dev", "lists", "build"}, c.args...)...); code != c.code {
+			t.Errorf("%v: exit %d, want %d, stderr %q", c.args, code, c.code, stderr)
 		}
 	}
-	if code, _, _ := runCLI(t, "dev", "lists", "build"); code != 2 {
+	if code, _, _ := runCLI(t, "dev", "lists", "build"); code != exitUsage {
 		t.Errorf("no source: exit %d", code)
 	}
 }

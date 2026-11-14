@@ -102,11 +102,12 @@ func secondAgentChangesNothing(t *testing.T, n *lab.Node, exit netip.Addr, extra
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		res, err := n.Exec(ctx, args...)
 		cancel()
-		want, code := "another thinkpol agent is running on this host", 1
+		// Both are refused as busy (EX_TEMPFAIL).
+		want := "another thinkpol agent is running on this host"
 		if args[1] == "rollback" {
-			want, code = "another thinkpol process holds the host", 75
+			want = "another thinkpol process holds the host"
 		}
-		if err == nil || res.ExitCode != code || !strings.Contains(res.Stderr, want) {
+		if err == nil || res.ExitCode != 75 || !strings.Contains(res.Stderr, want) {
 			t.Errorf("%s: %v (exit %d)\n%s%s", strings.Join(args, " "), err, res.ExitCode, res.Stdout, res.Stderr)
 		}
 	}

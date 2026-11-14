@@ -285,6 +285,12 @@ func (k *killSwitchKeeper) status(s killSwitchSettings, active bool) KillSwitchS
 	return st
 }
 
+// notApplied is the status of a kill switch the node hasn't put as meant
+// (KillSwitchNotApplied).
+func (s killSwitchSettings) notApplied() KillSwitchStatus {
+	return KillSwitchStatus{On: s.on, AllowLAN: s.allowLAN, Error: KillSwitchNotApplied}
+}
+
 // killSwitchSettings are the device's kill switch settings in effect:
 // its device file's toggles, else the node's defaults.
 func (n *Node) killSwitchSettings() killSwitchSettings {
@@ -311,23 +317,42 @@ func (n *Node) enforceKillSwitch(ctx context.Context, v killSwitchView) {
 	n.report.set(func(p *report) { p.killSwitch = st })
 }
 
+// ErrKillSwitchNotEnforced is a toggle stored and acted on while the kill
+// switch isn't as meant: KillSwitchNotEnforcedError says why.
+var ErrKillSwitchNotEnforced = errors.New("agent: the kill switch is not enforced")
+
+// KillSwitchNotEnforcedError is SetKillSwitch or SetAllowLAN that stored
+// the toggle, had the node act on it, and left the kill switch not as
+// meant (Reason, as Status says it): the toggle stays, and the node
+// retries. errors.Is finds ErrKillSwitchNotEnforced in it.
+type KillSwitchNotEnforcedError struct{ Reason KillSwitchError }
+
+func (e *KillSwitchNotEnforcedError) Error() string {
+	return ErrKillSwitchNotEnforced.Error() + ": " + string(e.Reason)
+}
+
+func (e *KillSwitchNotEnforcedError) Is(target error) bool { return target == ErrKillSwitchNotEnforced }
+
 // SetKillSwitch sets a device's kill switch toggle, stored in DeviceFile
 // (only the service writes it), and returns once the node acted on it
-// (Status shows what it did). ErrServerMode on a server.
+// (Status shows what it did): nil only when the kill switch is then as
+// meant, a *KillSwitchNotEnforcedError when it isn't. ErrServerMode on a
+// server; ErrNotRunning on a node that stopped, which takes the stored
+// toggle at its next start.
 func (n *Node) SetKillSwitch(ctx context.Context, on bool) error {
 	return n.setToggle(ctx, func(s *DeviceSettings) { s.KillSwitch = &on }, "kill switch set", "kill_switch", on)
 }
 
 // SetAllowLAN sets whether a device's kill switch lets the LAN out
 // (firewall.LAN), stored in DeviceFile, and returns once the node acted
-// on it. ErrServerMode on a server.
+// on it, as SetKillSwitch does.
 func (n *Node) SetAllowLAN(ctx context.Context, on bool) error {
 	return n.setToggle(ctx, func(s *DeviceSettings) { s.AllowLAN = &on }, "allow-LAN set", "allow_lan", on)
 }
 
 // setToggle stores the toggle set changes, then has the node's goroutine
-// act on it and waits for that; a node that stopped takes it at its next
-// start.
+// act on it and waits for that, and says whether the kill switch is then
+// as meant; a node that stopped takes it at its next start.
 func (n *Node) setToggle(ctx context.Context, set func(*DeviceSettings), msg, key string, on bool) error {
 	if n.Mode() == ModeServer {
 		return ErrServerMode
@@ -347,14 +372,18 @@ func (n *Node) setToggle(ctx context.Context, set func(*DeviceSettings), msg, ke
 	select {
 	case n.killSwitchRequests <- done:
 	case <-n.stopped:
-		return nil
+		return ErrNotRunning
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 	select {
 	case <-done:
-		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	// The node published what it did before closing done.
+	if st := n.Status().KillSwitch; st.Error != "" {
+		return &KillSwitchNotEnforcedError{Reason: st.Error}
+	}
+	return nil
 }

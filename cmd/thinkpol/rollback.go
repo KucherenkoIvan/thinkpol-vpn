@@ -25,9 +25,6 @@ func runRollback(_ context.Context, e env, args []string) error {
 		return errUsage
 	}
 	r, err := agent.Rollback(platform(), agent.DefaultStateDir)
-	if errors.Is(err, agent.ErrAnotherAgent) {
-		err = tempFailError{err}
-	}
 	if perr := r.Print(e.stdout); perr != nil {
 		return errors.Join(err, perr)
 	}

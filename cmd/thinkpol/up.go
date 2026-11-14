@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -39,10 +40,16 @@ func runUp(ctx context.Context, e env, args []string) error {
 	}
 	cfg, err := upConfig(e, args)
 	if derr := trace.KeepOnlyOnADevice(cfg); derr != nil {
-		return errors.Join(err, derr)
+		// derr decides the exit: -h (0) or a usage error (64) would hide
+		// it, exiting as if the trace were kept.
+		if err == nil || errors.Is(err, flag.ErrHelp) || errors.Is(err, errUsagePrinted) || errors.Is(err, errUsage) {
+			return derr
+		}
+		return fmt.Errorf("%w; and %v", derr, err)
 	}
 	if err != nil {
-		return err
+		// The node file is read from the state directory, up's input.
+		return inputAt(err, nil, []string{cfg.StateDir})
 	}
 	logs, err := agent.NewLogs(cfg.LogLevel, trace.LogOutput(e.stderr, cfg.Service))
 	if err != nil {
@@ -54,7 +61,9 @@ func runUp(ctx context.Context, e env, args []string) error {
 	localapi.RouteGRPCLog(logs.Logger)
 	node, err := agent.Prepare(cfg, logs, platform())
 	if err != nil {
-		return err
+		// Prepare reads the state directory and the map first: up's
+		// named inputs.
+		return inputAt(err, []string{cfg.MapPath()}, []string{cfg.StateDir})
 	}
 	if err := node.KeepLastRun(trace); err != nil {
 		return err

@@ -9,7 +9,7 @@ import (
 )
 
 func init() {
-	register(command{path: "t b", args: "<word>...", summary: "test command b", run: runTB})
+	registerForTest(command{path: "t b", args: "<word>...", summary: "test command b", run: runTB})
 }
 
 func runTB(_ context.Context, e env, args []string) error {
@@ -31,7 +31,7 @@ func TestSecondFileInGroupDispatches(t *testing.T) {
 
 func TestCommandUsageErrorPrintsItsSynopsis(t *testing.T) {
 	code, _, stderr := runCLI(t, "t", "b")
-	if code != 2 || stderr != "usage: thinkpol t b <word>...\n\ntest command b\n" {
+	if code != exitUsage || stderr != "usage: thinkpol t b <word>...\n\ntest command b\n" {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 }

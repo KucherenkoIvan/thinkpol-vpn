@@ -19,5 +19,5 @@ func runServiceConnectOnBoot(context.Context, env, []string) error {
 }
 
 // errConnectOnBootMoved answers the service's connect-on-boot, which is
-// the device's setting now.
-var errConnectOnBootMoved = errors.New("connect-on-boot is the device's setting now, no longer the service's: thinkpol connect-on-boot [on|off] (no root needed)")
+// the device's setting now: arguments no longer taken.
+var errConnectOnBootMoved = argsError{errors.New("connect-on-boot is the device's setting now, no longer the service's: thinkpol connect-on-boot [on|off] (no root needed)")}

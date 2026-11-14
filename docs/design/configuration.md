@@ -78,7 +78,7 @@ The levels then combine by narrowing:
 
 ## File formats
 
-- **One format, JSON,** for the node file and the device file alike (owner, 2026-11-07). Nesting is expected (TP-183's ceiling holds lists, a node that serves several spaces needs settings per space, allow-LAN takes prefixes), and one format is simpler than two. JSON has no comments, so the CLI reference lists every key and its default (TP-167).
+- **One format, JSON,** for the node file and the device file alike (owner, 2026-11-07). Nesting is expected (TP-183's ceiling holds lists, a node that serves several spaces needs settings per space, allow-LAN takes prefixes), and one format is simpler than two. JSON has no comments, so the CLI reference lists every key and its default (TP-181).
 - **An unknown key is an error** (TP-166): `up` exits with EX_CONFIG (78) and names the key, so a typo never reads as a default. So are a key given twice (encoding/json would keep the last), a key of another case (encoding/json would match it), a null (encoding/json would read it as the default: leave the key out instead), a value of the wrong type or out of range, invalid JSON, more than one object, and an empty file (`{}` is a file without settings). The same strict reading applies to `device.json`, where a mistake stops the node from starting.
 - **Linux systemd drop-ins are unsupported** (owner, 2026-11-07). `diag` reports one if it finds it, since a drop-in can set `THINKPOL_*` variables behind the node file's back: `service_drop_ins.paths` lists every `thinkpol.service.d/*.conf` and `service.d/*.conf` on systemd's system unit search path, in its order (`systemctl set-property` writes under `/etc/systemd/system.control`) (TP-166), to the group too.
 

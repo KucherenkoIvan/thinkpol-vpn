@@ -4,7 +4,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -54,7 +53,7 @@ func HostInstaller(out io.Writer, plat agent.Platform) (Installer, error) {
 // installed for the whole host.
 func CheckRoot() error {
 	if os.Geteuid() != 0 {
-		return errors.New("the service is the host's: run this as root (sudo)")
+		return ErrNeedsRoot
 	}
 	return nil
 }

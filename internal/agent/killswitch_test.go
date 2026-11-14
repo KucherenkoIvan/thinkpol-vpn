@@ -20,6 +20,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
 // The kill switch is in place while its toggle is on, or under the crash
@@ -313,6 +314,133 @@ func TestAFailingKillSwitchIsReportedAndRetried(t *testing.T) {
 	}
 	inPlace(t, host, "connected")
 	eventually(t, func() bool { return b.node.Status().KillSwitch.Enforced })
+}
+
+// A toggle answers for the kill switch it leaves: one not as meant
+// (applying or removing it failed) is a KillSwitchNotEnforcedError with
+// Status's reason, the toggle stored all the same; a node that stopped
+// stores it for its next start and says ErrNotRunning.
+func TestAToggleSaysWhetherTheKillSwitchIsEnforced(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	host := &memKillSwitches{}
+	b := startDevice(t, s, reg, false, withKillSwitch(host, nil))
+	ctx := context.Background()
+	b.connection(t, Disconnected)
+
+	notEnforced := func(err error, want KillSwitchError) bool {
+		var ne *KillSwitchNotEnforcedError
+		return errors.As(err, &ne) && ne.Reason == want && errors.Is(err, ErrKillSwitchNotEnforced)
+	}
+	host.failWith(errors.New("nftables says no"))
+	if err := b.node.SetKillSwitch(ctx, true); !notEnforced(err, KillSwitchApplyFailed) {
+		t.Fatalf("on while applying fails: %v, want %s", err, KillSwitchApplyFailed)
+	}
+	if st := b.node.Status().KillSwitch; !st.On || st.Enforced {
+		t.Errorf("status %+v, want on, not enforced", st)
+	}
+	host.failWith(nil)
+	if err := b.node.SetAllowLAN(ctx, false); err != nil {
+		t.Fatalf("allow-LAN off once applying works: %v", err)
+	}
+	inPlace(t, host, "down")
+	host.failCloseWith(errors.New("nftables says no"))
+	if err := b.node.SetKillSwitch(ctx, false); !notEnforced(err, KillSwitchRemoveFailed) {
+		t.Fatalf("off while removing fails: %v, want %s", err, KillSwitchRemoveFailed)
+	}
+	host.failCloseWith(nil)
+	if err := b.node.SetKillSwitch(ctx, false); err != nil {
+		t.Fatalf("off once removing works: %v", err)
+	}
+	inPlace(t, host, "none")
+
+	b.stop()
+	select {
+	case <-b.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the node didn't stop")
+	}
+	b.done <- nil // for the cleanup
+	if err := b.node.SetKillSwitch(ctx, true); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("on with the node stopped: %v, want ErrNotRunning", err)
+	}
+	data, err := os.ReadFile(filepath.Join(b.node.cfg.StateDir, DeviceFile))
+	if err != nil || !strings.Contains(string(data), `"kill_switch": true`) {
+		t.Errorf("the stopped node's toggle isn't stored: %s, %v", data, err)
+	}
+}
+
+// A device removed from its space enforces its kill switch while it
+// waits; once a newer map makes it a server, the host is left alone, so
+// a toggle is refused as not applied instead of trusting what the kill
+// switch was before. A map that makes it a device again enforces the
+// toggle stored meanwhile.
+func TestAToggleWhileTheMapMakesADeviceAServerIsNotApplied(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	host := &memKillSwitches{}
+	b := startDevice(t, s, reg, false, withKillSwitch(host, nil), deviceOpt{prepare: func(c *Config, _ *Platform) {
+		writeFile(t, filepath.Join(c.StateDir, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
+	}})
+	ctx := context.Background()
+	eventually(t, func() bool { return b.node.Status().Removed })
+	if err := b.node.SetKillSwitch(ctx, true); err != nil {
+		t.Fatalf("on while removed: %v", err)
+	}
+	inPlace(t, host, "down")
+
+	b.maps <- s.buildBoth(t, 2, func(a, b *netmap.Section) { b.Node.Kind, a.Inbound[0].PeerKind = netmap.NodeServer, netmap.NodeServer })
+	eventually(t, func() bool { return b.node.Status().ModeMismatch })
+	for _, on := range []bool{false, true, false} {
+		err := b.node.SetKillSwitch(ctx, on)
+		var ne *KillSwitchNotEnforcedError
+		if !errors.As(err, &ne) || ne.Reason != KillSwitchNotApplied {
+			t.Fatalf("%s while mismatched: %v, want %s", onOff(on), err, KillSwitchNotApplied)
+		}
+		if st := b.node.Status().KillSwitch; st.On != on || st.Enforced || st.Error != KillSwitchNotApplied {
+			t.Fatalf("status after %s: %+v, want not applied", onOff(on), st)
+		}
+	}
+	if host.rules() == nil {
+		t.Fatal("the mismatched node touched the host's kill switch")
+	}
+
+	b.maps <- s.build(t, 3)
+	inPlace(t, host, "none")
+	eventually(t, func() bool { st := b.node.Status().KillSwitch; return st.Enforced && st.Error == "" && !st.On })
+}
+
+// A map that moves a waiting device into or out of mismatch brings the
+// kill switch's status along with it, not at the next re-apply
+// (killSwitchReapply): Status never shows the mismatch and a kill switch
+// status from the other role together.
+func TestTheKillSwitchStatusFollowsAMismatchAtOnce(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	host := &memKillSwitches{}
+	b := startDevice(t, s, reg, false, withKillSwitch(host, nil), deviceOpt{prepare: func(c *Config, _ *Platform) {
+		writeFile(t, filepath.Join(c.StateDir, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
+	}})
+	ctx := context.Background()
+	eventually(t, func() bool { return b.node.Status().Removed })
+	if err := b.node.SetKillSwitch(ctx, true); err != nil {
+		t.Fatalf("on while removed: %v", err)
+	}
+	inPlace(t, host, "down")
+
+	b.maps <- s.buildBoth(t, 2, func(a, b *netmap.Section) { b.Node.Kind, a.Inbound[0].PeerKind = netmap.NodeServer, netmap.NodeServer })
+	eventually(t, func() bool { return b.node.Status().ModeMismatch })
+	if st := b.node.Status().KillSwitch; st.Enforced || st.Error != KillSwitchNotApplied {
+		t.Fatalf("made a server: kill switch %+v, want not applied", st)
+	}
+
+	b.maps <- s.buildWithout(t, 3, s.b)
+	eventually(t, func() bool { st := b.node.Status(); return st.Removed && !st.ModeMismatch })
+	if st := b.node.Status().KillSwitch; !st.Enforced || st.Error != "" || !st.On {
+		t.Fatalf("removed again: kill switch %+v, want on and enforced", st)
+	}
+	inPlace(t, host, "down")
 }
 
 // The node file's kill switch keys are the defaults until a member sets a

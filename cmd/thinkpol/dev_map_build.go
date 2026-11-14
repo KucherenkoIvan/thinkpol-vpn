@@ -33,7 +33,7 @@ func runDevMapBuild(_ context.Context, e env, args []string) error {
 	}
 	data, err := os.ReadFile(fs.Arg(0))
 	if err != nil {
-		return err
+		return input(err)
 	}
 	spec, err := devmap.ParseSpec(fs.Arg(0), data, os.LookupEnv)
 	if err != nil {
@@ -44,7 +44,7 @@ func runDevMapBuild(_ context.Context, e env, args []string) error {
 	}
 	keys, err := devmap.LoadKeys(*dir, spec)
 	if err != nil {
-		return err
+		return inputAt(err, nil, []string{*dir})
 	}
 	if *version == 0 {
 		previous, _ := os.ReadFile(*out) // a missing or foreign map just doesn't count

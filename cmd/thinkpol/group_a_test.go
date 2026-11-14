@@ -11,8 +11,17 @@ import (
 // Commands of the "t" group are registered from two files, the way two
 // tickets add `dev …` commands without touching each other.
 func init() {
-	register(command{path: "t a", args: "[-n count]", summary: "test command a", run: runTA})
-	register(command{path: "t hidden", summary: "test command, hidden", hidden: true, run: runTA})
+	registerForTest(command{path: "t a", args: "[-n count]", summary: "test command a", run: runTA})
+	registerForTest(command{path: "t hidden", summary: "test command, hidden", hidden: true, run: runTA})
+}
+
+// testOnly are the commands the tests register: visible, so the listings
+// show them, but not the CLI's (no exit-code rows for them).
+var testOnly = map[string]bool{}
+
+func registerForTest(c command) {
+	register(c)
+	testOnly[c.path] = true
 }
 
 func runTA(_ context.Context, e env, args []string) error {
@@ -40,7 +49,7 @@ func TestHiddenCommandRuns(t *testing.T) {
 
 func TestGroupPrefixListsItsCommands(t *testing.T) {
 	code, _, stderr := runCLI(t, "t")
-	if code != 2 || !strings.Contains(stderr, "usage: thinkpol t <command>") ||
+	if code != exitUsage || !strings.Contains(stderr, "usage: thinkpol t <command>") ||
 		!strings.Contains(stderr, "  t a") || !strings.Contains(stderr, "  t b") ||
 		strings.Contains(stderr, "version") || strings.Contains(stderr, "t hidden") {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
@@ -49,7 +58,7 @@ func TestGroupPrefixListsItsCommands(t *testing.T) {
 
 func TestUnknownCommandInGroup(t *testing.T) {
 	code, _, stderr := runCLI(t, "t", "c")
-	if code != 2 || !strings.Contains(stderr, `unknown command "t c"`) || !strings.Contains(stderr, "  t b") {
+	if code != exitUsage || !strings.Contains(stderr, `unknown command "t c"`) || !strings.Contains(stderr, "  t b") {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 }
@@ -63,7 +72,7 @@ func TestFlagHelpExitsZero(t *testing.T) {
 
 func TestBadFlagIsUsageError(t *testing.T) {
 	code, _, stderr := runCLI(t, "t", "a", "-bogus")
-	if code != 2 || !strings.Contains(stderr, "-bogus") || strings.Count(stderr, "usage: thinkpol t a") != 1 {
+	if code != exitUsage || !strings.Contains(stderr, "-bogus") || strings.Count(stderr, "usage: thinkpol t a") != 1 {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 }

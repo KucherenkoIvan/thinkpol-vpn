@@ -4,7 +4,11 @@
 // Each command lives in its own file and registers itself from init (see
 // cli.go), so adding a command never touches shared code. Command files are
 // composition roots: they parse flags, build adapters and call into
-// internal/, nothing more.
+// internal/, nothing more. A command returns an error and never picks its
+// exit code: exitCode (exitcode.go) maps every failure to BSD sysexits,
+// the contract scripts branch on. A command marks the inputs it names
+// (input, inputAt): only those make 66 and 77 of a missing or unreadable
+// file; any other errno is 1.
 package main
 
 import (

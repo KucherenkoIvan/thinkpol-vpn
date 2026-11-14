@@ -85,7 +85,7 @@ func TestDevMapRotate(t *testing.T) {
 	// A rotation replaces a deployed map: with none there, it says so
 	// instead of building.
 	absent := filepath.Join(dir, "absent.bin")
-	if code, _, stderr := runCLI(t, "dev", "map", "rotate", "-keys", keys, "-out", absent, "../../lab/maps/m0.yaml"); code != 1 || !strings.Contains(stderr, "the first build is dev map build") || !strings.Contains(stderr, absent) {
+	if code, _, stderr := runCLI(t, "dev", "map", "rotate", "-keys", keys, "-out", absent, "../../lab/maps/m0.yaml"); code != exitNoInput || !strings.Contains(stderr, "the first build is dev map build") || !strings.Contains(stderr, absent) {
 		t.Fatalf("no map to rotate: exit %d, %s", code, stderr)
 	}
 	if _, err := os.Stat(absent); !os.IsNotExist(err) {
@@ -251,7 +251,7 @@ func TestDevKeygenNeverReplacesKeys(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(keys, "c.key")); !os.IsNotExist(err) {
 		t.Error("keys written before every name was checked")
 	}
-	if code, _, _ := runCLI(t, "dev", "keygen", "node", "-out", keys); code != 2 {
+	if code, _, _ := runCLI(t, "dev", "keygen", "node", "-out", keys); code != exitUsage {
 		t.Errorf("no names: exit %d", code)
 	}
 }

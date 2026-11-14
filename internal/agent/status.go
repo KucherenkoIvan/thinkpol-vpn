@@ -163,7 +163,8 @@ var ErrServerMode = errors.New("agent: a server node always serves its spaces")
 // may leave outside it (Status.DNSUnprotected).
 var ErrDNSUnprotected = errors.New("agent: connected, but the system may resolve names outside the tunnel")
 
-// ErrNotRunning is Connect or Disconnect on a node that isn't running.
+// ErrNotRunning is Connect, Disconnect or a kill switch toggle on a node
+// that isn't running.
 var ErrNotRunning = errors.New("agent: the node is not running")
 
 // StartError is a data plane that failed to start on Connect. Step names
