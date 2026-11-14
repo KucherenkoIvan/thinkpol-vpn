@@ -8,8 +8,10 @@
 //
 //   - GetStatus, and WatchStatus as a stream: the node's mode and
 //     connection, its space and map version, whether it was removed from
-//     the space, its health and problems, its rule preset; a running data
-//     plane's MTU and IPv6 state (and why IPv6 is off), the last Apply's
+//     the space, its health and problems, its rule preset and
+//     connect-on-boot (the JSON schema's version is the CLI's, in its
+//     JSON only: "JSON" below); a running data
+//     plane's TUN, MTU and IPv6 state (and why IPv6 is off), the last Apply's
 //     failed step, its counters, its peers with the entry each one's
 //     packets leave through, its neighbors and their links, its egresses,
 //     and what the map held that the node skipped; on a server, its
@@ -29,11 +31,31 @@
 // the step its start failed at; a device connected while its OS may
 // resolve names outside the node's resolver hears `dns_not_protected`.
 // `thinkpol up -connect=false` starts a device disconnected; under the
-// service connect-on-boot decides a boot's first start, and a later start
+// service the device's connect-on-boot decides a boot's first start
+// (SetConnectOnBoot sets it, from the next boot; `thinkpol
+// connect-on-boot on|off`, GetStatus shows it), and a later start
 // in the same boot comes back as the last Connect or Disconnect left it
 // ([agent.ConnectRecord]). A server
 // serves its spaces whenever it runs: it reports its workers and public
-// listeners and refuses Connect, Disconnect and SetRulePreset.
+// listeners and refuses Connect, Disconnect, SetRulePreset,
+// SetConnectOnBoot, SetKillSwitch and SetAllowLAN.
+//
+// SetKillSwitch and SetAllowLAN set a device's kill switch toggles
+// (`thinkpol kill-switch on|off`, `thinkpol allow-lan on|off`), stored in
+// its device file, and return once the node acted on them: the kill
+// switch put in place, changed or removed as the toggles and the crash
+// posture say, or the attempt failed (Status.kill_switch says which:
+// kill_switch_enforced false and the error's code). A toggle kept while
+// the kill switch is then not as meant is refused as
+// kill_switch_not_enforced:<reason> (the client's
+// [ErrKillSwitchNotEnforced]), so no client takes it for done. A node
+// that isn't running takes them at its next start, refused as
+// not_running; a device that waits on a map making it a server (mode
+// mismatch, at its start or after waiting removed from its space) stores
+// them and leaves the host alone, refused as
+// kill_switch_not_enforced:not_applied.
+// GetStatus
+// shows the toggles and whether the kill switch is in place as meant.
 //
 // # Where the socket is
 //
@@ -68,8 +90,8 @@
 // recorded at connect time (SO_PEERCRED and SO_PEERGROUPS on Linux,
 // LOCAL_PEERCRED on macOS), against the call's level ([Policy]): root and
 // the service's own user may do everything; members of the group see the
-// status and the spaces, control the node (Connect, Disconnect,
-// SetRulePreset) and take the diagnostics without their host parts; the
+// status and the spaces, control the node (Connect, Disconnect), set the
+// member's toggles (SetRulePreset, SetConnectOnBoot, SetKillSwitch, SetAllowLAN) and take the diagnostics without their host parts; the
 // log is root's only, because its debug lines may quote the map. A call
 // not listed needs everything. On macOS the recorded groups are only those
 // the caller's process got at login, and only the first 16 of those
@@ -98,22 +120,26 @@
 //
 // A refusal says which case it is: permission_denied (neither root nor in
 // the group), root_only (not root or the service's user, and the call is
-// root's) or membership_unknown (the call needs the group and Directory
-// Services couldn't say; refused all the same, with codes.Unavailable, to
-// be tried again). A caller that hangs up during the lookup isn't refused:
+// root's), membership_unknown (the call needs the group and Directory
+// Services didn't answer in time; refused all the same, with
+// codes.Unavailable, to be tried again) or membership_check_failed
+// (asking Directory Services failed otherwise; codes.Internal, which
+// retrying doesn't fix). A caller that hangs up during the lookup isn't refused:
 // it gets its context's end, logged at debug; when that end is the
 // caller's own deadline, grpckit also logs "rpc deadline exceeded" at
-// warn. The wording is in errors.go
-// only ([refusals], and the client's own errors' beside it), which the
-// client's dial-time refusal shares, and none of it points at the log,
+// warn. Every refusal, the client's own service_down included, is a row
+// of errors.go's [refusals], with its wording, which the client's
+// dial-time refusal shares: [Error]'s code can't be set anywhere else, a
+// detail (`start_failed:<step>`) only rides on a listed code, and a test
+// fails on an Error built elsewhere. None of the wording points at the log,
 // which only root may read; both permission refusals begin with
 // "permission denied". Every refusal is logged with its method and code;
 // one with credentials also has the caller's uid, the level the call
 // needed, the group it was checked against (if there is one) and how many
 // groups the kernel recorded (not which ones), plus, if the group was
 // looked up, the level the caller had and why Directory Services couldn't
-// answer, if it couldn't. membership_unknown is logged at warn, the others
-// at info.
+// answer, if it couldn't. The two membership refusals are logged at
+// warn, the others at info.
 // There is no read-only tier for other users: they can't reach the
 // socket at all.
 //
@@ -131,11 +157,11 @@
 // # Rule presets
 //
 // A preset chosen through SetRulePreset is stored by the service in the
-// device's state directory ([agent.LocalRulesFile], rules.local, next to
-// the device's own rules), then handed to the engine; nothing else writes
-// it (see [agent.Node.SetRulePreset]). It is read like the node's other
-// files, and one that can't be read or parsed stops the node from starting
-// rather than reading as no rules. A preset the map can't build is kept
+// device file ([agent.DeviceFile], device.json, with the device's own
+// rules and connect-on-boot), then handed to the engine; nothing else
+// writes it (see [agent.Node.SetRulePreset]). It is read like the node's
+// other files, and one that can't be read or parsed stops the node from
+// starting rather than reading as no settings. A preset the map can't build is kept
 // and enforced failing closed, and the API says so
 // (`rule_preset_unavailable`, and the status).
 //
@@ -148,16 +174,11 @@
 // and "couldn't look" stay apart. It records; it doesn't judge: the
 // guard's own check of pf comes with its evidence.
 //
-// Its JSON is the v1 contract ([WriteDiagnostics]; `status -json` is
-// not): the schema's own field names (snake_case: `schema_version`,
-// `last_apply`) and every field present, an unset one as its zero value
-// or null; only a guard's `present` is left out, when it couldn't be told
-// (protojson omits an unset proto3 optional field even then).
-// [DiagSchemaVersion] is bumped when a field is removed or renamed or its
-// type or meaning changes, not when one is added; `unreadable` texts are
-// free-form, and enumerated string values (a route's type, an Apply's
-// step) may grow without a bump. Taking it changes nothing on the host.
-// It holds:
+// Its JSON ([WriteDiagnostics]) is in the convention below, and part of
+// the v1 contract; only a guard's or a kill switch's `present` is left
+// out, when it couldn't be told (protojson omits an unset proto3
+// optional field even then).
+// Taking it changes nothing on the host. It holds:
 //
 //   - the schema version, when it was taken, the agent's OS and version,
 //     and `host_parts`: whether the caller got the host parts;
@@ -180,21 +201,44 @@
 //     its lines up to the hook, every skipped interface and the anchors
 //     before the guard's, and the guard's `pfctl -E` reference and whether
 //     pf still holds it;
+//   - the kill switch as the host holds it, on or off, whatever left it
+//     ([firewall.InspectKillSwitch]): on Linux the nftables table's flags,
+//     chains, rules (rendered nft-like) with their counters, and each
+//     set's size; on macOS the pf anchor's rules with their counters, its
+//     tables' sizes, pf's enabled state, and the kill switch's own
+//     `pfctl -E` reference and whether pf still holds it. Sizes only: the
+//     entries are public addresses, the direct ones possibly thousands;
 //   - the resolvers the host uses, for the overlay's names and the rest
 //     ([dns.Inspect]): resolv.conf and systemd-resolved's links on Linux,
-//     `scutil --dns` on macOS.
+//     `scutil --dns` on macOS;
+//   - `service_drop_ins`: drop-ins for the service's systemd unit
+//     (thinkpol.service.d/*.conf and service.d/*.conf), by path, unsupported and reported
+//     ([agent.DropInReport]); none on macOS. Not a host part: paths only,
+//     the group gets them too;
+//   - `last_run`: what the previous run under a device's service left on
+//     its stderr ([agent.LastRun]: a panic's or a fatal error's trace, or
+//     the error it exited with), its head line by line, up to 64 KiB
+//     (`truncated` says there was more); empty after a clean stop and on a
+//     server. Root's, like the host parts: a panic's message may name a
+//     public address, so the group's snapshot has it unreadable, "root
+//     only", when there is one. The status's `last_run_crashed` says
+//     there is one, to the group too (`status` prints a "last run" line),
+//     and `last_run_unreadable` that there was a file it didn't read
+//     (`unreadable` says why, to root).
 //
-// The routes, rules, guard and resolvers are read from the host whatever
-// the data plane's state, so a snapshot after a crash or a stop shows
-// what was left. They name public addresses (the entries', the direct
-// destinations', the gateway's, the upstreams'), so they are root's: the
+// The routes, rules, guard, kill switch and resolvers are read from the
+// host whatever the data plane's state, so a snapshot after a crash or a
+// stop shows what was left. They name public addresses (the entries', the
+// direct destinations', the gateway's, the upstreams'), so they are
+// root's: the
 // group's snapshot has each of them unreadable, "root only", and the
 // agent doesn't read them for it.
 //
 // The snapshot holds no key, token or session id: what it carries comes
 // from the status, which holds none, and from reading the host, which
-// holds none of the node's. The pf reference shows by its pid; its token
-// stays in the guard's record, whose errors never quote it. A test walks
+// holds none of the node's. A pf reference shows by its pid; its token
+// stays in its owner's record (the guard's or the kill switch's), whose
+// errors never quote it. A test walks
 // the schema for fields named for a secret, and another looks for a
 // device's keys and its links' credentials in a real node's snapshot.
 //
@@ -205,6 +249,59 @@
 // (/dev/stdout is a link through /proc/self/fd/1 to whatever stdout is,
 // a file included), so root writing into a directory others can write to
 // never follows or replaces their link. `-o -` prints it.
+//
+// # JSON
+//
+// What the CLI prints for a script, `status -json` ([WriteJSON]) and
+// `diag` ([WriteDiagnostics]), follows one convention, opt-in with
+// `-json` (`diag` has no text form yet); a person's output stays text.
+// TP-181 gives the other commands `-json` in it, and every field added
+// to the status (TP-048's kill switch and allow-LAN toggles, say)
+// follows it:
+//
+//   - the schema's own field names, snake_case (`space_id`,
+//     `schema_version`), so the JSON says what the local API's message
+//     says: a tray reading the API and a script reading the CLI see the
+//     same names;
+//   - every field present: an unset one as its zero value (`false`, `0`,
+//     `""`, `[]`, `{}`) or, a message's, `null` (`data_plane` while the
+//     data plane is down, `uplink` on a device, a peer's `last_handshake`
+//     before the first);
+//   - a top-level `schema_version`, [SchemaVersion], the one number for
+//     every document, and always the CLI's: the CLI decides the JSON's
+//     names and spellings, so the version is the CLI's whatever the
+//     service sent (Diagnostics' own field, the service's, is
+//     overwritten; Status has none on the wire). The gap: with a service
+//     older than the CLI, a field that service never sends reads as its
+//     zero value under the CLI's version;
+//   - an enum value in lower snake_case without its type's prefix, as the
+//     text view spells it: `connected`, `device`, `ok`, not protojson's
+//     `CONNECTION_CONNECTED`, `MODE_DEVICE`, `HEALTH_LEVEL_OK`; the zero
+//     value is `unspecified`. Every enum field the schema has is spelled
+//     so, nested, in a list or as a map's value, so a new enum follows it
+//     with no code. A value the CLI's schema doesn't know (a newer
+//     service's) is `unknown`, as in the text view, never a number.
+//     The prefix is the zero value's name without `UNSPECIFIED`.
+//     Health problems and other codes are snake_case strings too;
+//   - otherwise protojson's spelling of values: a 64-bit integer as a
+//     string (`"map_version": "1793188210"`), a timestamp as
+//     RFC 3339 in UTC, a duration as seconds with 0, 3, 6 or 9
+//     fractional digits (`"2s"`, `"1.500s"`, `"0.027600s"`);
+//   - one object, indented by two spaces, then a newline, the same bytes
+//     for the same state (protojson's own whitespace is randomized per
+//     build, so it is re-indented); `status -json -watch` writes one
+//     compact object per line ([WriteJSONLine], NDJSON), for line
+//     readers.
+//
+// The v1 contract is the field names, their types and their meaning in
+// Status and Diagnostics. [SchemaVersion] is bumped when a field is
+// removed or renamed or its type or meaning changes, not when one is
+// added (a reader ignores fields it doesn't know); `unreadable` texts and
+// other free text are not part of it, and enumerated values (an enum, a
+// health problem, a route's type, an Apply's step) may grow without a
+// bump. Counters' names (`data_plane.counters`) may come and go: a reader
+// takes a missing one as 0. Version 2 spelled the enum values as above;
+// version 1 had protojson's full names, in diag's status.
 //
 // # What it reports
 //

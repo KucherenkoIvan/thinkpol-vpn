@@ -1,8 +1,9 @@
 ---
 id: TP-133
 title: "`thinkpol diag` as root without a running agent"
-milestone: M2
+milestone: later
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-091]
@@ -27,7 +28,10 @@ After a crash (kill -9, power loss) `thinkpol diag` still records what the dead 
 ## Notes
 - Owner's answer to the device-harness questions (2026-10-23, TP-082 question 2). The harness's crash steps use it.
 - **Slot (pre-M2 phase, 2026-10-24).** Wave 1, Agent lane: after TP-141, before TP-140. Starts only after the owner's TP-139 session, whose verdicts on its planned surface go into this ticket first.
+- **TP-139 verdicts (TP-139 owner session, 2026-11-07; docs/design/api-overview.md "Verdicts", docs/design/configuration.md).** Overlaps TP-168 (`status` local, `diag` over the network, one JSON convention): the new `agent` field follows that convention (snake_case, every field, `schema_version`), and its values are snake_case. Exit codes follow sysexits (TP-167): the fallback's code is decided against that table, and non-root is 77. Whichever of TP-133 and TP-168 starts second merges the other first.
 
 ## Log
 - 2026-10-23 created in backlog (TP-082 design answers)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Agent)
+- 2026-11-07 TP-139 verdicts noted
+- 2026-11-07 milestone → later (owner's MVP cut: diag without an agent: no done-when needs it)

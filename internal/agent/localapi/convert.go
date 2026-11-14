@@ -27,9 +27,14 @@ func statusProto(st agent.Status) *localapiv1.Status {
 		Retrying:   st.Retrying,
 		Health:     &localapiv1.Health{Level: healthProto(h.Level), Problems: problemCodes(h.Problems)},
 		RulePreset: st.RulePreset, RulesEnforced: st.RulesEnforced, RulePresetUnavailable: st.PresetUnavailable,
+		ConnectOnBoot: st.ConnectOnBoot, LastRunCrashed: st.LastRunCrashed, LastRunUnreadable: st.LastRunUnreadable,
+	}
+	if st.Mode != agent.ModeServer {
+		k := st.KillSwitch
+		out.KillSwitch = &localapiv1.KillSwitch{On: k.On, AllowLan: k.AllowLAN, Active: k.Active, Enforced: k.Enforced, Error: string(k.Error)}
 	}
 	if dp := st.DataPlane; dp != nil {
-		out.DataPlane = dataPlaneProto(dp, st.Listeners)
+		out.DataPlane = dataPlaneProto(dp, st.Listeners, st.Interface)
 	}
 	for _, w := range st.Workers {
 		out.Workers = append(out.Workers, &localapiv1.Worker{
@@ -47,7 +52,7 @@ func statusProto(st agent.Status) *localapiv1.Status {
 	for _, l := range st.PublicListeners {
 		out.PublicListeners = append(out.PublicListeners, &localapiv1.PublicListener{
 			Transport: agent.Sanitize(l.Transport), Routed: l.Routed, Unauthenticated: l.Unauthenticated, NoSpace: l.NoSpace,
-			StreamsOverloaded: l.StreamsOverloaded, Rejected: uint32(l.Rejected),
+			StreamsOverloaded: l.StreamsOverloaded, StreamsBoundClosed: l.StreamsBoundClosed, Rejected: uint32(l.Rejected),
 		})
 	}
 	return out
@@ -61,11 +66,11 @@ func problemCodes(ps []agent.Problem) []string {
 	return out
 }
 
-func dataPlaneProto(dp *dataplane.Status, listeners int) *localapiv1.DataPlane {
+func dataPlaneProto(dp *dataplane.Status, listeners int, iface string) *localapiv1.DataPlane {
 	out := &localapiv1.DataPlane{
 		Mtu: uint32(dp.MTU), Ipv6: dp.IPv6, Ipv6Off: string(dp.IPv6Off), LastApplyError: string(dp.LastApplyError),
-		Listeners: uint32(listeners),
-		Counters:  map[string]uint64{},
+		Listeners: uint32(listeners), Interface: agent.Sanitize(iface),
+		Counters: map[string]uint64{},
 	}
 	routeTable := dp.RouteTable.Enforced || dp.RouteTable.Error != ""
 	for _, c := range dataPlaneCounters {
@@ -162,6 +167,8 @@ var dataPlaneCounters = []struct {
 	{"route_table.reapplies", routeTableCounter, func(dp *dataplane.Status) uint64 { return dp.RouteTable.Reapplies }},
 	{"route_table.rules_ahead", routeTableCounter, func(dp *dataplane.Status) uint64 { return uint64(dp.RouteTable.RulesAhead) }},
 	{"route_table.overlay_routes_ahead", routeTableCounter, func(dp *dataplane.Status) uint64 { return uint64(dp.RouteTable.OverlayAhead) }},
+	{"route_table.corrupt_records", routeTableCounter, func(dp *dataplane.Status) uint64 { return uint64(dp.RouteTable.CorruptRecords) }},
+	{"route_table.unowned_routes", routeTableCounter, func(dp *dataplane.Status) uint64 { return uint64(dp.RouteTable.UnownedRoutes) }},
 }
 
 // idString is an id in hex, empty for the zero id.

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 )
@@ -11,5 +12,12 @@ import (
 // on macOS).
 func newGuard() routetable.Guard { return firewall.NewIPv6Guard() }
 
+// newKillSwitch is the host's kill switch (nftables on Linux, a pf anchor
+// on macOS).
+func newKillSwitch() agent.KillSwitch { return firewall.NewKillSwitch() }
+
 // inspectGuard reads the host's leak guard as the host holds it.
 var inspectGuard = firewall.InspectIPv6Guard
+
+// inspectKillSwitch reads the host's kill switch as the host holds it.
+var inspectKillSwitch = firewall.InspectKillSwitch

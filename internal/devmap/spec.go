@@ -12,6 +12,8 @@ import (
 	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/reality"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -80,6 +82,9 @@ type Node struct {
 	Endpoints []Address
 	// Listeners are as written, or derived from Endpoints.
 	Listeners []Address
+	// Reality is the server's reality listener settings: set exactly when
+	// it has reality endpoints.
+	Reality *Reality
 	// Ingress lets devices dial this server; Egress lets internet traffic
 	// leave from it. Server settings, off unless written.
 	Ingress, Egress bool
@@ -92,6 +97,15 @@ type Node struct {
 // settings is what netmap's builder policy reads of the node.
 func (n Node) settings() *netmap.NodeSettings {
 	return &netmap.NodeSettings{Kind: n.Kind, AllowIngress: n.Ingress, AllowEgress: n.Egress}
+}
+
+// Reality is what a server's reality listeners imitate: the camouflage
+// target (an IP literal and port) and the server names it serves. Dialers
+// ask for the first name.
+type Reality struct {
+	Target      netip.AddrPort
+	ServerNames []string
+	Pos         Pos
 }
 
 // Address is a transport and an IP literal with a port, written
@@ -121,7 +135,12 @@ type Error struct {
 	File string
 	Pos  Pos
 	Msg  string
+	// Err is the failure it reports, if one is wrapped (a key file that
+	// couldn't be read): errors.As finds its path error.
+	Err error
 }
+
+func (e *Error) Unwrap() error { return e.Err }
 
 func (e *Error) Error() string {
 	if e.Pos.Line == 0 {
@@ -236,15 +255,33 @@ func (l *rawList) UnmarshalYAML(node ast.Node) error {
 
 type rawNode struct {
 	pos       Pos
-	Name      scalar   `yaml:"name"`
-	Kind      scalar   `yaml:"kind"`
-	IPv4      scalar   `yaml:"ipv4"`
-	IPv6      scalar   `yaml:"ipv6"`
-	Endpoints []scalar `yaml:"endpoints"`
-	Listen    []scalar `yaml:"listen"`
-	Ingress   scalar   `yaml:"ingress"`
-	Egress    scalar   `yaml:"egress"`
-	Lists     []scalar `yaml:"lists"`
+	Name      scalar      `yaml:"name"`
+	Kind      scalar      `yaml:"kind"`
+	IPv4      scalar      `yaml:"ipv4"`
+	IPv6      scalar      `yaml:"ipv6"`
+	Endpoints []scalar    `yaml:"endpoints"`
+	Listen    []scalar    `yaml:"listen"`
+	Reality   *rawReality `yaml:"reality"`
+	Ingress   scalar      `yaml:"ingress"`
+	Egress    scalar      `yaml:"egress"`
+	Lists     []scalar    `yaml:"lists"`
+}
+
+type rawReality struct {
+	pos         Pos
+	Target      scalar   `yaml:"target"`
+	ServerNames []scalar `yaml:"server_names"`
+}
+
+func (r *rawReality) UnmarshalYAML(node ast.Node) error {
+	type fields rawReality // without this method
+	var f fields
+	if err := yaml.NodeToValue(node, &f, yaml.Strict()); err != nil {
+		return err
+	}
+	*r = rawReality(f)
+	r.pos = posOf(node)
+	return nil
 }
 
 func (n *rawNode) UnmarshalYAML(node ast.Node) error {
@@ -564,7 +601,61 @@ func (c *checker) node(s *Spec, rn rawNode, ipv4s, ipv6s map[netip.Addr]string) 
 	n.Ingress = c.setting(label, "ingress", rn.Ingress, n.Kind)
 	n.Egress = c.setting(label, "egress", rn.Egress, n.Kind)
 	c.nodeAddresses(&n, label, rn)
+	n.Reality = c.nodeReality(n, label, rn)
 	return n
+}
+
+// nodeReality reads a server's reality settings, which it needs exactly
+// when it has reality endpoints.
+func (c *checker) nodeReality(n Node, label string, rn rawNode) *Reality {
+	hasEndpoints := slices.ContainsFunc(n.Endpoints, func(e Address) bool { return e.Transport == reality.Name })
+	raw := rn.Reality
+	switch {
+	case raw == nil && hasEndpoints:
+		c.errorf(rn.pos, "%s: reality endpoints need reality: {target: ip:port, server_names: [...]}", label)
+		return nil
+	case raw == nil:
+		return nil
+	case !hasEndpoints:
+		c.errorf(raw.pos, "%s: reality settings without reality endpoints", label)
+		return nil
+	}
+	r := &Reality{Pos: raw.pos}
+	ok := true
+	if !raw.Target.set() {
+		c.errorf(raw.pos, "%s: reality: target is missing (the camouflage site, ip:port)", label)
+		ok = false
+	} else if text, vok := c.value(raw.Target); !vok {
+		ok = false
+	} else if ap, err := transport.ParseEndpoint(text); err != nil {
+		c.errorf(raw.Target.pos, "%s: reality target: %v (an IP literal and port: nodes never resolve names)", label, err)
+		ok = false
+	} else {
+		r.Target = ap
+	}
+	if len(raw.ServerNames) == 0 {
+		c.errorf(raw.pos, "%s: reality: server_names is missing (the names the target serves)", label)
+		ok = false
+	}
+	for _, v := range raw.ServerNames {
+		text, vok := c.value(v)
+		switch {
+		case !vok:
+			ok = false
+		case text == "":
+			c.errorf(v.pos, "%s: reality: an empty server name", label)
+			ok = false
+		case slices.Contains(r.ServerNames, text):
+			c.errorf(v.pos, "%s: reality: server name %q is listed twice", label, text)
+			ok = false
+		default:
+			r.ServerNames = append(r.ServerNames, text)
+		}
+	}
+	if !ok {
+		return nil
+	}
+	return r
 }
 
 // nodeName reads a node's name, empty when it is missing or invalid, and

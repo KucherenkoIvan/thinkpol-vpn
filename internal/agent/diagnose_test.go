@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 )
@@ -22,11 +24,13 @@ type inspected struct {
 	mu     sync.Mutex
 	asked  []string
 	report netcfg.InterfaceReport
-	// hostReads counts the reads of the routes and the guard.
-	hostReads int
-	routes    netcfg.Inspection
-	guard     routetable.GuardReport
-	dns       dns.HostReport
+	// hostReads counts the reads of the host parts.
+	hostReads  int
+	routes     netcfg.Inspection
+	guard      routetable.GuardReport
+	killSwitch firewall.KillSwitchReport
+	dns        dns.HostReport
+	dropIns    DropInReport
 }
 
 func (i *inspected) inspector() Inspector {
@@ -53,12 +57,19 @@ func (i *inspected) inspector() Inspector {
 			i.hostReads++
 			return i.guard
 		},
+		KillSwitch: func(context.Context) firewall.KillSwitchReport {
+			i.mu.Lock()
+			defer i.mu.Unlock()
+			i.hostReads++
+			return i.killSwitch
+		},
 		DNS: func(context.Context) dns.HostReport {
 			i.mu.Lock()
 			defer i.mu.Unlock()
 			i.hostReads++
 			return i.dns
 		},
+		DropIns: func() DropInReport { return i.dropIns },
 	}
 }
 
@@ -68,7 +79,8 @@ func (i *inspected) reads() int {
 	return i.hostReads
 }
 
-// TestTheHostPartsAreRoots: without host, the routes and the guard aren't
+// TestTheHostPartsAreRoots: without host, the routes, the guard, the kill
+// switch and the resolvers aren't
 // read at all, and say they are root's; with it, they are what the host's
 // readers said, whatever the data plane's state.
 func TestTheHostPartsAreRoots(t *testing.T) {
@@ -76,9 +88,12 @@ func TestTheHostPartsAreRoots(t *testing.T) {
 	_, reg := memoryRegistry(t)
 	startNode(t, reg, s.a, s.verified(t, 1))
 	insp := &inspected{
-		routes: netcfg.Inspection{Routes: []netcfg.HostRoute{{Owner: netcfg.OwnerRouteTable, Family: netcfg.IPv6, Dst: netip.MustParsePrefix("::/0"), Type: "unreachable"}}},
-		guard:  routetable.GuardReport{Where: "test", Present: true, Exempt: []netip.Prefix{netip.MustParsePrefix("2001:db8:d0::/48")}},
-		dns:    dns.HostReport{Sources: []dns.HostSource{{Name: "resolv.conf", Present: true, Resolvers: []dns.HostResolver{{Servers: []string{"192.0.2.53"}}}}}},
+		routes:     netcfg.Inspection{Routes: []netcfg.HostRoute{{Owner: netcfg.OwnerRouteTable, Family: netcfg.IPv6, Dst: netip.MustParsePrefix("::/0"), Type: "unreachable"}}},
+		guard:      routetable.GuardReport{Where: "test", Present: true, Exempt: []netip.Prefix{netip.MustParsePrefix("2001:db8:d0::/48")}},
+		killSwitch: firewall.KillSwitchReport{Where: "test", Present: true, Sets: []firewall.KillSwitchSetReport{{Name: "allow4", Entries: 2}}},
+		dns:        dns.HostReport{Sources: []dns.HostSource{{Name: "resolv.conf", Present: true, Resolvers: []dns.HostResolver{{Servers: []string{"192.0.2.53"}}}}}},
+		// Not a host part: paths only, the group sees them too.
+		dropIns: DropInReport{Paths: []string{"/etc/systemd/system/thinkpol.service.d/override.conf"}},
 	}
 	b := startDevice(t, s, reg, false, withInspector(insp))
 	b.connection(t, Disconnected)
@@ -86,14 +101,67 @@ func TestTheHostPartsAreRoots(t *testing.T) {
 
 	d := b.node.Diagnose(ctx, false)
 	if insp.reads() != 0 || d.HostParts || d.Routes.RoutesUnreadable != UnreadableRootOnly || d.Routes.RulesUnreadable != UnreadableRootOnly ||
-		d.Routes.Routes != nil || d.Guard.Unreadable != UnreadableRootOnly || d.Guard.Present || d.DNS.Unreadable != UnreadableRootOnly || d.DNS.Sources != nil {
-		t.Fatalf("not root: %d reads, %+v, %+v", insp.reads(), d.Routes, d.Guard)
+		d.Routes.Routes != nil || d.Guard.Unreadable != UnreadableRootOnly || d.Guard.Present ||
+		d.KillSwitch.Unreadable != UnreadableRootOnly || d.KillSwitch.Present || d.DNS.Unreadable != UnreadableRootOnly || d.DNS.Sources != nil {
+		t.Fatalf("not root: %d reads, %+v, %+v, %+v", insp.reads(), d.Routes, d.Guard, d.KillSwitch)
+	}
+	if !slices.Equal(d.DropIns.Paths, insp.dropIns.Paths) {
+		t.Fatalf("not root: drop-ins %+v", d.DropIns)
 	}
 	// Disconnected, what is left on the host still shows: a crash's.
 	d = b.node.Diagnose(ctx, true)
-	if insp.reads() != 3 || !d.HostParts || len(d.Routes.Routes) != 1 || d.Routes.RoutesUnreadable != "" || !d.Guard.Present || len(d.Guard.Exempt) != 1 ||
-		d.DNS.Unreadable != "" || len(d.DNS.Sources) != 1 {
-		t.Fatalf("root: %d reads, %+v, %+v", insp.reads(), d.Routes, d.Guard)
+	if insp.reads() != 4 || !d.HostParts || len(d.Routes.Routes) != 1 || d.Routes.RoutesUnreadable != "" || !d.Guard.Present || len(d.Guard.Exempt) != 1 ||
+		!d.KillSwitch.Present || len(d.KillSwitch.Sets) != 1 || d.DNS.Unreadable != "" || len(d.DNS.Sources) != 1 {
+		t.Fatalf("root: %d reads, %+v, %+v, %+v", insp.reads(), d.Routes, d.Guard, d.KillSwitch)
+	}
+}
+
+// The previous run's trace shows in the snapshot, root's only, and the
+// status says the last run crashed; a run that stopped cleanly shows
+// nothing.
+func TestThePreviousRunsTraceShows(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	b := startDevice(t, s, reg, false, withInspector(&inspected{}))
+	b.connection(t, Disconnected)
+	ctx := context.Background()
+
+	if err := b.node.KeepLastRun(&CrashTrace{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []bool{true, false} {
+		if d := b.node.Diagnose(ctx, root); d.LastRun != (LastRun{}) || d.Status.LastRunCrashed || b.node.Status().LastRunCrashed {
+			t.Fatalf("a clean stop, root %v: %+v, crashed %v", root, d.LastRun, d.Status.LastRunCrashed)
+		}
+	}
+
+	trace := "panic: boom\n\ngoroutine 1 [running]:\n"
+	if err := b.node.KeepLastRun(&CrashTrace{LastRun: LastRun{Trace: trace, Truncated: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if !b.node.Status().LastRunCrashed {
+		t.Fatal("the status doesn't say the last run crashed")
+	}
+	if d := b.node.Diagnose(ctx, true); d.LastRun.Trace != trace || !d.LastRun.Truncated || d.LastRun.Unreadable != "" || !d.Status.LastRunCrashed {
+		t.Fatalf("root: %+v", d.LastRun)
+	}
+	if d := b.node.Diagnose(ctx, false); d.LastRun != (LastRun{Unreadable: UnreadableRootOnly}) || !d.Status.LastRunCrashed {
+		t.Fatalf("not root: %+v", d.LastRun)
+	}
+
+	// A trace that wasn't read isn't a crash, and why is root's too.
+	if err := b.node.KeepLastRun(&CrashTrace{LastRun: LastRun{Unreadable: "hard-linked"}}); err != nil {
+		t.Fatal(err)
+	}
+	if st := b.node.Status(); st.LastRunCrashed || !st.LastRunUnreadable {
+		t.Fatalf("an unread trace: %+v", st)
+	}
+	if d := b.node.Diagnose(ctx, false); d.LastRun != (LastRun{Unreadable: UnreadableRootOnly}) {
+		t.Fatalf("not root: %+v", d.LastRun)
+	}
+	if d := b.node.Diagnose(ctx, true); d.LastRun.Unreadable != "hard-linked" {
+		t.Fatalf("root: %+v", d.LastRun)
 	}
 }
 
@@ -249,13 +317,13 @@ func TestAServersSnapshotSaysItIsOne(t *testing.T) {
 	plat := testPlatform()
 	insp := &inspected{}
 	plat.Inspect = insp.inspector()
-	n, err := Prepare(testConfig(s.stateDir(t, s.a, 1)), Logs{}, plat)
+	n, err := Prepare(serverConfig(s.stateDir(t, s.a, 1)), Logs{}, plat)
 	if err != nil {
 		t.Fatal(err)
 	}
 	d := n.Diagnose(context.Background(), true)
 	if d.Status.Mode != ModeServer || d.TUN.Unreadable != UnreadableServer || d.LastApply.Unreadable != UnreadableServer ||
-		len(insp.names()) != 0 || !d.HostParts || insp.reads() != 3 {
+		len(insp.names()) != 0 || !d.HostParts || insp.reads() != 4 {
 		t.Fatalf("%+v; TUN asked for %q, %d host reads", d, insp.names(), insp.reads())
 	}
 }

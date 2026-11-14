@@ -9,8 +9,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -19,7 +17,7 @@ import (
 )
 
 // The renderers write what a Client returned, already sanitized, for a
-// person (or, WriteJSON, for a script).
+// person; json.go's write it for a script.
 
 // WriteStatus writes st as of now.
 func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
@@ -41,14 +39,12 @@ func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
 		line("maps refused:\t%d since the node started (the service's log says why)", n)
 	}
 	line("mode:\t%s", displayName(st.GetMode()))
-	if p := st.GetRulePreset(); p != "" {
-		switch {
-		case st.GetRulePresetUnavailable():
-			p += " (unavailable in this space: failing closed)"
-		case !st.GetRulesEnforced():
-			p += " (applies once connected)"
-		}
-		line("rule preset:\t%s", p)
+	writeDeviceSettings(line, st)
+	if st.GetLastRunCrashed() {
+		line("last run:\tcrashed, or exited with an error (thinkpol diag shows its trace, as root)")
+	}
+	if st.GetLastRunUnreadable() {
+		line("last run:\tits crash trace wasn't read (thinkpol diag says why, as root)")
 	}
 	if st.GetRetrying() {
 		line("retrying:\tyes, see the service's log")
@@ -82,8 +78,8 @@ func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
 	if ls := st.GetPublicListeners(); len(ls) > 0 {
 		line("public listeners:")
 		for _, l := range ls {
-			line("  %s\trouted %d\tunauthenticated %d\tno space %d\toverloaded %d\trejected links %d",
-				l.GetTransport(), l.GetRouted(), l.GetUnauthenticated(), l.GetNoSpace(), l.GetStreamsOverloaded(), l.GetRejected())
+			line("  %s\trouted %d\tunauthenticated %d\tno space %d\toverloaded %d\tbound-closed %d\trejected links %d",
+				l.GetTransport(), l.GetRouted(), l.GetUnauthenticated(), l.GetNoSpace(), l.GetStreamsOverloaded(), l.GetStreamsBoundClosed(), l.GetRejected())
 		}
 	}
 	return tw.Flush()
@@ -96,6 +92,9 @@ func writeDataPlane(line func(string, ...any), dp *localapiv1.DataPlane, now tim
 		if dp.GetIpv6Off() != "" {
 			ipv6 += " (" + dp.GetIpv6Off() + ")"
 		}
+	}
+	if name := dp.GetInterface(); name != "" {
+		line("interface:\t%s", name)
 	}
 	line("overlay:\tmtu %d, ipv6 %s, %d listeners", dp.GetMtu(), ipv6, dp.GetListeners())
 	if e := dp.GetLastApplyError(); e != "" {
@@ -179,6 +178,15 @@ func writeCounters(line func(string, ...any), counters map[string]uint64) {
 			line("\t%d routes of other software take overlay addresses around the tunnel", ahead)
 		}
 	}
+	if n := counters["route_table.corrupt_records"]; n > 0 {
+		left := "no route left that no record names"
+		if u := counters["route_table.unowned_routes"]; u == 1 {
+			left = "1 thinkpol route no record names (an owner already running when its record went bad still removes its own; otherwise it stays until reboot, unless it went with its owner's interface)"
+		} else if u > 1 {
+			left = fmt.Sprintf("%d thinkpol routes no record names (an owner already running when its record went bad still removes its own; the rest stay until reboot, unless they went with their owner's interface)", u)
+		}
+		line("route records:\t%d corrupt (see the log for which and why); %s", n, left)
+	}
 	var drops []string
 	for _, name := range slices.Sorted(maps.Keys(counters)) {
 		if v := counters[name]; v > 0 && counterKinds[name] == dropCounter {
@@ -229,39 +237,11 @@ func WriteLogLines(w io.Writer, lines []string, missed uint64) error {
 	return nil
 }
 
-// WriteJSON writes m as JSON, for scripts.
-func WriteJSON(w io.Writer, m proto.Message) error {
-	b, err := protojson.MarshalOptions{Multiline: true, EmitUnpopulated: false}.Marshal(m)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(w, "%s\n", b)
-	return err
-}
-
-// displayNames are what WriteStatus calls the status's enum values.
-var displayNames = map[protoreflect.Enum]string{
-	localapiv1.Connection_CONNECTION_UNSPECIFIED:    "unspecified",
-	localapiv1.Connection_CONNECTION_DISCONNECTED:   "disconnected",
-	localapiv1.Connection_CONNECTION_CONNECTING:     "connecting",
-	localapiv1.Connection_CONNECTION_CONNECTED:      "connected",
-	localapiv1.Connection_CONNECTION_SERVING:        "serving",
-	localapiv1.HealthLevel_HEALTH_LEVEL_UNSPECIFIED: "unspecified",
-	localapiv1.HealthLevel_HEALTH_LEVEL_OK:          "ok",
-	localapiv1.HealthLevel_HEALTH_LEVEL_DEGRADED:    "degraded",
-	localapiv1.HealthLevel_HEALTH_LEVEL_DOWN:        "down",
-	localapiv1.Mode_MODE_UNSPECIFIED:                "unspecified",
-	localapiv1.Mode_MODE_DEVICE:                     "device",
-	localapiv1.Mode_MODE_SERVER:                     "server",
-}
-
-// displayName is e's display name; a value the table doesn't know (a
-// newer service's) is "unknown".
+// displayName is e's name as WriteStatus prints it, the JSON's
+// spelling: a value the schema doesn't know (a newer service's) is
+// "unknown".
 func displayName(e protoreflect.Enum) string {
-	if name, ok := displayNames[e]; ok {
-		return name
-	}
-	return "unknown"
+	return enumValueName(e.Descriptor(), e.Number())
 }
 
 func ago(t *timestamppb.Timestamp, now time.Time) string {
@@ -291,6 +271,47 @@ func byteCount(n uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// writeDeviceSettings writes a device's rule preset and toggles.
+func writeDeviceSettings(line func(string, ...any), st *localapiv1.Status) {
+	if p := st.GetRulePreset(); p != "" {
+		switch {
+		case st.GetRulePresetUnavailable():
+			p += " (unavailable in this space: failing closed)"
+		case !st.GetRulesEnforced():
+			p += " (applies once connected)"
+		}
+		line("rule preset:\t%s", p)
+	}
+	if st.GetMode() != localapiv1.Mode_MODE_SERVER {
+		line("connect-on-boot:\t%s", onOff(st.GetConnectOnBoot()))
+		if k := st.GetKillSwitch(); k != nil {
+			line("kill switch:\t%s", KillSwitchText(k))
+		}
+	}
+}
+
+// KillSwitchText says what the kill switch does now: its toggles, and
+// whether its rules are in place as meant.
+func KillSwitchText(k *localapiv1.KillSwitch) string {
+	s := onOff(k.GetOn())
+	if k.GetAllowLan() {
+		s += ", allow-LAN on"
+	} else {
+		s += ", allow-LAN off"
+	}
+	switch {
+	case k.GetError() == "not_applied":
+		s += " (not applied yet)"
+	case !k.GetEnforced():
+		s += " (not enforced: " + k.GetError() + ", retrying)"
+	case k.GetActive() && !k.GetOn():
+		s += " (held by the crash posture while the connection is meant up)"
+	case k.GetActive():
+		s += " (in place)"
+	}
+	return s
 }
 
 func onOff(on bool) string {

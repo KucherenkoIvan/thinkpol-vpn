@@ -2,47 +2,22 @@ package main
 
 import (
 	"context"
-	"flag"
-	"fmt"
-
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/service"
+	"errors"
 )
 
 func init() {
 	register(command{
 		path:    "service connect-on-boot",
-		args:    "[on|off]",
-		summary: "show or set whether the service connects this device at boot (off by default); setting it needs root",
+		summary: "replaced by thinkpol connect-on-boot",
+		hidden:  true,
 		run:     runServiceConnectOnBoot,
 	})
 }
 
-func runServiceConnectOnBoot(ctx context.Context, e env, args []string) error {
-	fs := flag.NewFlagSet("service connect-on-boot", flag.ContinueOnError)
-	if err := parseFlags(fs, e, args); err != nil {
-		return err
-	}
-	in, err := service.HostInstaller(e.stdout, platform())
-	if err != nil {
-		return err
-	}
-	switch {
-	case fs.NArg() == 0:
-		on, err := in.ConnectOnBoot()
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintf(e.stdout, "connect-on-boot: %s\n", service.OnOff(on))
-		return err
-	case fs.NArg() == 1:
-		on, err := service.ParseOnOff(fs.Arg(0))
-		if err != nil || on == nil {
-			return errUsage
-		}
-		if err := service.CheckRoot(); err != nil {
-			return err
-		}
-		return in.SetConnectOnBoot(ctx, *on)
-	}
-	return errUsage
+func runServiceConnectOnBoot(context.Context, env, []string) error {
+	return errConnectOnBootMoved
 }
+
+// errConnectOnBootMoved answers the service's connect-on-boot, which is
+// the device's setting now: arguments no longer taken.
+var errConnectOnBootMoved = argsError{errors.New("connect-on-boot is the device's setting now, no longer the service's: thinkpol connect-on-boot [on|off] (no root needed)")}

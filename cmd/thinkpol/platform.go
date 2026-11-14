@@ -4,6 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/service"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
@@ -28,16 +29,19 @@ func platform() agent.Platform {
 				ClearRouteTable: routetable.Clear,
 				SetSystemDNS:    dns.SetSystem,
 				SystemUpstreams: dns.SystemUpstreams,
+				NewKillSwitch:   newKillSwitch,
 			},
 		},
 		LockHost:      agent.HostLock,
 		RestoreDNS:    dns.RestoreSystem,
 		ConnectRecord: agent.HostConnectRecord(),
 		Inspect: agent.Inspector{
-			Interface: netcfg.InspectInterface,
-			Routes:    netcfg.Inspect,
-			Guard:     inspectGuard,
-			DNS:       dns.Inspect,
+			Interface:  netcfg.InspectInterface,
+			Routes:     netcfg.Inspect,
+			Guard:      inspectGuard,
+			KillSwitch: inspectKillSwitch,
+			DNS:        dns.Inspect,
+			DropIns:    service.HostDropIns,
 		},
 	}
 }

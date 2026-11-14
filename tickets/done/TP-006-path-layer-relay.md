@@ -3,6 +3,7 @@ id: TP-006
 title: "Path layer and relay protocol"
 milestone: M0
 area: dataplane/path
+stream: core
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-003, TP-005]

@@ -1,8 +1,9 @@
 ---
 id: TP-067
 title: "Resource footprint and system requirements"
-milestone: M3
+milestone: later
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-012]
@@ -50,3 +51,4 @@ Measure what thinkpol needs to run, so that README can state minimal and recomme
 - 2026-10-15 docs: first measured footprint from device run 4
 - 2026-10-15 docs (backlog grooming): milestone M3; FairShare out of scope (TP-040); refs fixed
 - 2026-10-15 docs (backlog grooming, review fixes): PRD ref slug; reply-path note points at TP-040
+- 2026-11-07 milestone → later (owner's MVP cut: README numbers)

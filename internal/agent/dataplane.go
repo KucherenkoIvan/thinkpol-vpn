@@ -65,7 +65,7 @@ type DataPlane struct {
 	// RunDataPlane runs it, and gives it each map's plan once the map is
 	// applied. ServeBlobs (a server's worker) also serves them, and holds
 	// the header's whole set to pass on; otherwise the node only fetches
-	// its own (a device, or a server run in device mode).
+	// its own (a device).
 	Blobs      *blobs.Service
 	ServeBlobs bool
 	// DNS runs the node's resolver on its overlay addresses (see
@@ -80,7 +80,8 @@ type DataPlane struct {
 	// Namespace is what the data plane needs of its network namespace;
 	// Device, a device's host adapters (required with RouteTable; nil in
 	// a server's worker, which then never asks or points the OS's
-	// resolvers).
+	// resolvers). With Device set the data plane runs no server's
+	// section: a map that makes the node one stops it, as a removal does.
 	Namespace WorkerHost
 	Device    *DeviceHost
 
@@ -93,13 +94,19 @@ type DataPlane struct {
 	requests <-chan connectRequest
 	remember func(connect bool)
 	events   emitter
-	// Rules are the device's own rule choice (LocalRulesFile), and
+	// Rules are the device's own rule choice (DeviceFile), and
 	// rulesRequests replace them while it runs.
 	Rules         rules.Local
 	rulesRequests <-chan rulesRequest
 	// dnsUpstreams delivers a later config's changed upstream list while
 	// the data plane runs (serveSpace); latest-wins. Nil without one.
 	dnsUpstreams <-chan []netip.AddrPort
+	// killSwitch keeps a device's kill switch for the data plane's state
+	// (Node.enforceKillSwitch; nil in a worker), at every change, every
+	// killSwitchReapply, and when killSwitchRequests asks after a toggle
+	// changed (closing the channel it sent once done).
+	killSwitch         func(ctx context.Context, v killSwitchView)
+	killSwitchRequests <-chan chan struct{}
 
 	// tuning is what tests change; production leaves it zero.
 	tuning tuning
@@ -124,6 +131,8 @@ type tuning struct {
 	// node's overlay addresses and clients.
 	dnsPort   uint16
 	dnsListen netip.Addr
+	// exitDeadline replaces dataplane.ExitHandshakeDeadline (0: it).
+	exitDeadline time.Duration
 }
 
 // RetryAfter is how long a data plane waits before retrying an Apply, a
@@ -146,6 +155,9 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 	if dp.tuning.retryAfter == 0 {
 		dp.tuning.retryAfter = RetryAfter
 	}
+	if dp.tuning.exitDeadline == 0 {
+		dp.tuning.exitDeadline = dataplane.ExitHandshakeDeadline
+	}
 	if dp.Log == nil {
 		dp.Log = slog.New(slog.DiscardHandler)
 	}
@@ -164,7 +176,12 @@ func RunDataPlane(ctx context.Context, dp DataPlane) error {
 		follow: mapFollower{
 			log: dp.Log, keys: dp.Keys, report: dp.report, cur: dp.Map, section: section,
 			removedMsg: "the data plane stops until a map includes it again",
+			device:     dp.Device != nil,
 		},
+	}
+	if r.follow.checkKind(); r.follow.mismatch {
+		// Node.run waits these out (awaitSection) before it gets here.
+		return errors.New("agent: device mode runs no server's section")
 	}
 	if dp.Blobs != nil {
 		r.blobsChanged = dp.Blobs.Subscribe()
@@ -419,11 +436,44 @@ func (r *runner) stop() {
 // shutdown takes the data plane down as the node stops: its connection
 // goes with it, disconnected (a node's next start reads Config.Connect).
 func (r *runner) shutdown() {
-	if !r.conn.disconnected() {
+	meantUp := !r.conn.disconnected()
+	if meantUp {
 		logRefused(r.dp.Log, r.conn.disconnect())
 	}
 	r.stop()
+	// A stop is no deliberate disconnect: the kill switch is left as a
+	// crash would leave it, narrowed to the down shape (an update that
+	// fails to start leaks nothing). The node's context is done.
+	ctx, cancel := context.WithTimeout(context.Background(), killSwitchStopTimeout)
+	defer cancel()
+	r.keepKillSwitch(ctx, meantUp)
 	r.publish()
+}
+
+// enforceKillSwitch keeps the kill switch for the runner's state.
+func (r *runner) enforceKillSwitch(ctx context.Context) {
+	if r.dp.killSwitch != nil {
+		r.keepKillSwitch(ctx, !r.conn.disconnected())
+	}
+}
+
+// keepKillSwitch has the node keep its kill switch (a device's; a worker
+// has none) for meantUp, the entries of its section, and, while the data
+// plane is up, the route table's exemptions.
+func (r *runner) keepKillSwitch(ctx context.Context, meantUp bool) {
+	if r.dp.killSwitch == nil {
+		return
+	}
+	v := killSwitchView{meantUp: meantUp, tun: r.tun}
+	if !r.follow.out() {
+		v.entries = entries(r.follow.section)
+	}
+	if r.engine != nil && r.routes != nil {
+		if e, ok := r.routes.exempt(); ok {
+			v.connected = &e
+		}
+	}
+	r.dp.killSwitch(ctx, v)
 }
 
 func (r *runner) loop(ctx context.Context) error {
@@ -432,12 +482,15 @@ func (r *runner) loop(ctx context.Context) error {
 	defer retry.Stop()
 	status := time.NewTicker(statusEvery)
 	defer status.Stop()
+	reapply := time.NewTicker(killSwitchReapply)
+	defer reapply.Stop()
 	for {
 		var ended <-chan struct{}
 		if r.listeners != nil {
 			r.listeners.reconcile(ctx, r.dp.Inbound.Listeners(r.follow.section))
 			ended = r.listeners.ended
 		}
+		r.enforceKillSwitch(ctx)
 		r.publish()
 		if at, ok := r.nextRetry(); ok {
 			retry.Reset(time.Until(at))
@@ -461,6 +514,11 @@ func (r *runner) loop(ctx context.Context) error {
 			r.reloadRules()
 		case <-status.C:
 			r.logStatus()
+		case <-reapply.C:
+		case done := <-r.dp.killSwitchRequests:
+			r.enforceKillSwitch(ctx)
+			r.publish()
+			close(done)
 		case req := <-r.dp.requests:
 			r.request(ctx, req)
 		case ups := <-r.dp.dnsUpstreams:
@@ -488,6 +546,9 @@ func (r *runner) publish() {
 	r.dp.report.set(func(p *report) {
 		p.engine, p.version, p.removed, p.retrying, p.listeners, p.conn, p.dns =
 			r.engine, r.follow.cur.Header().Version, r.follow.removed, !r.retryAt.IsZero(), n, r.conn.state, r.guard.problem
+		p.mismatch = r.follow.mismatch
+		p.dnsNoUpstream = r.noUpstream()
+		p.exitDeadline = r.dp.tuning.exitDeadline
 	})
 	// What Status says of them (DNSUnprotected; DataPlane.RouteTable's
 	// Error): the route table recovers and fails again on its own, the
@@ -540,12 +601,16 @@ func (r *runner) connect(ctx context.Context, connect bool) error {
 		// retry: either way it starts now, and says if it can't; out of
 		// its space, once a map has it again.
 		retry := !r.conn.disconnected()
-		if err := r.conn.connect(!r.follow.removed); err != nil {
+		if err := r.conn.connect(!r.follow.out()); err != nil {
 			logRefused(r.dp.Log, err)
 			return err
 		}
 		if r.conn.state == connRemoved {
-			r.dp.Log.Info("connecting once a map includes this node")
+			if r.follow.mismatch {
+				r.dp.Log.Warn("connecting once the map makes this node a device; " + modeMismatchMsg)
+			} else {
+				r.dp.Log.Info("connecting once a map includes this node")
+			}
 			break
 		}
 		if err := r.start(ctx); err != nil {
@@ -608,8 +673,8 @@ func (r *runner) retry(ctx context.Context) {
 }
 
 // next takes a newer map, if it is one, and acts on it: a map without the
-// node stops the data plane, one with it applies it (or starts the data
-// plane on it).
+// node, or that makes a device a server, stops the data plane, one with
+// it applies it (or starts the data plane on it).
 func (r *runner) next(ctx context.Context, envelope []byte) {
 	taken, removed, back := r.follow.take(envelope)
 	if !taken {
@@ -622,7 +687,7 @@ func (r *runner) next(ctx context.Context, envelope []byte) {
 	if removed {
 		r.tell(EventRemovedFromSpace)
 	}
-	if r.follow.removed {
+	if r.follow.out() {
 		logRefused(r.dp.Log, r.conn.remove())
 		r.stop()
 		r.retryAt = time.Time{}
@@ -682,7 +747,7 @@ func (r *runner) updateBlobs() {
 	if r.dp.Blobs == nil {
 		return
 	}
-	if r.engine == nil && r.follow.removed {
+	if r.engine == nil && r.follow.out() {
 		r.dp.Blobs.Update(blobs.Plan{}) // the space's lists are no use now
 		return
 	}
@@ -709,9 +774,6 @@ func (r *runner) applied() {
 	if n := r.follow.section.Node; n.Kind == netmap.NodeServer {
 		attrs = append(attrs, serverSettings(n)...)
 		attrs = append(attrs, "exit", onOff(st.Exit))
-		if n.AllowEgress && !st.Exit {
-			r.dp.Log.Warn("the map allows egress, but a server forwards its space's internet traffic only in server mode: not an exit here")
-		}
 	}
 	if st.RouteTable.Enforced {
 		attrs = append(attrs, "route_table_routes", st.RouteTable.Routes)

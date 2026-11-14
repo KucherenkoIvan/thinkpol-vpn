@@ -1,8 +1,9 @@
 ---
 id: TP-032
-title: "Censor modules: whitelist, TLS fingerprints, throttling"
+title: "Censor modules: TLS fingerprints, throttling"
 milestone: M3
 area: lab/censor
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-024, TP-026, TP-064, TP-089]
@@ -12,20 +13,23 @@ branch: ""
 ---
 
 ## Goal
-The lab reproduces whitelist mode, TLS fingerprint filtering and volume throttling.
+The lab reproduces TLS fingerprint filtering and volume throttling.
 
 ## Scope
-- Whitelist mode, as docs/design/lab.md describes it: drop everything whose destination address isn't listed, then check the handshake's name (SNI) on what's left; drop UDP even to listed addresses; variants that throttle the rest to about 14 kb/s, reset it, or let it time out. A name-only check (address not checked) is a separate, weaker module.
 - JA3/JA4 computation with an allow-list of common browser fingerprints.
 - Volume throttling: flows to non-domestic addresses slowed or frozen after N kilobytes.
 - Server hello fingerprints (JA3S/JA4S): TP-026; this module consumes them for the matrix.
 
+## Out of scope
+- Whitelist mode and the UDP-to-listed-address drop: TP-177 (after the MVP).
+
 ## Acceptance
 - [ ] Go's default `crypto/tls` client is blocked by the JA3/JA4 allow-list while the uTLS Chrome fingerprint passes
-- [ ] whitelist mode drops a disguised handshake carrying a listed name to an unlisted address
-- [ ] UDP to a listed address is dropped; TCP to it passes
-- [ ] each variant (drop, throttle, reset, time out) has a matrix column, and so does the name-only module
+- [ ] a flow to a non-domestic address is slowed or frozen after N kilobytes, and the matrix has a column for it
 - [ ] with TP-026's server fingerprints, the matrix compares a node's server hello to the camouflage site's
+
+## Notes
+- Split 2026-11-07 (owner's MVP cut): whitelist mode and the UDP-to-listed-address drop moved to TP-177 (the owner deferred whitelist mode: research is ongoing). The throttling box is new: the scope had no box of its own.
 
 ## Log
 - 2026-10-10 created in backlog
@@ -34,3 +38,4 @@ The lab reproduces whitelist mode, TLS fingerprint filtering and volume throttli
 - 2026-10-15 docs (backlog grooming, review fixes): depends_on TP-026; whitelist-mode wording dropped from JA3S line
 - 2026-10-15 depends_on TP-089 (split from TP-024 review)
 - 2026-10-16 docs: whitelist mode per the 2026 research (address first, then the name; UDP dropped to listed addresses; variants; name-only as a separate module)
+- 2026-11-07 split (owner's MVP cut): whitelist mode → TP-177; a throttling acceptance box added

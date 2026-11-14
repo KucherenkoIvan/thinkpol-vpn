@@ -27,6 +27,9 @@ Each area's design is a file of its own under `docs/design/`; this file is the e
 | [Control plane](docs/design/control-plane.md) | the controller, the signed map, joining, kernel usage |
 | [Censor lab](docs/design/lab.md) | the lab and its censor modules; device testing |
 | [Milestones](docs/design/milestones.md) | the done-when checks, out of scope |
+| [Configuration](docs/design/configuration.md) | the three levels (network, node, device), what lives where, precedence and narrowing, file formats |
+| [API overview](docs/design/api-overview.md) | the user-facing surface as built (CLI, local API, configuration, on-disk state), the planned additions, and a consistency review (TP-139); a snapshot, not a source of truth |
+| [API overview: reference](docs/design/api-overview-reference.md) | the overview's command-by-command CLI and local API reference, with example output |
 
 ## Where the mechanism lives
 
@@ -34,10 +37,10 @@ Each package's `doc.go` holds its mechanism; this table is the way in.
 
 | Package | Role |
 |---|---|
-| `cmd/thinkpol` | the one binary (`up`, CLI, `admin serve`, dev tools); composition roots |
-| `cmd/thinkpol-tray` | the tray app, a local API client |
+| `cmd/thinkpol` | the one binary (`up`, CLI, dev tools; `admin serve` planned, TP-042); composition roots |
+| `cmd/thinkpol-tray` | planned (TP-049, its stack TP-086): the tray app, a local API client |
 | [`agent`](internal/agent/doc.go) | the node agent: maps, modes, host lock, connection, events, what a node keeps |
-| [`agent/service`](internal/agent/service/doc.go) | installing the agent as the host's service: the systemd unit, the launchd daemon, connect-on-boot |
+| [`agent/service`](internal/agent/service/doc.go) | installing the agent as the host's service: the systemd unit, the launchd daemon, listing the unit's (unsupported) drop-ins |
 | [`agent/supervisor`](internal/agent/supervisor/doc.go) | servers: shared listeners, isolation, egress; the planned gatekeeper |
 | [`agent/worker`](internal/agent/worker/doc.go), [`agent/ipc`](internal/agent/ipc/doc.go) | a space's sandboxed data plane and its protocol |
 | [`agent/localapi`](internal/agent/localapi/doc.go) | the local API: socket, gates, limits |
@@ -47,8 +50,9 @@ Each package's `doc.go` holds its mechanism; this table is the way in.
 | [`dataplane/router`](internal/dataplane/router/doc.go) | classifying packets by destination; local reflection on macOS |
 | [`dataplane/wg`](internal/dataplane/wg/doc.go) | the WireGuard devices, one per egress |
 | [`dataplane/path`](internal/dataplane/path/doc.go) | destination routing, liveness, failover |
-| [`dataplane/transport`](internal/dataplane/transport/doc.go), [`shaping`](internal/shaping/doc.go) | the transport port, shaping, planned stream transports |
+| [`dataplane/transport`](internal/dataplane/transport/doc.go), [`shaping`](internal/shaping/doc.go) | the transport port, shaping, stream transports |
 | [`dataplane/transport/udp`](internal/dataplane/transport/udp/doc.go) | `udp`: wire format, replay rules, bounds |
+| [`dataplane/transport/reality`](internal/dataplane/transport/reality/doc.go) | `reality`: the seal, the splice, frames |
 | [`dataplane/rules`](internal/dataplane/rules/doc.go) | matchers, presets, compilation into prefixes |
 | [`dataplane/routetable`](internal/dataplane/routetable/doc.go), [`dataplane/netcfg`](internal/dataplane/netcfg/doc.go) | route-table mode on Linux and macOS; routes and rules |
 | [`dataplane/ifbind`](internal/dataplane/ifbind/doc.go), [`dataplane/trusteddir`](internal/dataplane/trusteddir/doc.go), [`dataplane/nsthread`](internal/dataplane/nsthread/doc.go) | socket binding; trusted directories; namespace threads |

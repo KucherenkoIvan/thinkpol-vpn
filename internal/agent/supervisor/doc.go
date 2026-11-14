@@ -219,6 +219,13 @@
 // record, so the root still forwards nothing else and the next start tries
 // again.
 //
+// A service uninstall leaves no next start, so [ClearLeftovers] does a
+// dead supervisor's cleanup there and then: holding the node's supervisor
+// role (so never a live one's), it removes the spaces' veths and the
+// routes its configurator recorded, puts back the forwarding its record
+// names, then removes its tables, which stay, as on Close, while that
+// forwarding can't be turned off or the record can't be read.
+//
 // # Shared listeners
 //
 // The supervisor owns the node's public address, the scarce resource, and
@@ -238,12 +245,16 @@
 // routable once its worker is ready.
 //
 // Whatever fails authentication, is stale or replayed, or authenticates as
-// a space no longer served goes to the listener's [Listener.Camouflage],
-// and never reaches a worker. On a node with ingress off,
+// a space no longer served goes to the listener's camouflage, and never
+// reaches a worker. On a node with ingress off,
 // dataplane.AcceptedInbound keeps only other servers' links, so a
 // device's credential is unauthenticated there and gets the camouflage,
-// whatever inbound links the section lists. Not yet: the node agent
-// passes no Camouflage, so all of it is dropped ([transport.Drop]).
+// whatever inbound links the section lists. A datagram listener's
+// camouflage is its [Listener.Camouflage], nil dropping it
+// ([transport.Drop]: udp's own default, and what the node agent passes);
+// a stream listener's is always its transport's own (reality splices to
+// its target), and SetListeners refuses a stream listener given a
+// Camouflage.
 //
 // # Datagrams
 //
@@ -253,10 +264,10 @@
 // then the supervisor forwards it, untouched, to the space's current
 // worker over the worker's data socket without blocking: a full socket
 // drops the datagram (counted as WorkerFull), so a stuck worker stalls
-// only its own space. A replay needs only a passive tap to capture, so
-// within one supervisor's lifetime it is dropped before it reaches a
-// worker or costs its space anything (RESIDUAL-RISKS.md RR34). The worker
-// decrypts and filters again.
+// only its own space. A replay needs only a passive tap to capture, so it
+// is dropped before it reaches a worker or costs its space anything,
+// within one supervisor's lifetime and, but for RESIDUAL-RISKS.md RR34,
+// across its restarts. The worker decrypts and filters again.
 //
 // The worker's replies come back over the same socket and leave through
 // the public socket it names, but only to a source address that one of the
@@ -270,20 +281,56 @@
 // displace another's. A worker can answer its peers, never use the node's
 // public address to reach anyone else, whatever egress its space has.
 //
-// Not after a supervisor restart: Routers and reply addresses live in
-// memory, the workers die with the supervisor, and a replay of datagrams
-// sent in the last five minutes (ten, if the sender's clock ran ahead) is
-// routed and answered again (RESIDUAL-RISKS.md RR34; TP-069).
+// Routers and reply addresses live in memory, and the workers die with the
+// supervisor, so a restarted supervisor starts both afresh. Its Routers
+// refuse every datagram sealed before the second they started in, so a
+// tap's capture of the old supervisor's traffic reaches no worker; what
+// still gets in (a capture sealed in that second, by a sender whose clock
+// ran ahead, or while the node's clock was behind or stepped back) is the
+// udp package's residual (RESIDUAL-RISKS.md RR34). The workers' Listeners
+// have no start rule of their own, so a worker restart costs nothing.
 //
 // # Streams
 //
-// A stream transport's Router reads the start of each connection; an
-// authenticated one's descriptor and the bytes already read go to the
-// space's worker over its control socket, without blocking (a full socket
-// refuses the connection). A listener routes at most 1024 connections at
-// a time, each given at most 10 s to show who it is; past the bound a
-// connection goes straight to the camouflage. No stream transport exists
-// yet.
+// A stream transport's public listener, bound to its Router, reads the
+// start of each connection and decides it, asking the supervisor whether
+// the credential's space is served, and says what it decided (a
+// [transport.StreamVerdict]: unknown, a space not served, stale and
+// replayed are counted like a datagram's); an authenticated one's
+// descriptor, the bytes already read and,
+// for reality, the descriptor of the target connection the router dialled
+// at accept (with what it read from it) go to the space's worker over its
+// control socket, without blocking (a full socket refuses the
+// connection). What it doesn't hand over it turns away itself, to its
+// transport's camouflage (reality splices it to its target from the
+// first byte, so a prober meets the target's timing). The public
+// listener's handoff settings (for reality: its settings, private key
+// and target included, and the target's records, learned here) reach,
+// with the Listeners message, only the workers of spaces whose inbound
+// table has links of its transport; a space's Listeners are sent again
+// when that changes. (A connection routed to a space in the moment
+// before its worker has the new Listeners is dropped by the worker.) Each
+// listener is described with the address it is bound to.
+//
+// The bounds on what a stream listener costs the supervisor are two
+// layers. The supervisor's: at most 1024 connections per listener in
+// their routing work at once, until the listener says the connection
+// only waits for its dialer's bytes (reality: once the target is dialled
+// and the mirror is up), so idle connections don't hold these; past it a
+// connection goes straight to the camouflage. Each connection is given
+// at most 10 s of reads to show who it is (reality then leaves an
+// undecided connection spliced to its target). The transport's own:
+// reality's listener holds at most 1024 connections whose hello is
+// being decided and 1024 spliced to its target, closing what comes past
+// either, each costing two descriptors (package reality), so one listener
+// holds at most about 4096 descriptors whatever arrives. What those
+// bounds close is counted apart (bound-closed in `thinkpol status`), so
+// the node owner sees a flood or splices pinned open. None of these
+// tells members from strangers before the hello: a sustained flood of
+// new connections that send nothing still closes a listener's members,
+// and strangers filling the splice bound make the listener close new
+// strangers the site would answer, a camouflage tell (RESIDUAL-RISKS.md
+// RR38).
 //
 // # Fair share
 //

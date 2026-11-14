@@ -3,6 +3,7 @@ id: TP-010
 title: "Shared listener and connection handoff"
 milestone: M0
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-005, TP-009]

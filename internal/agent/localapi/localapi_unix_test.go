@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"net"
@@ -43,6 +44,8 @@ type fakeNode struct {
 	// what it was last asked for.
 	diag agent.Diagnostics
 	host *bool
+	// toggleErr is what a kill switch toggle returns once stored.
+	toggleErr error
 }
 
 // askedHost is what the last Diagnose was asked for: nil before any.
@@ -72,6 +75,36 @@ func (n *fakeNode) SetRulePreset(_ context.Context, preset string) error {
 	}
 	n.st.RulePreset = preset
 	return nil
+}
+
+func (n *fakeNode) SetConnectOnBoot(on bool) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.st.Mode == agent.ModeServer {
+		return agent.ErrServerMode
+	}
+	n.st.ConnectOnBoot = on
+	return nil
+}
+
+func (n *fakeNode) SetKillSwitch(_ context.Context, on bool) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.st.Mode == agent.ModeServer {
+		return agent.ErrServerMode
+	}
+	n.st.KillSwitch.On, n.st.KillSwitch.Active, n.st.KillSwitch.Enforced = on, on, n.toggleErr == nil
+	return n.toggleErr
+}
+
+func (n *fakeNode) SetAllowLAN(_ context.Context, on bool) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.st.Mode == agent.ModeServer {
+		return agent.ErrServerMode
+	}
+	n.st.KillSwitch.AllowLAN = on
+	return n.toggleErr
 }
 
 func (n *fakeNode) Status() agent.Status {
@@ -206,6 +239,64 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 	if _, err := c.SetRulePreset(ctx, "nope"); !errors.Is(err, ErrUnknownPreset) {
 		t.Fatalf("got %v, want ErrUnknownPreset", err)
 	}
+	for _, on := range []bool{true, false} {
+		st, err := c.SetConnectOnBoot(ctx, on)
+		if err != nil || st.GetConnectOnBoot() != on {
+			t.Fatalf("connect-on-boot %v: %v, %v", on, st, err)
+		}
+		if got, err := c.ConnectOnBoot(ctx); err != nil || got != on {
+			t.Fatalf("connect-on-boot shown: %v, %v; want %v", got, err, on)
+		}
+		out.Reset()
+		if err := WriteStatus(&out, st, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if want := "connect-on-boot: +" + map[bool]string{true: "on", false: "off"}[on] + "\n"; !regexp.MustCompile(want).MatchString(out.String()) {
+			t.Errorf("no %q in\n%s", want, out.String())
+		}
+	}
+	// The kill switch's toggles: set through the API, shown in the status.
+	if st, err := c.SetKillSwitch(ctx, true); err != nil || !st.GetKillSwitch().GetOn() {
+		t.Fatalf("kill switch on: %v, %v", st, err)
+	}
+	st, err = c.SetAllowLAN(ctx, true)
+	if err != nil || !st.GetKillSwitch().GetAllowLan() || !st.GetKillSwitch().GetOn() {
+		t.Fatalf("allow-LAN on: %v, %v", st, err)
+	}
+	if k, err := c.KillSwitch(ctx); err != nil || !k.GetOn() || !k.GetAllowLan() || !k.GetEnforced() {
+		t.Fatalf("kill switch shown: %v, %v", k, err)
+	}
+	out.Reset()
+	if err := WriteStatus(&out, st, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if want := "kill switch: +on, allow-LAN on \\(in place\\)\n"; !regexp.MustCompile(want).MatchString(out.String()) {
+		t.Errorf("no %q in\n%s", want, out.String())
+	}
+	s.node.mu.Lock()
+	s.node.st.Mode = agent.ModeServer
+	s.node.mu.Unlock()
+	if _, err := c.SetKillSwitch(ctx, true); !errors.Is(err, ErrServerMode) {
+		t.Fatalf("kill switch on a server: %v, want ErrServerMode", err)
+	}
+	if _, err := c.SetAllowLAN(ctx, true); !errors.Is(err, ErrServerMode) {
+		t.Fatalf("allow-LAN on a server: %v, want ErrServerMode", err)
+	}
+	if _, err := c.KillSwitch(ctx); !errors.Is(err, ErrServerMode) {
+		t.Fatalf("kill switch shown on a server: %v, want ErrServerMode", err)
+	}
+	if st, err := c.Status(ctx); err != nil || st.GetKillSwitch() != nil {
+		t.Fatalf("a server's status has a kill switch: %v, %v", st.GetKillSwitch(), err)
+	}
+	if _, err := c.SetConnectOnBoot(ctx, true); !errors.Is(err, ErrServerMode) {
+		t.Fatalf("connect-on-boot on a server: %v, want ErrServerMode", err)
+	}
+	if on, err := c.ConnectOnBoot(ctx); !errors.Is(err, ErrServerMode) || err.Error() != refusalMsg(ErrServerMode, "") {
+		t.Fatalf("connect-on-boot shown on a server: %v, %v; want ErrServerMode", on, err)
+	}
+	s.node.mu.Lock()
+	s.node.st.Mode = agent.ModeDevice
+	s.node.mu.Unlock()
 
 	s.node.mu.Lock()
 	s.node.connectErr = &agent.StartError{Step: agent.StepTUN, Err: errors.New("detail 192.0.2.1 for the log only")}
@@ -227,6 +318,17 @@ func TestTheCLIControlsTheNode(t *testing.T) {
 	s.node.mu.Unlock()
 	if _, err := c.Connect(ctx); !errors.Is(err, ErrServerMode) {
 		t.Fatalf("got %v, want ErrServerMode", err)
+	}
+
+	// A toggle kept while the kill switch isn't enforced is refused with
+	// the reason, for every client to see.
+	s.node.mu.Lock()
+	s.node.toggleErr = &agent.KillSwitchNotEnforcedError{Reason: agent.KillSwitchApplyFailed}
+	s.node.mu.Unlock()
+	for name, set := range map[string]func(context.Context, bool) (*localapiv1.Status, error){"kill switch": c.SetKillSwitch, "allow-LAN": c.SetAllowLAN} {
+		if _, err := set(ctx, true); !errors.Is(err, ErrKillSwitchNotEnforced) || !strings.Contains(err.Error(), "apply_failed") {
+			t.Errorf("%s on, not enforced: %v, want ErrKillSwitchNotEnforced with its reason", name, err)
+		}
 	}
 }
 
@@ -386,13 +488,20 @@ func TestCallersAreCheckedByTheirCredentials(t *testing.T) {
 	if _, err := c.Diagnose(ctx); !errors.Is(err, ErrPermissionDenied) {
 		t.Fatalf("stranger's diagnostics: %v", err)
 	}
+	if _, err := c.SetConnectOnBoot(ctx, true); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("stranger's connect-on-boot: %v", err)
+	}
 
 	member := serve(t, Policy{ServiceUID: uint32(os.Geteuid()) + 1, Group: uint32(os.Getegid()), HasGroup: true})
 	c = dial(t, member.socket)
 	if _, err := c.Connect(ctx); err != nil {
 		t.Fatalf("member's connect: %v", err)
 	}
-	if d, err := c.Diagnose(ctx); err != nil || d.GetSchemaVersion() != DiagSchemaVersion {
+	// The member's own toggle, no root needed.
+	if st, err := c.SetConnectOnBoot(ctx, true); err != nil || !st.GetConnectOnBoot() {
+		t.Fatalf("member's connect-on-boot: %v, %v", st, err)
+	}
+	if d, err := c.Diagnose(ctx); err != nil || d.GetSchemaVersion() != SchemaVersion {
 		t.Fatalf("member's diagnostics: %v, %v", d, err)
 	}
 	// Without the parts that name public addresses: those are root's.
@@ -405,21 +514,34 @@ func TestCallersAreCheckedByTheirCredentials(t *testing.T) {
 	}
 }
 
-// A caller the OS couldn't place goes out as Unavailable, which a client
-// may try again, and the client finds ErrMembershipUnknown in it.
+// A caller the OS didn't place in time goes out as Unavailable, which a
+// client may try again, and the client finds ErrMembershipUnknown in it;
+// one the OS failed to place otherwise goes out as Internal, and the
+// client finds ErrMembershipCheckFailed.
 func TestAnUnknownMembershipIsUnavailable(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root may do everything")
 	}
-	down := &fakeMembership{err: errors.New("opendirectoryd is down")}
-	s := serveGated(t, Policy{ServiceUID: uint32(os.Geteuid()) + 1, Group: 4242424, HasGroup: true, Membership: down}, me())
-	c := dial(t, s.socket)
-	ctx := context.Background()
-	if _, raw := c.api.GetStatus(ctx, &localapiv1.GetStatusRequest{}); status.Code(raw) != codes.Unavailable {
-		t.Fatalf("raw status: %v, want %s", raw, codes.Unavailable)
-	}
-	if _, err := c.Status(ctx); !errors.Is(err, ErrMembershipUnknown) || IsPermission(err) {
-		t.Fatalf("status: %v, want ErrMembershipUnknown", err)
+	for _, tc := range []struct {
+		name string
+		err  error
+		code codes.Code
+		want Error
+	}{
+		{"timed out", fmt.Errorf("no answer within 3s: %w", context.DeadlineExceeded), codes.Unavailable, ErrMembershipUnknown},
+		{"failed", errors.New("opendirectoryd is down"), codes.Internal, ErrMembershipCheckFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := serveGated(t, Policy{ServiceUID: uint32(os.Geteuid()) + 1, Group: 4242424, HasGroup: true, Membership: &fakeMembership{err: tc.err}}, me())
+			c := dial(t, s.socket)
+			ctx := context.Background()
+			if _, raw := c.api.GetStatus(ctx, &localapiv1.GetStatusRequest{}); status.Code(raw) != tc.code {
+				t.Fatalf("raw status: %v, want %s", raw, tc.code)
+			}
+			if _, err := c.Status(ctx); !errors.Is(err, tc.want) || IsPermission(err) {
+				t.Fatalf("status: %v, want %s", err, tc.want.code)
+			}
+		})
 	}
 }
 

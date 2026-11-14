@@ -10,25 +10,19 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	localapiv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/localapi/v1"
 )
-
-// DiagSchemaVersion is the schema of Diagnose's snapshot
-// (Diagnostics.schema_version). It is bumped when a field is removed or
-// renamed or its type or meaning changes, not when one is added;
-// `unreadable` texts are free-form, and enumerated string values (a
-// route's type, an Apply's step) may grow without a bump.
-const DiagSchemaVersion = 1
 
 // Diagnose serves the snapshot: whole to root and the service's user, to
 // the group without the parts that name public addresses.
@@ -41,19 +35,30 @@ func (s *server) Diagnose(ctx context.Context, _ *localapiv1.DiagnoseRequest) (*
 // diagnosticsProto is d on the wire, taken at now by an agent of version.
 func diagnosticsProto(d agent.Diagnostics, now time.Time, version string) *localapiv1.Diagnostics {
 	return &localapiv1.Diagnostics{
-		SchemaVersion: DiagSchemaVersion,
-		TakenAt:       timestamppb.New(now),
-		Os:            runtime.GOOS,
-		AgentVersion:  version,
-		HostParts:     d.HostParts,
-		Status:        statusProto(d.Status),
-		Tun:           interfaceProto(d.TUN),
-		LastApply:     applyProto(d.LastApply),
-		Routes:        routesProto(d.Routes),
-		PolicyRules:   rulesProto(d.Routes),
-		Guard:         guardProto(d.Guard),
-		Dns:           dnsProto(d.DNS),
+		SchemaVersion:  SchemaVersion,
+		TakenAt:        timestamppb.New(now),
+		Os:             runtime.GOOS,
+		AgentVersion:   version,
+		HostParts:      d.HostParts,
+		Status:         statusProto(d.Status),
+		Tun:            interfaceProto(d.TUN),
+		LastApply:      applyProto(d.LastApply),
+		Routes:         routesProto(d.Routes),
+		PolicyRules:    rulesProto(d.Routes),
+		Guard:          guardProto(d.Guard),
+		KillSwitch:     killSwitchProto(d.KillSwitch),
+		Dns:            dnsProto(d.DNS),
+		ServiceDropIns: &localapiv1.DiagDropIns{Unreadable: d.DropIns.Unreadable, Paths: d.DropIns.Paths},
+		LastRun:        &localapiv1.DiagLastRun{Unreadable: d.LastRun.Unreadable, Lines: traceLines(d.LastRun.Trace), Truncated: d.LastRun.Truncated},
 	}
+}
+
+// traceLines is a trace's lines, without the newline that ends the last.
+func traceLines(trace string) []string {
+	if trace == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(trace, "\n"), "\n")
 }
 
 func applyProto(a agent.ApplyReport) *localapiv1.DiagApply {
@@ -138,19 +143,11 @@ func guardProto(g routetable.GuardReport) *localapiv1.DiagGuard {
 	}
 	out := &localapiv1.DiagGuard{
 		Where:  g.Where,
-		Rules:  &localapiv1.DiagGuardRules{Unreadable: g.RulesUnreadable},
+		Rules:  guardRulesProto(g.Rules, g.RulesUnreadable),
 		Exempt: &localapiv1.DiagPrefixes{Unreadable: g.ExemptUnreadable},
 	}
 	if !g.PresentUnknown {
 		out.Present = &g.Present
-	}
-	if g.RulesUnreadable == "" {
-		for _, r := range g.Rules {
-			out.Rules.Rules = append(out.Rules.Rules, &localapiv1.DiagGuardRule{
-				Chain: r.Chain, Text: r.Text, Counted: r.Counted, Packets: r.Packets, Bytes: r.Bytes,
-				Evaluations: r.Evaluations, States: r.States,
-			})
-		}
 	}
 	if g.ExemptUnreadable == "" {
 		for _, p := range g.Exempt {
@@ -158,12 +155,7 @@ func guardProto(g routetable.GuardReport) *localapiv1.DiagGuard {
 		}
 	}
 	if nf := g.NFTables; nf != nil {
-		out.Nftables = &localapiv1.DiagNftables{Dormant: nf.Dormant, ChainsUnreadable: nf.ChainsUnreadable}
-		for _, c := range nf.Chains {
-			out.Nftables.Chains = append(out.Nftables.Chains, &localapiv1.DiagNftChain{
-				Name: c.Name, Hook: c.Hook, Priority: int32(max(min(c.Priority, math.MaxInt32), math.MinInt32)), Policy: c.Policy,
-			})
-		}
+		out.Nftables = nftablesProto(nf)
 	}
 	if pf := g.PF; pf != nil {
 		out.Pf = pfProto(pf)
@@ -171,25 +163,96 @@ func guardProto(g routetable.GuardReport) *localapiv1.DiagGuard {
 	return out
 }
 
+// killSwitchProto is k on the wire, read in part as guardProto's guard
+// is: rules and sets there (empty when there is no kill switch), present
+// unset when it couldn't be told.
+func killSwitchProto(k firewall.KillSwitchReport) *localapiv1.DiagKillSwitch {
+	if k.Unreadable != "" {
+		return &localapiv1.DiagKillSwitch{Unreadable: k.Unreadable, Where: k.Where}
+	}
+	out := &localapiv1.DiagKillSwitch{
+		Where: k.Where,
+		Rules: guardRulesProto(k.Rules, k.RulesUnreadable),
+		Sets:  &localapiv1.DiagKillSwitchSets{Unreadable: k.SetsUnreadable},
+	}
+	if !k.PresentUnknown {
+		out.Present = &k.Present
+	}
+	if k.SetsUnreadable == "" {
+		for _, set := range k.Sets {
+			ps := &localapiv1.DiagKillSwitchSet{Name: set.Name, Unreadable: set.Unreadable}
+			if set.Unreadable == "" {
+				ps.Entries = uint32(min(uint64(max(set.Entries, 0)), math.MaxUint32))
+			}
+			out.Sets.Sets = append(out.Sets.Sets, ps)
+		}
+	}
+	if nf := k.NFTables; nf != nil {
+		out.Nftables = nftablesProto(nf)
+	}
+	if pf := k.PF; pf != nil {
+		out.Pf = &localapiv1.DiagKillSwitchPf{
+			Enabled:   enabledProto(pf.Enabled, pf.EnabledUnreadable),
+			Reference: referenceProto(pf.Reference, pf.ReferenceUnreadable),
+		}
+	}
+	return out
+}
+
 func pfProto(pf *routetable.PFReport) *localapiv1.DiagPf {
 	out := &localapiv1.DiagPf{
-		Enabled:    &localapiv1.DiagPfEnabled{Unreadable: pf.EnabledUnreadable},
+		Enabled:    enabledProto(pf.Enabled, pf.EnabledUnreadable),
 		GuardCheck: &localapiv1.DiagPfGuardCheck{Unreadable: pf.GuardCheckUnreadable},
-		Reference:  &localapiv1.DiagPfReference{Unreadable: pf.ReferenceUnreadable},
-	}
-	if pf.EnabledUnreadable == "" {
-		out.Enabled.Enabled = pf.Enabled
+		Reference:  referenceProto(pf.Reference, pf.ReferenceUnreadable),
 	}
 	if pf.GuardCheckUnreadable == "" {
 		c := out.GuardCheck
 		c.State, c.MainRules, c.Skipped, c.AnchorsBefore = pf.GuardCheck, pf.MainRules, pf.Skipped, pf.AnchorsBefore
 	}
-	if r := pf.Reference; pf.ReferenceUnreadable == "" && r != nil {
-		out.Reference.Recorded, out.Reference.Stale, out.Reference.Pid, out.Reference.PidOnly = r.Recorded, r.Stale, uint32(max(r.Pid, 0)), r.PidOnly
-		out.Reference.HeldUnreadable = r.HeldUnreadable
-		if r.HeldUnreadable == "" {
-			out.Reference.Held = r.Held
-		}
+	return out
+}
+
+// guardRulesProto is the guard's or the kill switch's rules on the wire.
+func guardRulesProto(rules []routetable.GuardRuleReport, unreadable string) *localapiv1.DiagGuardRules {
+	out := &localapiv1.DiagGuardRules{Unreadable: unreadable}
+	if unreadable != "" {
+		return out
+	}
+	for _, r := range rules {
+		out.Rules = append(out.Rules, &localapiv1.DiagGuardRule{
+			Chain: r.Chain, Text: r.Text, Counted: r.Counted, Packets: r.Packets, Bytes: r.Bytes,
+			Evaluations: r.Evaluations, States: r.States,
+		})
+	}
+	return out
+}
+
+func nftablesProto(nf *routetable.NFTablesReport) *localapiv1.DiagNftables {
+	out := &localapiv1.DiagNftables{Dormant: nf.Dormant, ChainsUnreadable: nf.ChainsUnreadable}
+	for _, c := range nf.Chains {
+		out.Chains = append(out.Chains, &localapiv1.DiagNftChain{
+			Name: c.Name, Hook: c.Hook, Priority: int32(max(min(c.Priority, math.MaxInt32), math.MinInt32)), Policy: c.Policy,
+		})
+	}
+	return out
+}
+
+func enabledProto(on bool, unreadable string) *localapiv1.DiagPfEnabled {
+	if unreadable != "" {
+		return &localapiv1.DiagPfEnabled{Unreadable: unreadable}
+	}
+	return &localapiv1.DiagPfEnabled{Enabled: on}
+}
+
+func referenceProto(r *routetable.PFReferenceReport, unreadable string) *localapiv1.DiagPfReference {
+	out := &localapiv1.DiagPfReference{Unreadable: unreadable}
+	if unreadable != "" || r == nil {
+		return out
+	}
+	out.Recorded, out.Stale, out.Pid, out.PidOnly = r.Recorded, r.Stale, uint32(max(r.Pid, 0)), r.PidOnly
+	out.HeldUnreadable = r.HeldUnreadable
+	if r.HeldUnreadable == "" {
+		out.Held = r.Held
 	}
 	return out
 }
@@ -235,12 +298,7 @@ func (c *Client) Diagnose(ctx context.Context) (*localapiv1.Diagnostics, error) 
 // v1 form: JSON with the schema's own field names (snake_case) and every
 // field present, an unset one as its zero value or null.
 func WriteDiagnostics(w io.Writer, d *localapiv1.Diagnostics) error {
-	b, err := protojson.MarshalOptions{Multiline: true, UseProtoNames: true, EmitUnpopulated: true}.Marshal(d)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(w, "%s\n", b)
-	return err
+	return WriteJSON(w, d)
 }
 
 // ErrNotAFile: -o names something there that isn't a regular file (a

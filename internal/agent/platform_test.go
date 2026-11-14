@@ -15,6 +15,7 @@ import (
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
@@ -49,6 +50,7 @@ func testHost() Host {
 			SystemUpstreams: func([]netip.Addr) ([]netip.Addr, error) {
 				return nil, errors.New("no system upstreams in this test")
 			},
+			NewKillSwitch: (&memKillSwitches{}).new,
 		},
 	}
 }
@@ -69,7 +71,11 @@ func testPlatform() Platform {
 			Guard: func(context.Context) routetable.GuardReport {
 				return routetable.GuardReport{Unreadable: "no guard in this test"}
 			},
-			DNS: func(context.Context) dns.HostReport { return dns.HostReport{Unreadable: "no resolvers in this test"} },
+			KillSwitch: func(context.Context) firewall.KillSwitchReport {
+				return firewall.KillSwitchReport{Unreadable: "no kill switch in this test"}
+			},
+			DNS:     func(context.Context) dns.HostReport { return dns.HostReport{Unreadable: "no resolvers in this test"} },
+			DropIns: func() DropInReport { return DropInReport{Unreadable: "no service in this test"} },
 		},
 	}
 }
@@ -111,7 +117,9 @@ func TestTransportsMarkSocketsPerMode(t *testing.T) {
 			var asks markAsks
 			plat := testPlatform()
 			plat.Transports = asks.transports(reg)
-			n, err := Prepare(testConfig(s.stateDir(t, tc.keys, 1)), Logs{}, plat)
+			cfg := testConfig(s.stateDir(t, tc.keys, 1))
+			cfg.Mode = tc.mode
+			n, err := Prepare(cfg, Logs{}, plat)
 			if err != nil {
 				t.Fatal(err)
 			}

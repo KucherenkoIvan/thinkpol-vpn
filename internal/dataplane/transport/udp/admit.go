@@ -3,6 +3,8 @@ package udp
 import (
 	"crypto/cipher"
 	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
 // admitLadder is the authenticate-and-admit ladder the package doc describes
@@ -14,7 +16,15 @@ import (
 // the packets itself.
 type admitLadder struct {
 	counters counters
+	start    transport.StartRule
 }
+
+// startedAt is the start rule of a receiver started now (a Router, or a
+// Listener of its own socket): its memory of senders starts empty (the
+// package doc, "What a receiver accepts"). The zero transport.StartRule,
+// refusing nothing, is the dialer's and that of a Listener behind a
+// Router.
+func startedAt(t *Transport) transport.StartRule { return transport.StartedAt(t.now(), t.elapsed) }
 
 // admit runs the ladder over a datagram of a table receiver (a Listener
 // or a Router): it takes the datagram's connection id, finds the
@@ -47,7 +57,7 @@ func (a *admitLadder) admitOne(dst []byte, s *senders, recv cipher.AEAD, d []byt
 	case err != nil:
 		a.counters.unauthenticated.Add(1)
 		return opened{}, dropUnauthenticated
-	case !o.fresh(now):
+	case !o.fresh(now), a.start.Refuses(o.sent, now):
 		a.counters.staleTimestamp.Add(1)
 		return opened{}, dropStaleTimestamp
 	}
@@ -101,7 +111,7 @@ func (t *senderHistories) historyOf(secret []byte) *senders {
 // forgotten.
 func (t *senderHistories) follow(set *peerSet, now time.Time) {
 	for key, s := range t.retired {
-		if !sentFresh(s.newest, now) {
+		if !transport.FreshUnix(s.newest, now) {
 			delete(t.retired, key)
 		}
 	}

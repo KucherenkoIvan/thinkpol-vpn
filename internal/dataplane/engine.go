@@ -501,10 +501,30 @@ type PeerStatus struct {
 	Addresses []netip.Addr
 	// FirstHop is the hop the peer's packets leave through now; zero
 	// before the first packet or without a path.
-	FirstHop         netmap.NodeID
-	LastHandshake    time.Time
+	FirstHop netmap.NodeID
+	// Exit says the peer is the exit of a chain the routing rules use: it
+	// has a device of its own (the internet is its allowed IPs).
+	Exit          bool
+	LastHandshake time.Time
+	// HandshakePendingSince is when the first initiation to the peer
+	// still unanswered was sent (wg.PeerStatus.HandshakePendingSince).
+	HandshakePendingSince time.Time
+	// LastInitiation is when the last initiation to the peer was sent
+	// (wg.PeerStatus.LastInitiation).
+	LastInitiation   time.Time
 	RxBytes, TxBytes uint64
 }
+
+// ExitHandshakeDeadline is how long a handshake initiation to an exit may
+// go unanswered before health says so. WireGuard initiates again every
+// RekeyTimeout (5 s) while it has data for the exit, so this is three
+// initiations in a row unanswered: one lost packet doesn't flip health. A
+// session that dies under traffic is noticed after about 30 s: WireGuard
+// re-initiates once it has heard nothing back for 15 s (KeepaliveTimeout
+// + RekeyTimeout), then this deadline runs. The age of the last
+// handshake can't be the test: no persistent keepalive is set, so an idle
+// exit's last handshake grows old on a healthy device.
+const ExitHandshakeDeadline = 3 * wg.RekeyTimeout
 
 // Status reports the engine's state.
 func (e *Engine) Status() Status {
@@ -552,8 +572,8 @@ func (e *Engine) statusLocked() Status {
 		for _, p := range d.peers {
 			r := reported[p.Key]
 			ps := PeerStatus{
-				ID: p.ID, Device: name, Addresses: slices.Clone(p.Addresses),
-				LastHandshake: r.LastHandshake, RxBytes: r.RxBytes, TxBytes: r.TxBytes,
+				ID: p.ID, Device: name, Addresses: slices.Clone(p.Addresses), Exit: name == exitDevice(p.ID),
+				LastHandshake: r.LastHandshake, HandshakePendingSince: r.HandshakePendingSince, LastInitiation: r.LastInitiation, RxBytes: r.RxBytes, TxBytes: r.TxBytes,
 			}
 			if hop, _, ok := d.wg.Bind().Current(path.NodeID(p.ID)); ok {
 				ps.FirstHop = netmap.NodeID(hop)

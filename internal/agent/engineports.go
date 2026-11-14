@@ -42,6 +42,9 @@ type routeTable struct {
 	closed    bool
 	want      *dataplane.RouteTableWant // last given; nil before the first
 	upstreams []netip.AddrPort
+	// exempted is GuardFor of the last want with its upstreams, built once
+	// per change (a country-sized direct set takes a while).
+	exempted *routetable.Exempt
 }
 
 // errRouteTableClosed is SetDirectUpstreams's error after Close.
@@ -55,7 +58,7 @@ func (t *routeTable) Enforce(ctx context.Context, w dataplane.RouteTableWant) er
 	// Kept for SetDirectUpstreams, whose callers run on other goroutines:
 	// a copy of the engine's slices.
 	w.Overlay, w.Bypass = slices.Clone(w.Overlay), slices.Clone(w.Bypass)
-	t.want = &w // the route table keeps trying it
+	t.want, t.exempted = &w, nil // the route table keeps trying it
 	return t.rt.Enforce(ctx, t.wantOf(w))
 }
 
@@ -82,7 +85,7 @@ func (t *routeTable) SetDirectUpstreams(ctx context.Context, addrs []netip.AddrP
 	if slices.Equal(addrs, t.upstreams) {
 		return nil
 	}
-	t.upstreams = addrs
+	t.upstreams, t.exempted = addrs, nil
 	if t.want == nil {
 		return nil
 	}
@@ -92,12 +95,29 @@ func (t *routeTable) SetDirectUpstreams(ctx context.Context, addrs []netip.AddrP
 	return nil
 }
 
+// exempt is what the leak guard exempts for the last Want and the
+// upstreams (routetable.GuardFor): the kill switch's connected shape.
+// False before the first Enforce.
+func (t *routeTable) exempt() (routetable.Exempt, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.want == nil {
+		return routetable.Exempt{}, false
+	}
+	if t.exempted == nil {
+		e := routetable.GuardFor(t.wantOf(*t.want))
+		t.exempted = &e
+	}
+	return *t.exempted, true
+}
+
 func (t *routeTable) Status() dataplane.RouteTableStatus {
 	st := t.rt.Status()
 	return dataplane.RouteTableStatus{
 		Enforced: st.Enforced, Error: routeTableError(st.Error), GuardEnforced: st.GuardEnforced, GuardError: routeTableError(st.GuardError),
 		Routes: st.Routes, LastApply: st.LastApply,
 		Reapplies: st.Reapplies, RulesAhead: st.RulesAhead, OverlayAhead: st.OverlayAhead,
+		CorruptRecords: st.CorruptRecords, UnownedRoutes: st.UnownedRoutes,
 	}
 }
 

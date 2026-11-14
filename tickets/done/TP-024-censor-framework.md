@@ -3,6 +3,7 @@ id: TP-024
 title: "Censor framework"
 milestone: M2
 area: lab/censor
+stream: verification
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-012]

@@ -1,8 +1,9 @@
 ---
 id: TP-145
 title: "Guards against cross-ticket drift: env reads and the Engine's size"
-milestone: M2
+milestone: later
 area: repo
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: []
@@ -40,3 +41,4 @@ Two things a review fixed and a later ticket undid can't come back unnoticed: en
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 code-health review: before-M2 list)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 1, Hygiene)
+- 2026-11-07 milestone → later (owner's MVP cut: lint drift guards: hygiene)

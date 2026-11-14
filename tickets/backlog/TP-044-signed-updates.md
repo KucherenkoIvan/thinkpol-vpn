@@ -1,8 +1,9 @@
 ---
 id: TP-044
 title: "Signed agent updates"
-milestone: M4
+milestone: later
 area: agent
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-037, TP-017]
@@ -30,3 +31,4 @@ Nodes update themselves from signed releases distributed through the network (sh
 - 2026-10-10 created in backlog
 - 2026-10-12 docs (TP-017): notes from blob distribution
 - 2026-10-13 docs (TP-062): note: update key pinned at provisioning; a failed signature keeps the node running
+- 2026-11-07 milestone → later (owner's MVP cut: A9 is a should)

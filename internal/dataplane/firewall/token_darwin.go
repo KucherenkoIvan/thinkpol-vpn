@@ -37,6 +37,25 @@ type pfToken struct {
 type tokenStore struct {
 	dir  string
 	boot func() (string, error)
+	// record and header name the record and head it; empty: the guard's
+	// (tokenRecord, tokenHeader).
+	record, header string
+}
+
+// name is the record's file name.
+func (s tokenStore) name() string {
+	if s.record == "" {
+		return tokenRecord
+	}
+	return s.record
+}
+
+// head is the record's first line.
+func (s tokenStore) head() string {
+	if s.header == "" {
+		return tokenHeader
+	}
+	return s.header
 }
 
 // recordState is what read found.
@@ -79,7 +98,7 @@ type staleWhy string
 
 const (
 	staleOtherBoot  staleWhy = "written in another boot session"
-	staleNotRegular staleWhy = "not a regular file (a symlink or a fifo is never the guard's)"
+	staleNotRegular staleWhy = "not a regular file"
 	staleNoBoot     staleWhy = "no boot line before its body"
 	staleBody       staleWhy = "a body that isn't one token line"
 )
@@ -90,7 +109,7 @@ func (s tokenStore) readIn(d *os.File) (pfToken, recordState, staleWhy, error) {
 	if err != nil {
 		return pfToken{}, recordNone, "", err
 	}
-	body, err := trusteddir.ReadRecord(d, tokenRecord, boot)
+	body, err := trusteddir.ReadRecord(d, s.name(), boot)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return pfToken{}, recordNone, "", nil
@@ -158,7 +177,7 @@ func (s tokenStore) write(t pfToken) error {
 		value = strconv.FormatUint(t.value, 10)
 	}
 	body := fmt.Sprintf("token %s pid %d\n", value, t.pid)
-	if err := trusteddir.WriteRecord(d, tokenRecord, tokenHeader, boot, []byte(body)); err != nil {
+	if err := trusteddir.WriteRecord(d, s.name(), s.head(), boot, []byte(body)); err != nil {
 		return fmt.Errorf("firewall: %w", err)
 	}
 	return nil
@@ -171,5 +190,5 @@ func (s tokenStore) remove() error {
 		return err
 	}
 	defer func() { _ = d.Close() }()
-	return trusteddir.Remove(d, tokenRecord)
+	return trusteddir.Remove(d, s.name())
 }

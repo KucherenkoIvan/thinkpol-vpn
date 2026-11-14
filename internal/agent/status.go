@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -16,8 +17,7 @@ import (
 // S1, S4): nodes are the space's opaque ids, addresses are the overlay's,
 // and whatever failed is named from fixed vocabularies.
 type Status struct {
-	// Mode is the node's mode; ModeAuto while it is removed from its space
-	// and its kind unknown.
+	// Mode is the node's mode (Config.Mode), removed from its space or not.
 	Mode  Mode
 	Space netmap.SpaceID
 	// MapVersion is the version of the map the node follows.
@@ -27,8 +27,11 @@ type Status struct {
 	// the map it follows (the same file read again) isn't counted.
 	MapsRefused uint64
 	// Removed is set while the map has no section for the node.
-	Removed    bool
-	Connection Connection
+	Removed bool
+	// ModeMismatch is set while the map makes a node run in device mode a
+	// server: it runs nothing of the map, as while removed.
+	ModeMismatch bool
+	Connection   Connection
 	// Retrying is set while a start, an Apply or (on a server) serving the
 	// map failed and waits to be retried.
 	Retrying bool
@@ -37,18 +40,32 @@ type Status struct {
 	DataPlane *dataplane.Status
 	// Listeners counts the listeners a device's data plane serves.
 	Listeners int
+	// Interface is the name of a device's TUN while its data plane runs.
+	Interface string
 	// Workers and PublicListeners are a server's.
 	Workers         []WorkerStatus
 	PublicListeners []PublicListenerStatus
 	// Egress is a server's (nil on a device).
 	Egress *supervisor.EgressInfo
-	// RulePreset is a device's rule preset (LocalRulesFile; "space" when it
+	// RulePreset is a device's rule preset (DeviceFile; "space" when it
 	// chose none); RulesEnforced is set while its data plane runs them, and
 	// PresetUnavailable when the map can't build the preset, which is then
 	// enforced failing closed.
 	RulePreset        string
 	RulesEnforced     bool
 	PresetUnavailable bool
+	// ConnectOnBoot is a device's connect-on-boot (DeviceFile): whether
+	// the service connects it at a boot's first start.
+	ConnectOnBoot bool
+	// KillSwitch is a device's kill switch: its toggles and whether it is
+	// in place as meant.
+	KillSwitch KillSwitchStatus
+	// LastRunCrashed: the previous run under a device's service left a
+	// trace on its stderr (LastRun.Crashed); Diagnostics has it.
+	LastRunCrashed bool
+	// LastRunUnreadable: the service's crash trace file was there but
+	// wasn't read (LastRun.Unreadable); Diagnostics says why.
+	LastRunUnreadable bool
 	// DNSUnprotected is set while a connected device's OS may resolve
 	// names outside the node's resolver (pointing it failed, or another
 	// link's domains in systemd-resolved): names may leave outside the
@@ -59,10 +76,25 @@ type Status struct {
 	// ones read before, so `direct` names may not resolve. The OS still
 	// resolves through the node, so on its own it is not DNSUnprotected.
 	DNSUpstreamsStale bool
+	// DNSNoUpstream is set while a connected device's resolver has no
+	// direct upstream to ask (none configured, none read from the OS), or
+	// the OS names none now (its previous ones are still asked,
+	// dns.ErrNoSystemUpstream): `direct` names may not resolve. Not while
+	// DNSUpstreamsStale: those upstreams are unknown, not absent.
+	DNSNoUpstream bool
 	// DNSUpstreamsRefused is an exit's: how many of the resolver
 	// upstreams the worker's egress refuses, so the resolver doesn't use
 	// them (each is logged with its address).
 	DNSUpstreamsRefused int
+	// ExitsUnanswered counts a connected device's exits (DataPlane.Peers
+	// with Exit set) that have left a WireGuard handshake initiation
+	// unanswered for dataplane.ExitHandshakeDeadline while their first hop
+	// was up (exitHandshakes): directly or behind a relay, the traffic
+	// sent through them is lost. DefaultExitUnanswered says one of them
+	// carries an address family's background route (Rules.DefaultExits):
+	// the destinations of that family no other route names are lost.
+	ExitsUnanswered       int
+	DefaultExitUnanswered bool
 }
 
 // Connection is whether a node carries traffic.
@@ -115,6 +147,9 @@ type PublicListenerStatus struct {
 	Transport                        string
 	Routed, Unauthenticated, NoSpace uint64
 	StreamsOverloaded                uint64
+	// StreamsBoundClosed counts connections the transport closed past its
+	// own bounds.
+	StreamsBoundClosed uint64
 	// Rejected counts the peer links the transport refused to route.
 	Rejected int
 }
@@ -128,7 +163,8 @@ var ErrServerMode = errors.New("agent: a server node always serves its spaces")
 // may leave outside it (Status.DNSUnprotected).
 var ErrDNSUnprotected = errors.New("agent: connected, but the system may resolve names outside the tunnel")
 
-// ErrNotRunning is Connect or Disconnect on a node that isn't running.
+// ErrNotRunning is Connect, Disconnect or a kill switch toggle on a node
+// that isn't running.
 var ErrNotRunning = errors.New("agent: the node is not running")
 
 // StartError is a data plane that failed to start on Connect. Step names
@@ -159,6 +195,8 @@ type report struct {
 	// mapsRefused counts the maps the node's followers refused.
 	mapsRefused uint64
 	removed     bool
+	// mismatch: the map makes a device-mode node a server.
+	mismatch bool
 	// conn is a device's connection.
 	conn connState
 	// retrying: a start, an Apply (a connected device's too) or a
@@ -170,13 +208,26 @@ type report struct {
 	listeners int
 	// workers is a server's supervisor, while it runs.
 	workers workerReporter
-	// preset is a device's rule preset (Status.RulePreset).
-	preset string
+	// preset is a device's rule preset (Status.RulePreset), and
+	// connectOnBoot its connect-on-boot.
+	preset        string
+	connectOnBoot bool
+	// killSwitch is a device's kill switch (Status.KillSwitch).
+	killSwitch KillSwitchStatus
+	// lastRun is what the previous run left in the crash trace file
+	// (Node.KeepLastRun).
+	lastRun LastRun
 	// dns says why a device's OS may resolve outside its resolver.
 	dns func() error
+	// dnsNoUpstream says a device's resolver has no direct upstream (nil
+	// while none runs).
+	dnsNoUpstream func() bool
 	// dnsUpstreamsRefused is an exit's count of resolver upstreams the
 	// worker's egress refuses (Status.DNSUpstreamsRefused).
 	dnsUpstreamsRefused int
+	// exitDeadline is dataplane.ExitHandshakeDeadline, or the tests'
+	// (tuning).
+	exitDeadline time.Duration
 }
 
 // workerReporter is what a server's status comes from: the supervisor.
@@ -217,14 +268,23 @@ func (p *report) forDiagnostics() (Status, string, *dataplane.ApplyTrace) {
 	return p.statusWith(&st), p.engine.TUNName(), last
 }
 
+// lastRunTrace is what the previous run left (report.lastRun).
+func (p *report) lastRunTrace() LastRun {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastRun
+}
+
 func (p *report) statusLocked() Status { return p.statusWith(nil) }
 
 // statusWith is the status, with dp as the engine's if it was read
 // already (nil: read it now).
 func (p *report) statusWith(dp *dataplane.Status) Status {
-	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, MapsRefused: p.mapsRefused, Removed: p.removed, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused}
+	s := Status{Mode: p.mode, Space: p.space, MapVersion: p.version, MapsRefused: p.mapsRefused, Removed: p.removed, ModeMismatch: p.mismatch, Retrying: p.retrying, Listeners: p.listeners, DNSUpstreamsRefused: p.dnsUpstreamsRefused,
+		LastRunCrashed: p.lastRun.Crashed(), LastRunUnreadable: p.lastRun.Unreadable != ""}
 	if p.mode != ModeServer {
-		s.RulePreset = p.preset
+		s.RulePreset, s.ConnectOnBoot = p.preset, p.connectOnBoot
+		s.KillSwitch = p.killSwitch
 	}
 	switch {
 	case p.mode == ModeServer:
@@ -241,7 +301,7 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 			dp = &st
 		}
 		st := *dp
-		s.DataPlane = &st
+		s.DataPlane, s.Interface = &st, p.engine.TUNName()
 		s.RulesEnforced, s.PresetUnavailable = true, st.Rules.PresetUnavailable
 		var problem error
 		if p.dns != nil {
@@ -250,6 +310,10 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		// Read once: both flags come from the same Problem.
 		s.DNSUnprotected = dns.Unprotected(problem)
 		s.DNSUpstreamsStale = errors.Is(problem, dns.ErrUpstreamsStale)
+		// Unknown upstreams (stale) aren't absent ones: one cause, one code.
+		s.DNSNoUpstream = !s.DNSUpstreamsStale &&
+			(errors.Is(problem, dns.ErrNoSystemUpstream) || p.dnsNoUpstream != nil && p.dnsNoUpstream())
+		s.ExitsUnanswered, s.DefaultExitUnanswered = exitHandshakes(&st, time.Now(), p.exitDeadline)
 	}
 	if p.workers != nil {
 		for _, w := range p.workers.Workers() {
@@ -263,11 +327,46 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		for _, l := range p.workers.Listeners() {
 			s.PublicListeners = append(s.PublicListeners, PublicListenerStatus{
 				Transport: l.Transport, Routed: l.Routed, Unauthenticated: l.Unauthenticated, NoSpace: l.NoSpace,
-				StreamsOverloaded: l.StreamsOverloaded, Rejected: len(l.Rejected),
+				StreamsOverloaded: l.StreamsOverloaded, StreamsBoundClosed: l.StreamsBoundClosed, Rejected: len(l.Rejected),
 			})
 		}
 	}
 	return s
+}
+
+// exitHandshakes grades the exits among st.Peers at now: how many are
+// unanswered, and whether the default rule's exit is one of them. An exit
+// is unanswered once its oldest unanswered handshake initiation is
+// deadline old, counted from when its first hop came up if that is later:
+// while the first hop is down that is the neighbor's problem (one cause,
+// one code), and WireGuard's initiations can't get through. An exit
+// nothing was sent to has none pending, and neither counts one whose last
+// initiation went out before its first hop came up: WireGuard gives up
+// retrying after 90 s without traffic, so nothing has tested the link
+// since it returned. One flagged while its first hop stayed up stays so
+// until a handshake completes, even if traffic to it stops. A chain has
+// one exit, so a default exit unanswered (RuleStatus.DefaultExits: what
+// carries either family's background route) is the internet lost,
+// whatever the other exits do.
+func exitHandshakes(st *dataplane.Status, now time.Time, deadline time.Duration) (unanswered int, defaultUnanswered bool) {
+	upFor := make(map[netmap.NodeID]time.Duration, len(st.Neighbors))
+	for _, n := range st.Neighbors {
+		if n.Up {
+			upFor[netmap.NodeID(n.Node)] = n.UpFor
+		}
+	}
+	for _, p := range st.Peers {
+		if !p.Exit || p.HandshakePendingSince.IsZero() {
+			continue
+		}
+		up, ok := upFor[p.FirstHop]
+		if !ok || min(now.Sub(p.HandshakePendingSince), up) < deadline || p.LastInitiation.Before(now.Add(-up)) {
+			continue
+		}
+		unanswered++
+		defaultUnanswered = defaultUnanswered || slices.Contains(st.Rules.DefaultExits[:], p.ID)
+	}
+	return unanswered, defaultUnanswered
 }
 
 // HealthLevel grades a node's health.
@@ -304,8 +403,11 @@ type Problem string
 
 // The problems Health names.
 const (
-	ProblemDisconnected   Problem = "disconnected"
-	ProblemRemoved        Problem = "removed_from_space"
+	ProblemDisconnected Problem = "disconnected"
+	ProblemRemoved      Problem = "removed_from_space"
+	// ProblemModeMismatch: the map makes a node run in device mode a
+	// server; it carries nothing until its operator sets server mode.
+	ProblemModeMismatch   Problem = "mode_mismatch"
 	ProblemStarting       Problem = "starting"
 	ProblemRetrying       Problem = "retrying"
 	ProblemApplyFailed    Problem = "apply_failed"    // the last Apply failed; DataPlane.LastApplyError says where
@@ -338,6 +440,25 @@ const (
 	// ruleset): the device connects, but IPv6 from interface-bound
 	// sockets isn't confined.
 	ProblemGuardUnsupported Problem = "ipv6_guard_unsupported"
+	// ProblemKillSwitch: a device's kill switch isn't as meant (putting
+	// it in place or removing it failed; retried every 10 s): while it
+	// should be in, traffic may leave around the tunnel when it is down.
+	ProblemKillSwitch Problem = "kill_switch_not_enforced"
+	// ProblemKillSwitchUnsupported: the OS can't hold the kill switch
+	// (Linux: no nf_tables; macOS: no pfctl) while it should be in.
+	ProblemKillSwitchUnsupported Problem = "kill_switch_unsupported"
+	// ProblemRouteRecordsCorrupt: a route record of thinkpol's was found
+	// corrupt this boot (macOS; the log names it and says why) while
+	// routes with thinkpol's route flag that no record names are in
+	// place. Those are left alone as foreign ones: an owner already
+	// running when its record went bad still removes its own and rewrites
+	// its record at its next change, and the problem goes; the rest (a
+	// dead owner's, or a set-aside record's) stay until reboot unless they
+	// went with their owner's interface (a leftover host route sends its
+	// address around the tunnel, policy_rules_ahead; leftover reject
+	// routes keep blocking). Removing a set-aside file acknowledges the
+	// problem; it does not remove the routes.
+	ProblemRouteRecordsCorrupt Problem = "route_records_corrupt"
 	// ProblemDNSUnprotected: the OS may resolve names outside the node's
 	// resolver, so names may leave outside the tunnel.
 	ProblemDNSUnprotected Problem = "dns_not_protected"
@@ -350,6 +471,22 @@ const (
 	// the resolver asks the rest, and with none left tunnel-bound names
 	// fail.
 	ProblemDNSUpstreamRefused Problem = "dns_upstream_refused"
+	// ProblemDNSNoUpstream: a device's resolver has no direct upstream to
+	// ask, so `direct` names don't resolve (Status.DNSNoUpstream).
+	ProblemDNSNoUpstream Problem = "dns_no_upstream"
+	// ProblemExitNoHandshake: an exit the device routes through,
+	// directly or behind a relay, has left WireGuard's handshake
+	// unanswered past the deadline while its first hop was up
+	// (Status.ExitsUnanswered). Down when the exit of the chain carrying
+	// either family's background (/0) route is unanswered (a chain has one
+	// exit, so none of its exits answers): that family's destinations no
+	// other route names are lost. The background route is the action with
+	// the most addresses, which may not be the default rule's (rules
+	// before it can take every address). Degraded for any other exit
+	// unanswered. Only a completed handshake clears it, even if the device
+	// goes idle; an exit sent no initiation since its first hop came up
+	// isn't counted.
+	ProblemExitNoHandshake Problem = "exit_no_handshake"
 )
 
 // Health grades the status.
@@ -362,13 +499,16 @@ func (s Status) Health() Health {
 	if s.Removed {
 		add(HealthDown, ProblemRemoved)
 	}
+	if s.ModeMismatch {
+		add(HealthDown, ProblemModeMismatch)
+	}
 	switch s.Connection {
 	case Disconnected:
 		add(HealthDown, ProblemDisconnected)
 	case Connecting:
 		if s.Retrying {
 			add(HealthDown, ProblemRetrying)
-		} else if !s.Removed {
+		} else if !s.Removed && !s.ModeMismatch {
 			add(HealthDown, ProblemStarting)
 		}
 	case Serving:
@@ -376,6 +516,13 @@ func (s Status) Health() Health {
 	}
 	if s.DataPlane != nil {
 		s.dataPlaneProblems(add)
+	}
+	switch s.KillSwitch.Error {
+	case "", KillSwitchNotApplied:
+	case KillSwitchUnsupported:
+		add(HealthDegraded, ProblemKillSwitchUnsupported)
+	default:
+		add(HealthDegraded, ProblemKillSwitch)
 	}
 	return h
 }
@@ -409,7 +556,7 @@ func (s Status) serverProblems(add func(HealthLevel, Problem)) {
 }
 
 // dataPlaneProblems adds a running data plane's problems: its map, links,
-// rules, route table and DNS.
+// exits, rules, route table and DNS.
 func (s Status) dataPlaneProblems(add func(HealthLevel, Problem)) {
 	dp := s.DataPlane
 	if dp.LastApplyError != "" {
@@ -427,6 +574,12 @@ func (s Status) dataPlaneProblems(add func(HealthLevel, Problem)) {
 	case up < len(dp.Neighbors):
 		add(HealthDegraded, ProblemNeighborDown)
 	}
+	switch {
+	case s.DefaultExitUnanswered:
+		add(HealthDown, ProblemExitNoHandshake)
+	case s.ExitsUnanswered > 0:
+		add(HealthDegraded, ProblemExitNoHandshake)
+	}
 	if len(dp.Skipped) > 0 {
 		add(HealthDegraded, ProblemSkipped)
 	}
@@ -440,6 +593,9 @@ func (s Status) dataPlaneProblems(add func(HealthLevel, Problem)) {
 	if s.DNSUpstreamsStale {
 		add(HealthDegraded, ProblemDNSUpstreamsStale)
 	}
+	if s.DNSNoUpstream {
+		add(HealthDegraded, ProblemDNSNoUpstream)
+	}
 }
 
 // routeTableProblems adds the OS routing table's problems and its leak
@@ -452,6 +608,9 @@ func routeTableProblems(rt dataplane.RouteTableStatus, add func(HealthLevel, Pro
 	}
 	if rt.Error == "" && rt.OverlayAhead > 0 {
 		add(HealthDown, ProblemOverlayRoutesAhead)
+	}
+	if rt.CorruptRecords > 0 && rt.UnownedRoutes > 0 {
+		add(HealthDegraded, ProblemRouteRecordsCorrupt)
 	}
 	switch rt.GuardError {
 	case "":

@@ -3,6 +3,7 @@ id: TP-143
 title: "macOS guard: does pf mark a skipped interface at all?"
 milestone: M2
 area: dataplane/firewall
+stream: core
 repo: thinkpol-vpn
 size: S
 needs_human: macos
@@ -35,7 +36,9 @@ What RESIDUAL-RISKS.md says about a skipped interface on macOS is true. Either t
 - **Device evidence (the 2026-10-24 macOS device run, steps 1, 6 and 20).** The listing was identical before connecting, with the guard applied, and after `set skip on lo`: bare names, no `lo (skip)` and no marked `lo0`. Health stayed ok at 20 s and 77 s. The listings are in TP-096's Notes.
 - TP-096 recorded the listing and ticked its box; the question whether macOS marks skips at all moved here.
 - Depends on TP-144 for the `lo0` run.
+- Owner, 2026-11-09: the device evidence comes from the Mac session in the M2 acceptance run (TP-029); a defect found there is fixed before M2 closes, possibly with a second short session.
 
 ## Log
 - 2026-10-24 created in backlog (2026-10-24 macOS device run, step 20: before-M2 list)
 - 2026-10-24 docs: slotted in the pre-M2 phase (wave 3)
+- 2026-11-09 notes: device evidence comes from the M2 acceptance session (owner)

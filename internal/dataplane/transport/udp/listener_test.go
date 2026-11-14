@@ -285,9 +285,47 @@ func TestListenerFollowsARebindingDialer(t *testing.T) {
 	expectPacket(t, fromServer, []byte("found you"))
 }
 
+// A listener restarted while a tap's capture is still fresh, as a node in
+// device mode restarts, refuses what was sealed before it started: the
+// capture opens no link and reaches only the camouflage, and the dialer,
+// sending on with the same sender, gets through at once (TP-069).
+func TestRestartThenReplayWithinTheWindow(t *testing.T) {
+	f := newFixture(t)
+	client := f.dial()
+	fromServer := reads(client)
+	write(t, client, "before the restart")
+	expectPacket(t, reads(f.accept()), []byte("before the restart"))
+	old, _ := f.tap.captured()
+
+	f.clock.advance(time.Second) // the restart ends in a later second than the capture
+	f.restart()
+	f.tap.rebind() // the attacker's own address
+	before := f.camo.Calls()
+	for _, d := range old {
+		f.tap.inject(d)
+	}
+	waitFor(t, "every replay counted", func() bool { return f.listener.Counters().StaleTimestamp >= uint64(len(old)) })
+	f.expectNoAccept()
+	if c := f.listener.Counters(); c.StaleTimestamp != uint64(len(old)) || c.Delivered != 0 {
+		t.Fatalf("counters %+v for %d replays, want them all stale", c, len(old))
+	}
+	if got := f.camo.Calls() - before; got != int64(len(old)) {
+		t.Errorf("%d replays reached the camouflage, want %d", got, len(old))
+	}
+
+	f.tap.rebind()
+	write(t, client, "after the restart")
+	server := f.accept()
+	expectPacket(t, reads(server), []byte("after the restart"))
+	write(t, server, "still yours")
+	expectPacket(t, fromServer, []byte("still yours"))
+}
+
 func TestConnIDsChangeAcrossTheHour(t *testing.T) {
 	now := time.Now()
-	boundary := now.Truncate(connIDPeriod).Add(connIDPeriod)
+	// An hour at least 3 s away: the dialer, 2 s before it, mustn't seal
+	// before the second the listener started in.
+	boundary := now.Add(3 * time.Second).Truncate(connIDPeriod).Add(connIDPeriod)
 	f := newFixture(t)
 	// The listener is just past the hour, the dialer just before it.
 	f.clock.advance(boundary.Add(2 * time.Second).Sub(now))
@@ -434,9 +472,9 @@ func TestNoncesNeverRepeat(t *testing.T) {
 // until the freshness check would reject that time.
 func TestNineRedialsThenQuietThenOldest(t *testing.T) {
 	f := newFixture(t)
-	// Nodes' clocks may be off by maxClockSkew; the worst case for the
+	// Nodes' clocks may be off by transport.MaxClockSkew; the worst case for the
 	// replay memory is a sender at the full skew ahead.
-	skewed := New(Options{Now: (&clock{off: maxClockSkew}).now})
+	skewed := New(Options{Now: (&clock{off: transport.MaxClockSkew}).now})
 	var server transport.Link
 	var got <-chan []byte
 	for i := range 9 {
@@ -454,7 +492,7 @@ func TestNineRedialsThenQuietThenOldest(t *testing.T) {
 
 	// Past one skew the oldest would be forgotten if the memory ran on
 	// the receiver's clock alone; its datagram is fresh until two.
-	f.clock.advance(senderTakeover + maxClockSkew + 15*time.Second)
+	f.clock.advance(senderTakeover + transport.MaxClockSkew + 15*time.Second)
 	f.tap.rebind()
 	before := f.listener.Counters()
 	for _, d := range up {
@@ -621,7 +659,7 @@ func TestAnEvictedSenderThatKeepsSendingStaysRemembered(t *testing.T) {
 	// The sender's clock is ahead by the full allowed skew, and moves
 	// with the fixture's, so its sealed send times advance as the
 	// listener's clock is moved forward.
-	skewed := New(Options{Now: func() time.Time { return f.clock.now().Add(maxClockSkew) }})
+	skewed := New(Options{Now: func() time.Time { return f.clock.now().Add(transport.MaxClockSkew) }})
 	first := f.dialWith(skewed)
 	write(t, first, "first")
 	server := f.accept()
@@ -656,7 +694,7 @@ func TestAnEvictedSenderThatKeepsSendingStaysRemembered(t *testing.T) {
 	// Forgotten ten minutes after the eviction, the id comes back while
 	// the captured datagram — sealed thirty seconds later on a clock a
 	// skew ahead — is fresh for another skew yet.
-	f.clock.advance(2*maxClockSkew - 15*time.Second)
+	f.clock.advance(2*transport.MaxClockSkew - 15*time.Second)
 	f.tap.rebind()
 	extra := f.dialWith(skewed)
 	write(t, extra, "extra")

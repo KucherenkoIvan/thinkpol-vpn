@@ -434,6 +434,44 @@ func TestMinus(t *testing.T) {
 	}
 }
 
+// TestIntersect checks set intersection at every address of small
+// universes, and that it is symmetric.
+func TestIntersect(t *testing.T) {
+	r := rand.New(rand.NewPCG(11, 12))
+	for _, base := range []netip.Prefix{pfx("10.0.0.0/22"), pfx("255.255.252.0/22"), pfx("2001:db8::/118"), pfx("ffff:ffff:ffff:ffff:ffff:ffff:ffff:fc00/118")} {
+		for range 300 {
+			var bs, bt Builder
+			for range r.IntN(20) {
+				_ = bs.AddPrefix(randPrefix(r, base, 10))
+			}
+			for range r.IntN(20) {
+				_ = bt.AddPrefix(randPrefix(r, base, 10))
+			}
+			s, _ := bs.Build()
+			u, _ := bt.Build()
+			both := s.Intersect(u)
+			if !both.Equal(u.Intersect(s)) {
+				t.Fatalf("%v and %v: not symmetric", s.Prefixes(), u.Prefixes())
+			}
+			for a := base.Addr(); base.Contains(a); a = a.Next() {
+				if got, want := both.Contains(a), s.Contains(a) && u.Contains(a); got != want {
+					t.Fatalf("%v and %v: Contains(%v) = %v", s.Prefixes(), u.Prefixes(), a, got)
+				}
+			}
+		}
+	}
+	s := build(t, "10.0.0.0/8", "2001:db8::/32")
+	var nilSet *Set
+	if !s.Intersect(nil).IsEmpty() || !nilSet.Intersect(s).IsEmpty() || !s.Intersect(s).Equal(s) {
+		t.Fatal("nil or self intersection")
+	}
+	// A partial overlap keeps only the part both hold, across families.
+	got := strs(s.Intersect(build(t, "10.1.2.0/24", "11.0.0.0/8", "2001:db8:d0::/48", "2001:db9::/32")).Prefixes())
+	if want := []string{"10.1.2.0/24", "2001:db8:d0::/48"}; !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
 func TestRangesAreMergedSpans(t *testing.T) {
 	// Adjacent prefixes that no CIDR covers come back as one range; the
 	// top of IPv6 ends at its last address.

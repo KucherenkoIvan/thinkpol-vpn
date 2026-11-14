@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 )
 
 // Systemd is the service manager of most Linux distributions: the unit
@@ -38,11 +41,6 @@ func (Systemd) Start(ctx context.Context, run Runner) error {
 		}
 	}
 	return nil
-}
-
-func (Systemd) Reload(ctx context.Context, run Runner) error {
-	_, err := run(ctx, "systemctl", "daemon-reload")
-	return err
 }
 
 // Stop stops the unit, still enabled, waiting for the agent to exit
@@ -139,4 +137,72 @@ func (Systemd) EnsureGroup(ctx context.Context, run Runner, group string) error 
 func (Systemd) AddToGroup(ctx context.Context, run Runner, user, group string) error {
 	_, err := run(ctx, "usermod", "-a", "-G", group, user)
 	return err
+}
+
+// dropInDirs are the system unit search path, in systemd's order
+// (systemd.unit(5)), and /lib/systemd/system where /lib isn't /usr/lib.
+var dropInDirs = []string{
+	"/etc/systemd/system.control",
+	"/run/systemd/system.control",
+	"/run/systemd/transient",
+	"/run/systemd/generator.early",
+	"/etc/systemd/system",
+	"/etc/systemd/system.attached",
+	"/run/systemd/system",
+	"/run/systemd/system.attached",
+	"/run/systemd/generator",
+	"/usr/local/lib/systemd/system",
+	"/usr/lib/systemd/system",
+	"/lib/systemd/system",
+	"/run/systemd/generator.late",
+}
+
+// HostDropIns lists the drop-ins for the service's unit on this host:
+// unsupported, and reported by `thinkpol diag`.
+func HostDropIns() agent.DropInReport { return dropIns("/") }
+
+// dropIns lists the *.conf files systemd applies to the service's unit,
+// under root: in each unit directory, thinkpol.service.d's, then
+// service.d's (every service's; distributions ship some there). A
+// directory that can't be read (but for a missing one) makes the report
+// unreadable.
+func dropIns(root string) agent.DropInReport {
+	var r agent.DropInReport
+	var unreadable []string
+	seen := map[string]bool{}
+	for _, dir := range dropInDirs {
+		for _, name := range []string{UnitName + ".d", "service.d"} {
+			d := filepath.Join(dir, name)
+			// /lib is /usr/lib on most distributions: a directory is
+			// listed once. One that can't be resolved is left to ReadDir
+			// to report.
+			resolved, err := filepath.EvalSymlinks(filepath.Join(root, d))
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err == nil {
+				if seen[resolved] {
+					continue
+				}
+				seen[resolved] = true
+			}
+			entries, err := os.ReadDir(filepath.Join(root, d))
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				unreadable = append(unreadable, fmt.Sprintf("%s: %v", d, err))
+				continue
+			}
+			for _, e := range entries {
+				if strings.HasSuffix(e.Name(), ".conf") {
+					r.Paths = append(r.Paths, filepath.Join(d, e.Name()))
+				}
+			}
+		}
+	}
+	if len(unreadable) > 0 {
+		return agent.DropInReport{Unreadable: strings.Join(unreadable, "; ")}
+	}
+	return r
 }

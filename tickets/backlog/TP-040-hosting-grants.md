@@ -3,6 +3,7 @@ id: TP-040
 title: "Hosting grants and shared nodes"
 milestone: M4
 area: features/hosting
+stream: administration
 repo: thinkpol-vpn
 size: epic
 depends_on: [TP-036, TP-010]
@@ -35,6 +36,8 @@ A node owner shares a server node with another space, fully isolated, capped and
 - **From TP-017 (review S4):** blobs are per space. A guest space's seeds belong in its own directory (e.g. `guests/<space-id>/blobs/`), read by `seedBlobs` for that space's worker only (`supervisor.Space.Seeds`). A worker holds its space's whole header set in memory (at most `blobs.ServerMaxHeldSize`, 16 MiB, plus a stand-in set while lists are replaced): set a per-worker cgroup `MemoryMax` that accounts for it, and count a guest's blobs against the guest's share, not the owner's.
 - **From TP-014 (egress), decided in its review:** a guest's `Space.Egress` is the grant's (at most what the node allows), never the guest map's `AllowEgress`, and the guest's worker section gets `AllowEgress` set from the grant before it is handed over (the engine's exit follows the section). A guest's `Dials` are firewall holes its own admin authors: cap them (e.g. 64), take public unicast addresses only and never the node's own, show their count to the owner, and honour them only if the grant allows egress (or the owner's map lists the servers the guest may reach). Each space's flows through the root are capped (`Options.MaxFlowsPerSpace`, a quarter of the conntrack table by default): size it with the number of guests.
 - **Parked (author, 2026-10-15):** Per-space egress caps would go on the veth (tc, `WorkerInfo.Link`).
+- Caps and fair share are TP-184 now (MVP triage 2026-11-07, PRD N7).
+- D10: the device's part of the map names the space owning each entry, so the tray can show `owned by <space>`; TP-036 builds it.
 
 ## Log
 - 2026-10-10 created in backlog
@@ -45,3 +48,4 @@ A node owner shares a server node with another space, fully isolated, capped and
 - 2026-10-12 docs (TP-014 review): notes from egress on Linux
 - 2026-10-15 docs: board fix-ups (log order, refs, parked notes)
 - 2026-10-15 docs (backlog grooming, review fixes): removed redundant split note and log line
+- 2026-11-07 notes: caps and fair share → TP-184 (MVP triage); D10 cross-reference

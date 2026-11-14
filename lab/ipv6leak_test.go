@@ -49,7 +49,7 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 	server.WriteFile(t, seed, list)
 	server.MustExec(t, "chmod", "600", seed)
 
-	srv := server.Start(t, "thinkpol", "up", "-map-poll", "1s")
+	srv := server.Start(t, "thinkpol", "up", "-mode", "server", "-map-poll", "1s")
 	up := dev.Start(t, "thinkpol", "up", "-map-poll", "1s")
 	waitLog(t, srv, `worker space=\S+ .*`+applied(v1))
 	waitLog(t, up, applied(v1)+`.*route_table_routes=`)

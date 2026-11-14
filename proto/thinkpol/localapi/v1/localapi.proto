@@ -35,12 +35,26 @@ service LocalService {
   rpc ListSpaces(ListSpacesRequest) returns (ListSpacesResponse);
   // SetRulePreset switches the device's routing rules to a preset
   // ("space", the space's own rules; "everything"; "all-but-domestic")
-  // and stores the choice in the device's local rules file, which only
-  // the service writes. INVALID_ARGUMENT "unknown_rule_preset" for
+  // and stores the choice in the device's settings file, which only the
+  // service writes. INVALID_ARGUMENT "unknown_rule_preset" for
   // another name; FAILED_PRECONDITION "rule_preset_unavailable" when the
   // space can't build it (the choice is kept, enforced failing closed),
   // "server_mode" on a server.
   rpc SetRulePreset(SetRulePresetRequest) returns (SetRulePresetResponse);
+  // SetConnectOnBoot sets whether the service connects the device at a
+  // boot's first start, stored in the device's settings file, which only
+  // the service writes; it takes effect at the next boot (GetStatus shows
+  // it). FAILED_PRECONDITION "server_mode" on a server.
+  rpc SetConnectOnBoot(SetConnectOnBootRequest) returns (SetConnectOnBootResponse);
+  // SetKillSwitch turns the device's kill switch on or off, stored in the
+  // device's settings file, in effect at once: while it is on and the
+  // tunnel is down, nothing leaves but traffic to the entries (and the
+  // LAN with allow-LAN). FAILED_PRECONDITION "server_mode" on a server.
+  rpc SetKillSwitch(SetKillSwitchRequest) returns (SetKillSwitchResponse);
+  // SetAllowLAN sets whether the kill switch lets the LAN out (private,
+  // link-local and multicast addresses), stored and in effect as
+  // SetKillSwitch. FAILED_PRECONDITION "server_mode" on a server.
+  rpc SetAllowLAN(SetAllowLANRequest) returns (SetAllowLANResponse);
   // TailLogs sends the agent's in-memory log: the last lines, then, when
   // following, every new line until the client goes away or the service
   // stops. Root only: debug lines may quote the map.
@@ -93,6 +107,30 @@ message SetRulePresetResponse {
   Status status = 1;
 }
 
+message SetConnectOnBootRequest {
+  bool on = 1;
+}
+
+message SetConnectOnBootResponse {
+  Status status = 1;
+}
+
+message SetKillSwitchRequest {
+  bool on = 1;
+}
+
+message SetKillSwitchResponse {
+  Status status = 1;
+}
+
+message SetAllowLANRequest {
+  bool on = 1;
+}
+
+message SetAllowLANResponse {
+  Status status = 1;
+}
+
 message TailLogsRequest {
   // The last lines to send first; 0 sends 100.
   uint32 lines = 1;
@@ -116,21 +154,24 @@ message DiagnoseResponse {
 // Diagnostics is `thinkpol diag`'s snapshot: the evidence a device run
 // records. `thinkpol diag` writes it as JSON with these field names
 // (snake_case) and every field present, unset ones as their zero value
-// or null, but a guard's `present`, left out when it couldn't be told. A
-// part the agent couldn't read has `unreadable` set to why, and nothing
-// else; a part without it was read, and what it lists is all there is. No key, token or session id is in it; endpoints and
-// addresses are, in the host parts, which only root gets.
+// or null, but a guard's or a kill switch's `present`, left out when it
+// couldn't be told. A part the agent couldn't read has `unreadable` set
+// to why, and nothing else; a part without it was read, and what it
+// lists is all there is. No key, token or session id is in it;
+// endpoints and addresses are, in the host parts, which only root gets.
 message Diagnostics {
   // The schema. Bumped when a field is removed or renamed or its type or
   // meaning changes; not when a field is added. `unreadable` texts are
   // free-form, and the values of enumerated strings (a route's type, an
-  // Apply's step) may grow without a bump.
+  // Apply's step) may grow without a bump. This is the service's; the
+  // CLI's JSON carries the CLI's own (the localapi package doc's "JSON").
   uint32 schema_version = 1;
   google.protobuf.Timestamp taken_at = 2;
   // The agent's OS ("linux", "darwin") and version.
   string os = 3;
   string agent_version = 4;
-  // The caller got the host parts (routes, policy_rules, guard, dns):
+  // The caller got the host parts (routes, policy_rules, guard,
+  // kill_switch, dns):
   // root and the service's user do; the group's snapshot has them
   // unreadable.
   bool host_parts = 5;
@@ -147,10 +188,38 @@ message Diagnostics {
   DiagRules policy_rules = 10;
   // The IPv6 leak guard as the host holds it. A host part.
   DiagGuard guard = 11;
+  // The kill switch as the host holds it, on or off, whatever left it
+  // (a crashed or stopped run's included). A host part.
+  DiagKillSwitch kill_switch = 15;
   // The resolvers the host uses, for the overlay's names and the rest, as
   // it reports them (Linux: resolv.conf and systemd-resolved; macOS:
   // scutil --dns). A host part.
   DiagDns dns = 12;
+  // Drop-ins for the service's systemd unit (thinkpol.service.d/*.conf):
+  // unsupported, since one can set THINKPOL_* variables behind the node
+  // file's back. None on macOS, where launchd has no drop-ins.
+  DiagDropIns service_drop_ins = 13;
+  // What the previous run under a device's service left on its stderr
+  // (the crash trace file, emptied at each start once read): a panic's or
+  // a fatal error's trace, or the error it exited with. Empty when it left
+  // nothing (it stopped cleanly) and on a server, which keeps no trace.
+  // Root only, like the host parts: the group's snapshot has it
+  // unreadable when there is one.
+  DiagLastRun last_run = 14;
+}
+
+// The head of the previous run's stderr, line by line.
+message DiagLastRun {
+  string unreadable = 1;
+  repeated string lines = 2;
+  // The trace was longer than what is kept (64 KiB).
+  bool truncated = 3;
+}
+
+// The drop-in files found, by path.
+message DiagDropIns {
+  string unreadable = 1;
+  repeated string paths = 2;
 }
 
 // An interface as the host reports it.
@@ -261,12 +330,54 @@ message DiagGuard {
   DiagPf pf = 7;
 }
 
+// The kill switch as the host holds it: Linux's nftables table, macOS's
+// pf anchor and its tables.
+message DiagKillSwitch {
+  string unreadable = 1;
+  // "nftables table inet thinkpol-killswitch", "pf anchor
+  // com.apple/001.thinkpol-killswitch".
+  string where = 2;
+  // The host holds it (the table exists; the anchor lists rules). Unset,
+  // and left out of the JSON, when that couldn't be told (the anchor's
+  // rules unreadable).
+  optional bool present = 3;
+  // Its rules in order with their counters, as the guard's are.
+  DiagGuardRules rules = 4;
+  // Its nftables sets or pf tables, by name, each with its size; their
+  // entries (public addresses) are left out.
+  DiagKillSwitchSets sets = 5;
+  DiagNftables nftables = 6;
+  DiagKillSwitchPf pf = 7;
+}
+
+message DiagKillSwitchSets {
+  string unreadable = 1;
+  repeated DiagKillSwitchSet sets = 2;
+}
+
+message DiagKillSwitchSet {
+  // "allow4", "direct6", "thinkpol_killswitch"...
+  string name = 1;
+  string unreadable = 2;
+  // Linux: the intervals the set holds (a prefix or a range each);
+  // macOS: the addresses and prefixes `pfctl -T show` lists.
+  uint32 entries = 3;
+}
+
+// pf's state as it concerns the kill switch (macOS).
+message DiagKillSwitchPf {
+  DiagPfEnabled enabled = 1;
+  // The kill switch's own `pfctl -E` reference, apart from the guard's.
+  DiagPfReference reference = 2;
+}
+
 message DiagGuardRules {
   string unreadable = 1;
   repeated DiagGuardRule rules = 2;
 }
 
-// A rule of the guard as the host lists it, with its counters.
+// A rule of the guard's or the kill switch's as the host lists it,
+// with its counters.
 message DiagGuardRule {
   // The nftables chain (Linux).
   string chain = 1;
@@ -288,9 +399,9 @@ message DiagPrefixes {
   repeated string prefixes = 2;
 }
 
-// The guard table's own state (Linux).
+// The guard's or the kill switch's table's own state (Linux).
 message DiagNftables {
-  // The table's chains are unhooked: it guards nothing.
+  // The table's chains are unhooked: it enforces nothing.
   bool dormant = 1;
   string chains_unreadable = 2;
   repeated DiagNftChain chains = 3;
@@ -332,10 +443,11 @@ message DiagPfGuardCheck {
   repeated string anchors_before = 5;
 }
 
-// The guard's `pfctl -E` reference, by the pid of the pfctl that took it.
+// The guard's or the kill switch's `pfctl -E` reference, by the pid of
+// the pfctl that took it.
 message DiagPfReference {
   string unreadable = 1;
-  // The guard's record names a reference.
+  // Its owner's record names a reference.
   bool recorded = 2;
   // A record of another boot session: it holds nothing now.
   bool stale = 3;
@@ -424,6 +536,35 @@ message Status {
   // isn't counted). One that keeps growing is someone handing it maps it
   // refuses.
   uint64 maps_refused = 15;
+  // A device's connect-on-boot, from its settings file: whether the
+  // service connects it at a boot's first start.
+  bool connect_on_boot = 16;
+  // The previous run under a device's service crashed or exited with an
+  // error: it left a trace on its stderr, which Diagnose's last_run has.
+  bool last_run_crashed = 17;
+  // The service's crash trace file was there but wasn't read: Diagnose's
+  // last_run says why.
+  bool last_run_unreadable = 18;
+  // A device's kill switch.
+  KillSwitch kill_switch = 19;
+}
+
+// KillSwitch is a device's kill switch.
+message KillSwitch {
+  // The toggles in effect: the device's settings file's, else the node's
+  // defaults.
+  bool on = 1;
+  bool allow_lan = 2;
+  // The rules are meant to be in place now: the toggle is on, or the
+  // connection is meant up under the "everything" or "all-but-domestic"
+  // preset (the crash posture).
+  bool active = 3;
+  // The host holds what is meant (in place, or rightly not); error says
+  // why not: "apply_failed", "remove_failed", "unsupported", or
+  // "not_applied" (the agent hasn't put it as meant yet: it is starting,
+  // or leaves the host alone while its map makes it a server).
+  bool enforced = 4;
+  string error = 5;
 }
 
 // Uplink is a server's way to the internet, for its spaces that allow
@@ -443,7 +584,7 @@ message Uplink {
 }
 
 enum Mode {
-  MODE_UNSPECIFIED = 0; // removed from its space, kind unknown
+  MODE_UNSPECIFIED = 0; // not set: an agent never reports it
   MODE_DEVICE = 1;
   MODE_SERVER = 2;
 }
@@ -498,6 +639,8 @@ message DataPlane {
   // the rules, and how often the overlay interface was re-applied after its
   // link came up ("interface.reapplies").
   map<string, uint64> counters = 10;
+  // The overlay's TUN, by the name the OS gave it.
+  string interface = 11;
 }
 
 // A WireGuard peer.
@@ -587,4 +730,8 @@ message PublicListener {
   uint64 streams_overloaded = 5;
   // Peer links the transport refused to route.
   uint32 rejected = 6;
+  // Connections the transport closed past its own bounds (reality's
+  // connections being decided or spliced): a flood, or splices pinned
+  // open.
+  uint64 streams_bound_closed = 7;
 }

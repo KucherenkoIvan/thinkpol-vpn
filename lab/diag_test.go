@@ -360,8 +360,11 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 	// links and resolv.conf (its stub).
 	startResolved(t, dev, internet.IPv4(lab.NetServers))
 
-	srv := server.Start(t, "thinkpol", "up", "-map-poll", "1s")
-	up := dev.Start(t, "thinkpol", "up", "-map-poll", "1s")
+	srv := server.Start(t, "thinkpol", "up", "-mode", "server", "-map-poll", "1s")
+	// The crash posture (TP-048) would put the kill switch in place under
+	// "all but domestic", and its chain would refuse the guard's test
+	// ping before the guard's counts it: both are last at output.
+	up := dev.Start(t, "thinkpol", "up", "-map-poll", "1s", "-fail-closed-after-crash=false")
 	waitLog(t, srv, `worker space=\S+ .*`+applied(v1))
 	waitLog(t, up, applied(v1)+`.*route_table_routes=`)
 	waitLog(t, up, `msg="blob fetched" .*name=dm`)
@@ -396,7 +399,7 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 		if err := json.Unmarshal([]byte(out), &d); err != nil {
 			t.Fatalf("diag's JSON: %v\n%s", err, out)
 		}
-		if d.SchemaVersion != 1 || d.Os != "linux" || d.Status.Connection != "CONNECTION_CONNECTED" || d.HostParts != !slices.Contains(args, "setpriv") {
+		if d.SchemaVersion != 2 || d.Os != "linux" || d.Status.Connection != "connected" || d.HostParts != !slices.Contains(args, "setpriv") {
 			t.Fatalf("diag: %+v", d)
 		}
 		return d, out

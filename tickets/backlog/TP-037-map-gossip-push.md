@@ -3,6 +3,7 @@ id: TP-037
 title: "Map gossip and push channel"
 milestone: M4
 area: netmap
+stream: administration
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-036, KRN-002]

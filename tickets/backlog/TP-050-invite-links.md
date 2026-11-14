@@ -3,6 +3,7 @@ id: TP-050
 title: "Invite links"
 milestone: M5
 area: cmd/thinkpol-tray
+stream: clients
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-039, TP-049]

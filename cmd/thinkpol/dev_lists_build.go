@@ -37,7 +37,7 @@ func runDevListsBuild(_ context.Context, e env, args []string) error {
 	}
 	f, built, err := lists.BuildFile(fs.Arg(0), lists.Format(*format), names, *out)
 	if err != nil {
-		return err
+		return inputAt(err, []string{fs.Arg(0)}, nil)
 	}
 	return devmap.WriteListsReport(e.stdout, e.stderr, f, built)
 }

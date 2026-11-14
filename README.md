@@ -2,11 +2,12 @@
 
 A self-hosted virtual network for people behind a censor. Your devices and a few VPS nodes form one private network, traffic between them is disguised so no VPN fingerprint reaches the wire, and internet traffic can leave through a chain of hops. Managed like Tailscale, without depending on anyone's servers.
 
-Work in progress: the project is being rewritten from scratch.
+A research project, work in progress: a prototype and a lab for studying censorship and how to get past it. The project is being rewritten from scratch.
 
 - [PRD.md](PRD.md): what it must do
 - [DESIGN.md](DESIGN.md): how it works (the entry point and index; the design files it indexes hold the model, and each package's `doc.go` its mechanism)
 - [RESIDUAL-RISKS.md](RESIDUAL-RISKS.md): what the design accepts falling short of
+- [docs/design/api-overview.md](docs/design/api-overview.md): the CLI, the local API, configuration and on-disk state, until a dedicated CLI reference exists
 - [docs/runbook-pre-controller.md](docs/runbook-pre-controller.md): running a space by hand, before the controller
 - [tickets/](tickets/README.md): the board (`python3 tickets/board.py`)
 

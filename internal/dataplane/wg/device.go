@@ -26,6 +26,11 @@ import (
 // the path layer's message budget less this.
 const Overhead = device.MessageTransportSize
 
+// RekeyTimeout is how long WireGuard waits for a handshake's answer before
+// it sends the next initiation (device.RekeyTimeout, plus up to a third of
+// a second of jitter).
+const RekeyTimeout = device.RekeyTimeout
+
 // ErrClosed is returned by a closed device.
 var ErrClosed = errors.New("wg: device closed")
 
@@ -45,8 +50,22 @@ type PeerStatus struct {
 	Key           netmap.WireGuardKey
 	Node          path.NodeID
 	LastHandshake time.Time // zero before the first
-	RxBytes       uint64
-	TxBytes       uint64
+	// HandshakePendingSince is when WireGuard sent the peer the first
+	// handshake initiation that is still unanswered: zero once a handshake
+	// with the peer completes (either side's initiation), and only then:
+	// it stays after traffic stops and WireGuard gives up retrying.
+	// WireGuard initiates when it has data for a peer without a fresh
+	// session, when a session stopped hearing back after data was sent,
+	// and to rekey; a peer nothing was sent to has none pending, however
+	// old its last handshake.
+	HandshakePendingSince time.Time
+	// LastInitiation is when WireGuard last sent the peer a handshake
+	// initiation (zero before the first). Unlike HandshakePendingSince it
+	// stops moving when WireGuard gives up retrying, so it says whether an
+	// initiation went out since some moment.
+	LastInitiation time.Time
+	RxBytes        uint64
+	TxBytes        uint64
 }
 
 // Device is one WireGuard device (wireguard-go): it reads its TUN, a router
@@ -57,7 +76,7 @@ type Device struct {
 	dev  *device.Device
 	bind *path.Bind
 
-	hs *handshakeLog // nil without a log
+	hs *handshakes
 
 	mu     sync.Mutex
 	key    netmap.WireGuardPrivateKey
@@ -79,7 +98,6 @@ type Device struct {
 // that (info), so a log at info level explains a drop.
 func New(name string, t tun.Device, b *path.Bind, log *slog.Logger) *Device {
 	logger := &device.Logger{Verbosef: device.DiscardLogf, Errorf: device.DiscardLogf}
-	var hs *handshakeLog
 	if log != nil {
 		log = log.With("wireguard", name)
 		logger.Errorf = func(format string, args ...any) {
@@ -89,9 +107,11 @@ func New(name string, t tun.Device, b *path.Bind, log *slog.Logger) *Device {
 			}
 			log.Log(context.Background(), level, fmt.Sprintf(format, args...))
 		}
-		hs = &handshakeLog{log: log, late: make(map[string]bool)}
-		logger.Verbosef = hs.verbosef
 	}
+	// Peers' HandshakePendingSince comes from the verbose messages, log or
+	// not.
+	hs := newHandshakes(log)
+	logger.Verbosef = hs.verbosef
 	return &Device{
 		name:   name,
 		hs:     hs,
@@ -102,33 +122,57 @@ func New(name string, t tun.Device, b *path.Bind, log *slog.Logger) *Device {
 	}
 }
 
-// handshakeLog sorts WireGuard's verbose messages: the first handshake of
-// a peer that timed out goes to the info level (WireGuard's retries after
-// it to debug), and so does the next handshake of that peer done, ending
-// the outage; everything else is debug.
-type handshakeLog struct {
-	log  *slog.Logger
+// handshakes follows each peer's handshakes through WireGuard's verbose
+// messages. It keeps each peer's first unanswered initiation
+// (PeerStatus.HandshakePendingSince): WireGuard's "did not complete"
+// message can't say that, since every packet sent without a session
+// re-initiates (at most once per RekeyTimeout) and pushes the retry timer
+// that logs it back. And it sorts the messages for the log: the first
+// handshake of a peer that timed out goes to the info level (WireGuard's
+// retries after it to debug), and so does the next handshake of that peer
+// done, ending the outage; everything else is debug.
+type handshakes struct {
+	log  *slog.Logger // nil: nothing is logged
 	mu   sync.Mutex
 	late map[string]bool // peers (as WireGuard names them) whose handshake timed out, until one is done
+	// pending is when each peer's first initiation still unanswered was
+	// sent.
+	pending map[string]time.Time
+	// initiated is when each peer's last initiation was sent.
+	initiated map[string]time.Time
 }
 
-// keep forgets the peers not in keys, so peers the map took away while
-// their handshakes failed don't stay behind.
-func (h *handshakeLog) keep(keys map[netmap.WireGuardKey]Peer) {
+func newHandshakes(log *slog.Logger) *handshakes {
+	return &handshakes{log: log, late: make(map[string]bool), pending: make(map[string]time.Time), initiated: make(map[string]time.Time)}
+}
+
+// of is PeerStatus.HandshakePendingSince and LastInitiation for the peer
+// of key k.
+func (h *handshakes) of(k netmap.WireGuardKey) (pendingSince, lastInitiation time.Time) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if len(h.late) == 0 {
-		return
+	return h.pending[peerName(k)], h.initiated[peerName(k)]
+}
+
+// forget drops what is known of the peers of keys: WireGuard removed them
+// (a peer it adds again with the same key starts afresh).
+func (h *handshakes) forget(keys []netmap.WireGuardKey) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, k := range keys {
+		delete(h.late, peerName(k))
+		delete(h.pending, peerName(k))
+		delete(h.initiated, peerName(k))
 	}
-	names := make(map[string]bool, len(keys))
-	for k := range keys {
-		names[peerName(k)] = true
-	}
-	for p := range h.late {
-		if !names[p] {
-			delete(h.late, p)
-		}
-	}
+}
+
+// reset drops what is known of every peer: WireGuard's peers are replaced.
+func (h *handshakes) reset() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	clear(h.late)
+	clear(h.pending)
+	clear(h.initiated)
 }
 
 // peerName is how WireGuard names a peer in its messages (device.Peer's
@@ -138,7 +182,7 @@ func peerName(k netmap.WireGuardKey) string {
 	return "peer(" + b[0:4] + "…" + b[39:43] + ")"
 }
 
-func (h *handshakeLog) verbosef(format string, args ...any) {
+func (h *handshakes) verbosef(format string, args ...any) {
 	peer := ""
 	if len(args) > 0 {
 		peer = fmt.Sprint(args[0])
@@ -146,17 +190,26 @@ func (h *handshakeLog) verbosef(format string, args ...any) {
 	level := slog.LevelDebug
 	h.mu.Lock()
 	switch {
+	case strings.Contains(format, "Sending handshake initiation"):
+		now := time.Now()
+		if _, ok := h.pending[peer]; !ok {
+			h.pending[peer] = now
+		}
+		h.initiated[peer] = now
 	case strings.Contains(format, "Handshake did not complete") || strings.Contains(format, "stopped hearing back"):
 		if !h.late[peer] {
 			h.late[peer] = true
 			level = slog.LevelInfo
 		}
-	case h.late[peer] && (strings.Contains(format, "Received handshake response") || strings.Contains(format, "Sending handshake response")):
-		delete(h.late, peer)
-		level = slog.LevelInfo
+	case strings.Contains(format, "Received handshake response") || strings.Contains(format, "Sending handshake response"):
+		delete(h.pending, peer)
+		if h.late[peer] {
+			delete(h.late, peer)
+			level = slog.LevelInfo
+		}
 	}
 	h.mu.Unlock()
-	if h.log.Enabled(context.Background(), level) {
+	if h.log != nil && h.log.Enabled(context.Background(), level) {
 		h.log.Log(context.Background(), level, fmt.Sprintf(format, args...))
 	}
 }
@@ -197,15 +250,23 @@ func (d *Device) Configure(key netmap.WireGuardPrivateKey, peers []Peer) error {
 	if key != d.key || !d.synced {
 		fmt.Fprintf(&b, "private_key=%s\n", hex.EncodeToString(key[:]))
 	}
-	if !d.synced {
+	// What is known of a removed peer's handshakes is dropped before
+	// WireGuard removes it, so a peer re-added with the same key (its Node
+	// changed) doesn't inherit it.
+	replaced := !d.synced
+	if replaced {
 		b.WriteString("replace_peers=true\n")
 		clear(d.peers)
+		d.hs.reset()
 	}
+	var removed []netmap.WireGuardKey
 	for k := range d.peers {
 		if p, ok := next[k]; !ok || p.Node != d.peers[k].Node {
 			fmt.Fprintf(&b, "public_key=%s\nremove=true\n", k)
+			removed = append(removed, k)
 		}
 	}
+	d.hs.forget(removed)
 	for _, k := range sortedKeys(next) {
 		p := next[k]
 		old, had := d.peers[k]
@@ -229,10 +290,13 @@ func (d *Device) Configure(key netmap.WireGuardPrivateKey, peers []Peer) error {
 			return fmt.Errorf("wg: device %s: %w", d.name, err)
 		}
 	}
-	d.key, d.peers, d.synced = key, next, true
-	if d.hs != nil {
-		d.hs.keep(next)
+	// Again now WireGuard has removed them: an initiation the old peer
+	// logged in between would otherwise be inherited by its replacement.
+	if replaced {
+		d.hs.reset()
 	}
+	d.hs.forget(removed)
+	d.key, d.peers, d.synced = key, next, true
 	if !d.up {
 		if err := d.dev.Up(); err != nil {
 			return fmt.Errorf("wg: device %s: up: %w", d.name, err)
@@ -349,6 +413,9 @@ func (d *Device) Peers() ([]PeerStatus, error) {
 		return nil, fmt.Errorf("wg: device %s: status: %w", d.name, err)
 	}
 	flush()
+	for i := range out {
+		out[i].HandshakePendingSince, out[i].LastInitiation = d.hs.of(out[i].Key)
+	}
 	slices.SortFunc(out, func(a, b PeerStatus) int { return strings.Compare(string(a.Key[:]), string(b.Key[:])) })
 	return out, nil
 }

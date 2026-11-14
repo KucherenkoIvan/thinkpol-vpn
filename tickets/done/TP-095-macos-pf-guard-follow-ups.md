@@ -3,6 +3,7 @@ id: TP-095
 title: "macOS pf guard follow-ups"
 milestone: M2
 area: dataplane/firewall
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-092]

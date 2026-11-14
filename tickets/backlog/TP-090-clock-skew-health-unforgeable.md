@@ -1,8 +1,9 @@
 ---
 id: TP-090
 title: "clock_skew health that can't be forged"
-milestone: M2
+milestone: later
 area: dataplane/transport
+stream: transports
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-074]
@@ -43,3 +44,4 @@ A node's health names `clock_skew` when a peer's clock disagrees with its own be
 ## Log
 - 2026-10-15 created in backlog (cut from TP-074 round 3)
 - 2026-10-15 docs: TP-074 review nits — scope needs (a)+(b)+(c) or probe; acceptance uses three distinct stale captures
+- 2026-11-07 milestone → later (owner's MVP cut: polish)

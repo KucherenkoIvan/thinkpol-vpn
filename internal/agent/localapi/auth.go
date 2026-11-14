@@ -27,8 +27,9 @@ type Access uint8
 const (
 	// AccessNone: nothing.
 	AccessNone Access = iota
-	// AccessControl: the status, the spaces, connect and disconnect, rule
-	// presets, the diagnostics' parts without public addresses.
+	// AccessControl: the status, the spaces, connect and disconnect, the
+	// member's toggles (rule preset, connect-on-boot), the diagnostics'
+	// parts without public addresses.
 	AccessControl
 	// AccessAdmin: everything, the agent's log too.
 	AccessAdmin
@@ -49,14 +50,17 @@ func (a Access) String() string {
 // methodAccess is the level each call needs; a call not listed needs
 // AccessAdmin.
 var methodAccess = map[string]Access{
-	localapiv1.LocalService_GetStatus_FullMethodName:     AccessControl,
-	localapiv1.LocalService_WatchStatus_FullMethodName:   AccessControl,
-	localapiv1.LocalService_ListSpaces_FullMethodName:    AccessControl,
-	localapiv1.LocalService_Connect_FullMethodName:       AccessControl,
-	localapiv1.LocalService_Disconnect_FullMethodName:    AccessControl,
-	localapiv1.LocalService_SetRulePreset_FullMethodName: AccessControl,
-	localapiv1.LocalService_Diagnose_FullMethodName:      AccessControl,
-	localapiv1.LocalService_TailLogs_FullMethodName:      AccessAdmin,
+	localapiv1.LocalService_GetStatus_FullMethodName:        AccessControl,
+	localapiv1.LocalService_WatchStatus_FullMethodName:      AccessControl,
+	localapiv1.LocalService_ListSpaces_FullMethodName:       AccessControl,
+	localapiv1.LocalService_Connect_FullMethodName:          AccessControl,
+	localapiv1.LocalService_Disconnect_FullMethodName:       AccessControl,
+	localapiv1.LocalService_SetRulePreset_FullMethodName:    AccessControl,
+	localapiv1.LocalService_SetConnectOnBoot_FullMethodName: AccessControl,
+	localapiv1.LocalService_SetKillSwitch_FullMethodName:    AccessControl,
+	localapiv1.LocalService_SetAllowLAN_FullMethodName:      AccessControl,
+	localapiv1.LocalService_Diagnose_FullMethodName:         AccessControl,
+	localapiv1.LocalService_TailLogs_FullMethodName:         AccessAdmin,
 }
 
 // Caller is a local API client's process by its credentials, as the
@@ -163,9 +167,10 @@ func (p Policy) access(ctx context.Context, c Caller) (Access, error) {
 // logs a refusal with the caller's uid and the group it was checked
 // against (not its groups: only how many the kernel recorded). A root-only
 // call is refused as ErrRootOnly before any group is looked up; a caller
-// whose membership the OS couldn't settle is refused as
-// ErrMembershipUnknown; a caller that left during the lookup is refused
-// nothing, and gets its context's end.
+// whose membership the OS didn't settle in time is refused as
+// ErrMembershipUnknown, and one it failed to settle otherwise as
+// ErrMembershipCheckFailed; a caller that left during the lookup is
+// refused nothing, and gets its context's end.
 func (p Policy) allow(ctx context.Context, log *slog.Logger, method string) error {
 	need, ok := methodAccess[method]
 	if !ok {
@@ -173,7 +178,7 @@ func (p Policy) allow(ctx context.Context, log *slog.Logger, method string) erro
 	}
 	c, ok := callerFrom(ctx)
 	if !ok {
-		log.Info("local API call refused: no peer credentials", "method", method, "refusal", ErrPermissionDenied.Code)
+		log.Info("local API call refused: no peer credentials", "method", method, "refusal", ErrPermissionDenied.code)
 		return ErrPermissionDenied
 	}
 	if need == AccessAdmin && !p.isAdmin(c) {
@@ -192,8 +197,13 @@ func (p Policy) allow(ctx context.Context, log *slog.Logger, method string) erro
 		return ctx.Err()
 	}
 	if err != nil {
-		p.logRefusal(ctx, log, ErrMembershipUnknown, method, c, need, "has", got.String(), "membership_err", err)
-		return ErrMembershipUnknown
+		refusal := ErrMembershipCheckFailed
+		if errors.Is(err, context.DeadlineExceeded) {
+			// No answer in time: the next lookup may get one.
+			refusal = ErrMembershipUnknown
+		}
+		p.logRefusal(ctx, log, refusal, method, c, need, "has", got.String(), "membership_err", err)
+		return refusal
 	}
 	p.logRefusal(ctx, log, ErrPermissionDenied, method, c, need, "has", got.String())
 	return ErrPermissionDenied
@@ -201,15 +211,15 @@ func (p Policy) allow(ctx context.Context, log *slog.Logger, method string) erro
 
 // logRefusal logs c's call of method refused as refusal, with what was
 // looked up, if anything (extra: what c has, why the OS couldn't say).
-// ErrMembershipUnknown is a warning, the others are routine.
+// The membership refusals are warnings, the others are routine.
 func (p Policy) logRefusal(ctx context.Context, log *slog.Logger, refusal Error, method string, c Caller, need Access, extra ...any) {
-	attrs := []any{"method", method, "refusal", refusal.Code, "uid", c.UID, "needs", need.String(), "recorded_groups", len(c.GIDs)}
+	attrs := []any{"method", method, "refusal", refusal.code, "uid", c.UID, "needs", need.String(), "recorded_groups", len(c.GIDs)}
 	if p.HasGroup {
 		attrs = append(attrs, "group", p.Group)
 	}
 	attrs = append(attrs, extra...)
 	level := slog.LevelInfo
-	if refusal == ErrMembershipUnknown {
+	if refusal == ErrMembershipUnknown || refusal == ErrMembershipCheckFailed {
 		level = slog.LevelWarn
 	}
 	log.Log(ctx, level, "local API call refused", attrs...)

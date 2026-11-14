@@ -7,11 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -154,15 +154,27 @@ func (n *Node) RunGoTests(t testing.TB, pkgPattern string, args ...string) {
 	}
 }
 
+// GoTestResult is how one package's tests went in one run.
+type GoTestResult struct {
+	ImportPath string
+	Failed     bool
+	Tests      TestTally
+}
+
 // GoTestEach runs each package's tests in a fresh lab of its own
 // (GoTestTopology), up to parallel at a time, so no package sees what
 // another left behind. Each package's output goes to w in one piece, in the
 // order the packages finish. env (NAME=value) is added to the test
-// binaries' environment. It returns the packages that failed; err is for
-// the lab itself failing. Its labs run this process's binaries: the caller
-// removes them with RemoveRunBinaries once GoTestEach returns.
-func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int, w io.Writer, env []string, args ...string) (failed []string, err error) {
+// binaries' environment. It returns each package's result, sorted by import
+// path; err is for the lab itself failing. Its labs run this process's
+// binaries: the caller removes them with RemoveRunBinaries once GoTestEach
+// returns.
+func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int, w io.Writer, env []string, args ...string) (results []GoTestResult, err error) {
 	checkout, err := CheckoutProject(root)
+	if err != nil {
+		return nil, err
+	}
+	run, err := runID()
 	if err != nil {
 		return nil, err
 	}
@@ -180,22 +192,23 @@ func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int
 			defer func() { <-sem }()
 			var out bytes.Buffer
 			fmt.Fprintf(&out, "=== lab gotest %s\n", pkg.ImportPath)
-			labErr, testErr := goTestFresh(ctx, root, GoTestProject(checkout)+"-"+shortHash(pkg.ImportPath), pkg, &out, env, args)
+			labErr, testErr := goTestFresh(ctx, root, goTestPackageProject(checkout, run, pkg.ImportPath), pkg, &out, env, args)
+			res := GoTestResult{ImportPath: pkg.ImportPath, Failed: testErr != nil, Tests: TallyTests(out.Bytes())}
 			mu.Lock()
 			defer mu.Unlock()
 			if testErr != nil {
 				fmt.Fprintln(&out, testErr)
-				failed = append(failed, pkg.ImportPath)
 			}
 			if labErr != nil {
 				errs = append(errs, labErr)
 			}
+			results = append(results, res)
 			_, _ = w.Write(out.Bytes())
 		}()
 	}
 	wg.Wait()
-	sort.Strings(failed)
-	return failed, errors.Join(errs...)
+	slices.SortFunc(results, func(a, b GoTestResult) int { return strings.Compare(a.ImportPath, b.ImportPath) })
+	return results, errors.Join(errs...)
 }
 
 func goTestFresh(ctx context.Context, root, project string, pkg GoPackage, w io.Writer, env, args []string) (labErr, testErr error) {
@@ -221,4 +234,149 @@ func GoTestTopology() Topology {
 		Networks: []Network{{Name: "lab"}},
 		Nodes:    []NodeSpec{{Name: "gotest", Networks: []string{"lab"}}},
 	}
+}
+
+// ListLabTaggedPackages expands go package patterns, as seen for this
+// machine, to the packages that have test files behind the lab build tag:
+// lab tests, which start labs from the host and need Docker there, not in
+// a node.
+func ListLabTaggedPackages(ctx context.Context, root string, patterns ...string) ([]GoPackage, error) {
+	untagged, err := listTestFiles(ctx, root, nil, patterns)
+	if err != nil {
+		return nil, err
+	}
+	tagged, err := listTestFiles(ctx, root, []string{"-tags=lab"}, patterns)
+	if err != nil {
+		return nil, err
+	}
+	var out []GoPackage
+	// Names, not counts: a !lab test file can pair with a lab one.
+	for _, p := range tagged {
+		plain := untagged[p.ImportPath].testFiles
+		if slices.ContainsFunc(p.testFiles, func(f string) bool { return !slices.Contains(plain, f) }) {
+			out = append(out, p.GoPackage)
+		}
+	}
+	slices.SortFunc(out, func(a, b GoPackage) int { return strings.Compare(a.ImportPath, b.ImportPath) })
+	return out, nil
+}
+
+type listedPackage struct {
+	GoPackage
+	testFiles []string
+}
+
+func listTestFiles(ctx context.Context, root string, flags, patterns []string) (map[string]listedPackage, error) {
+	args := append(append([]string{"-C", root, "list", "-json=ImportPath,Dir,TestGoFiles,XTestGoFiles"}, flags...), patterns...)
+	res, err := run(ctx, nil, nil, "go", args...)
+	if err != nil {
+		return nil, fmt.Errorf("lab: %w", err)
+	}
+	out := map[string]listedPackage{}
+	dec := json.NewDecoder(strings.NewReader(res.Stdout))
+	for dec.More() {
+		var p struct {
+			ImportPath                string
+			Dir                       string
+			TestGoFiles, XTestGoFiles []string
+		}
+		if err := dec.Decode(&p); err != nil {
+			return nil, err
+		}
+		rel, err := filepath.Rel(root, p.Dir)
+		if err != nil {
+			return nil, err
+		}
+		out[p.ImportPath] = listedPackage{
+			GoPackage: GoPackage{ImportPath: p.ImportPath, Dir: filepath.ToSlash(rel)},
+			testFiles: slices.Concat(p.TestGoFiles, p.XTestGoFiles),
+		}
+	}
+	return out, nil
+}
+
+// DefaultLabTestTimeout bounds a package's lab tests (GoTestLabTagged)
+// unless the caller passes its own -test.timeout; it matches make lab-test's
+// LAB_TIMEOUT.
+const DefaultLabTestTimeout = "20m"
+
+// labTestWaitDelay bounds how long GoTestLabTagged waits for the output
+// pipe to close once its go test has exited or been killed.
+const labTestWaitDelay = 10 * time.Second
+
+// GoTestLabTagged runs a package's tests on this machine with the lab build
+// tag, as make lab-test runs ./lab/...: its lab tests start their own labs
+// and run in-node tests there, and its tests without the tag run too. args
+// are test binary flags (-test.v, -test.run, ...); env (NAME=value) is
+// added to the environment. Output is streamed to w; the error is non-nil
+// when the tests fail. Cancelling ctx kills go test and every process it
+// started; the labs its tests started stay up (make lab-down removes them).
+func GoTestLabTagged(ctx context.Context, root string, pkg GoPackage, w io.Writer, env []string, args ...string) (GoTestResult, error) {
+	if !slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(strings.TrimLeft(a, "-"), "test.timeout") }) {
+		args = append([]string{"-test.timeout=" + DefaultLabTestTimeout}, args...)
+	}
+	// -count=1 before the package: a later -test.count from args wins, and
+	// either way the result is never served from the test cache.
+	cmd := exec.CommandContext(ctx, "go", append([]string{"-C", root, "test", "-tags=lab", "-count=1", "./" + pkg.Dir}, args...)...)
+	cmd.Env = append(os.Environ(), env...)
+	killGroupOnCancel(cmd)
+	// A process that left the group may still hold the output pipe.
+	cmd.WaitDelay = labTestWaitDelay
+	var out syncBuffer
+	cmd.Stdout = io.MultiWriter(w, &out)
+	cmd.Stderr = cmd.Stdout
+	err := cmd.Run()
+	res := GoTestResult{ImportPath: pkg.ImportPath, Failed: err != nil, Tests: TallyTests([]byte(out.String()))}
+	if err != nil {
+		return res, fmt.Errorf("lab: lab tests in %s: %w", pkg.ImportPath, err)
+	}
+	return res, nil
+}
+
+// TestTally counts a verbose (-test.v) test run's top-level tests by
+// outcome. Subtests, and test output nested in a lab test's log (indented),
+// don't count.
+type TestTally struct {
+	Passed, Failed, Skipped int
+}
+
+// TallyTests tallies the "--- PASS/FAIL/SKIP: " lines that start a line in
+// a verbose test run's output.
+func TallyTests(out []byte) TestTally {
+	var t TestTally
+	for line := range strings.Lines(string(out)) {
+		switch {
+		case strings.HasPrefix(line, "--- PASS: "):
+			t.Passed++
+		case strings.HasPrefix(line, "--- FAIL: "):
+			t.Failed++
+		case strings.HasPrefix(line, "--- SKIP: "):
+			t.Skipped++
+		}
+	}
+	return t
+}
+
+// Ran is how many tests ran, skipped ones included.
+func (t TestTally) Ran() int { return t.Passed + t.Failed + t.Skipped }
+
+// OnlySkipped returns, sorted, the packages in which at least one test ran
+// and every test that ran, over all of a package's results, skipped.
+func OnlySkipped(results []GoTestResult) []string {
+	byPkg := map[string]TestTally{}
+	for _, r := range results {
+		t := byPkg[r.ImportPath]
+		t.Passed += r.Tests.Passed
+		t.Failed += r.Tests.Failed
+		t.Skipped += r.Tests.Skipped
+		byPkg[r.ImportPath] = t
+	}
+	var out []string
+	for pkg, t := range byPkg {
+		if t.Skipped > 0 && t.Passed+t.Failed == 0 {
+			out = append(out, pkg)
+		}
+	}
+	slices.Sort(out)
+	return out
 }

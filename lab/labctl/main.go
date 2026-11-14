@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -21,14 +22,20 @@ import (
 const usage = `usage: labctl <command>
 
   up                                  start the standard topology for this checkout
-  down [-tests | -stale]              remove this checkout's labs and ended runs' binaries (-tests:
-                                      only the labs tests started; -stale: instead, every lab whose
-                                      checkout is gone, and no binaries)
-  gotest [-v] [-run re] [-count n] [-timeout d] [-p n] [-perf] pkgs...
+  down [-tests | -run id | -stale]    remove this checkout's labs and ended runs' binaries (-tests:
+                                      only the labs tests started; -run: only those the run id
+                                      started; -stale: instead, every lab whose checkout is gone,
+                                      and no binaries)
+  gotest [-v] [-run re] [-count n] [-timeout d] [-p n] [-perf] [-tagged] [-fail-skipped] pkgs...
                                       run each package's tests in a fresh lab node with THINKPOL_LAB=1
                                       (-count, -timeout: the test binary's; repeat runs for stability)
                                       (-perf: alone on the host, with THINKPOL_LAB_PERF=1: make lab-perf)
+                                      (-tagged: then run packages with lab-tagged tests on the host,
+                                      go test -tags lab, as make lab-test's lab phase does)
+                                      (-fail-skipped: implies -v; fail a package whose tests all
+                                      skipped, and a run in which no test ran: make lab-gotest)
   project                             print this checkout's project prefix
+  run-id                              print a fresh run id, for ` + lab.RunEnv + `
 `
 
 func main() {
@@ -66,34 +73,61 @@ func run(ctx context.Context, args []string) error {
 		}
 		fmt.Println(checkout)
 		return nil
+	case "run-id":
+		fmt.Println(lab.NewRunID())
+		return nil
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 }
 
-// down removes this checkout's labs (or only its tests', or every stale
-// one) and prints what it removed.
+// down removes this checkout's labs (or only its tests', or one run's, or
+// every stale one) and prints what it removed.
 func down(ctx context.Context, root string, args []string) error {
 	fs := flag.NewFlagSet("down", flag.ContinueOnError)
 	onlyTests := fs.Bool("tests", false, "only remove labs started by tests")
+	run := fs.String("run", "", "only remove labs the run with this id started ("+lab.RunEnv+")")
 	stale := fs.Bool("stale", false, "remove every lab whose checkout no longer exists")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	// Parsing stops at the first argument that isn't a flag: "down r1 -run
+	// r1" would leave -run unseen and remove the whole checkout's labs.
+	if fs.NArg() > 0 {
+		fmt.Fprint(os.Stderr, usage)
+		return fmt.Errorf("down: unexpected argument %q", fs.Arg(0))
+	}
+	// -run given at all means one run's labs, even with an empty or invalid
+	// id (an unset variable): never the whole checkout's.
+	runGiven := false
+	fs.Visit(func(f *flag.Flag) { runGiven = runGiven || f.Name == "run" })
+	if n := btoi(*onlyTests) + btoi(runGiven) + btoi(*stale); n > 1 {
+		return errors.New("down: -tests, -run and -stale don't combine")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	var removed []string
 	var err error
-	if *stale {
+	switch {
+	case *stale:
 		removed, err = lab.DownStale(ctx)
-	} else {
+	case runGiven:
+		removed, err = lab.DownRun(ctx, root, *run)
+	default:
 		removed, err = lab.DownCheckout(ctx, root, *onlyTests)
 	}
 	for _, p := range removed {
 		fmt.Println("removed", p)
 	}
 	return err
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // runGotest parses gotest's flags into the test binary's, and runs it.
@@ -103,10 +137,12 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 	fs := flag.NewFlagSet("gotest", flag.ContinueOnError)
 	runRe := fs.String("run", "", "run only tests matching the regexp")
 	count := fs.Int("count", 0, "run each test n times (the test binary's -test.count)")
-	timeout := fs.String("timeout", "", "the test binary's -test.timeout (default "+lab.DefaultTestTimeout+")")
+	timeout := fs.String("timeout", "", "the test binary's -test.timeout (default "+lab.DefaultTestTimeout+" in a node, "+lab.DefaultLabTestTimeout+" on the host with -tagged)")
 	verbose := fs.Bool("v", false, "verbose test output")
 	parallel := fs.Int("p", 4, "packages tested at once")
 	perf := fs.Bool("perf", false, "a perf run: wait until no other lab runs, keep others from starting, set "+lab.PerfEnv+"=1")
+	tagged := fs.Bool("tagged", false, "also run packages with lab-tagged tests on the host (go test -tags lab)")
+	failSkipped := fs.Bool("fail-skipped", false, "fail a package whose tests all skipped, and a run in which no test ran (implies -v)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -123,7 +159,7 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 		env = append(env, lab.PerfEnv+"=1")
 	}
 	var testArgs []string
-	if *verbose {
+	if *verbose || *failSkipped {
 		testArgs = append(testArgs, "-test.v")
 	}
 	if *runRe != "" {
@@ -135,7 +171,7 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 	if *timeout != "" {
 		testArgs = append(testArgs, "-test.timeout="+*timeout)
 	}
-	return gotest(ctx, root, *parallel, env, testArgs, fs.Args())
+	return gotest(ctx, root, gotestOptions{parallel: *parallel, tagged: *tagged, failSkipped: *failSkipped}, env, testArgs, fs.Args())
 }
 
 func up(ctx context.Context, root string) error {
@@ -170,7 +206,12 @@ func up(ctx context.Context, root string) error {
 	return nil
 }
 
-func gotest(ctx context.Context, root string, parallel int, env, args, patterns []string) error {
+type gotestOptions struct {
+	parallel            int
+	tagged, failSkipped bool
+}
+
+func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patterns []string) error {
 	if len(patterns) == 0 {
 		return errors.New("gotest: no packages")
 	}
@@ -178,16 +219,64 @@ func gotest(ctx context.Context, root string, parallel int, env, args, patterns 
 	if err != nil {
 		return err
 	}
-	if len(pkgs) == 0 {
+	var tagged []lab.GoPackage
+	if opt.tagged {
+		if tagged, err = lab.ListLabTaggedPackages(ctx, root, patterns...); err != nil {
+			return err
+		}
+	}
+	if len(pkgs)+len(tagged) == 0 {
+		if opt.failSkipped {
+			return errors.New("gotest: no packages with tests")
+		}
 		fmt.Println("gotest: no packages with tests")
 		return nil
 	}
-	failed, err := lab.GoTestEach(ctx, root, pkgs, parallel, os.Stdout, env, args...)
-	if err != nil {
-		return err
+	var results []lab.GoTestResult
+	if len(pkgs) > 0 {
+		if results, err = lab.GoTestEach(ctx, root, pkgs, opt.parallel, os.Stdout, env, args...); err != nil {
+			return err
+		}
 	}
+	for _, pkg := range tagged {
+		fmt.Printf("=== lab gotest -tags lab (on the host) %s\n", pkg.ImportPath)
+		res, err := lab.GoTestLabTagged(ctx, root, pkg, os.Stdout, env, args...)
+		if err != nil {
+			fmt.Println(err)
+		}
+		results = append(results, res)
+	}
+	return gotestVerdict(results, opt.failSkipped)
+}
+
+// gotestVerdict is the run's outcome: the packages that failed and, with
+// failSkipped, those whose tests all skipped; a run whose test binaries
+// were not verbose has nothing to count, so failSkipped needs -test.v.
+func gotestVerdict(results []lab.GoTestResult, failSkipped bool) error {
+	var failed []string
+	ran, pkgs := 0, map[string]bool{}
+	for _, r := range results {
+		pkgs[r.ImportPath] = true
+		ran += r.Tests.Ran()
+		if r.Failed && !slices.Contains(failed, r.ImportPath) {
+			failed = append(failed, r.ImportPath)
+		}
+	}
+	slices.Sort(failed)
+	var errs []error
 	if len(failed) > 0 {
-		return fmt.Errorf("gotest: failed: %s", strings.Join(failed, " "))
+		errs = append(errs, fmt.Errorf("gotest: failed: %s", strings.Join(failed, " ")))
+	}
+	if failSkipped {
+		if skipped := lab.OnlySkipped(results); len(skipped) > 0 {
+			errs = append(errs, fmt.Errorf("gotest: every test skipped in: %s", strings.Join(skipped, " ")))
+		}
+		if ran == 0 {
+			errs = append(errs, errors.New("gotest: no test ran"))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
 	}
 	fmt.Printf("gotest: ok, %d packages\n", len(pkgs))
 	return nil

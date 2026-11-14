@@ -30,15 +30,27 @@ type mapFollower struct {
 	// map has no section for this node; <removedMsg>", said once per
 	// removal, about what stopping means here.
 	removedMsg string
+
+	// device is a follower in device mode, which never runs a server's
+	// section (PRD A4): mismatch is set while the section held is one,
+	// and the node runs nothing of the map, as while removed.
+	device   bool
+	mismatch bool
 }
+
+// modeMismatchMsg is what a device-mode node says when the map makes it a
+// server: a server box whose node file lost its mode is left alone.
+const modeMismatchMsg = `the map makes this node a server, but it runs in device mode, which runs no server: ` +
+	`it carries nothing and leaves the host's network alone; set "mode": "server" in node.json (or -mode server) and restart`
 
 // take takes a newer map if it is one (valid, signed by the space,
 // newer), and reports whether it did; removed when that map removes the
 // node from its space (not when it was out already), back when it has the
 // node's section again after a removal: the caller says so (sayBack) once
 // it knows what the node is back as. A taken map without a section for
-// the node keeps the node's last section; a taken section logs a kind
-// change first, against the last one held.
+// the node keeps the node's last section; a taken section sets mismatch
+// (checkKind), and on a server logs a kind change against the last one
+// held.
 func (f *mapFollower) take(envelope []byte) (taken, removed, back bool) {
 	m, err := f.cur.Next(envelope)
 	if errors.Is(err, netmap.ErrNotNewer) {
@@ -61,15 +73,32 @@ func (f *mapFollower) take(envelope []byte) (taken, removed, back bool) {
 		f.refused()
 		return false, false, false
 	}
-	// A kind held is the running node's: it can't change (it restarts
-	// to). Kind 0 is no kind held yet, a follower that starts while the
-	// node is out of its space.
-	if f.section.Node.Kind != 0 && section.Node.Kind != f.section.Node.Kind {
-		f.log.Warn("the map changes this node's kind; restart the node to change its mode", "kind", section.Node.Kind)
+	// The mode never follows the kind: a device's mismatch says what a
+	// change means there. Kind 0 is no kind held yet, a follower that
+	// starts while the node is out of its space.
+	if !f.device && f.section.Node.Kind != 0 && section.Node.Kind != f.section.Node.Kind {
+		f.log.Warn("the map changes this node's kind; the node's mode is its own (-mode, node.json) and doesn't follow it", "kind", section.Node.Kind)
 	}
 	back = f.removed
 	f.cur, f.section, f.removed = m, section, false
+	f.checkKind()
 	return true, false, back
+}
+
+// out is whether the node runs nothing of the map: removed from its space,
+// or a server's section in device mode.
+func (f *mapFollower) out() bool { return f.removed || f.mismatch }
+
+// checkKind sets mismatch from the section held, and says when it changes.
+func (f *mapFollower) checkKind() {
+	was := f.mismatch
+	f.mismatch = f.device && f.section.Node.Kind == netmap.NodeServer
+	switch {
+	case f.mismatch && !was:
+		f.log.Error(modeMismatchMsg, "version", f.cur.Header().Version)
+	case was && !f.mismatch:
+		f.log.Info("the map makes this node a device again", "version", f.cur.Header().Version)
+	}
 }
 
 // refused counts a map not taken in the report.
@@ -90,7 +119,7 @@ func (f *mapFollower) markRemoved(m *netmap.Map) (now bool) {
 	if f.removed {
 		return false
 	}
-	f.removed = true
+	f.removed, f.mismatch = true, false
 	f.log.Warn("removed from space: the map has no section for this node; "+f.removedMsg,
 		"version", m.Header().Version)
 	return true

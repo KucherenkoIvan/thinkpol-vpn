@@ -44,8 +44,11 @@
 // follows the dialer (datagram transports without a handshake). When the
 // table changes, links whose credential is gone are closed ([ErrRevoked]);
 // links whose credential stays pick up their new settings, or close with
-// [ErrSettingsRefused] if the transport refuses them. Accept may
-// return a link that is already closed. Closing a listener closes every link
+// [ErrSettingsRefused] if the transport refuses them. A listener may take
+// a change in the background: until it has, a credential the change added
+// fails authentication like any other (its dial may fail, or get a link
+// that is never accepted), so a dialer admitted by a new map dials again.
+// Accept may return a link that is already closed. Closing a listener closes every link
 // it accepted; a dialer's link either carries on with a listener restarted
 // at the same endpoint or closes, so the layer above redials.
 //
@@ -69,8 +72,9 @@
 // Endpoints and listener addresses in the map are IP literals: the
 // controller resolves names, and nodes never ask DNS at dial time, past
 // the tunnel. Transports may rely on clocks: nodes' clocks must agree
-// within five minutes (udp drops datagrams sealed further than that from
-// its own clock).
+// within five minutes ([MaxClockSkew]), and a transport that seals a send
+// time checks it with [FreshUnix] (udp drops datagrams sealed further than
+// that from its own clock), or with [FreshWithin] for a narrower window.
 //
 // # Traffic shape
 //
@@ -118,27 +122,41 @@
 // [SendStats] count what shaping costs on the wire, the overhead the lab
 // weighs against what shaping hides. udp implements padding and refuses
 // the rest; the lab measures how much shaping is enough per transport and
-// tunes the defaults, which are no shaping until it says otherwise.
+// tunes the defaults, which are no shaping until it says otherwise. It
+// has for reality: without padding of its own, a link pads every record
+// to at least 512 bytes (package reality), so PadNone can't be asked for
+// there; what that floor still shows is RESIDUAL-RISKS.md RR58.
 //
 // # Shared listeners
 //
 // On a server node the supervisor owns the public address for every space
-// (docs/design/server-agent.md "Server agent: one worker per space"). A transport that can
-// sit behind it gives it a router ([PacketRouter], [StreamRouter]), which
-// authenticates each datagram or the start of each connection and says
-// which space's worker it belongs to. A [PacketRoutable] datagram
-// transport opens the public socket for the supervisor (ListenPacket) and
+// (docs/design/server-agent.md "Server agent: one worker per space"). A
+// transport that can sit behind it gives it a router ([PacketRouter],
+// [StreamRouter]), the state shared by all its listeners (the merged
+// table, replay memory), with which each datagram or the start of each
+// connection is authenticated and given to its space's worker. A
+// [PacketRoutable] datagram transport opens the public socket for the
+// supervisor (ListenPacket), its router decides each datagram, and it
 // listens, in the worker, on what the supervisor forwards
-// (ListenForwarded); a [StreamRoutable] stream transport opens the public
-// listener (ListenStream) and gives the worker a [HandoffListener] for the
-// connections passed to it.
+// (ListenForwarded). A [StreamRoutable] stream transport opens the public
+// listener bound to its router (ListenStream, a [StreamListener] whose
+// handoff settings go to the workers as they are), which decides each
+// connection (RouteStream, a [StreamVerdict]), and gives the worker a
+// [HandoffListener] for the connections passed to it ([StreamHandoff]:
+// the connection, what the router read, and a connection the router
+// opened for it, reality's target). A stream listener turns away what it
+// doesn't hand over itself, always to its transport's own camouflage
+// (reality splices to its target), so the timing a prober meets is the
+// transport's; it tells the supervisor when a connection needs no more
+// routing work, only its dialer's bytes, so the supervisor's bound on
+// routing work isn't held by connections that only wait.
 //
-// # Stream transports (planned)
+// # Stream transports
 //
-// No stream transport exists yet; what follows is the design the port's
-// stream side ([StreamRoutable], [StreamRouter], [HandoffListener]) is
-// shaped for, and what TP-087 (`reality`, M2) and TP-028 (`tls`, after the
-// MVP) build to.
+// `reality` (package reality, TP-087) is the first stream transport, and
+// sits behind a server node's shared listener (TP-201). `tls` (TP-028)
+// comes after the MVP. What follows is the design the port's stream side
+// ([StreamRoutable], [StreamRouter], [HandoffListener]) is shaped for.
 //
 // `tls` is TLS 1.3 with a browser fingerprint (uTLS), for node-to-node
 // links. The client's auth token rides in the ClientHello, so a server
@@ -161,11 +179,14 @@
 // uTLS. For `tls` the token is an HMAC of the credential and a coarse
 // timestamp, checked by peeking at the ClientHello without terminating
 // TLS, against a replay cache; for `reality` it is the short id and the
-// time sealed to the listener's key, and the connection is handed over
-// once its TLS session is established. An authenticated connection's file
-// descriptor and the bytes already read go to the space's worker (over its
-// Unix socket, package supervisor); with `tls` the worker terminates TLS
-// with its own certificate, self-signed and pinned by the client. Anything
+// time sealed to the listener's key, opened in the supervisor before any
+// TLS is terminated, and the connection is handed over with the
+// connection to the target the supervisor dialled at accept (which has
+// the hello but its last byte); the worker's REALITY server completes the
+// handshake on them. An authenticated connection's file descriptor and
+// the bytes already read go to the space's worker (over its Unix socket,
+// package supervisor); with `tls` the worker terminates TLS with its own
+// certificate, self-signed and pinned by the client. Anything
 // else is proxied as a whole to the camouflage target, so a probe
 // completes a handshake with the real site and sees its certificate.
 //
@@ -203,8 +224,12 @@
 // as a probe proxied by `tls` did; an authenticated session's ServerHello
 // is still ours (REALITY's stack, not the target's), so the first tell
 // remains for a censor that compares members' sessions with the site's;
-// and every failed probe still dials the target, the same upstream tell as
-// `tls`'s proxying. What it removes is a certificate of our own to manage.
-// The lab's prober measures both tells (TP-026, TP-032), for `reality`
-// too, and the matrix shows them.
+// and every connection still dials the target, the same upstream tell as
+// `tls`'s proxying (at accept, authenticated ones too, as REALITY's own
+// server does, so a probe's timing is the target's). Unlike REALITY's own
+// server, which passes a hello on as it reads it, ours writes a hello to
+// the target in at least two writes, Nagle off: all but its last byte, as
+// each read returns it, then that byte once the listener decided. What it removes is a certificate of our own to
+// manage. The lab's prober measures both tells (TP-026, TP-032), for
+// `reality` too, and the matrix shows them.
 package transport

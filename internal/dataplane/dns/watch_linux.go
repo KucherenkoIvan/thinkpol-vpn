@@ -11,9 +11,13 @@ import (
 )
 
 // watchFile signals changes to the file at path: written and closed,
-// created, or renamed into its directory (inotify on the directory). The
-// channel may be nil where that can't be watched; callers poll too.
-func watchFile(path string) (<-chan struct{}, func()) {
+// created, or renamed into its directory (inotify on the directory). A
+// signal is true when every change it stands for was a rename into the
+// path: a file renamed in was complete before it got the name, while one
+// created at the path (IN_CREATE fires at the open) may still be being
+// written. The channel may be nil where that can't be watched; callers
+// poll too.
+func watchFile(path string) (<-chan bool, func()) {
 	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
 		return nil, func() {}
@@ -23,7 +27,7 @@ func watchFile(path string) (<-chan struct{}, func()) {
 		return nil, func() {}
 	}
 	f := os.NewFile(uintptr(fd), "inotify") // non-blocking: Close ends a Read
-	ch := make(chan struct{}, 1)
+	ch := make(chan bool, 1)
 	name := filepath.Base(path)
 	go func() {
 		buf := make([]byte, 64*(unix.SizeofInotifyEvent+unix.NAME_MAX+1))
@@ -36,16 +40,34 @@ func watchFile(path string) (<-chan struct{}, func()) {
 				ev := (*unix.InotifyEvent)(unsafe.Pointer(&buf[off]))
 				nameBytes := buf[off+unix.SizeofInotifyEvent : off+unix.SizeofInotifyEvent+int(ev.Len)]
 				off += unix.SizeofInotifyEvent + int(ev.Len)
-				if string(trimNUL(nameBytes)) == name {
-					select {
-					case ch <- struct{}{}:
-					default:
-					}
+				switch {
+				case ev.Mask&unix.IN_Q_OVERFLOW != 0: // events were lost, a creation among them maybe
+					signal(ch, false)
+				case string(trimNUL(nameBytes)) == name:
+					signal(ch, ev.Mask&unix.IN_MOVED_TO != 0)
 				}
 			}
 		}
 	}()
 	return ch, func() { _ = f.Close() }
+}
+
+// signal sends renamed on ch, or merges it into the signal not yet
+// received: a merged signal is a rename only if every change was. Only
+// this goroutine sends on ch, so once its buffer is emptied the send
+// can't block.
+func signal(ch chan bool, renamed bool) {
+	select {
+	case ch <- renamed:
+		return
+	default:
+	}
+	select {
+	case pending := <-ch:
+		renamed = renamed && pending
+	default:
+	}
+	ch <- renamed
 }
 
 func trimNUL(b []byte) []byte {

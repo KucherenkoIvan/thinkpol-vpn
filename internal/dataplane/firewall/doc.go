@@ -1,9 +1,10 @@
 // Package firewall keeps traffic from leaving around the tunnel where
 // routing can't: the IPv6 leak guard, an adapter for routetable's Guard
 // port that the agent composes with the route table (TP-021: nftables on
-// Linux; TP-078: a pf anchor on macOS) and, later, the kill
-// switch (TP-048: pf, nftables, WFP). Desktop-only: it imports routetable,
-// never the other way round.
+// Linux; TP-078: a pf anchor on macOS), and the kill switch
+// ([KillSwitch], TP-048: nftables on Linux, a pf anchor on macOS; WFP is
+// TP-076's), which the agent applies on its own. Desktop-only: it
+// imports routetable, never the other way round.
 //
 // # The leak guard
 //
@@ -15,24 +16,34 @@
 // enforcement for IPv6, the [routetable.Guard] the agent hands the route
 // table's [routetable.Enforcer]. It refuses IPv6 a process of the device
 // sends out of any interface but the TUN and loopback, except what
-// [routetable.Exempt] lets out, which [routetable.GuardFor] derives from
-// the same Want as the routes: the direct destinations and the links'
-// endpoints (exactly what the route table throws, endpoints as whole
-// addresses), link-local unicast and multicast ([routetable.LinkScoped]),
-// the links' marked sockets ([routetable.Mark]) and the direct DNS
-// upstreams. So whether IPv6 goes into the TUN (an exit with NAT66), meets
-// an unreachable route (an overlay without IPv6) or is refused by an exit
-// without IPv6, the device's own IPv6 leaves a physical interface only to
-// direct destinations and entries, on the link, or from the links' own
-// sockets.
+// [routetable.Exempt] lets out, which the Enforcer picks for the routes
+// in place and the last Want (what [routetable.GuardFor] of both
+// exempts; the routetable doc's "One rule picks the guard"): the direct
+// destinations and the links' endpoints (exactly what the route table
+// throws, endpoints as whole addresses), link-local unicast and
+// multicast ([routetable.LinkScoped]), the links' marked sockets
+// ([routetable.Mark]) and the direct DNS upstreams. So whether IPv6 goes
+// into the TUN (an exit with NAT66), meets an unreachable route (an
+// overlay without IPv6) or is refused by an exit without IPv6, the
+// device's own IPv6 leaves a physical interface only to direct
+// destinations and entries, on the link, or from the links' own sockets.
 //
-// Only IPv6 is the guard's: IPv4's interface-bound sockets still leave by
-// the main table's default route until the kill switch (TP-048), a
-// separate owner with its own table or anchor. The guard is the
+// Only IPv6 is the guard's: IPv4's interface-bound sockets leave by the
+// main table's default route unless the kill switch is in place, a
+// separate owner with its own table or anchor (below). The guard is the
 // connection's, in place while a device is connected, not the kill
-// switch (docs/design/security.md "Kill switch"). Forwarded traffic isn't its business:
-// nothing forwarded is bound to an interface, and routing (rule 5301 on
-// Linux) keeps it in the tunnel.
+// switch (docs/design/security.md "Kill switch"). Forwarded traffic isn't
+// the guard's: nothing forwarded is bound to an interface, and while
+// connected routing (rule 5301 on Linux) sends it into the tunnel. While
+// the tunnel is down (disconnected, after a crash) routing lets what the
+// device routes for others (containers behind NAT, VMs on a NAT network,
+// a hotspot's clients) out direct, and only the kill switch holds it: its
+// forward chain on Linux, its anchor on macOS (pf filters a forwarded
+// packet on its way out too). What is bridged onto the uplink at layer 2
+// (Docker's macvlan and ipvlan, libvirt's macvtap, and without
+// br_netfilter a bridge enslaving the physical interface) is routed by
+// no one here: on Linux it never meets the inet hooks and leaves around
+// the kill switch (RESIDUAL-RISKS.md RR61).
 //
 // When the guard goes in, how it is kept for routes whose re-apply fails,
 // and when it is removed (under the route table's owner lock, also by
@@ -169,12 +180,38 @@
 // in place: only interface-bound IPv6 is unconfined until the hook is
 // there, where waiting to connect would send everything direct.
 //
-// With the hook there, three things still let IPv6 past the anchor, and
+// With the hook there, four things still let IPv6 past the anchor, and
 // while one lasts the guard isn't enforced (`ipv6_guard_not_enforced`,
 // retried):
 //
 //   - a `pass ... quick` above the hook that an outgoing IPv6 packet could
 //     match (not `in` only, not `inet` only): evaluation ends there;
+//   - such a pass inside an anchor the main ruleset calls above the hook
+//     (other VPN and firewall software adds its own, in /etc/pf.conf or at
+//     run time), or any pass in a `quick` anchor (pf stops after one once
+//     a rule in it matched). The guard follows each call an outgoing IPv6
+//     packet could take (not `in` only, not `inet` only), as pfctl lists
+//     it: `pfctl -a <name> -s rules`, a wildcard's children by `pfctl -a
+//     <name> -s Anchors`, down through the anchors those call (a name
+//     relative to the anchor holding the rule, `../` a level up, or
+//     absolute after a `/`), up to 16 pfctl runs; a wildcard stops at the
+//     guard's own anchor, which ends evaluation for every outgoing IPv6
+//     packet that reaches it. An anchor a rule names that doesn't exist
+//     holds nothing, as pf runs it; but one a listing named that reads as
+//     missing is read by another name than pf's (pfctl printing a nested
+//     name otherwise than assumed, TP-096 checks), and counts as a bypass.
+//     An anchor it can't name (an anonymous `anchor { ... }`, which pfctl
+//     is taken to list without a name: unverified, TP-096), a name with a
+//     `*` in it but a trailing `/*` wildcard (pfctl's -a would take a
+//     trailing `*` off and read another anchor), one with a `"` in it
+//     (pfctl prints it as it is, so the name's end can't be found),
+//     ending in white space (which `-s Anchors` can't tell from its
+//     layout) or holding a newline (a listing names its sibling twice:
+//     pf's names are unique), an anchor call with a label (taken as a
+//     name it can't read: whether Apple's pfctl prints one is unverified),
+//     a listing pf refuses or the guard can't read, and more to read than
+//     16 pfctl runs leave it not enforced: what it can't read it can't
+//     clear. An anchor after the hook is never reached, and isn't read;
 //   - an interface pf skips (`set skip on`) but lo0 and the utun, which
 //     the anchor passes anyway: pf evaluates no rule for its packets, and
 //     `-s rules` doesn't show it; `pfctl -s Interfaces -v` lists it as
@@ -185,8 +222,11 @@
 //   - an anchor under com.apple whose name sorts before the guard's
 //     (`pfctl -a com.apple -s Anchors`): pf keeps anchors sorted by path,
 //     so it runs first, and a quick pass in it ends evaluation there. Its
-//     existence counts, not its rules; a stock Mac is expected to have
-//     only Apple's two (TP-096 checks).
+//     existence alone is the bypass (TP-126's decision). Its rules are
+//     walked like any earlier anchor's, within the same 16 runs: what they
+//     hold is reported too and is part of the kill's identity (below), and
+//     one the guard can't read leaves pf unreadable. A stock Mac is
+//     expected to have only Apple's two (TP-096 checks).
 //
 // These are checked last in every apply, after the load and the enable,
 // so what pf does filter stays guarded meanwhile, and in every poll. The
@@ -287,20 +327,33 @@
 // rule. Killing a tunnelled connection's state is harmless the same way:
 // the anchor passes it statelessly.
 //
-// It kills them after a load and after enabling pf (states from before),
-// and after an apply that failed (a quick pass above the hook keeps state
-// by default, and its states outlive it), with one exception: while the
-// same bypasses last (checkBypass's verdict unchanged), the retries don't
-// kill again. What a bypass lets through needs no state, and the anchor
-// lets nothing outgoing make one, so a kill would only take what the
-// bypass makes anew. A change checkBypass's verdict shows (a kind of
-// bypass more or gone, a skipped interface or an earlier anchor more or
-// gone, all gone) kills them, taking what the one gone let be made; a
-// second quick pass above the hook, or an earlier anchor's rules changing
-// under the same name, doesn't change the verdict, and its states live on
-// until the verdict changes, a reload or an enable. A bypass that comes
-// and goes between two polls is seen by no apply, and its states live on
-// (RESIDUAL-RISKS.md RR11).
+// It kills them after a load, after enabling pf (states from before),
+// after pf found off by an apply or a poll (pf passes anything while off,
+// and someone else may turn it back on before the guard does; the poll
+// reads pf's status first, a failing guard's too, whose 5 s retries read
+// it anyway), and
+// after an apply that failed (a quick pass above the hook keeps state by
+// default, and its states outlive it), with one exception: while the
+// same bypasses last, the retries don't kill again. What a bypass lets
+// through needs no state, and the anchor lets nothing outgoing make one,
+// so a kill would only take what the bypass makes anew. "The same" is
+// what the check found and the text of every rule it read up to the hook,
+// each with the anchor calls that led to it and whether a quick anchor
+// holds it, not its error's words: any change to them kills, taking what
+// the one gone let be made: a second quick pass above the hook, an
+// earlier anchor's rules changing under the same name, a call narrowed to
+// an interface or made quick, a block put above a pass. So does a check,
+// an apply's or a poll's, that saw otherwise in between without killing,
+// one that couldn't read pf (it can't tell they are the same), and a main
+// ruleset without the hook, seen by either (pf ran no anchor meanwhile).
+// None found is known, not unknown: a retry after a failure that let
+// nothing past the anchor (pf's status unreadable a while) doesn't kill
+// again. The identity is the rules' text, not what they refer to: a
+// bypass narrowed through a table's contents (`to <t>`, the table
+// flushed) or an interface's addresses changing under the same rules
+// doesn't kill, and its states live on, though the guard keeps saying it
+// isn't enforced. Nor does a bypass that comes and goes between two
+// polls, seen by no check (RESIDUAL-RISKS.md RR11).
 //
 // # macOS: enabling pf by reference
 //
@@ -315,15 +368,38 @@
 // A token `pfctl -E` doesn't print readably is looked up in `pfctl -s
 // References` by that pid; until it is found it is recorded by pid alone,
 // and the apply and the close both fail, so a reference is never held
-// unrecorded or forgotten. A reference is released (`pfctl -X`) only while
+// unrecorded or forgotten. The apply fails last: while pf is on (by that
+// reference or another), it finishes enforcing (the bypass check, the
+// state kill), then reports the unread token, so the apply that turns pf
+// back on after a `pfctl -d` kills what pf passed while off even when the
+// new token can't be read, and a retry while the token stays unread kills
+// only as any other would (above). With pf off, the apply stops at the
+// token, before the check and the kill: they would vouch for states pf
+// goes on passing, and no second reference is taken while the guard
+// can't name the one it holds; pf stays off until `pfctl -s References`
+// names that token or no longer lists its pid, or something else turns
+// pf on (TP-160, RESIDUAL-RISKS.md RR11). A reference is released (`pfctl -X`) only while
 // `pfctl -s References` lists that token as taken by that pid: a token is
 // a kernel address's hash and a pid is reused in time, so a released
 // value can come back as someone else's; both matching is as close as pf
 // lets anyone tell. If the guard finds pf off (someone ran `pfctl -d`), it
-// takes a new reference first, then releases the old one if pf still
-// lists it; if that release fails, the Apply finishes enforcing (the
-// bypass check, the state kill), then says so (the record names the new
-// reference, and the old one is left to pf).
+// takes a new reference first, records it, then releases the old one if
+// pf still lists it; if that release fails, the Apply finishes enforcing
+// (the bypass check, the state kill), then says so, and the old reference
+// stays owed: the next Apply or Close retries it. If the record write
+// fails, the Apply fails and the guard keeps the old reference owed: the
+// Apply whose write succeeds releases it as above, and a Close before
+// that releases it, then the new one (failing, and kept for the next
+// Close in this run, while it can't). The record is replaced whole or
+// not at all, so a failed write leaves it naming the old reference, and
+// the guard never takes it over again as its own. Only this run knows
+// the new reference: after a crash the next start's routetable.Clear
+// releases the old one through the record, and the new one stays with pf
+// unrecorded (as do older owed ones, after more than one failed write).
+// While pf is on, the reference the guard knows is kept without reading
+// whether pf still lists it, by the apply and the poll alike: a `pfctl
+// -d` and someone's `pfctl -e` between two polls leave pf on by theirs
+// alone, the states made meanwhile unkilled (TP-161).
 //
 // `pfctl -s References` is read by the columns its header names: a line's
 // first field is the pid, and the token is the field where the header's
@@ -333,18 +409,26 @@
 // ALTQ chatter on stderr: a listing of none. A listing without the header
 // otherwise, a header with no reference under it, a line out of those
 // columns, one cut short, or that answer with anything else on stderr is
-// one the guard can't read, and a reference not
-// found in it proves nothing: looking a token up by pid and
-// releasing both fail, so the record stays and the next Close (or
-// routetable.Clear's) tries again. pf stays enabled on that reference
-// meanwhile, rather than the guard forgetting a reference pf still holds.
+// one the guard can't read, and a reference not found in it proves
+// nothing: looking a token up by pid and releasing both fail, so the
+// record stays and the next Close (or routetable.Clear's) tries again. pf
+// stays enabled on that reference meanwhile, rather than the guard
+// forgetting a reference pf still holds.
 //
 // # macOS: polling
 //
-// pf has no event stream, so [IPv6Guard.Watch] polls every 10 s: the hook,
-// what bypasses it (the skipped interfaces, the anchors under com.apple),
-// the anchor's rules and table, and pf enabled (six pfctl runs, each
-// bounded at 15 s), and whether its last apply failed, so a retry is due.
+// pf has no event stream, so [IPv6Guard.Watch] polls every 10 s: pf
+// enabled, then the hook, what bypasses it (the skipped interfaces, the
+// anchors under com.apple) and the anchor's rules and table (six pfctl
+// runs, each bounded at 15 s), and whether its last apply failed, so a
+// retry is due. pf found off ends the poll; so does a failed apply, after
+// pf's status alone (one run), which is read first so that pf seen off
+// marks the states for killing whatever else is wrong.
+// A main ruleset that calls anchors above the hook, or an anchor under
+// com.apple before the guard's, costs one more run per anchor read (and
+// per wildcard's listing), up to 16 more; a stock Mac's costs none. The
+// poll holds the guard's lock throughout, so at worst (22 runs, each
+// hung until its 15 s bound) an Apply waits about 5.5 minutes behind it.
 // The Enforcer then puts back what changed: `pfctl -d`, a flush, an entry
 // added, a replaced main ruleset that still has the hook are undone within
 // about 10 s, not a second as on Linux; a bypass is reported within as
@@ -371,23 +455,26 @@
 // # macOS: reading it back
 //
 // [InspectIPv6Guard] reads the guard as pf holds it, for diagnostics,
-// running listings only (`-s ...`, a table's `-T show`; never a load,
-// -E, -X, -F, -k, -d or -z) and opening the record's directory without
-// making it: the anchor's rules with their counters (`-s rules -v`: each
-// rule's line, its "[ Evaluations: ... Packets: ... Bytes: ... States:
-// ... ]" line, and the optional "[ Inserted: ... ]" line, with or without
-// "State Creations"), the exempt table, `-s info`'s Status line, and what
-// the guard's check reads (readBypass, shared with checkBypass): its
-// verdict on the main ruleset with the lines up to the hook as evidence,
-// every name pf skips, the anchors before the guard's. Then the record's
+// running listings only (`-s ...`, a table's `-T show`; never a load, -E,
+// -X, -F, -k, -d or -z) and opening the record's directory without making
+// it: the anchor's rules with their counters (`-s rules -v`: each rule's
+// line, its "[ Evaluations: ... Packets: ... Bytes: ... States: ... ]"
+// line, and the optional "[ Inserted: ... ]" line, with or without "State
+// Creations"), the exempt table, `-s info`'s Status line, and what the
+// guard's check reads (readBypass, shared with checkBypass): its verdict on
+// the main ruleset with the lines up to the hook as evidence, every name pf
+// skips, the anchors before the guard's. Not what the anchors above the
+// hook hold (the main ruleset's lines name them): GuardCheck is the main
+// ruleset's verdict alone, and can say `hooked` while the guard reports a
+// pass in such an anchor (TP-151). Then the record's
 // reference, by its pid, with whether `-s References` lists it as taken by
 // that pid; the token stays in the record. A listing with a line it can't
 // read (no rule, counters out of place, unreadable or past uint64, a rule
 // without counters, a line too long to read; in References, as the guard
-// reads it, above) is unreadable as a whole, naming the line: half a listing
-// could hide the rule that matters. A record of another boot is stale;
-// one that isn't a regular file or can't be parsed is unreadable, said in
-// fixed words (trusteddir's errors never quote a record either). A
+// reads it, above) is unreadable as a whole, naming the line: half a
+// listing could hide the rule that matters. A record of another boot is
+// stale; one that isn't a regular file or can't be parsed is unreadable,
+// said in fixed words (trusteddir's errors never quote a record either). A
 // missing anchor is an empty one, and with no pfctl at all everything is
 // unreadable.
 //
@@ -396,19 +483,23 @@
 // exact lines, "No ALTQ support in kernel" and "ALTQ related functions
 // disabled"; a rule's label saying ALTQ is a rule): a missing anchor's
 // rules, `pfctl: DIOCGETRULES: Invalid argument` ([AnchorMissing]); a
-// missing table, `pfctl: Table does not exist.` (macOS answers it for a
-// missing anchor's table too) or `pfctl: Anchor or Ruleset does not
-// exist.`. Any other failure, an "Invalid argument" of another ioctl
-// included, is an error, never an empty anchor or table. The parsers are
-// tested on listings a Mac printed (testdata/pfctl/recorded-*, sanitized),
-// and on built ones for what no device has printed.
+// missing anchor's children (`-s Anchors`), `Anchor '<name>' not found.`
+// with nothing listed, whatever the exit status (pfctl's source, which
+// exits 0; both unrecorded); a missing table, `pfctl: Table does not
+// exist.` (macOS answers it for a missing anchor's table too) or `pfctl:
+// Anchor or Ruleset does not exist.`. Any other failure, an "Invalid
+// argument" of another ioctl included, is an error, never an empty anchor
+// or table. The parsers are tested on listings a Mac printed
+// (testdata/pfctl/recorded-*, sanitized), and on built ones for what no
+// device has printed.
 //
 // # What the macOS guard doesn't do
 //
 //   - Match MLD's hop limit (above).
-//   - See a quick pass inside an anchor the main ruleset evaluates before
-//     the hook (TP-129). An anchor under com.apple that sorts before the
-//     guard's is seen (above).
+//   - See a `nat pass` (or `binat pass`) that matches outgoing IPv6: pf
+//     passes what it translates without the filter rules, and `-s rules`
+//     doesn't list translation rules (TP-152).
+//   - Show in diagnostics what the anchors above the hook hold (TP-151).
 //   - Undo what lets IPv6 past it (above): it reports it.
 //   - Confine IPv4: that is the kill switch's (TP-048).
 //   - Confine interface-bound IPv6 while the main ruleset has no hook (at
@@ -425,4 +516,162 @@
 // baseline through them, so a restore takes as absence only the answers
 // the guard does (above), and only from a pfctl that exited (not one cut
 // off at its timeout).
+//
+// # The kill switch
+//
+// [KillSwitch] lets nothing out of any interface but loopback except
+// what [KillSwitchRules] allows, both families, a socket bound to an
+// interface or not: the entries and, with allow-LAN, the LAN ([LAN], the
+// agent's definition, kept here: private and link-local unicast,
+// broadcast, multicast of link-local and site-local scope) in Allow;
+// while connected the TUN, the direct destinations (Direct) and, on
+// macOS, DNS to the direct upstreams; on Linux the links' marked
+// sockets; and always DHCP (v4 and v6) and the link's neighbour
+// discovery and MLD. DNS (UDP and TCP ports 53 and 853: plain, over TLS,
+// over QUIC) to NoDNS is refused before Allow is looked at (after the
+// links' marked sockets on Linux): the agent puts the LAN there while
+// down with allow-LAN, on macOS but the entries whose transport is on
+// port 53 or 853 (RESIDUAL-RISKS.md RR62).
+// Everything else is refused (a reset, an ICMP error).
+// What is allowed, and when it is in place, is the agent's choice (the
+// agent package doc, "The kill switch"); the firewall applies it, checks
+// it is whole, and removes it. It is an owner of its own, apart from the
+// guard: the guard is the connection's and goes on a disconnect, the kill
+// switch may stay. Its table or anchor outlives the process on purpose: a
+// crash or a stop leaves it in place, and a fresh kill switch's Close
+// removes whatever a run left.
+//
+// On Linux it is the table `inet thinkpol-killswitch` ([KillSwitchTable]),
+// built, replaced and compared the way the guard's is (one transaction;
+// a re-apply compares flags, both chains, every rule and every set
+// element, and rebuilds what differs):
+//
+//	table inet thinkpol-killswitch {
+//	  set allow4, allow6 { flags interval; elements = <Allow> }
+//	  set direct4, direct6 { flags interval,timeout; timeout 30s; elements = <Direct> }
+//	  set nodns4, nodns6 { flags interval; elements = <NoDNS> }
+//	  chain output { type filter hook output priority 2147483647; policy accept;
+//	    oifname "lo" accept; oifname <TUN> accept (connected); meta mark <Mark> accept
+//	    ip daddr @nodns4, ip6 daddr @nodns6: udp dport { 53, 853 } reject; tcp dport { 53, 853 } reject with tcp reset
+//	    ip daddr @allow4 accept; ip6 daddr @allow6 accept
+//	    ip daddr @direct4 accept; ip6 daddr @direct6 accept
+//	    udp 68 -> 67 accept (IPv4); udp 546 -> 547 to ff02::1:2 or fe80::/10 accept (IPv6)
+//	    neighbour discovery (hop limit 255) and MLD (hop limit 1) accept, as the guard's
+//	    meta l4proto tcp reject with tcp reset; reject with icmpx admin-prohibited
+//	  }
+//	  chain forward { type filter hook forward priority 2147483647; policy accept;
+//	    oifname <TUN> accept; iifname <TUN> accept (connected)
+//	    iifname <bridge> oifname <bridge> accept (each bridge on its own)
+//	    the same DNS refusals as output
+//	    ip daddr @allow4, @direct4 accept; ip6 daddr @allow6, @direct6 accept
+//	    ct direction reply: ip saddr @allow4, @direct4 accept; ip6 saddr @allow6, @direct6 accept
+//	    meta l4proto tcp reject with tcp reset; reject with icmpx admin-prohibited
+//	  }
+//	}
+//
+// Both chains are hooked last, as the guard's; a packet must pass every
+// table's chain at its hook. The forward chain confines what the device
+// routes for others (container bridges, VM NAT, a hotspot), which never
+// meets output: into and out of the TUN, to the allowed and direct
+// destinations, and their replies (by source, in conntrack's reply
+// direction only, so a client can't spoof its way out). With
+// br_netfilter (bridge-nf-call-iptables, set by Docker up to 27 and by
+// Kubernetes) a frame bridged between two ports of one bridge meets the
+// forward hook as well, the bridge its in and out interface. It passes
+// within a bridge on its own: every port a veth or a tap (containers,
+// VMs) and no default or gatewayed route (by RTA_GATEWAY or RTA_VIA) out
+// of it, of either family, in any table, whether the route names the
+// bridge, one of its ports or a device on top of either (br0.100, a VLAN
+// on a port), so it never leads off the machine; a packet routed back
+// out of such a bridge passes too. A bridge with another port (the
+// uplink enslaved, Wi-Fi, a VLAN, a bond, a VXLAN) or a route beyond its
+// link (the host's default route on br0, on a veth uplink enslaved in it
+// as inside a container, or on a VLAN on top of it) passes nothing
+// within it: a VM's frame bridged from its tap to eth0 would otherwise
+// leave for the internet. A unicast route that names no interface (one
+// by a nexthop object, dumped as RTA_NH_ID alone with
+// nexthop_compat_mode=0, which netlink doesn't read) can't be placed:
+// then no bridge passes. What it can't see: a bridge whose veth uplink
+// has no default route yet when listed (DHCP pending) passes until the
+// next Apply after the route appears. There is a rule per such bridge
+// as the namespace has them at the Apply (nftables' inet family has no
+// bridge-port key, and an xt physdev match would leave the table
+// unlistable by nft): a bridge made, or a port or route changed, since
+// counts from the next Apply. When the links or routes can't be listed,
+// the rest goes in with no bridge passing, and Apply fails, wrapping
+// [ErrKillSwitchInPlace], so the agent reports it and tries again. A forward
+// chain, not postrouting: reject is refused at postrouting, and output
+// already holds what the device sends itself. What it refuses, a
+// published container port reached from the LAN without allow-LAN
+// included, is the kill switch working: everything not allowed is
+// refused, whoever routes it. Direct's elements expire [DirectTimeout] after they were put
+// in, and every Apply, a re-apply of what is in place included, puts them
+// in again (flush and add, one transaction): the agent re-applies at
+// every 10 s tick, at most about 15 s apart, so only a dead agent (or a
+// node loop stalled for about 15 s) lets them go, leaving the entries
+// and the LAN. A kernel without nf_tables makes it unsupported
+// ([ErrKillSwitchUnsupported]), by the guard's probe.
+//
+// On macOS it is the anchor `com.apple/001.thinkpol-killswitch`
+// ([KillSwitchAnchor]) under Apple's hook, sorting after the guard's (an
+// anchor before the guard's is a bypass to it), with a table of both
+// families (Allow and Direct together: pf can't expire an entry, so a
+// dead agent's direct destinations stay until the next start narrows
+// them) and one of NoDNS, loaded with its rules in one
+// `pfctl -f - -o none`:
+//
+//	pass out quick on lo0 all no state
+//	pass out quick on <utun> all no state                                             (connected)
+//	block return out quick proto { tcp, udp } from any to <thinkpol_killswitch_nodns> port 53
+//	block return out quick proto { tcp, udp } from any to <thinkpol_killswitch_nodns> port 853
+//	pass out quick from any to <thinkpol_killswitch> no state
+//	pass out quick proto { tcp, udp } from any to <upstream> port <its port> no state (each upstream, connected)
+//	pass out quick inet proto udp from any port 68 to any port 67 no state
+//	pass out quick inet6 proto udp from any port 546 to { ff02::1:2, fe80::/10 } port 547 no state
+//	pass out quick inet6 proto ipv6-icmp all icmp6-type { 133, 134, 135, 136, 137 } no state
+//	pass out quick inet6 proto ipv6-icmp from any to ff00::/8 icmp6-type { 130, 131, 132, 143 } no state
+//	block return out quick all
+//
+// pf can't match a hop limit: neighbour discovery passes by its ICMPv6
+// type to any destination, MLD only to multicast. Every Apply checks the
+// main ruleset has the hook (without it: an ordinary failure, retried;
+// a main ruleset flushed, or replaced by a pf.conf without the hook,
+// leaves the anchor unevaluated until someone puts the hook back, which
+// the kill switch doesn't), reads the anchor back (the rules checked for
+// their words, as the guard's, the tables entry for entry) and reloads
+// what differs (a load pf took is enabled even when its read-back fails:
+// with pf off, its rules would be evaluated not at all; Apply then fails
+// wrapping [ErrKillSwitchInPlace], and, loading again at each Apply,
+// kills states again only for a text it hasn't killed for), holds pf
+// on by a reference of its own (`pfctl -E`, recorded in
+// pf-killswitch.token next to the guard's record, released by Close
+// under the guard's rules: the reference machinery is shared), and after
+// a load or pf found off kills the states, of either family, whose other
+// end isn't in its table. It doesn't look for what passes before its
+// anchor (RESIDUAL-RISKS.md RR57): while the guard is in place, its quick
+// passes decide IPv6 first, and what they pass is what the connected
+// shape passes, but link-local unicast and multicast, which the guard
+// passes whole. An interface pf skips is filtered by no rule: lo0 costs
+// nothing, any other carries everything past the kill switch, and pfctl
+// never showed the skip on a device (TP-143), so it isn't read. With no
+// pfctl at all it is unsupported. The device checks are in TP-048's Notes.
+//
+// # The kill switch: reading it back
+//
+// [InspectKillSwitch] reads the kill switch as the host holds it, for
+// diagnostics, whether or not one runs (a crashed or stopped run's
+// shows), in the guard's readers' terms ([KillSwitchReport]). On Linux:
+// the table's flags, both chains as hooked, every rule rendered as the
+// guard's are (a conntrack key too: `ct direction reply`) with its
+// counter's values, and each set by name with its size, the intervals it
+// holds (a direct set's expired ones gone). On macOS, listings only (`-s
+// rules -v`, `-T show`, `-s info`, `-s References`) and the record read
+// without making its directory: the anchor's rules with their counters,
+// each table's size (`-T show`'s lines; a table pf doesn't hold is left
+// out), pf's enabled state, and the kill switch's own `pfctl -E`
+// reference with whether pf lists it as held, the guard's apart. Only
+// the sizes of the sets and tables: their entries are public addresses,
+// and the direct ones may run to thousands. No table, or an anchor
+// listing no rules, is no kill switch, not an unreadable one; a part that
+// can't be read says why, as the guard's report does.
 package firewall

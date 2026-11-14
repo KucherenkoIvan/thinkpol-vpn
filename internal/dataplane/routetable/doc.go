@@ -174,7 +174,18 @@
 // ([netcfg.Survey.Held]): where another VPN has its own split routes, or
 // anyone a route at one of our destinations, ours go more specific
 // instead (halves, and their halves), so applying never conflicts with
-// what is there.
+// what is there. That holds for the routes of a corrupt route record
+// too, which netcfg counts as foreign ([netcfg.Survey.CorruptRecords]): a
+// crashed run's reject and direct routes stay in place until reboot,
+// never removed on a guess; a running owner's (the overlay's, its record
+// corrupted in place) are still its own to remove. The overlay's routes
+// are no host routes, so seen as foreign they count as nothing ahead. The
+// enforcer counts this boot's corrupt records and the routes with
+// thinkpol's flag that no record names ([Status.CorruptRecords],
+// [Status.UnownedRoutes]; health `route_records_corrupt`, degraded, while
+// both are nonzero) and warns of each record, naming it and saying why it
+// is corrupt: once while surveys find it unchanged, again when it comes
+// back after a survey without it, or with a new reason or mtime.
 //
 // # Direct DNS upstreams
 //
@@ -211,13 +222,23 @@
 // a debounce (200 ms) after a burst of events, when a link comes, goes or
 // changes state (a TUN going down takes its IPv4 route along without
 // telling anyone), when an interface's on-link routes or a default route
-// change, when its own routes or rules are removed (on macOS, when any
-// foreign route comes, goes or changes), once after each change of its
-// own, every [Backstop] (a minute) anyway, and every [RetryAfter] (5 s)
-// while that fails. A re-apply that finds everything in place changes
-// nothing. [Status] says when the table isn't enforced (the TUN down
-// included: [ErrorTUNDown]) and the agent's health then says
-// `route_table_not_enforced` (down).
+// change, when its own routes or rules are removed or a rule with its
+// protocol is added (Linux: one beside its own, which the re-apply
+// removes; on macOS, when any foreign route comes, goes or changes),
+// once after each change of its own, every [Backstop] (a minute)
+// anyway, and every [RetryAfter] (5 s) while that fails. While the routes fail, events don't re-apply a
+// debounce later: they wait for the next retry, [RetryAfter] after the
+// last attempt ended (the check after a failed Enforce too). A failing
+// Apply's undo removes rules of its own, itself an event, so retrying on
+// events would retry every debounce. An event that is the fix (the TUN
+// coming up) is taken by that retry, or a debounce after the event if
+// that is later: at most [RetryAfter] after the event, plus what was left
+// of the Apply under way when it came (one that comes during an Apply
+// that fails waits for [RetryAfter] after that Apply ends). A failing
+// guard alone doesn't hold events back. A re-apply that finds everything
+// in place changes nothing. [Status] says when the table isn't enforced
+// (the TUN down included: [ErrorTUNDown]) and the agent's health then
+// says `route_table_not_enforced` (down).
 //
 // # The leak guard
 //
@@ -231,12 +252,48 @@
 //
 // The Enforcer applies the guard after the routes on every Apply and
 // re-apply; applying what is in place again checks it is still whole,
-// and the adapter rebuilds it if anything differs. While a re-apply of
-// the routes fails, the guard stays the one for the routes in place (the
-// last Want that went in): an Apply is all or nothing, so the previous
-// routes stay, and so must their guard. When the guard's own Watch says
-// it may have changed from outside, the Enforcer puts it back alone, a
-// debounce later.
+// and the adapter rebuilds it if anything differs. When the guard's own
+// Watch says it may have changed from outside, the Enforcer puts it back
+// alone, a debounce later.
+//
+// One rule picks the guard, on every Apply, re-apply and repair alike:
+// it is the guard for the routes in place (the last Want that went in)
+// cut to what the last Want's guard exempts too, Direct and Upstreams
+// both (TUN and Mark are the routes in place's). Once the last Want's
+// routes are in, that is its own guard. While they fail to go in, the
+// routes in place stay the previous ones (an Apply is all or nothing),
+// and the guard follows them, but never past the Want that failed. A
+// guard wider than the routes in place is never installed; one narrower
+// can only refuse, never leak, since the device's own IPv6 the routes
+// still send direct leaves through a physical interface, where the guard
+// refuses what it doesn't exempt. So a failed grow keeps the old guard,
+// and a failed shrink narrows it to the new set: the device's IPv6 to
+// the prefixes dropped is refused until an Apply works (where the guard
+// is enforced), while IPv4 to them still goes direct by the old routes
+// (RR14; IPv4 is the kill switch's, TP-048), and so, on Linux, does IPv6
+// the device forwards: the nftables guard hooks only the device's own
+// output. macOS's pf filters forwarded packets on their way out too, so
+// it probably refuses them; that is unverified (TP-096). A change that
+// drops some prefixes and adds others exempts only those it keeps:
+// neither an added one, whose routes aren't in, nor a dropped one, which
+// the rules now tunnel; likewise an upstream. The engine's fallback to
+// nothing direct after a failed shrink narrows the guard the same way, to
+// the endpoints alone, until it is given the new rules' Want (the next
+// step of its change), which widens it to what the old and the new
+// direct set both hold.
+//
+// Until a Want's routes first go in, no guard is applied and
+// [Status.GuardEnforced] stays false: there are no routes to guard yet,
+// and a guard for nothing direct would refuse IPv6 to the links'
+// endpoints too, which macOS, with no socket marks, exempts only by
+// address. After a crash, the crashed run's routes and guard (its
+// nftables table on Linux, its pf anchor on macOS) are still in place
+// then, and may exempt more than the new rules do. They don't outlast a
+// first Enforce that fails: in the agent that fails the start, whose
+// undo closes the Enforcer, and its Close removes the guard and the
+// routes, a crashed run's included, whether or not this Enforcer ever
+// applied them (TP-157). The start is then retried with nothing of ours
+// in place (RR20).
 //
 // The guard has a status of its own ([Status.GuardEnforced],
 // [Status.GuardError]): its failure never fails the routes or an Enforce.
@@ -271,6 +328,9 @@
 //
 // After a crash IPv6 stays unreachable but for direct destinations until
 // the agent starts again, bound sockets included (the guard stays too);
-// IPv4 flows, as with the kill switch off. That is the M1 behaviour; the
-// decided posture is stricter (docs/design/security.md "Kill switch").
+// IPv4 flows, as with the kill switch off. The next start's first Apply
+// that works takes the guard over with the new rules'; one that fails
+// removes it with the routes (the leak guard, above). That is the M1
+// behaviour; the decided posture is stricter (docs/design/security.md
+// "Kill switch").
 package routetable

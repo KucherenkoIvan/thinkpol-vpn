@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net"
 	"net/netip"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,8 @@ type fakeWorker struct {
 	// streams gets the connections handed over, rebuilt from the passed
 	// descriptor as the real worker does.
 	streams chan handedStream
+	// onListeners, if set, is called with each Listeners message sent.
+	onListeners func([]ipc.Listener)
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -73,9 +76,11 @@ type forwardedDatagram struct {
 }
 
 type handedStream struct {
-	listener uint32
-	conn     net.Conn
-	consumed []byte
+	listener   uint32
+	conn       net.Conn
+	consumed   []byte
+	target     net.Conn // nil unless the router handed one over
+	targetRead []byte
 }
 
 func newFakeWorker(s *shared, space transport.SpaceID) *fakeWorker {
@@ -101,7 +106,14 @@ func (w *fakeWorker) TrySendDatagram(h ipc.DatagramHeader, d []byte) error {
 }
 
 func (w *fakeWorker) TrySend(m ipc.Message) error {
-	id, f, consumed, err := ipc.DecodeStream(m)
+	if m.Kind == ipc.KindListeners {
+		ls, err := ipc.DecodeListeners(m)
+		if err == nil && w.onListeners != nil {
+			w.onListeners(ls)
+		}
+		return err
+	}
+	st, f, tf, err := ipc.DecodeStream(m)
 	if err != nil {
 		return err
 	}
@@ -109,7 +121,13 @@ func (w *fakeWorker) TrySend(m ipc.Message) error {
 	if err != nil {
 		return err
 	}
-	w.streams <- handedStream{id, conn, bytes.Clone(consumed)}
+	hs := handedStream{listener: st.Listener, conn: conn, consumed: bytes.Clone(st.Consumed), targetRead: bytes.Clone(st.TargetRead)}
+	if tf != nil {
+		if hs.target, err = net.FileConn(tf); err != nil {
+			return err
+		}
+	}
+	w.streams <- hs
 	return nil
 }
 
@@ -699,13 +717,96 @@ func TestReplaysCostNothing(t *testing.T) {
 	if remotes := (*s.routes.Load())[space].remotesForTest(); len(remotes) != 1 {
 		t.Fatalf("remembered %v, want the first sender only", remotes)
 	}
-	listener := s.ipcListeners()[0].ID
+	listener := s.ipcListeners(space)[0].ID
 	for _, c := range senders[1:] {
 		s.reply(space, ipc.DatagramHeader{Listener: listener, Remote: netip.MustParseAddrPort(c.LocalAddr().String())}, []byte("x"))
 	}
 	if c := s.counters(space); c.RepliesNotAllowed != 2 {
 		t.Fatalf("replies to the replayers: %+v", c)
 	}
+}
+
+// A supervisor restart, which starts the transport's router afresh while
+// a tap's capture is still fresh, doesn't let the capture through: replayed
+// to the new supervisor it reaches no worker, costs its space nothing and
+// gives the worker no address to answer, while the dialer, sending on with
+// the same sender, is forwarded at once (TP-069).
+func TestReplaysAfterARestartCostNothing(t *testing.T) {
+	var ahead atomic.Int64 // the test's clock: real time, moved forward by the restart
+	now := func() time.Time { return time.Now().Add(time.Duration(ahead.Load())) }
+	p := transporttest.SymmetricPeer()
+	space := randomSpace()
+	start := func() (*shared, *meter, *fakeWorker, string) {
+		m := &meter{allow: true, charged: map[transport.SpaceID]int{}}
+		s := newTestShared(t, m, udp.New(udp.Options{Now: now}))
+		address := listenUDP(t, s, nil)
+		s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {udp.Name: {p.PeerLink}}})
+		w := newFakeWorker(s, space)
+		s.attach(space, w.sockets())
+		return s, m, w, address
+	}
+
+	// The dialer sends through a passive tap, which keeps a copy.
+	capture, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = capture.Close() }()
+	client, err := udp.New(udp.Options{Now: now}).Dial(context.Background(), capture.LocalAddr().String(), transport.DialConfig{Credential: p.Credential})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	captureNext := func() []byte {
+		t.Helper()
+		if err := client.WritePacket(make([]byte, 1000)); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 2048)
+		_ = capture.SetReadDeadline(time.Now().Add(wait))
+		n, _, err := capture.ReadFrom(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return buf[:n]
+	}
+	send := func(address string, d []byte) net.Conn {
+		t.Helper()
+		c, err := net.Dial("udp", address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		if _, err := c.Write(d); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+
+	first, _, w, address := start()
+	genuine := captureNext()
+	send(address, genuine)
+	eventually(t, "the genuine datagram forwarded", func() bool { return w.got.Load() == 1 })
+	first.close()
+
+	ahead.Store(int64(time.Second)) // the restart ends in a later second than the capture
+	s, m, w, address := start()
+	replayer := send(address, genuine)
+	eventually(t, "the replay counted", func() bool { return s.counters(space).Stale == 1 })
+	if w.got.Load() != 0 || m.of(space) != 0 {
+		t.Fatalf("forwarded %d, charged %d: want nothing", w.got.Load(), m.of(space))
+	}
+	if remotes := (*s.routes.Load())[space].remotesForTest(); len(remotes) != 0 {
+		t.Fatalf("remembered %v, want no address", remotes)
+	}
+	listener := s.ipcListeners(space)[0].ID
+	s.reply(space, ipc.DatagramHeader{Listener: listener, Remote: netip.MustParseAddrPort(replayer.LocalAddr().String())}, []byte("x"))
+	if c := s.counters(space); c.RepliesNotAllowed != 1 || c.Replies != 0 {
+		t.Fatalf("a reply to the replayer: %+v", c)
+	}
+
+	send(address, captureNext())
+	eventually(t, "the dialer's next datagram forwarded", func() bool { return w.got.Load() == 1 })
 }
 
 // remotesForTest lists the remote ends the space may answer.
@@ -980,11 +1081,11 @@ func TestSetListenersKeepsWhatStays(t *testing.T) {
 	if _, err := s.setListeners(context.Background(), []Listener{keep}); err != nil {
 		t.Fatal(err)
 	}
-	first := s.ipcListeners()
+	first := s.ipcListeners(transport.SpaceID{})
 	if changed, err := s.setListeners(context.Background(), []Listener{keep}); err != nil || changed {
 		t.Fatalf("the same set: changed %v, %v", changed, err)
 	}
-	if again := s.ipcListeners(); len(again) != 1 || again[0] != first[0] {
+	if again := s.ipcListeners(transport.SpaceID{}); len(again) != 1 || !reflect.DeepEqual(again, first) {
 		t.Fatalf("listeners %v, then %v", first, again)
 	}
 	changed, err := s.setListeners(context.Background(), []Listener{keep, {Transport: "carrier-pigeon", Address: "127.0.0.1:0"}})
@@ -994,8 +1095,8 @@ func TestSetListenersKeepsWhatStays(t *testing.T) {
 	if _, err := s.setListeners(context.Background(), []Listener{keep, keep}); err == nil {
 		t.Fatal("a listener listed twice")
 	}
-	if changed, err := s.setListeners(context.Background(), nil); err != nil || !changed || len(s.ipcListeners()) != 0 {
-		t.Fatalf("no listeners: changed %v, %v, %v", changed, err, s.ipcListeners())
+	if changed, err := s.setListeners(context.Background(), nil); err != nil || !changed || len(s.ipcListeners(transport.SpaceID{})) != 0 {
+		t.Fatalf("no listeners: changed %v, %v, %v", changed, err, s.ipcListeners(transport.SpaceID{}))
 	}
 }
 
@@ -1082,8 +1183,17 @@ func (c *closingWorker) Close() error {
 }
 
 // lineTransport is a stream transport for the handoff's tests: a
-// connection starts with its credential and a newline.
-type lineTransport struct{}
+// connection starts with its credential and a newline. With a target, an
+// authenticated connection is handed over with a connection to it, as
+// reality hands over its target, and "early" as read from it. What it
+// turns away goes to camo. With waits, a connection waits on its dialer
+// outside the routing work (RouteStream calls waiting before reading), as
+// reality's does once its mirror is up.
+type lineTransport struct {
+	target string
+	camo   transport.Camouflage
+	waits  bool
+}
 
 func (lineTransport) Name() string                                     { return "line" }
 func (lineTransport) Dialer() transport.Dialer                         { return nil }
@@ -1094,14 +1204,19 @@ func (lineTransport) CheckInbound(transport.PeerLink) error            { return 
 func (lineTransport) Listen(context.Context, transport.ListenConfig, transport.Admission) (transport.Listener, error) {
 	return nil, errors.ErrUnsupported
 }
-func (lineTransport) ListenStream(ctx context.Context, cfg transport.ListenConfig) (net.Listener, error) {
+func (lt lineTransport) ListenStream(ctx context.Context, cfg transport.ListenConfig, r transport.StreamRouter) (transport.StreamListener, error) {
+	lr, ok := r.(lineRouter)
+	if !ok {
+		return nil, fmt.Errorf("a %T", r)
+	}
 	var lc net.ListenConfig
-	return lc.Listen(ctx, "tcp", cfg.Address)
+	ln, err := lc.Listen(ctx, "tcp", cfg.Address)
+	return lineListener{Listener: ln, lt: lt, peers: lr.peers}, err
 }
-func (lineTransport) Handoff(transport.Admission) (transport.HandoffListener, error) {
+func (lineTransport) Handoff(string, []byte, transport.Admission) (transport.HandoffListener, error) {
 	return nil, errors.ErrUnsupported
 }
-func (lineTransport) StreamRouter(peers transport.Peers) transport.StreamRouter {
+func (lt lineTransport) StreamRouter(peers transport.Peers) transport.StreamRouter {
 	return lineRouter{peers}
 }
 
@@ -1109,23 +1224,56 @@ type lineRouter struct{ peers transport.Peers }
 
 func (lineRouter) Rejected() []transport.PeerError { return nil }
 
-func (r lineRouter) RouteStream(conn net.Conn) (transport.Identity, []byte, bool) {
+type lineListener struct {
+	net.Listener
+	lt    lineTransport
+	peers transport.Peers
+}
+
+func (lineListener) HandoffSettings() []byte { return []byte("line settings") }
+func (l lineListener) Camouflage() transport.Camouflage {
+	if l.lt.camo == nil {
+		return transport.Drop{}
+	}
+	return l.lt.camo
+}
+
+func (l lineListener) RouteStream(conn net.Conn, serves func(transport.Identity) bool, waiting func()) (transport.StreamHandoff, transport.StreamVerdict) {
+	if l.lt.waits {
+		waiting()
+	}
 	// Byte by byte: whatever is read is consumed and must be reported.
 	var line []byte
 	b := make([]byte, 1)
 	for len(line) < 64 && !bytes.HasSuffix(line, []byte("\n")) {
 		if _, err := conn.Read(b); err != nil {
-			return transport.Identity{}, line, false
+			l.Camouflage().Stream(conn, line)
+			return transport.StreamHandoff{}, transport.StreamUnknown
 		}
 		line = append(line, b[0])
 	}
-	links, _ := r.peers.Snapshot()
+	links, _ := l.peers.Snapshot()
 	for _, pl := range links {
-		if bytes.Equal(pl.Verifier, bytes.TrimSuffix(line, []byte("\n"))) {
-			return pl.Peer, line, true
+		if !bytes.Equal(pl.Verifier, bytes.TrimSuffix(line, []byte("\n"))) {
+			continue
 		}
+		if !serves(pl.Peer) {
+			l.Camouflage().Stream(conn, line)
+			return transport.StreamHandoff{Peer: pl.Peer}, transport.StreamUnserved
+		}
+		h := transport.StreamHandoff{Peer: pl.Peer, Conn: conn, Consumed: line}
+		if l.lt.target != "" {
+			var err error
+			if h.Target, err = net.Dial("tcp", l.lt.target); err != nil {
+				l.Camouflage().Stream(conn, line)
+				return transport.StreamHandoff{}, transport.StreamUnknown
+			}
+			h.TargetRead = []byte("early")
+		}
+		return h, transport.StreamRouted
 	}
-	return transport.Identity{}, line, false
+	l.Camouflage().Stream(conn, line)
+	return transport.StreamHandoff{}, transport.StreamUnknown
 }
 
 type streamCamouflage struct {
@@ -1138,19 +1286,31 @@ func (c streamCamouflage) Stream(conn net.Conn, consumed []byte) {
 	c.got <- consumed
 }
 
+// lineAddress is the shared's one listener's address.
+func lineAddress(s *shared) string {
+	for _, pl := range *s.byID.Load() {
+		return pl.ln.Addr().String()
+	}
+	return ""
+}
+
 // A stream connection goes, descriptor and consumed bytes, to its space's
-// worker, which talks to the dialer on it; an unauthenticated one goes
-// whole to the camouflage.
+// worker, which talks to the dialer on it, with the target connection its
+// router opened (descriptor and what it read) and the listener's handoff
+// settings; an unauthenticated one goes whole to the listener's
+// camouflage.
 func TestStreamsAreHandedOver(t *testing.T) {
-	s := newTestShared(t, nil, lineTransport{})
-	camo := streamCamouflage{got: make(chan []byte, 4)}
-	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0", Camouflage: camo}}); err != nil {
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
 		t.Fatal(err)
 	}
-	var address string
-	for _, pl := range *s.byID.Load() {
-		address = pl.ln.Addr().String()
+	defer func() { _ = target.Close() }()
+	camo := streamCamouflage{got: make(chan []byte, 4)}
+	s := newTestShared(t, nil, lineTransport{target: target.Addr().String(), camo: camo})
+	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
+		t.Fatal(err)
 	}
+	address := lineAddress(s)
 	a, b := randomSpace(), randomSpace()
 	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{
 		a: {"line": {{Peer: transport.Identity{Node: transport.NodeID{1}}, Verifier: []byte("alpha")}}},
@@ -1177,8 +1337,29 @@ func TestStreamsAreHandedOver(t *testing.T) {
 		t.Fatal("no handoff")
 	}
 	defer func() { _ = hs.conn.Close() }()
-	if string(hs.consumed) != "bravo\n" || hs.listener != s.ipcListeners()[0].ID {
+	listeners := s.ipcListeners(b)
+	if string(hs.consumed) != "bravo\n" || hs.listener != listeners[0].ID {
 		t.Fatalf("handed over listener %d with %q", hs.listener, hs.consumed)
+	}
+	if got := string(listeners[0].Handoff); got != "line settings" {
+		t.Fatalf("the workers are told handoff settings %q", got)
+	}
+	if hs.target == nil || string(hs.targetRead) != "early" {
+		t.Fatalf("handed over target %v with %q read", hs.target, hs.targetRead)
+	}
+	defer func() { _ = hs.target.Close() }()
+	far, err := target.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = far.Close() }()
+	if _, err := hs.target.Write([]byte("to the target")); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 13)
+	_ = far.SetReadDeadline(time.Now().Add(wait))
+	if _, err := io.ReadFull(far, got); err != nil || string(got) != "to the target" {
+		t.Fatalf("the target read %q, %v", got, err)
 	}
 	// The worker reads on where the router stopped, and answers.
 	buf := make([]byte, 5)
@@ -1223,19 +1404,100 @@ func TestStreamsAreHandedOver(t *testing.T) {
 	}
 }
 
-// A listener routes at most so many connections at once; the rest go
-// straight to the camouflage, counted.
-func TestStreamRoutingIsBounded(t *testing.T) {
-	s := newTestShared(t, nil, lineTransport{})
-	s.routingLimit = 2
-	camo := streamCamouflage{got: make(chan []byte, 4)}
-	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0", Camouflage: camo}}); err != nil {
+// A stream listener's handoff settings (reality's private key and
+// target) go only to the workers of spaces whose inbound table has links
+// of its transport, and a space that gains or loses such links is
+// reported, for its worker's Listeners to be sent again. Every listener
+// is described with the address it is bound to.
+func TestAStreamListenersSettingsGoOnlyToSpacesWithItsLinks(t *testing.T) {
+	s := newTestShared(t, nil, lineTransport{}, udp.New(udp.Options{}))
+	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}, {Transport: udp.Name, Address: "127.0.0.1:0"}}); err != nil {
 		t.Fatal(err)
 	}
-	var address string
-	for _, pl := range *s.byID.Load() {
-		address = pl.ln.Addr().String()
+	a, b := randomSpace(), randomSpace()
+	line := transport.PeerLink{Peer: transport.Identity{Node: transport.NodeID{1}}, Verifier: []byte("alpha")}
+	p := transporttest.SymmetricPeer()
+	if changed := s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{a: {"line": {line}}, b: {udp.Name: {p.PeerLink}}}); len(changed) != 0 {
+		t.Fatalf("new spaces reported as changed: %v", changed)
 	}
+	transports := func(space transport.SpaceID) map[string]ipc.Listener {
+		out := map[string]ipc.Listener{}
+		for _, l := range s.ipcListeners(space) {
+			out[l.Transport] = l
+			if ap, err := netip.ParseAddrPort(l.Address); err != nil || ap.Port() == 0 {
+				t.Errorf("%s listener described at %q, not where it is bound", l.Transport, l.Address)
+			}
+		}
+		return out
+	}
+	if got := transports(a); got["line"].Handoff == nil || len(got) != 2 {
+		t.Errorf("space A, with line links, is told %v", got)
+	}
+	if got := transports(b); len(got) != 1 || got[udp.Name].ID == 0 {
+		t.Errorf("space B, without line links, is told %v", got)
+	}
+	changed := s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{a: {"line": {line}}, b: {udp.Name: {p.PeerLink}, "line": {{Peer: transport.Identity{Node: transport.NodeID{2}}, Verifier: []byte("bravo")}}}})
+	if !slices.Equal(changed, []transport.SpaceID{b}) {
+		t.Fatalf("changed %v, want space B", changed)
+	}
+	if got := transports(b); got["line"].Handoff == nil {
+		t.Errorf("space B, given line links, is told %v", got)
+	}
+}
+
+// A running worker whose space gains a stream transport is sent the
+// transport's listener before the space's new links route: a member
+// routed first would reach a worker that doesn't know the listener and
+// be closed.
+func TestASpaceGainingATransportIsToldItsListenerBeforeItsLinksRoute(t *testing.T) {
+	s := newTestShared(t, nil, lineTransport{}, udp.New(udp.Options{}))
+	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}, {Transport: udp.Name, Address: "127.0.0.1:0"}}); err != nil {
+		t.Fatal(err)
+	}
+	a := randomSpace()
+	p := transporttest.SymmetricPeer()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{a: {udp.Name: {p.PeerLink}}})
+	w := newFakeWorker(s, a)
+	var told []string
+	w.onListeners = func(ls []ipc.Listener) {
+		listed := slices.ContainsFunc(ls, func(l ipc.Listener) bool { return l.Transport == "line" })
+		routed, _ := s.table("line").Snapshot() // setSpaces holds s.mu, on this goroutine
+		told = append(told, fmt.Sprintf("line listed %v, %d line links routed", listed, len(routed)))
+	}
+	s.attach(a, w.sockets())
+	line := transport.PeerLink{Peer: transport.Identity{Node: transport.NodeID{1}}, Verifier: []byte("alpha")}
+	changed := s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{a: {udp.Name: {p.PeerLink}, "line": {line}}})
+	if want := []string{"line listed true, 0 line links routed"}; !slices.Equal(told, want) {
+		t.Errorf("the worker was told %q, want %q", told, want)
+	}
+	if !slices.Equal(changed, []transport.SpaceID{a}) {
+		t.Errorf("changed %v, want space A (its session sends the final listing)", changed)
+	}
+}
+
+// A stream listener turns away to its transport's own camouflage:
+// SetListeners refuses one configured with a camouflage of its own.
+func TestAStreamListenerTakesNoCamouflage(t *testing.T) {
+	s := newTestShared(t, nil, lineTransport{})
+	camo := streamCamouflage{got: make(chan []byte, 1)}
+	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0", Camouflage: camo}}); err == nil {
+		t.Fatal("a stream listener with a camouflage was opened")
+	}
+	if len(s.infos()) != 0 {
+		t.Fatalf("listeners %+v", s.infos())
+	}
+}
+
+// A listener has at most so many connections in their routing work at
+// once; the rest go straight to the camouflage, counted.
+func TestStreamRoutingIsBounded(t *testing.T) {
+	camo := streamCamouflage{got: make(chan []byte, 4)}
+	s := newTestShared(t, nil, lineTransport{camo: camo})
+	s.routingLimit = 2
+	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
+		t.Fatal(err)
+	}
+	address := lineAddress(s)
 	for range 3 { // silent: they hold their routing slots
 		c, err := net.Dial("tcp", address)
 		if err != nil {
@@ -1252,6 +1514,51 @@ func TestStreamRoutingIsBounded(t *testing.T) {
 		t.Fatal("the third connection wasn't turned away")
 	}
 	if li := s.infos(); li[0].StreamsOverloaded != 1 {
+		t.Fatalf("listener %+v", li[0])
+	}
+}
+
+// Connections waiting on their dialer's bytes don't hold routing slots:
+// once RouteStream says a connection waits, its slot is free, so idle
+// connections, more than the bound, don't keep a member's from being
+// routed.
+func TestIdleStreamsDontStarveRouting(t *testing.T) {
+	camo := streamCamouflage{got: make(chan []byte, 8)}
+	s := newTestShared(t, nil, lineTransport{camo: camo, waits: true})
+	s.routingLimit = 2
+	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
+		t.Fatal(err)
+	}
+	address := lineAddress(s)
+	a := randomSpace()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{
+		a: {"line": {{Peer: transport.Identity{Node: transport.NodeID{1}}, Verifier: []byte("alpha")}}},
+	})
+	w := newFakeWorker(s, a)
+	s.attach(a, w.sockets())
+	for range 4 { // idle, waiting on their dialers
+		c, err := net.Dial("tcp", address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = c.Close() }()
+	}
+	time.Sleep(quiet) // all four accepted and routing
+	member, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = member.Close() }()
+	if _, err := member.Write([]byte("alpha\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case hs := <-w.streams:
+		_ = hs.conn.Close()
+	case <-time.After(wait):
+		t.Fatal("the member was never handed over")
+	}
+	if li := s.infos(); li[0].StreamsOverloaded != 0 {
 		t.Fatalf("listener %+v", li[0])
 	}
 }

@@ -107,7 +107,8 @@ $(TOOLS_STAMP):
 	touch $@
 
 # The lab (lab/README.md): Docker only, every lab a Compose project of its
-# own, named after this checkout, so several checkouts can run labs at once.
+# own, named after this checkout and the run, so several checkouts, and
+# several runs from one checkout, can run labs at once.
 LABCTL := go run ./lab/labctl
 LAB_TIMEOUT ?= 20m
 # Packages make lab-test runs in nodes at once. Fixed, not scaled by load:
@@ -122,9 +123,13 @@ lab-up: ## start the standard topology for this checkout, for poking around
 	$(LABCTL) up
 
 lab-test: ## lab tests (each starts its own lab) and every package's tests inside a lab node, at once; tears down after
-# Each phase writes its own exit status: sh has no pipefail.
+# Each phase writes its own exit status: sh has no pipefail. Both phases
+# share one run id (THINKPOL_LAB_RUN, in their labs' names), and the
+# clean-up removes that run's labs only: another run's from this checkout
+# (a lab-gotest beside it, another lab-test) stay.
 	@$(LABCTL) down -stale
-	@tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
+	@run=$$($(LABCTL) run-id) || exit 1; export THINKPOL_LAB_RUN=$$run; \
+	tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
 	status=0; \
 	( { go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) ./lab/...; echo $$? > "$$tmp/lab.status"; } 2>&1 | awk '{print "[lab]  " $$0; fflush()}' ) & \
 	( { $(LABCTL) gotest -p $(LAB_P) ./...; echo $$? > "$$tmp/node.status"; } 2>&1 | awk '{print "[node] " $$0; fflush()}' ) & \
@@ -136,7 +141,7 @@ lab-test: ## lab tests (each starts its own lab) and every package's tests insid
 			echo "lab-test: the $$f phase died without a status" >&2; status=1; \
 		fi; \
 	done; \
-	if [ -z "$$THINKPOL_LAB_KEEP" ] && ! $(LABCTL) down -tests; then status=1; fi; \
+	if [ -z "$$THINKPOL_LAB_KEEP" ] && ! $(LABCTL) down -run "$$run"; then status=1; fi; \
 	exit $$status
 
 # Performance gates: tests that check THINKPOL_LAB_PERF and are named
@@ -148,8 +153,9 @@ lab-perf: ## performance gates, alone on the host: waits for every other lab run
 	$(LABCTL) gotest -perf -v -p 1 -run '$(LAB_PERF_RUN)' $(LAB_PERF_PKGS)
 
 lab-gotest: export LAB_RUN = $(RUN)
-lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1 (PKG=./internal/... RUN=regexp COUNT=n)
-	$(LABCTL) gotest -v -run "$$LAB_RUN" $(if $(COUNT),-count $(COUNT) -timeout 60m) $(or $(PKG),./...)
+lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1, its lab-tagged tests on the host; fails if all skip (PKG=./internal/... required, RUN=regexp COUNT=n)
+	$(if $(PKG),,$(error lab-gotest needs PKG, e.g. PKG=./internal/dataplane/netcfg/...; make lab-test runs every package))
+	$(LABCTL) gotest -v -tagged -fail-skipped -run "$$LAB_RUN" $(if $(COUNT),-count $(COUNT) -timeout 60m) $(PKG)
 
 lab-down: ## remove every lab this checkout started
 	$(LABCTL) down

@@ -250,14 +250,24 @@ func (e *env) connect(pl Peer) (client, server *link) {
 
 // connectAdmitted is connect for a peer link a table change has just
 // admitted. Listeners may take the change in the background, and until
-// they have, a dial is camouflaged (and some transports decide that when
-// they dial), so it dials again until a link is accepted, waiting longer
-// each time.
+// they have, a dial is camouflaged: it gets a link that is never accepted,
+// or, where the transport decides when it dials (a stream transport whose
+// camouflage closes the connection mid-handshake), it fails. Either way
+// it dials again until a link is accepted, waiting longer each time.
 func (e *env) connectAdmitted(pl Peer) (client, server *link) {
 	e.t.Helper()
 	deadline := time.Now().Add(wait)
+	dial := func() (transport.Link, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), wait)
+		defer cancel()
+		return e.h.Dialer.Dial(ctx, e.dialTo, e.dialConfig(pl))
+	}
 	for patience := quiet; ; patience *= 2 {
-		client = e.dial(pl)
+		dialed, err := dialPastCamouflage(dial, e.camo, deadline)
+		if err != nil {
+			e.t.Fatalf("dial %s: %v", pl.Peer, err)
+		}
+		client = watch(e.t, dialed)
 		client.write([]byte("hello"))
 		ctx, cancel := context.WithTimeout(context.Background(), min(patience, time.Until(deadline)))
 		l, id, err := e.listener.Accept(ctx)
@@ -274,6 +284,25 @@ func (e *env) connectAdmitted(pl Peer) (client, server *link) {
 			e.t.Fatalf("accept: %v", err)
 		}
 		_ = client.Close()
+	}
+}
+
+// firstRedial is how long dialPastCamouflage waits after the first
+// camouflaged dial; it doubles with each one after.
+const firstRedial = 5 * time.Millisecond
+
+// dialPastCamouflage dials until a dial succeeds or fails on its own. A
+// dial that failed while camo took a connection was refused before the
+// listener had the table admitting it: it dials again, waiting longer
+// each time, until deadline. Any other failure returns at once.
+func dialPastCamouflage(dial func() (transport.Link, error), camo *Recorder, deadline time.Time) (transport.Link, error) {
+	for backoff := firstRedial; ; backoff *= 2 {
+		before := camo.Calls()
+		l, err := dial()
+		if err == nil || camo.Calls() == before || time.Now().After(deadline) {
+			return l, err
+		}
+		time.Sleep(min(backoff, time.Until(deadline)))
 	}
 }
 
@@ -840,19 +869,47 @@ func testListenerRestart(t *testing.T, h Harness) {
 	e := newEnv(t, h, pl)
 	client, _ := e.connect(pl)
 	e.restart()
+	type acceptResult struct {
+		l   transport.Link
+		id  transport.Identity
+		err error
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*wait)
+	defer cancel()
+	accepted := make(chan acceptResult, 1)
+	go func() {
+		l, id, err := e.listener.Accept(ctx)
+		accepted <- acceptResult{l, id, err}
+	}()
 	// The dialer's link carries on with the new listener, or reports closed
-	// so the layer above redials.
-	if err := client.WritePacket([]byte("after restart")); err != nil {
+	// so the layer above redials. A stream link learns that its peer closed
+	// only when it reads the close, so a write just before may succeed and
+	// be lost with the link (delivery is best effort): a link that closes
+	// instead of delivering is redialed too.
+	redial := func(err error) {
 		if !errors.Is(err, net.ErrClosed) {
-			t.Fatalf("write after the listener restarted: %v", err)
+			t.Fatalf("the dialer's link after the listener restarted: %v", err)
 		}
 		client = e.dial(pl)
 		client.write([]byte("after restart"))
 	}
-	server, id := e.accept()
-	if id != pl.Peer {
-		t.Fatalf("accepted %s, want %s", id, pl.Peer)
+	if err := client.WritePacket([]byte("after restart")); err != nil {
+		redial(err)
 	}
+	var r acceptResult
+	select {
+	case r = <-accepted:
+	case err := <-client.err:
+		redial(err)
+		r = <-accepted
+	}
+	if r.err != nil {
+		t.Fatalf("accept: %v", r.err)
+	}
+	if r.id != pl.Peer {
+		t.Fatalf("accepted %s, want %s", r.id, pl.Peer)
+	}
+	server := watch(t, r.l)
 	server.expect([]byte("after restart"))
 	for i := range 5 {
 		p := []byte(fmt.Sprintf("from the new listener %d", i))

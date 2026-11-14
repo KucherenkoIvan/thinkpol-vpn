@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -52,6 +53,9 @@ func TestUnprotectedSortsProblems(t *testing.T) {
 	if Unprotected(errors.Join(nil, nil)) {
 		t.Error("a join of nothing is unprotected")
 	}
+	if Unprotected(errors.Join(stale, fmt.Errorf("%w: named none", ErrNoSystemUpstream))) {
+		t.Error("stale upstreams with no system upstream are unprotected")
+	}
 }
 
 var testSystem = SystemConfig{
@@ -60,6 +64,15 @@ var testSystem = SystemConfig{
 }
 
 const isp = "# from DHCP\nnameserver 192.0.2.53\nnameserver 2001:db8::53\nsearch lan\noptions timeout:1 attempts:2\n"
+
+// manageResolvConf manages the resolv.conf at path with the product's
+// timings but no hold after a take-back: the tests here check what a
+// read tells and reports; the hold is resolvconf_settle_test.go's.
+func manageResolvConf(path, uplink string, c SystemConfig) (*resolvConf, error) {
+	timing := resolvConfTimes
+	timing.hold = 0
+	return setResolvConfTimed(path, uplink, c, timing)
+}
 
 func readString(t *testing.T, path string) string {
 	t.Helper()
@@ -88,7 +101,7 @@ func TestResolvConfIsReplacedAndRestored(t *testing.T) {
 	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, "", testSystem)
+	r, err := manageResolvConf(path, "", testSystem)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +145,7 @@ func TestALeftoverResolvConfKeepsItsOriginal(t *testing.T) {
 	}
 	next := testSystem
 	next.Servers = next.Servers[:1]
-	r, err := setResolvConf(path, "", next)
+	r, err := manageResolvConf(path, "", next)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +170,7 @@ func TestASymlinkedResolvConfComesBackAsTheLink(t *testing.T) {
 	if err := os.Symlink(target, path); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, "", testSystem)
+	r, err := manageResolvConf(path, "", testSystem)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +196,7 @@ func TestAResolvConfRewrittenMeanwhileIsTakenBack(t *testing.T) {
 	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, "", testSystem)
+	r, err := manageResolvConf(path, "", testSystem)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +207,7 @@ func TestAResolvConfRewrittenMeanwhileIsTakenBack(t *testing.T) {
 	r.mu.Unlock()
 	renewed := "nameserver 192.0.2.99\n"
 	writeFileAtomic(t, path, renewed)
-	deadline := time.Now().Add(3 * resolvConfCheck)
+	deadline := time.Now().Add(3 * resolvConfTimes.check)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
 			t.Fatalf("not taken back:\n%s", readString(t, path))
@@ -227,7 +240,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, uplink, testSystem)
+	r, err := manageResolvConf(path, uplink, testSystem)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +256,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 
 	mixed := "nameserver 127.0.0.53\nnameserver 192.0.2.88\n"
 	writeFileAtomic(t, path, mixed)
-	deadline := time.Now().Add(3 * resolvConfCheck)
+	deadline := time.Now().Add(3 * resolvConfTimes.check)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
 			t.Fatalf("not taken back:\n%s", readString(t, path))
@@ -263,7 +276,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 	writeFileAtomic(t, uplink, "nameserver 198.51.100.53\n")
 	stubOnly := "nameserver 127.0.0.53\n"
 	writeFileAtomic(t, path, stubOnly)
-	deadline = time.Now().Add(3 * resolvConfCheck)
+	deadline = time.Now().Add(3 * resolvConfTimes.check)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
 			t.Fatalf("stub-only rewrite not taken back:\n%s", readString(t, path))
@@ -285,7 +298,7 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 	}
 	stubOnlyOther := "nameserver 127.0.0.54\noptions edns0\n"
 	writeFileAtomic(t, path, stubOnlyOther)
-	deadline = time.Now().Add(3 * resolvConfCheck)
+	deadline = time.Now().Add(3 * resolvConfTimes.check)
 	for !slices.Equal(nameservers([]byte(readString(t, path))), testSystem.Servers) {
 		if time.Now().After(deadline) {
 			t.Fatalf("stub-only without uplink not taken back:\n%s", readString(t, path))
@@ -301,6 +314,121 @@ func TestARewrittenResolvConfFiltersStubUpstreams(t *testing.T) {
 	if !slices.Equal(lastUpstreams, wantKept) {
 		t.Errorf("stub-only without uplink: upstreams %v, want previous %v kept", lastUpstreams, wantKept)
 	}
+	// The failed read was on a change, so a read is owed: stale until one
+	// works, and the next tick that reads the uplink tells it, though
+	// resolv.conf hasn't changed since.
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("stub-only without uplink: problem %v, want stale only", p)
+	}
+	writeFileAtomic(t, uplink, "nameserver 203.0.113.53\n")
+	select {
+	case got := <-upstreams:
+		want := []netip.Addr{netip.MustParseAddr("203.0.113.53")}
+		if !slices.Equal(got, want) {
+			t.Errorf("uplink back: upstreams %v, want %v", got, want)
+		}
+	case <-time.After(3 * resolvConfTimes.check):
+		t.Fatal("uplink back: never told the owed read")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("uplink back: problem %v", p)
+	}
+}
+
+// The read owed after a failed change is told as a change's: an uplink
+// that reads but names no server (resolved's header-only file) keeps the
+// previous upstreams and says to set -dns-upstream, as a change straight
+// to it would; only the first read's is told whatever it finds.
+func TestResolvConfAnOwedReadThatNamesNoServerKeepsTheUpstreams(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolv.conf")
+	uplink := filepath.Join(dir, "uplink.conf") // missing until the last phase
+	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var log lockedBuffer
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams = func(a []netip.Addr) { told <- a }
+	c.Log = slog.New(slog.NewTextHandler(&log, nil))
+	r, err := manageResolvConf(path, uplink, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	writeFileAtomic(t, path, "nameserver 127.0.0.53\n")
+	applyOnce(t, r)
+	if p := r.Problem(); !errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("stub-only without uplink: problem %v, want stale only", p)
+	}
+	writeFileAtomic(t, uplink, "# managed by systemd-resolved\n")
+	applyOnce(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); !errors.Is(p, ErrNoSystemUpstream) || errors.Is(p, ErrUpstreamsStale) || Unprotected(p) {
+		t.Errorf("header-only uplink: problem %v, want no system upstream only", p)
+	}
+	if !strings.Contains(log.String(), "no upstream to ask") {
+		t.Errorf("header-only uplink: no -dns-upstream hint logged:\n%s", log.String())
+	}
+}
+
+// A rewrite naming no server keeps the previous upstreams (nothing told)
+// and says the OS names none, not unprotected; a rewrite naming one tells
+// it and clears that.
+func TestResolvConfARewriteNamingNoServerIsNoSystemUpstream(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	told := make(chan []netip.Addr, 8)
+	c := testSystem
+	c.Upstreams = func(a []netip.Addr) { told <- a }
+	r, err := manageResolvConf(path, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); p != nil {
+		t.Fatalf("at setup: problem %v", p)
+	}
+	writeFileAtomic(t, path, "search lan\n")
+	applyOnce(t, r)
+	toldNothing(t, told)
+	if p := r.Problem(); !errors.Is(p, ErrNoSystemUpstream) || Unprotected(p) {
+		t.Errorf("no nameserver: problem %v, want no system upstream, protected", p)
+	}
+	writeFileAtomic(t, path, "nameserver 192.0.2.99\n")
+	applyOnce(t, r)
+	select {
+	case got := <-told:
+		if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("192.0.2.99")}) {
+			t.Errorf("told %v", got)
+		}
+	case <-time.After(time.Second):
+		t.Error("a server named again isn't told")
+	}
+	if p := r.Problem(); p != nil {
+		t.Errorf("a server named again: problem %v", p)
+	}
+}
+
+// lockedBuffer is a log sink the watch goroutine may write to while the
+// test reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // Behind the stub, an unreadable uplink file is a failed read: a failed
@@ -316,7 +444,7 @@ func TestResolvConfAFailedFirstReadBehindTheStubWaitsForTheUplink(t *testing.T) 
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r, err := setResolvConf(path, uplink, c)
+	r, err := manageResolvConf(path, uplink, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +486,7 @@ func TestResolvConfAFailedFirstReadOverADanglingLinkReadsItsTargetWhenItAppears(
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,7 +551,7 @@ func TestResolvConfALinkToTheManagedFileItselfIsNotAGoodRead(t *testing.T) {
 			told := make(chan []netip.Addr, 8)
 			c := testSystem
 			c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-			r, err := setResolvConf(path, "", c)
+			r, err := manageResolvConf(path, "", c)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -457,7 +585,7 @@ func TestResolvConfWhileUntoldAStubTargetWithoutUplinkWarnsNothing(t *testing.T)
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
 	c.Log = slog.New(slog.NewTextHandler(&log, nil))
 	uplink := filepath.Join(dir, "uplink.conf") // missing until the last phase
-	r, err := setResolvConf(path, uplink, c)
+	r, err := manageResolvConf(path, uplink, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,7 +633,7 @@ func TestResolvConfAnEmptyUplinkFileIsAFailedRead(t *testing.T) {
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r, err := setResolvConf(path, uplink, c)
+	r, err := manageResolvConf(path, uplink, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,7 +678,7 @@ func TestResolvConfTheDefaultPathTellsNothingUntilAChange(t *testing.T) {
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams = func(a []netip.Addr) { told <- a }
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -586,7 +714,7 @@ func TestResolvConfAnOriginalWithoutATrailingNewlineIsNotAChange(t *testing.T) {
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams = func(a []netip.Addr) { told <- a }
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -653,7 +781,7 @@ func TestResolvConfUpdatesInPlace(t *testing.T) {
 	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r, err := setResolvConf(path, "", testSystem)
+	r, err := manageResolvConf(path, "", testSystem)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -711,7 +839,7 @@ func (e taggedUnprotected) Is(target error) bool { return target == ErrUnprotect
 func applyOnce(t *testing.T, r *resolvConf) {
 	t.Helper()
 	r.mu.Lock()
-	tell, _ := r.apply()
+	tell, _ := r.apply(readResolvConfFile(r.path))
 	r.mu.Unlock()
 	if tell != nil {
 		tell()
@@ -739,7 +867,7 @@ func TestResolvConfAFailedFirstReadIsStaleUntilAGoodReadTellsIt(t *testing.T) {
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -775,13 +903,13 @@ func TestResolvConfAFailedFirstReadIsStaleUntilAGoodReadTellsIt(t *testing.T) {
 
 // The first good read is told whatever it found: a resolv.conf with no
 // nameservers tells an empty answer and clears the staleness all the
-// same.
+// same, leaving only that the OS names none.
 func TestResolvConfAFailedFirstReadThenEmptyTellsAnEmptyAnswer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "resolv.conf") // missing: the first read fails
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -799,8 +927,8 @@ func TestResolvConfAFailedFirstReadThenEmptyTellsAnEmptyAnswer(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("never told the first good read")
 	}
-	if p := r.Problem(); p != nil {
-		t.Errorf("problem after a good read: %v", p)
+	if p := r.Problem(); errors.Is(p, ErrUpstreamsStale) || !errors.Is(p, ErrNoSystemUpstream) || Unprotected(p) {
+		t.Errorf("problem after a good read naming none: %v, want no system upstream only", p)
 	}
 }
 
@@ -814,7 +942,7 @@ func TestResolvConfTheFirstGoodReadAtSetupIsToldAtOnce(t *testing.T) {
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -839,11 +967,31 @@ func TestResolvConfUpstreamsUnknownWithoutUpstreamsIsNeverStale(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "resolv.conf") // missing: the read fails
 	c := testSystem
 	c.UpstreamsUnknown = true
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = r.Restore() })
+	if p := r.Problem(); p != nil {
+		t.Errorf("problem without Upstreams: %v", p)
+	}
+}
+
+// Without Upstreams to tell, a failed read on a change owes nothing
+// either: no stale problem.
+func TestResolvConfAFailedReadOnAChangeWithoutUpstreamsIsNeverStale(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolv.conf")
+	if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := manageResolvConf(path, filepath.Join(dir, "uplink.conf"), testSystem) // the uplink stays missing
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Restore() })
+	writeFileAtomic(t, path, "nameserver 127.0.0.53\n")
+	applyOnce(t, r)
 	if p := r.Problem(); p != nil {
 		t.Errorf("problem without Upstreams: %v", p)
 	}
@@ -861,7 +1009,7 @@ func TestResolvConfAFailedFirstReadOverADanglingSymlinkStaysStale(t *testing.T) 
 	told := make(chan []netip.Addr, 8)
 	c := testSystem
 	c.Upstreams, c.UpstreamsUnknown = func(a []netip.Addr) { told <- a }, true
-	r, err := setResolvConf(path, "", c)
+	r, err := manageResolvConf(path, "", c)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -34,9 +34,6 @@ type System interface {
 	// Start loads the definition just written and (re)starts the service;
 	// an agent it ran before has exited first.
 	Start(ctx context.Context, run Runner) error
-	// Reload has the manager take a changed definition at the service's
-	// next start, without restarting it.
-	Reload(ctx context.Context, run Runner) error
 	// Stop stops the service, keeping it enabled (it starts at boot), and
 	// returns once its agent has exited (or the stop timed out, an
 	// error).
@@ -69,14 +66,24 @@ type Installer struct {
 	// BinaryPath.
 	Executable string
 	// Ready says whether the node can run (its state directory), checked
-	// before anything is installed.
-	Ready func() error
+	// before anything is installed, and which mode the service is
+	// installed for (agent.ServiceMode; with why the node's mode isn't
+	// known, it is installed as a server, and told why): a device's
+	// definition sends the agent's stderr to CrashTrace, a server's sends
+	// it nowhere on disk.
+	Ready func() (mode agent.Mode, why agent.ModeUnknown, err error)
+	// CrashTrace is the device's crash trace file (agent.CrashTracePath),
+	// as the definition names it. A device's install makes it anew, 0600,
+	// before the service starts (agent.CreateCrashTrace); a server's
+	// install, and uninstall, remove it, once the service is stopped.
+	CrashTrace string
 	// LockHost takes the host's agent lock (agent.HostLock), failing with
 	// agent.ErrAnotherAgent while an agent holds it.
 	LockHost func() (func(), error)
 	// ClearHost undoes what a crashed agent left on the host
-	// (agent.Platform.ClearHost), under the host lock.
-	ClearHost func() error
+	// (agent.Platform.ClearHost), under the host lock, and says what it
+	// undid.
+	ClearHost func() ([]string, error)
 	// RuntimeDirs are where the agent keeps its locks and boot records
 	// (the agent's lock directory, the local API's): uninstall removes
 	// what a stopped agent leaves there.
@@ -87,20 +94,22 @@ type Installer struct {
 
 // Options are install's choices.
 type Options struct {
-	// ConnectOnBoot sets connect-on-boot; nil keeps what an installed
-	// service has, or off.
-	ConnectOnBoot *bool
 	// User is added to Group, so it may use the local API; "" adds no
 	// one.
 	User string
 }
 
 var (
+	// ErrNeedsRoot: CheckRoot refused a caller that isn't root.
+	ErrNeedsRoot = &agent.NeedsRootError{Why: "the service is the host's"}
 	// ErrNotInstalled: no service definition.
 	ErrNotInstalled = errors.New("the service is not installed")
 	// ErrDefinitionChanged: a definition that isn't what install writes
 	// (edited by hand).
 	ErrDefinitionChanged = errors.New("the service's definition was changed by hand")
+	// errOldDefinition: a definition from before connect-on-boot moved to
+	// the device's settings.
+	errOldDefinition = errors.New("the service's definition carries connect-on-boot")
 	// errAgentRuns: an agent holds the host lock where none may run.
 	errAgentRuns = errors.New("a thinkpol agent runs outside the service (it holds the host lock): stop it, then run this again")
 )
@@ -115,8 +124,7 @@ func (in Installer) say(format string, args ...any) {
 
 // Install copies the binary, makes the group (adding opts.User), writes
 // the definition and (re)starts the service. Run again, it replaces the
-// binary and restarts the service, keeping connect-on-boot unless opts
-// sets it. The binary directory's trust check, the group steps, then the
+// binary and restarts the service. The binary directory's trust check, the group steps, then the
 // binary, then the definition, all run before anything is stopped: a
 // failure there leaves the installed service running as it was (a
 // failure after the binary leaves the new binary for the old definition's
@@ -131,27 +139,30 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.System.Present(in.Root); err != nil {
 		return err
 	}
-	if err := in.Ready(); err != nil {
+	mode, why, err := in.Ready()
+	if err != nil {
 		return fmt.Errorf("this node can't run yet: %w", err)
 	}
-	_, err := os.Lstat(in.path(in.System.DefinitionPath()))
+	switch why {
+	case agent.UnknownMapShowsServer:
+		in.say("warning: the map makes this node a server, but node.json sets no mode, so it runs as a device, which runs no server: it carries nothing until node.json sets \"mode\": \"server\" (installing a server's definition, which keeps no crash trace)")
+	case agent.UnknownNotInMap:
+		in.say("warning: node.json sets no mode and the map doesn't include this node yet: installing a definition that keeps no crash trace; a device installs again once a map includes it, or sets \"mode\": \"device\" in node.json")
+	}
+	def := in.definition(mode)
+	_, err = os.Lstat(in.path(in.System.DefinitionPath()))
 	defined := err == nil
 	if !defined {
 		if err := in.noAgent(); err != nil {
 			return err
 		}
 	}
-	connect := false
-	d, err := in.installed()
-	switch {
-	case err == nil:
-		connect = d.ConnectOnBoot
-	case errors.Is(err, ErrNotInstalled):
-	default:
-		in.say("warning: %v; installing anew, connect-on-boot off unless -connect-on-boot says otherwise", err)
+	err = in.installed()
+	if errors.Is(err, errOldDefinition) {
+		in.say("connect-on-boot is no longer in the service's definition: it is the device's setting now, off until a member turns it on (thinkpol connect-on-boot on)")
 	}
-	if opts.ConnectOnBoot != nil {
-		connect = *opts.ConnectOnBoot
+	if errors.Is(err, ErrDefinitionChanged) || err != nil && !errors.Is(err, errOldDefinition) && !errors.Is(err, ErrNotInstalled) {
+		in.say("warning: %v; installing anew", err)
 	}
 	if err := in.binaryDirTrusted(); err != nil {
 		return err
@@ -168,7 +179,7 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 	if err := in.installBinary(); err != nil {
 		return err
 	}
-	if err := in.writeDefinition(Definition{Binary: BinaryPath, ConnectOnBoot: connect}); err != nil {
+	if err := in.writeDefinition(def); err != nil {
 		return err
 	}
 	if defined {
@@ -179,10 +190,16 @@ func (in Installer) Install(ctx context.Context, opts Options) error {
 			return fmt.Errorf("%s: %w", in.leftAfter(ctx, true), err)
 		}
 	}
+	// After the stop: an agent crashing before it would write the file anew.
+	if def.CrashTrace == "" {
+		in.removeCrashTrace()
+	} else if err := agent.CreateCrashTrace(in.path(def.CrashTrace)); err != nil {
+		return fmt.Errorf("%s; making the crash trace %s failed: %w", in.leftAfter(ctx, defined), def.CrashTrace, err)
+	}
 	if err := in.System.Start(ctx, in.Run); err != nil {
 		return fmt.Errorf("%s; starting it failed: %w", in.leftAfter(ctx, defined), err)
 	}
-	in.say("installed and started %s (connect-on-boot %s)", in.System.DefinitionPath(), OnOff(connect))
+	in.say("installed and started %s", in.System.DefinitionPath())
 	return nil
 }
 
@@ -217,38 +234,23 @@ func (in Installer) noAgent() error {
 	return nil
 }
 
-// ConnectOnBoot is the installed service's connect-on-boot.
-func (in Installer) ConnectOnBoot() (bool, error) {
-	d, err := in.installed()
-	return d.ConnectOnBoot, err
-}
-
-// SetConnectOnBoot rewrites the installed definition with connect-on-boot
-// on or off. The running agent isn't restarted: the setting is read at
-// the boot's first start only.
-func (in Installer) SetConnectOnBoot(ctx context.Context, on bool) error {
-	d, err := in.installed()
-	if err != nil {
-		return err
-	}
-	d.ConnectOnBoot = on
-	if err := in.writeDefinition(d); err != nil {
-		return err
-	}
-	if err := in.System.Reload(ctx, in.Run); err != nil {
-		return err
-	}
-	in.say("connect-on-boot %s: from the next boot", OnOff(on))
-	return nil
-}
-
 // Uninstall stops the service (the agent takes its data plane down as it
 // stops), then, holding the host lock (refused while an agent still holds
-// it), undoes what a crashed agent left on the host (ClearHost), removes
-// the definition, the binary, and what the stopped agent left in its
-// runtime directories. The group stays (it may be older than the
-// service); so does the node's state directory, its keys and map.
-func (in Installer) Uninstall(ctx context.Context) error {
+// it), undoes what a crashed agent left on the host (ClearHost: a
+// device's and a server's), removes the definition, the binary, the
+// device's crash trace, and what the stopped agent left in its runtime
+// directories. The group stays (it
+// may be older than the service); so does the node's state directory,
+// its keys and map.
+//
+// A ClearHost that fails stops it there, the service stopped and disabled
+// but its definition and binary on disk, so the binary is there to try
+// again (launchd loads a definition left on disk at the next boot); force
+// goes on, the failure reported as what is left on the host (a record the
+// cleanup can't read, such as a DNS backup readBackup rejects on macOS,
+// fails every try). With neither on disk there is nothing to keep, so it
+// goes on as force does.
+func (in Installer) Uninstall(ctx context.Context, force bool) error {
 	_, err := os.Lstat(in.path(in.System.DefinitionPath()))
 	defined := err == nil
 	if err := in.System.Remove(ctx, in.Run); err != nil && defined {
@@ -262,8 +264,15 @@ func (in Installer) Uninstall(ctx context.Context) error {
 		return err
 	}
 	defer unlock()
-	if err := in.ClearHost(); err != nil {
-		return fmt.Errorf("undoing what a crashed agent left: %w", err)
+	undone, err := in.ClearHost()
+	for _, u := range undone {
+		in.say("undid what a crashed agent left: %s", u)
+	}
+	if err != nil {
+		if left := in.onDisk(defined); left != "" && !force {
+			return fmt.Errorf("undoing what a crashed agent left failed: %w\nthe service is stopped, but %s; run this again once that is fixed, or with -force to remove them anyway and leave this on the host", err, left)
+		}
+		in.say("warning: left on the host, undo it yourself: %v", err)
 	}
 	if defined {
 		if err := os.Remove(in.path(in.System.DefinitionPath())); err != nil {
@@ -277,6 +286,7 @@ func (in Installer) Uninstall(ctx context.Context) error {
 	if err := os.Remove(in.path(BinaryPath)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
+	in.removeCrashTrace()
 	for _, dir := range in.RuntimeDirs {
 		left, err := clearRuntimeDir(in.path(dir))
 		if err != nil {
@@ -290,24 +300,91 @@ func (in Installer) Uninstall(ctx context.Context) error {
 	return nil
 }
 
-// installed reads the installed definition: exactly what install writes,
-// connect-on-boot on or off; none is ErrNotInstalled, anything else
-// ErrDefinitionChanged.
-func (in Installer) installed() (Definition, error) {
+// onDisk says what an uninstall stopped after the service's removal
+// leaves of it on disk, "" for nothing.
+func (in Installer) onDisk(defined bool) string {
+	var left []string
+	if defined {
+		left = append(left, fmt.Sprintf("its definition (%s)", in.System.DefinitionPath()))
+	}
+	if _, err := os.Lstat(in.path(BinaryPath)); err == nil {
+		left = append(left, fmt.Sprintf("its binary (%s)", BinaryPath))
+	}
+	if len(left) == 0 {
+		return ""
+	}
+	verb := "is"
+	if len(left) > 1 {
+		verb = "are"
+	}
+	return fmt.Sprintf("%s %s still on disk", strings.Join(left, " and "), verb)
+}
+
+// installed checks the installed definition is exactly what install
+// writes: none is ErrNotInstalled, one written before connect-on-boot
+// moved to the device's settings errOldDefinition (and also
+// ErrDefinitionChanged when it isn't what the older install wrote either),
+// anything else ErrDefinitionChanged.
+func (in Installer) installed() error {
 	data, err := os.ReadFile(in.path(in.System.DefinitionPath()))
 	if errors.Is(err, fs.ErrNotExist) {
-		return Definition{}, ErrNotInstalled
+		return ErrNotInstalled
 	}
 	if err != nil {
-		return Definition{}, err
+		return err
 	}
-	for _, on := range []bool{false, true} {
-		d := Definition{Binary: BinaryPath, ConnectOnBoot: on}
-		if bytes.Equal(data, in.System.Render(d)) {
-			return d, nil
+	// Either mode's: the node's mode may have changed since.
+	for _, mode := range []agent.Mode{agent.ModeDevice, agent.ModeServer} {
+		if bytes.Equal(data, in.System.Render(in.definition(mode))) {
+			return nil
 		}
 	}
-	return Definition{}, fmt.Errorf("%w: %s isn't what thinkpol service install writes; install again", ErrDefinitionChanged, in.System.DefinitionPath())
+	changed := fmt.Errorf("%w: %s isn't what thinkpol service install writes; install again", ErrDefinitionChanged, in.System.DefinitionPath())
+	if !bytes.Contains(data, []byte(oldConnectOnBootVariable)) {
+		return changed
+	}
+	for _, old := range oldDefinitions(in.System) {
+		if bytes.Equal(data, old) {
+			return errOldDefinition
+		}
+	}
+	return &oldChangedError{changed}
+}
+
+// oldChangedError is an old definition (errOldDefinition) that was also
+// changed by hand (ErrDefinitionChanged, its message).
+type oldChangedError struct{ changed error }
+
+func (e *oldChangedError) Error() string   { return e.changed.Error() }
+func (e *oldChangedError) Unwrap() []error { return []error{errOldDefinition, e.changed} }
+
+// oldConnectOnBootVariable is how definitions carried connect-on-boot
+// before it moved to the device's settings (agent.DeviceFile).
+const oldConnectOnBootVariable = "THINKPOL_CONNECT_ON_BOOT"
+
+// definition is what install writes for a node that runs in mode.
+func (in Installer) definition(mode agent.Mode) Definition {
+	d := Definition{Binary: BinaryPath}
+	if mode != agent.ModeServer {
+		d.CrashTrace = in.CrashTrace
+	}
+	return d
+}
+
+// removeCrashTrace removes the crash trace file, if there is one: a
+// server keeps none, and the service's is gone with it. One that can't be
+// removed is said.
+func (in Installer) removeCrashTrace() {
+	if in.CrashTrace == "" {
+		return
+	}
+	err := os.Remove(in.path(in.CrashTrace))
+	switch {
+	case err == nil:
+		in.say("removed the crash trace %s", in.CrashTrace)
+	case !errors.Is(err, fs.ErrNotExist):
+		in.say("warning: the crash trace %s stays: %v", in.CrashTrace, err)
+	}
 }
 
 // writeDefinition replaces the definition atomically, 0644.

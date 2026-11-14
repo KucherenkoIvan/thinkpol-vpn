@@ -3,6 +3,7 @@ id: TP-016
 title: "GeoIP lists"
 milestone: M1
 area: lists
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-003]

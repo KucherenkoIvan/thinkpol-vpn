@@ -4,8 +4,11 @@ package netcfg
 
 import (
 	"os"
+	"reflect"
 	"strconv"
 
+	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 )
 
@@ -24,14 +27,15 @@ func ClearFailingClose(path string, owner Owner, link string) error {
 			_ = c.Close()
 			return nil, err
 		}
-		lc.links.changed[link] = linkChange{index: l.Attrs().Index, origMTU: -1, mtu: l.Attrs().MTU}
+		lc.links.changed[link] = linkChange{index: l.Attrs().Index, kname: l.Attrs().Name, origMTU: -1, mtu: l.Attrs().MTU}
 		return c, nil
 	}, nil)
 }
 
 // NewInNamespaceToKill is NewInNamespace, and a kill that puts /dev/null
-// in place of the configurator's netlink socket: from then on every
-// netlink request it makes fails, the first dump of a Close included.
+// in place of the configurator's netlink sockets (its handle's and its
+// rule socket): from then on every netlink request it makes fails, the
+// first dump of a Close included.
 // It tells the configurator's sockets by scanning the process's netlink
 // sockets before and after NewInNamespace, so no other goroutine may open
 // a netlink socket between the two scans.
@@ -84,4 +88,33 @@ func netlinkFDs() (map[int]bool, error) {
 		}
 	}
 	return out, nil
+}
+
+// ErrDumpsDisagree is rule dumps that never agreed: the rules kept
+// changing while they were read.
+var ErrDumpsDisagree = errDumpsDisagree
+
+// FailCloseRuleDumps makes the rule dumps of c's Close fail with err, so
+// its rules step fails.
+func FailCloseRuleDumps(c Configurator, err error) {
+	c.(*linuxConfigurator).closeDump = func(*nl.SocketHandle, int) ([]rawRule, error) { return nil, err }
+}
+
+// ClosesWithSingleDumps says whether c's Close takes its rule dumps with
+// dumpRulesOnce, as newLinux sets it.
+func ClosesWithSingleDumps(c Configurator) bool {
+	got := reflect.ValueOf(c.(*linuxConfigurator).closeDump).Pointer()
+	return got == reflect.ValueOf(dumpRulesOnce).Pointer()
+}
+
+// FailCloseRouteListing makes c's Close fail to list the owner's routes
+// with err, so its routes step fails.
+func FailCloseRouteListing(c Configurator, err error) {
+	c.(*linuxConfigurator).closeRoutes = func(*linuxConfigurator) (map[routeKey]netlink.Route, error) { return nil, err }
+}
+
+// FailCloseLinkListing makes c's Close fail to build its link ops (the
+// address dump) with err, so its addresses and interfaces step fails.
+func FailCloseLinkListing(c Configurator, err error) {
+	c.(*linuxConfigurator).closeLinks = func(*linuxConfigurator) (*netlinkOps, error) { return nil, err }
 }

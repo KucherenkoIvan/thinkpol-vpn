@@ -3,6 +3,7 @@ id: TP-038
 title: "Provisioning over SSH"
 milestone: M4
 area: features/provisioning
+stream: administration
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-034]
@@ -23,7 +24,7 @@ branch: ""
 - [ ] a fresh lab container becomes a working node with one command; running it again changes nothing
 
 ## Notes
-- **Node ceiling (TP-111):** provisioning sets the node's preset and capabilities with the operator's consent, and registers them with the controller, which refuses to publish a map that asks for more.
+- **Node ceiling (TP-183):** provisioning sets the node's preset and capabilities with the operator's consent, and registers them with the controller, which refuses to publish a map that asks for more.
 - Split before starting (backlog grooming 2026-10-15).
 - **Shaping rollout (TP-027):** the controller puts shaping, or a new shaping field or value, into a link only when both ends' nodes reported supporting it (docs/design/transports.md). Provisioning registers the node with its agent version and capabilities, so the first map it gets carries only shaping it supports.
 - **From TP-011's review (deferred here):**
@@ -46,3 +47,4 @@ branch: ""
 - 2026-10-15 docs (independent review 2026-10-15): chrony/NTP in scope; pointer to TP-074
 - 2026-10-15 docs (backlog grooming): split note
 - 2026-10-18 notes: provisioning sets the node's ceiling (TP-111)
+- 2026-11-07 notes: the node ceiling is TP-183 now (split from TP-111, owner's MVP cut)

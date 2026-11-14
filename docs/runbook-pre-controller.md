@@ -19,7 +19,35 @@ A **node** (server or device) holds only:
   space.pub                 # the space's id and public keys: what every map is verified against
   map.bin                   # the latest map; the node can open only its own section
   blobs/                    # GeoIP list blobs, files named by their SHA-256
+  node.json                 # optional: the operator's settings (0600), see below
+  device.json               # a device's member toggles, written by the service only (0600)
 ```
+
+A node's settings go in `node.json`, one JSON object, root's, 0600. Every
+key is optional; a flag on `up` or a `THINKPOL_*` variable wins over it.
+For example, a server whose network has a smaller MTU, logging at debug:
+
+```json
+{"mode": "server", "link_mtu": 1400, "log_level": "debug"}
+```
+
+The keys are `mode`, `interface`, `link_mtu`, `log_level`, `map_poll`,
+`dns`, `dns_upstream` and `egress_allowed` (the last two are lists of
+strings); docs/design/configuration.md "Node level" has their types and
+defaults. **A server needs `"mode": "server"`**: a node runs as a device
+unless its node file (or `-mode server`, or `THINKPOL_MODE=server`) says
+otherwise, whatever its kind in the map, and a device runs no server's
+section: a server left without its mode opens no listener, takes no
+link, relays and forwards nothing, and leaves the box's network alone;
+`thinkpol status` shows `mode_mismatch` and its log says to set the mode.
+`"auto"` is no longer a mode.
+An unknown key, a key given twice, a null, a wrong type or a bad value
+stops `up` with exit status 78 and a message naming the file and the key;
+so does a file that isn't root's or isn't 0600 (`chmod 600` it).
+`up` reads the file at start: restart the service after changing it
+(`systemctl restart thinkpol`). Don't put settings in a systemd drop-in
+(`thinkpol.service.d/`): drop-ins are unsupported, and `thinkpol diag`
+lists any it finds.
 
 The **admin's build machine** holds the `keys/` directory from
 `thinkpol dev keygen space` and `thinkpol dev keygen node`: `space.key`
@@ -44,8 +72,19 @@ and starts the agent. It starts at every boot, and systemd starts it again
 5 s after any exit. `systemctl reload thinkpol` sends SIGHUP to the agent
 alone, which re-reads the map at once; the per-space workers it runs don't
 handle SIGHUP, so never signal the whole unit. `thinkpol service uninstall`
-stops it, undoes what a crashed agent left, and removes the unit and the
-binary; the `thinkpol` group and the state directory stay. Both refuse
+stops it, undoes what a crashed agent left (a server's forwarding, firewall
+tables and veths included), and removes the unit and the binary; the
+`thinkpol` group and the state directory stay. If undoing fails it stops
+with the unit and binary still on disk and says what is left; fix that and
+run it again, or add `-force` to remove them anyway. To undo what a dead
+agent left without uninstalling (a device's routes, DNS changes and kill
+switch, which a crash or a stop leaves on purpose, or a server's
+forwarding, tables and veths), run `sudo thinkpol rollback` while no
+agent runs: it says part by part what is left, and a device's service
+then starts disconnected for the rest of the boot. On a device, whether
+the service connects at boot is the member's choice: `thinkpol
+connect-on-boot on|off`, run by a member of the `thinkpol` group without
+root, from the next boot (off by default). Both refuse
 while an agent you started by hand holds the host lock: stop it first. Package `agent/service` has the unit and why it is so.
 
 When systemd captures the agent's stderr, journald stores it on disk;
@@ -158,6 +197,23 @@ Signed updates distributed through the network arrive with the controller
    ssh root@<node> "\"$staging/thinkpol\" version"
    ```
 
+   A binary from before TP-111 picked a server's mode by its kind in the
+   map. Updating a server from one: first make sure its `node.json` has
+   `"mode": "server"` (create the file, root's, 0600, if there is none),
+   and that no drop-in or definition sets `THINKPOL_MODE=auto` or
+   `-mode auto`, which now stop `up` with exit status 78:
+
+   ```sh
+   ssh root@<node> 'cd /var/lib/thinkpol && if [ -e node.json ]; then cat node.json; else (umask 077 && printf "{\"mode\": \"server\"}\n" >node.json); fi'
+   ```
+
+   With no file it writes `{"mode": "server"}` (root's, 0600). If it
+   printed a file without `"mode": "server"`, add that key to it. Without
+   it the server comes back in device mode and runs nothing of its map
+   (no listener, link, relay or exit; its network left alone), its status
+   shows `mode_mismatch`, and `service install` warns that the map makes
+   it a server while node.json sets no mode.
+
 2. Install the staged binary as the service: it copies itself over
    `/usr/local/bin/thinkpol` with a rename (an agent restarted mid-copy
    never runs a half-written file) and restarts the agent:
@@ -195,7 +251,10 @@ node whose clock is off by more cannot link to its peers.
   problem yet (TP-090). The symptom is links that never come up between
   nodes on the same map version. Compare the clocks of both ends
   (`date -u` on each, `chronyc tracking` on Linux), fix the one that is
-  off, and leave the map alone.
+  off, and leave the map alone; no restart is needed. A smaller error
+  shows only right after a node's agent starts: a peer dialing it whose
+  clock runs behind the node's gets no link for as long as it is behind
+  (at most five minutes; RESIDUAL-RISKS.md RR34).
 
 ## When something is wrong
 

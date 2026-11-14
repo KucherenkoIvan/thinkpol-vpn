@@ -10,7 +10,7 @@ import (
 func init() {
 	register(command{
 		path:    "service install",
-		args:    "[-connect-on-boot on|off] [-user name]",
+		args:    "[-user name]",
 		summary: "run this node as a service (systemd, launchd), started at boot; as root",
 		run:     runServiceInstall,
 	})
@@ -18,13 +18,15 @@ func init() {
 
 func runServiceInstall(ctx context.Context, e env, args []string) error {
 	fs := flag.NewFlagSet("service install", flag.ContinueOnError)
-	connect := fs.String("connect-on-boot", "", "on or off: connect at boot; unset: as installed, else off")
+	connect := fs.String("connect-on-boot", "", "removed: thinkpol connect-on-boot on|off, once the service runs")
 	user := fs.String("user", service.InstallingUser(), "added to the thinkpol group, which may use the local API; empty: no one")
 	if err := parseFlags(fs, e, args); err != nil {
 		return err
 	}
-	onBoot, err := service.ParseOnOff(*connect)
-	if err != nil || fs.NArg() > 0 {
+	if *connect != "" {
+		return errConnectOnBootMoved
+	}
+	if fs.NArg() > 0 {
 		return errUsage
 	}
 	if err := service.CheckRoot(); err != nil {
@@ -34,5 +36,5 @@ func runServiceInstall(ctx context.Context, e env, args []string) error {
 	if err != nil {
 		return err
 	}
-	return in.Install(ctx, service.Options{User: *user, ConnectOnBoot: onBoot})
+	return in.Install(ctx, service.Options{User: *user})
 }

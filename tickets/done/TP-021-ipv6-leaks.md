@@ -3,6 +3,7 @@ id: TP-021
 title: "IPv6 leak prevention"
 milestone: M1
 area: dataplane
+stream: core
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-018, TP-019]

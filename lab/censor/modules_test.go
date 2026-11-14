@@ -1,10 +1,11 @@
 package censor
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestBlockIPDropsByDestination(t *testing.T) {
@@ -15,7 +16,7 @@ func TestBlockIPDropsByDestination(t *testing.T) {
 	for _, dst := range []string{"203.0.113.9", "2001:db8::42"} {
 		p := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr(dst), 1, 2, []byte("x"))
 		d := m.Inspect(p, &Flow{})
-		if d.Verdict != Drop || !strings.Contains(d.Reason, dst) {
+		if d.Verdict != Drop || d.Flow || !strings.Contains(d.Reason, dst) {
 			t.Errorf("%s: %+v", dst, d)
 		}
 	}
@@ -30,12 +31,11 @@ func TestBlockIPSettings(t *testing.T) {
 		settings string
 		wantErr  string
 	}{
-		"no destinations": {`{}`, "no destinations"},
+		"no destinations": {`{}`, "no destination listed"},
 		"bad destination": {`{"destinations": ["999.1.1.1"]}`, "destination"},
 		"bad verdict":     {`{"destinations": ["203.0.113.9"], "verdict": "poison"}`, "verdict"},
-		"bad hold":        {`{"destinations": ["203.0.113.9"], "verdict": "throttle", "hold": "soon"}`, "hold"},
-		"bad held":        {`{"destinations": ["203.0.113.9"], "held": "reset"}`, "held"},
-		"good throttle":   {`{"destinations": ["203.0.113.9"], "verdict": "throttle", "hold": "200ms"}`, ""},
+		"negative rate":   {`{"destinations": ["203.0.113.9"], "verdict": "throttle", "rate": -1}`, "rate"},
+		"good throttle":   {`{"destinations": ["203.0.113.9"], "verdict": "throttle", "rate": 1750}`, ""},
 		"good prefix":     {`{"destinations": ["203.0.113.0/24"]}`, ""},
 	} {
 		m, err := newBlockIP([]byte(tc.settings))
@@ -54,14 +54,84 @@ func TestBlockIPSettings(t *testing.T) {
 	}
 }
 
-func TestBlockIPThrottleHolds(t *testing.T) {
-	m, err := newBlockIP([]byte(`{"destinations": ["203.0.113.9"], "verdict": "throttle", "hold": "50ms"}`))
+func TestBlockIPThrottleRate(t *testing.T) {
+	m, err := newBlockIP([]byte(`{"destinations": ["203.0.113.9"], "verdict": "throttle", "rate": 500, "burst": 900}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := udpPacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("203.0.113.9"), 1, 2, []byte("x"))
 	d := m.Inspect(p, &Flow{})
-	if d.Verdict != Throttle || d.Hold != 50*time.Millisecond || d.Held != Accept {
+	if d.Verdict != Throttle || d.Rate != 500 || d.Burst != 900 {
 		t.Errorf("throttle decision %+v", d)
+	}
+}
+
+// TestBlockIPDataOnly: with data, a packet without payload (the handshake)
+// passes and the first one with payload is decided.
+func TestBlockIPDataOnly(t *testing.T) {
+	m, err := newBlockIP([]byte(`{"destinations": ["203.0.113.9"], "verdict": "reset", "data": true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, dst := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("203.0.113.9")
+	if d := m.Inspect(tcpPacket(src, dst, 1, 2, 100, 0, Syn, nil), &Flow{}); d.Verdict != Accept {
+		t.Errorf("SYN: %+v", d)
+	}
+	if d := m.Inspect(tcpPacket(src, dst, 1, 2, 101, 9, Ack|Psh, []byte("hi")), &Flow{}); d.Verdict != Reset {
+		t.Errorf("data: %+v", d)
+	}
+}
+
+// TestModulesWithoutSettings: every module reads no settings at all as {}:
+// built either way, it builds or fails alike.
+func TestModulesWithoutSettings(t *testing.T) {
+	for name, build := range passives {
+		_, errNil := build(nil)
+		_, errEmpty := build([]byte(`{}`))
+		if fmt.Sprint(errNil) != fmt.Sprint(errEmpty) {
+			t.Errorf("%s: without settings %v, with {} %v", name, errNil, errEmpty)
+		}
+	}
+	for name, build := range actives {
+		_, errNil := build(nil)
+		_, errEmpty := build([]byte(`{}`))
+		if fmt.Sprint(errNil) != fmt.Sprint(errEmpty) {
+			t.Errorf("%s: without settings %v, with {} %v", name, errNil, errEmpty)
+		}
+	}
+}
+
+// TestSettingsRejectUnknownFields: a misspelt setting fails every module,
+// never leaving it on its default; so does anything after the object.
+func TestSettingsRejectUnknownFields(t *testing.T) {
+	registryMu.Lock()
+	var names []string
+	for n := range passives {
+		names = append(names, n)
+	}
+	for n := range actives {
+		names = append(names, n)
+	}
+	registryMu.Unlock()
+	if len(names) == 0 {
+		t.Fatal("no module registered")
+	}
+	for _, n := range names {
+		if !Registered(n) {
+			t.Errorf("%s isn't Registered", n)
+		}
+		_, _, err := Build(Config{Modules: []ModuleConfig{{Name: n, Settings: json.RawMessage(`{"upstreamTel": "report"}`)}}})
+		if err == nil || !strings.Contains(err.Error(), "upstreamTel") {
+			t.Errorf("%s with a misspelt setting: %v, want an error naming it", n, err)
+		}
+	}
+	if Registered("probr") {
+		t.Error("a misspelt module name is Registered")
+	}
+	if _, _, err := Build(Config{Modules: []ModuleConfig{{Name: "block-ip", Settings: json.RawMessage(`{"destinations": ["203.0.113.9"]} {}`)}}}); err == nil {
+		t.Error("settings with data after the object: no error")
+	}
+	if _, _, err := Build(Config{Modules: []ModuleConfig{{Name: "block-ip", Settings: json.RawMessage(`{"destinations": ["203.0.113.9"]}`)}}}); err != nil {
+		t.Errorf("good settings: %v", err)
 	}
 }

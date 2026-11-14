@@ -35,6 +35,11 @@ type Options struct {
 type Transport struct {
 	control func(network, address string, c syscall.RawConn) error
 	now     func() time.Time
+	// elapsed is the time from start to now, two readings of the clock:
+	// by its monotonic reading when both carry one, as time.Now's do, so
+	// a step of the wall clock doesn't count. A test stands in for such a
+	// step with it.
+	elapsed func(start, now time.Time) time.Duration
 }
 
 var (
@@ -44,7 +49,7 @@ var (
 
 // New returns the udp adapter.
 func New(o Options) *Transport {
-	t := &Transport{control: o.Control, now: o.Now}
+	t := &Transport{control: o.Control, now: o.Now, elapsed: func(start, now time.Time) time.Duration { return now.Sub(start) }}
 	if t.now == nil {
 		t.now = time.Now
 	}
@@ -64,8 +69,8 @@ func (t *Transport) Overhead(s transport.Shaping) int { return Overhead + s.Padd
 
 // CheckEndpoint implements transport.Transport.
 func (t *Transport) CheckEndpoint(endpoint string, cfg transport.DialConfig) error {
-	if _, err := parseEndpoint(endpoint); err != nil {
-		return err
+	if _, err := transport.ParseEndpoint(endpoint); err != nil {
+		return fmt.Errorf("udp: endpoint: %w", err)
 	}
 	if len(cfg.Credential) < MinSecretSize {
 		return fmt.Errorf("udp: credential is %d bytes, need at least %d", len(cfg.Credential), MinSecretSize)
@@ -89,10 +94,12 @@ func checkInbound(pl transport.PeerLink) error {
 	return proto.Unmarshal(pl.Settings, &transportv1.UdpInboundSettings{})
 }
 
-func parseEndpoint(endpoint string) (netip.AddrPort, error) {
-	ap, err := netip.ParseAddrPort(endpoint)
+// parseListenAddress reads a listener's address: an IP literal and port,
+// where an unspecified address binds every address of its family.
+func parseListenAddress(address string) (netip.AddrPort, error) {
+	ap, err := netip.ParseAddrPort(address)
 	if err != nil {
-		return ap, fmt.Errorf("udp: endpoint %q is not an IP literal and port: %w", endpoint, err)
+		return ap, fmt.Errorf("udp: listen address %q is not an IP literal and port: %w", address, err)
 	}
 	return ap, nil
 }
@@ -109,7 +116,7 @@ func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admi
 // ListenPacket implements transport.PacketRoutable: the socket Listen would
 // listen on, for a shared listener to read.
 func (t *Transport) ListenPacket(ctx context.Context, cfg transport.ListenConfig) (*net.UDPConn, error) {
-	ap, err := parseEndpoint(cfg.Address)
+	ap, err := parseListenAddress(cfg.Address)
 	if err != nil {
 		return nil, err
 	}
@@ -124,9 +131,14 @@ func (t *Transport) ListenPacket(ctx context.Context, cfg transport.ListenConfig
 	return pc.(*net.UDPConn), nil
 }
 
-// ListenForwarded implements transport.PacketRoutable with ListenOn.
+// ListenForwarded implements transport.PacketRoutable: a worker's Listener
+// over what the supervisor's Router forwarded. It has no start rule: the
+// Router started before it and refuses what was sealed before then, so
+// the rule here would refuse no replay the Router lets through, only a
+// dialer whose clock runs behind, after every worker restart or listener
+// reopen, and the datagrams the Router queued for it before it started.
 func (t *Transport) ListenForwarded(pc net.PacketConn, admission transport.Admission) (transport.Listener, error) {
-	return t.ListenOn(pc, admission), nil
+	return newListener(t, pc, admission.Peers, admission.Camouflage, transport.StartRule{}), nil
 }
 
 // listenNetwork binds one address family, as the map's listeners mean it:
@@ -139,11 +151,11 @@ func listenNetwork(ap netip.AddrPort) string {
 	return "udp6"
 }
 
-// ListenOn listens on pc, which it owns from now on. pc need not be a
-// socket: a worker behind a shared listener reads the datagrams the
-// supervisor routed to it and writes replies back the same way.
+// ListenOn listens on pc, which it owns from now on, as Listen does: it
+// refuses what was sealed before it started. A worker behind a shared
+// listener uses ListenForwarded instead.
 func (t *Transport) ListenOn(pc net.PacketConn, admission transport.Admission) *Listener {
-	return newListener(t, pc, admission.Peers, admission.Camouflage)
+	return newListener(t, pc, admission.Peers, admission.Camouflage, startedAt(t))
 }
 
 // PacketRouter implements transport.PacketRoutable.
@@ -157,7 +169,7 @@ type Counters struct {
 	Delivered       uint64 // packets
 	Cover           uint64 // authenticated datagrams that carried no packet
 	Unauthenticated uint64 // unknown connection id, bad tag, malformed
-	StaleTimestamp  uint64 // sent more than five minutes from our clock
+	StaleTimestamp  uint64 // sent more than five minutes from our clock, or sealed before the receiver started
 	StaleSender     uint64 // an older sender while a newer one is active
 	Replayed        uint64 // a counter seen before, or behind the window
 	NoLink          uint64 // no link is open, and the datagram opens none

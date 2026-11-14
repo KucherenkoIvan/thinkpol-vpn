@@ -24,6 +24,9 @@ type Node interface {
 	Connect(ctx context.Context) error
 	Disconnect(ctx context.Context) error
 	SetRulePreset(ctx context.Context, preset string) error
+	SetConnectOnBoot(on bool) error
+	SetKillSwitch(ctx context.Context, on bool) error
+	SetAllowLAN(ctx context.Context, on bool) error
 	Diagnose(ctx context.Context, host bool) agent.Diagnostics
 }
 
@@ -110,7 +113,7 @@ func NewGRPCServer(shutdown context.Context, o Options, p Policy) *grpc.Server {
 		opts = append(opts, grpckit.WithLogger(o.Log))
 	}
 	for _, r := range refusals {
-		opts = append(opts, grpckit.WithErrorCode(r.err.Code, r.code))
+		opts = append(opts, grpckit.WithErrorCode(r.err.code, r.code))
 	}
 	srv := grpckit.NewServer(opts...)
 	localapiv1.RegisterLocalServiceServer(srv, &server{node: o.Node, logs: o.Logs, version: o.Version, policy: p, shutdown: shutdown.Done()})
@@ -195,6 +198,7 @@ func (s *server) Disconnect(ctx context.Context, _ *localapiv1.DisconnectRequest
 // failed start only by its step, whose detail went to the node's log.
 func nodeError(err error) error {
 	var se *agent.StartError
+	var ne *agent.KillSwitchNotEnforcedError
 	switch {
 	case errors.Is(err, agent.ErrServerMode):
 		return ErrServerMode
@@ -208,6 +212,8 @@ func nodeError(err error) error {
 		return ErrDNSUnprotected
 	case errors.As(err, &se):
 		return startFailed(se.Step)
+	case errors.As(err, &ne):
+		return killSwitchNotEnforced(ne.Reason)
 	}
 	return err
 }
@@ -222,6 +228,27 @@ func (s *server) SetRulePreset(ctx context.Context, req *localapiv1.SetRulePrese
 		return nil, nodeError(err)
 	}
 	return &localapiv1.SetRulePresetResponse{Status: statusProto(s.node.Status())}, nil
+}
+
+func (s *server) SetConnectOnBoot(_ context.Context, req *localapiv1.SetConnectOnBootRequest) (*localapiv1.SetConnectOnBootResponse, error) {
+	if err := s.node.SetConnectOnBoot(req.GetOn()); err != nil {
+		return nil, nodeError(err)
+	}
+	return &localapiv1.SetConnectOnBootResponse{Status: statusProto(s.node.Status())}, nil
+}
+
+func (s *server) SetKillSwitch(ctx context.Context, req *localapiv1.SetKillSwitchRequest) (*localapiv1.SetKillSwitchResponse, error) {
+	if err := s.node.SetKillSwitch(ctx, req.GetOn()); err != nil {
+		return nil, nodeError(err)
+	}
+	return &localapiv1.SetKillSwitchResponse{Status: statusProto(s.node.Status())}, nil
+}
+
+func (s *server) SetAllowLAN(ctx context.Context, req *localapiv1.SetAllowLANRequest) (*localapiv1.SetAllowLANResponse, error) {
+	if err := s.node.SetAllowLAN(ctx, req.GetOn()); err != nil {
+		return nil, nodeError(err)
+	}
+	return &localapiv1.SetAllowLANResponse{Status: statusProto(s.node.Status())}, nil
 }
 
 func (s *server) TailLogs(req *localapiv1.TailLogsRequest, stream grpc.ServerStreamingServer[localapiv1.TailLogsResponse]) error {

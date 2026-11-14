@@ -3,6 +3,7 @@ id: TP-053
 title: "Lab subnet allocation survives a vanishing network"
 milestone: M0
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-002]

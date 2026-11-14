@@ -1,35 +1,36 @@
 ---
 id: TP-085
-title: "Redial at once on a network change"
+title: "macOS DNS-leak capture (PRD R4)"
 milestone: M2
 area: dataplane/path
+stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-019]
 split_from: TP-080
-refs: [N2, R4, D6, docs/design/milestones.md#milestones, docs/design/overlay.md#data-plane-every-node-one-binary]
+refs: [R4, D6, docs/design/milestones.md#milestones, docs/design/overlay.md#data-plane-every-node-one-binary]
 needs_human: macos
 owner: ""
 branch: ""
 ---
 
 ## Goal
-After sleep/wake or a default-route change, the client redials as soon as the route survey sees the new network instead of waiting out the full probe dead interval.
+The macOS DNS-leak evidence PRD R4 asks for (docs/design/milestones.md M1): a capture of the physical interface shows a direct name's query and not a tunnel-bound name's.
 
 ## Scope
-From the 2026-10-15 macOS manual session: after sleep/wake or a network change, the link is only declared dead after the 6 s probe timeout, and it comes back 1.4–3.5 s after the network returns. Redialing when the route survey sees a new default route (or the old one gone) should cut recovery to roughly the redial time. The same signal can shorten recovery in NAT-rebind cases (see TP-084).
+- A device run, recorded not judged: capture the physical interface, resolve one direct name and one tunnel-bound name, and keep both names with the capture.
+
+## Out of scope
+- Redialing at once on a network change, and the Wi-Fi-change captures: TP-179 (after the MVP).
 
 ## Acceptance
-- [ ] on a route-table change that replaces the default route, the client starts a redial without waiting for the 6 s dead interval
-- [ ] device checklist: after sleep/wake or Wi-Fi change, the tunnel is back within about the redial time, not dead-interval plus redial (measured: link declared dead after the 6 s probe timeout today; back 1.4–3.5 s after the network returns)
-- [ ] device, recorded not judged (ORCHESTRATION.md "Device testing (2026-10-16)"): during a Wi-Fi change, save `thinkpol diag` (TP-091) plus a capture of the physical interface. An agent judges the evidence after the run
-- [ ] device, recorded not judged (ORCHESTRATION.md "Device testing (2026-10-16)"): while the physical interface is captured (the Wi-Fi-change capture above can be it), resolve one direct name and one tunnel-bound name and write both names down with the capture. An agent judges the evidence after the run
+- [ ] device, recorded not judged (ORCHESTRATION.md "Device testing (2026-10-16)"): while the physical interface is captured, resolve one direct name and one tunnel-bound name and write both names down with the capture. An agent judges the evidence after the run
 
 ## Notes
-- Split from TP-080 (backlog grooming 2026-10-15). Measured numbers from the macOS session: dead after 6 s probe timeout; recovery 1.4–3.5 s after the network returns.
-- Overlaps TP-019's sleep/wake checklist only where route survey already runs; this ticket is the fast redial policy.
-- Carried over from TP-019: during the Wi-Fi change, the capture covers step 8's items (during the join: nothing but DHCP and the link's own traffic on the old interface's filter; the new service's DNS republished with `ThinkpolOverride`), and the run records step 15b (whether `route -n get <a direct IP>` ever answers utunN during the change).
+- Split from TP-080 (backlog grooming 2026-10-15).
 - Carries R4's macOS DNS-leak evidence (PRD R4, docs/design/milestones.md M1): the agent checks afterwards that the direct name's query appears in the physical-interface capture (proving the capture saw DNS) and the tunnel-bound name's does not.
+- Split 2026-11-07 (owner's MVP cut): the redial-without-the-6 s-wait work, its device checks and the carried-over TP-019 Wi-Fi-change items moved to TP-179.
+- Owner, 2026-11-09: the device evidence comes from the Mac session in the M2 acceptance run (TP-029); a defect found there is fixed before M2 closes, possibly with a second short session.
 
 ## Log
 - 2026-10-15 created in backlog (split from TP-080, backlog grooming)
@@ -39,3 +40,5 @@ From the 2026-10-15 macOS manual session: after sleep/wake or a network change, 
 - 2026-10-18 docs (TP-099): acceptance gained the DNS-leak capture with a positive control
 - 2026-10-19 docs (TP-099 round 4): the DNS-leak box recorded, not judged; Notes carry R4's macOS capture
 - 2026-10-19 docs (TP-099 rounds 3–5): the DNS-leak box records; Notes say what the agent checks
+- 2026-11-07 split (owner's MVP cut): only R4's DNS-leak capture stays; redial → TP-179
+- 2026-11-09 notes: device evidence comes from the M2 acceptance session (owner)

@@ -5,8 +5,6 @@ import (
 	"encoding/xml"
 	"fmt"
 	"strconv"
-
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 )
 
 // The service's names and paths on the host.
@@ -34,53 +32,66 @@ const (
 	StopTimeoutSeconds = 60
 )
 
-// Definition is what the service runs: the agent (`thinkpol up`, with the
-// node's defaults) and whether it connects at boot (THINKPOL_CONNECT_ON_BOOT,
-// which also has it keep a device's connect choice for the boot).
+// Definition is what the service runs: the agent, `thinkpol up -service`,
+// with no other setting: the node's are in its node file, the member's
+// (connect-on-boot among them) in the device's settings file.
 type Definition struct {
 	// Binary is the thinkpol binary's absolute path.
 	Binary string
-	// ConnectOnBoot is THINKPOL_CONNECT_ON_BOOT: whether a device connects
-	// at the boot's first start (PRD D5: off unless the member turns it on).
-	ConnectOnBoot bool
+	// CrashTrace is where a device's agent's stderr goes, appended to
+	// (agent.CrashTraceFile, which the agent empties at each start once it
+	// has read it); "" for a server, whose stderr is the manager's: nowhere
+	// under launchd, the journal under systemd (RESIDUAL-RISKS.md RR40).
+	CrashTrace string
 }
 
 // SystemdUnit is the definition as a systemd unit.
 func SystemdUnit(d Definition) []byte {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, `# Written by thinkpol service install; thinkpol service uninstall removes it.
-# Connect-on-boot: thinkpol service connect-on-boot on|off.
+# Settings: the node file (node.json in the state directory); connect-on-boot:
+# thinkpol connect-on-boot on|off. Drop-ins are unsupported (thinkpol diag reports them).
 [Unit]
 Description=thinkpol node agent
 After=network.target systemd-resolved.service
 StartLimitIntervalSec=0
 
 [Service]
-ExecStart=%s up
+ExecStart=%s up -service
 # SIGHUP to the agent alone re-reads the map at once; a server's workers
 # don't handle it, so never signal the whole unit.
 ExecReload=/bin/kill -HUP $MAINPID
-Environment=THINKPOL_CONNECT_ON_BOOT=%s
 Restart=always
 RestartSec=%d
 KillMode=mixed
 TimeoutStopSec=%d
-
+%s
 [Install]
 WantedBy=multi-user.target
-`, d.Binary, OnOff(d.ConnectOnBoot), RestartAfterSeconds, StopTimeoutSeconds)
+`, d.Binary, RestartAfterSeconds, StopTimeoutSeconds, systemdStderr(d.CrashTrace))
 	return b.Bytes()
 }
 
+// systemdStderr is the unit's stderr setting: a device's goes to its crash
+// trace, appended (truncate: would empty it before the agent reads it);
+// a server's stays the journal (RESIDUAL-RISKS.md RR40).
+func systemdStderr(crashTrace string) string {
+	if crashTrace == "" {
+		return ""
+	}
+	return "# The crash trace: the agent reads the previous run's, then empties it.\nStandardError=append:" + crashTrace + "\n"
+}
+
 // LaunchdPlist is the definition as a launchd daemon's property list. It
-// sets no StandardOutPath or StandardErrorPath: the agent writes no log
-// to disk (PRD S2), and its log is the local API's.
+// sets no StandardOutPath, and StandardErrorPath (launchd appends) only
+// for a device's crash trace: the agent writes no log to disk (PRD S2),
+// and its log is the local API's.
 func LaunchdPlist(d Definition) []byte {
 	var b bytes.Buffer
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Written by thinkpol service install; thinkpol service uninstall removes it. -->
-<!-- Connect-on-boot: thinkpol service connect-on-boot on|off. -->
+<!-- Settings: the node file (node.json in the state directory); connect-on-boot: thinkpol connect-on-boot on|off. -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
@@ -89,12 +100,8 @@ func LaunchdPlist(d Definition) []byte {
 	<array>
 		<string>` + escape(d.Binary) + `</string>
 		<string>up</string>
+		<string>-service</string>
 	</array>
-	<key>EnvironmentVariables</key>
-	<dict>
-		<key>THINKPOL_CONNECT_ON_BOOT</key>
-		<string>` + OnOff(d.ConnectOnBoot) + `</string>
-	</dict>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
@@ -103,7 +110,13 @@ func LaunchdPlist(d Definition) []byte {
 	<integer>` + strconv.Itoa(RestartAfterSeconds) + `</integer>
 	<key>ExitTimeOut</key>
 	<integer>` + strconv.Itoa(StopTimeoutSeconds) + `</integer>
-</dict>
+`)
+	if d.CrashTrace != "" {
+		b.WriteString(`	<key>StandardErrorPath</key>
+	<string>` + escape(d.CrashTrace) + `</string>
+`)
+	}
+	b.WriteString(`</dict>
 </plist>
 `)
 	return b.Bytes()
@@ -113,25 +126,4 @@ func escape(s string) string {
 	var b bytes.Buffer
 	_ = xml.EscapeText(&b, []byte(s))
 	return b.String()
-}
-
-// OnOff is connect-on-boot as THINKPOL_CONNECT_ON_BOOT spells it.
-func OnOff(on bool) string {
-	if on {
-		return agent.ConnectOnBootOn
-	}
-	return agent.ConnectOnBootOff
-}
-
-// ParseOnOff reads connect-on-boot as OnOff spells it: nil for "" (not
-// given), an error for anything but on and off.
-func ParseOnOff(s string) (*bool, error) {
-	switch s {
-	case "":
-		return nil, nil
-	case OnOff(true), OnOff(false):
-		on := s == OnOff(true)
-		return &on, nil
-	}
-	return nil, fmt.Errorf("connect-on-boot %q: want %s or %s", s, OnOff(true), OnOff(false))
 }

@@ -34,9 +34,11 @@
 // with default, so every destination has an action.
 //
 // Each device can override it locally (the "what goes through the tunnel"
-// switch): a local file ([Local]: rules.local in the state directory,
-// written only by the service through the local API) picks a base, either
-// the space's rules or a preset, and the device's own rules go ahead of it.
+// switch): its settings ([Local], kept in the device's settings file,
+// device.json in the state directory, written only by the service through
+// the local API; package agent) pick a base, either the space's rules or a
+// preset, and the device's own rules go ahead of it. Local's text form is
+// what devices kept in rules.local before, read once to carry it over.
 // [Effective] puts them in order. The presets ([PresetRules]):
 //
 //   - everything: local → direct, default → chain:<the presets' chain>;

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"time"
 )
 
 var (
@@ -180,7 +181,8 @@ type Rule struct {
 	// 32766.
 	Priority int
 	// Dst, when valid, matches only packets to this prefix (`to`), of
-	// the rule's family.
+	// the rule's family; never a /0 (leave it unset for every
+	// destination).
 	Dst netip.Prefix
 	// Oif, when set, matches only lookups for this outgoing interface
 	// (`oif`): sockets bound to it, and the kernel resolving the gateway
@@ -376,6 +378,11 @@ func validateRules(rs []Rule) error {
 		if r.Dst.IsValid() && (r.Dst != r.Dst.Masked() || FamilyOf(r.Dst.Addr()) != r.Family || r.Dst.Addr().Is4In6()) {
 			return fmt.Errorf("netcfg: rule %v: destination must be a masked prefix of the rule's family", r)
 		}
+		// The kernel keeps no destination for a /0, so the rule would not
+		// read back as added.
+		if r.Dst.IsValid() && r.Dst.Bits() == 0 {
+			return fmt.Errorf("netcfg: rule %v: a /0 destination is every destination; leave Dst unset", r)
+		}
 		if rules[r] {
 			return fmt.Errorf("netcfg: rule %v listed twice", r)
 		}
@@ -477,6 +484,24 @@ type Survey struct {
 	// its destination and Scope: what owners' scoped routes must not
 	// take.
 	HeldScoped []Route
+	// CorruptRecords are the owners' route records found corrupt in this
+	// boot (macOS): those set aside, and another owner's still in place
+	// (its owner sets it aside at its next start, or rewrites it at its
+	// next change). The routes they named count as foreign, so no other
+	// owner removes them; an owner already running when its record went
+	// bad still removes its own, which it knows from memory.
+	CorruptRecords []CorruptRecord
+	// UnownedRoutes counts the routes carrying thinkpol's route flag that
+	// no owner's record names (macOS): a corrupt record's leftovers, or
+	// another program's that uses the same flag.
+	UnownedRoutes int
+}
+
+// CorruptRecord is a route record found corrupt: its path, why it is
+// corrupt, and when it was last written (zero if that couldn't be read).
+type CorruptRecord struct {
+	Path, Reason string
+	Modified     time.Time
 }
 
 // Link is an interface as Survey sees it.

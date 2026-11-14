@@ -85,6 +85,17 @@ func (r *runner) setUpstreams(ups []netip.AddrPort) {
 	r.dp.Log.Info("DNS: the resolver's upstreams changed", "upstreams", len(ups))
 }
 
+// noUpstream is what a device's status reads to say its running
+// resolver has no direct upstream to ask; nil without one. A worker's
+// resolver reports its upstreams as dns_upstream_refused instead.
+func (r *runner) noUpstream() func() bool {
+	if r.resolver == nil || r.dp.inWorker() {
+		return nil
+	}
+	srv := r.resolver
+	return func() bool { return !srv.HasUpstreams() }
+}
+
 // dnsGuard is a device's OS resolver configuration while it should
 // resolve through the node, and why it may not: read by the status from
 // any goroutine.
@@ -194,9 +205,12 @@ func (r *runner) pointSystem() {
 	r.guard.set(true, sys, nil)
 	r.systemCfg, r.dnsRetryAt = want, time.Time{}
 	if p := sys.Problem(); p != nil {
-		if dns.Unprotected(p) {
+		switch {
+		case dns.Deferred(sys):
+			r.dp.Log.Error("DNS: the system's new configuration waits for another program's write of it to settle: names may leave outside the tunnel meanwhile", "servers", want.Servers, "err", p)
+		case dns.Unprotected(p):
 			r.dp.Log.Error("DNS: the system resolves through the node, but not only: names may leave outside the tunnel", "err", p)
-		} else {
+		default:
 			// The OS configuration warned when the read failed: one
 			// warning an episode.
 			r.dp.Log.Info("DNS: the system resolves through the node; the direct upstreams may be stale", "err", p)

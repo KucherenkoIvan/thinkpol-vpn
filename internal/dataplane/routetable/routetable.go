@@ -265,10 +265,14 @@ func PolicyRouting(w Want, s netcfg.Survey) netcfg.Config {
 // OwnerRouteTable: it applies each Want it is given, and applies it again
 // when Watch reports a change (an interface going down or up, its
 // subnets, the physical gateway, someone removing a route or rule of
-// ours), every Backstop anyway, and every RetryAfter while that fails.
-// Close removes everything. With a Guard, the guard follows the routes at
-// each step, with a status of its own: its failure never undoes the
-// routes or fails an Enforce.
+// ours or adding a rule with our protocol), every Backstop anyway, and
+// every RetryAfter while that fails: while the routes fail, events wait
+// for that retry, RetryAfter after the last attempt, rather than
+// re-applying a debounce later (a failing Apply's undo is itself an
+// event). Close removes everything, a crashed run's included. With a
+// Guard, the guard follows the routes at each step, never wider than the
+// routes in place nor the last Want (guardFor), with a status of its own:
+// its failure never undoes the routes or fails an Enforce.
 type Enforcer struct {
 	cfg   netcfg.Configurator
 	guard Guard // nil: routes only
@@ -290,11 +294,15 @@ type Enforcer struct {
 	// Apply.
 	mu   sync.Mutex
 	want *Want // last given
-	// applied is the last Want whose routes went in: what the OS holds
-	// while want's fail (an Apply is all or nothing), and what the guard
-	// must match meanwhile.
+	// applied is the last Want whose routes went in: what the last
+	// successful Apply put in place, which stays while want's fail (an
+	// Apply is all or nothing). The guard is never wider than it nor
+	// than want (guardFor). Non-nil only with want.
 	applied *Want
 	failing bool // the last Apply or re-Apply of want's routes failed
+	// lastAttempt is when the last Apply or re-Apply of the routes ended:
+	// while failing, the next comes RetryAfter later (retryIn).
+	lastAttempt time.Time
 	// unsupported: the OS can't enforce the table at all (a kernel without
 	// rule protocols); nothing is retried.
 	unsupported bool
@@ -308,6 +316,9 @@ type Enforcer struct {
 	// its own (warnLimit): the guard's apply, the routes' re-apply, and
 	// subscribing to the routes' and the guard's changes.
 	guardWarn, reapplyWarn, watchWarn, guardWatchWarn warnLimit
+	// corruptWarned are the corrupt route records the last survey found,
+	// each warned of once.
+	corruptWarned map[corruptSeen]bool
 }
 
 // Status is what an Enforcer reports: numbers and codes only.
@@ -319,9 +330,10 @@ type Status struct {
 	// ErrorUnsupported or ErrorTUNDown (then Enforced is false too); empty
 	// otherwise.
 	Error ErrorCode
-	// GuardEnforced says the leak guard for the last Want is in place:
-	// false without a Guard, before the first Enforce, and while applying
-	// it fails.
+	// GuardEnforced says the leak guard is in place for the routes in
+	// place and the last Want (guardFor: what both exempt; the last
+	// Want's own once its routes are in): false without a Guard, before
+	// the first Enforce, and while applying it fails.
 	GuardEnforced bool
 	// GuardError says what is wrong with the guard: ErrorGuard or
 	// ErrorGuardUnsupported; empty otherwise (no Guard included).
@@ -342,6 +354,15 @@ type Status struct {
 	// networks that nothing outranks (macOS, Layout.OverlayAhead): a peer's
 	// traffic leaves around the tunnel.
 	OverlayAhead int
+	// CorruptRecords counts the route records netcfg found corrupt in
+	// this boot (macOS, netcfg.Survey.CorruptRecords), as of the last
+	// survey: the routes they named are left in place as foreign.
+	CorruptRecords int
+	// UnownedRoutes counts the routes with thinkpol's route flag that no
+	// record names (macOS, netcfg.Survey.UnownedRoutes), as of the last
+	// survey: with a corrupt record, the routes it named that are still
+	// there.
+	UnownedRoutes int
 }
 
 // ErrorCode is what Status.Error and Status.GuardError say is wrong: a
@@ -454,8 +475,9 @@ func (e *Enforcer) pauseWatching() {
 
 // Enforce puts w's routes in place, all or nothing: on failure what was
 // in place stays, Enforce fails, and the watcher tries w again every
-// RetryAfter. The guard, if any, follows routes that went in; its own
-// failure doesn't fail Enforce (Status.GuardError says it, and the
+// RetryAfter. The guard, if any, follows routes that went in: none
+// before the first (a crashed run's stays until Close removes it); its
+// own failure doesn't fail Enforce (Status.GuardError says it, and the
 // watcher retries it).
 func (e *Enforcer) Enforce(ctx context.Context, w Want) error {
 	if w.TUN == "" {
@@ -481,36 +503,36 @@ func (e *Enforcer) Enforce(ctx context.Context, w Want) error {
 	return e.apply(ctx, w, false)
 }
 
-// apply puts w in place against the OS's routing as it is now, then the
-// guard for what the routes hold now: w's if they went in, else the last
-// applied Want's, which an Apply that failed left in place. The watcher
-// is paused or apply runs on it. Only the routes' failure is returned.
+// apply puts w in place against the OS's routing as it is now, records
+// it as the last Want (and the last applied one if its routes went in),
+// then puts the guard for that state in place (guardFor). The watcher is
+// paused or apply runs on it. Only the routes' failure is returned.
 func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	start := time.Now()
 	s, err := e.cfg.Survey(ctx)
 	var l Layout
 	if err == nil {
+		e.noteCorrupt(s)
 		l = LayoutOf(w, s)
 		err = e.cfg.Apply(ctx, l.Config)
 	}
 	took := time.Since(start)
-	if err == nil {
-		e.applyGuard(ctx, w)
-	} else {
-		e.mu.Lock()
-		held := e.applied
-		e.mu.Unlock()
-		if held != nil {
-			e.applyGuard(ctx, *held)
-		}
-	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.want = &w
+	e.failing, e.lastAttempt = err != nil, time.Now()
 	if err == nil {
 		e.applied = &w
 	}
-	e.failing = err != nil
+	held := e.applied
+	e.mu.Unlock()
+	// None before the first routes go in: a first Apply that fails fails
+	// the agent's start, whose Close removes any guard, a crashed run's
+	// too (TP-157). One here would only reset IPv6 flows on each retry.
+	if held != nil {
+		e.applyGuard(ctx, guardFor(*held, w))
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.status.Enforced = err == nil
 	if again {
 		e.status.Reapplies++
@@ -541,9 +563,68 @@ func (e *Enforcer) apply(ctx context.Context, w Want, again bool) error {
 	return nil
 }
 
-// applyGuard puts the guard for w in place and says how that went in the
+// guardFor is the one rule for the guard: for the routes in place
+// (held, the last applied Want) and the rules (want, the last given), it
+// is held's, its Direct and Upstreams cut to what want's guard exempts
+// too; TUN and Mark are held's. Never wider than either; once want's
+// routes are in, held == want and it is GuardFor(want). While they fail,
+// a failed shrink narrows it, a failed grow keeps held's, and a change
+// that adds some prefixes and drops others exempts only those it keeps.
+// What held routes direct and the guard no longer exempts is refused,
+// never leaked: the device's IPv6 that goes direct by routing still
+// leaves through a physical interface, where the guard refuses it.
+func guardFor(held, want Want) Exempt {
+	g, w := GuardFor(held), GuardFor(want)
+	g.Direct = g.Direct.Intersect(w.Direct)
+	g.Upstreams = intersectUpstreams(g.Upstreams, w.Upstreams)
+	return g
+}
+
+// intersectUpstreams are the upstreams in both a and b. b is
+// binary-searched, so it must be as upstreams leaves it (sorted,
+// compacted), and a too, or its duplicates would repeat: both are put
+// through upstreams here rather than trusted to be.
+func intersectUpstreams(a, b []netip.AddrPort) []netip.AddrPort {
+	b = upstreams(b)
+	var out []netip.AddrPort
+	for _, ap := range upstreams(a) {
+		if _, ok := slices.BinarySearchFunc(b, ap, netip.AddrPort.Compare); ok {
+			out = append(out, ap)
+		}
+	}
+	return out
+}
+
+// corruptSeen is a corrupt route record as a survey found it: one that
+// comes back, or comes back changed, is another.
+type corruptSeen struct {
+	path, reason string
+	modified     int64
+}
+
+// noteCorrupt counts the corrupt route records and the unowned routes a
+// survey found, and warns of each record by its path, with why it is
+// corrupt: once while surveys keep finding it unchanged, again once it
+// goes and comes back or comes back with a new reason or mtime (an
+// overlay's record corrupted, rewritten and corrupted again).
+func (e *Enforcer) noteCorrupt(s netcfg.Survey) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.status.CorruptRecords, e.status.UnownedRoutes = len(s.CorruptRecords), s.UnownedRoutes
+	seen := make(map[corruptSeen]bool, len(s.CorruptRecords))
+	for _, r := range s.CorruptRecords {
+		k := corruptSeen{r.Path, r.Reason, r.Modified.UnixNano()}
+		seen[k] = true
+		if !e.corruptWarned[k] {
+			e.log.Warn("route table: a corrupt route record holds no routes; the routes it named count as foreign here (an owner already running when its record went bad still removes its own; the rest stay until reboot, unless they went with their owner's interface)", "record", r.Path, "reason", r.Reason)
+		}
+	}
+	e.corruptWarned = seen
+}
+
+// applyGuard puts guard x in place and says how that went in the
 // status; nothing once the OS turned out unable to hold it.
-func (e *Enforcer) applyGuard(ctx context.Context, w Want) {
+func (e *Enforcer) applyGuard(ctx context.Context, x Exempt) {
 	if e.guard == nil {
 		return
 	}
@@ -553,7 +634,7 @@ func (e *Enforcer) applyGuard(ctx context.Context, w Want) {
 	if unsupported {
 		return
 	}
-	err := e.guard.Apply(ctx, GuardFor(w))
+	err := e.guard.Apply(ctx, x)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	switch {
@@ -608,7 +689,10 @@ func (e *Enforcer) Close() error {
 
 // watch re-applies the last Want after each burst of changes Watch
 // reports, every Backstop, and every RetryAfter while that fails; and the
-// guard alone after each burst of the guard's own Watch.
+// guard alone after each burst of the guard's own Watch. While the routes
+// fail, a burst (and the check) is held until RetryAfter has passed since
+// the last attempt: a failing Apply's undo removes rules of ours, an
+// event, which would otherwise retry it every debounce.
 func (e *Enforcer) watch(ctx context.Context, check bool) {
 	var w watches
 	e.subscribe(ctx, &w)
@@ -619,7 +703,9 @@ func (e *Enforcer) watch(ctx context.Context, check bool) {
 		if !e.settle(ctx, w.ch) {
 			return
 		}
-		e.reapply(ctx)
+		if e.retryIn() == 0 {
+			e.reapply(ctx)
+		}
 	}
 	for {
 		wait, unsupported := e.backstop()
@@ -659,6 +745,9 @@ func (e *Enforcer) watch(ctx context.Context, check bool) {
 			}
 			if !e.settle(ctx, w.ch) {
 				return
+			}
+			if e.retryIn() > 0 {
+				continue // the timer retries, RetryAfter after the last attempt
 			}
 		}
 		e.reapply(ctx)
@@ -716,19 +805,41 @@ func (e *Enforcer) subscribeGuard(ctx context.Context, w *watches) {
 }
 
 // backstop is how long watch waits for a change before it re-applies
-// anyway: RetryAfter while the routes or the guard fail, else Backstop;
+// anyway: while the routes fail, until RetryAfter after the last attempt
+// (retryIn); RetryAfter while the guard alone fails; else Backstop.
 // unsupported once the table can't be held at all.
 func (e *Enforcer) backstop() (wait time.Duration, unsupported bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	wait = Backstop
-	if e.failing || e.guardFailing {
+	switch {
+	case e.failing:
+		wait = e.retryInLocked()
+	case e.guardFailing:
 		wait = RetryAfter
+	default:
+		wait = Backstop
 	}
 	return wait, e.unsupported
 }
 
-// settle waits until ch is quiet for debounce; false if ctx ended.
+// retryIn is how long until the routes may be re-applied: while they
+// fail, what is left of RetryAfter since the last attempt; else 0.
+func (e *Enforcer) retryIn() time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.retryInLocked()
+}
+
+func (e *Enforcer) retryInLocked() time.Duration {
+	if !e.failing {
+		return 0
+	}
+	return max(0, RetryAfter-time.Since(e.lastAttempt))
+}
+
+// settle waits out debounce from the first event of a burst (a fixed
+// window: further events don't restart it, so a steady stream can't starve
+// the retry); false if ctx ended.
 func (e *Enforcer) settle(ctx context.Context, ch <-chan struct{}) bool {
 	timer := time.NewTimer(debounce)
 	defer timer.Stop()
@@ -763,18 +874,19 @@ func (e *Enforcer) reapply(ctx context.Context) {
 	}
 }
 
-// reapplyGuard puts the guard back alone, for the routes in place (the
-// last applied Want's), whether or not the routes' latest Apply failed:
-// a failed Apply leaves the previous routes in place, and they need
-// their guard.
+// reapplyGuard puts the guard back alone, by the same rule as apply
+// (guardFor), for the routes in place (the last applied Want's) and the
+// last Want, whether or not the routes' latest Apply failed: a failed
+// Apply leaves the previous routes in place, and they need their guard,
+// cut to what the last Want's guard exempts too.
 func (e *Enforcer) reapplyGuard(ctx context.Context) {
 	e.mu.Lock()
-	w := e.applied
+	held, want := e.applied, e.want
 	e.mu.Unlock()
-	if w == nil || ctx.Err() != nil {
+	if held == nil || want == nil || ctx.Err() != nil {
 		return // no routes in place yet: nothing to guard
 	}
-	e.applyGuard(ctx, *w)
+	e.applyGuard(ctx, guardFor(*held, *want))
 	e.mu.Lock()
 	e.status.Reapplies++
 	e.mu.Unlock()

@@ -3,6 +3,7 @@ id: TP-002
 title: "Lab harness"
 milestone: M0
 area: lab
+stream: verification
 repo: thinkpol-vpn
 size: M
 depends_on: [TP-001]

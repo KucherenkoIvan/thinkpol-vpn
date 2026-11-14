@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -22,12 +24,126 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	localapiv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/localapi/v1"
 )
 
 const testVersion = "v0.0.0-test"
+
+// The previous run's trace is the snapshot's last_run, and the status
+// says the last run crashed, in its JSON and in its text; nothing shows
+// after a clean stop.
+func TestThePreviousRunsTraceIsServed(t *testing.T) {
+	s := serve(t, me())
+	c := dial(t, s.socket)
+	ctx := context.Background()
+	render := func(st *localapiv1.Status) string {
+		t.Helper()
+		var out bytes.Buffer
+		if err := WriteStatus(&out, st, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+
+	d, err := c.Diagnose(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.GetLastRun().GetLines()) != 0 || d.GetStatus().GetLastRunCrashed() || strings.Contains(render(d.GetStatus()), "last run") {
+		t.Fatalf("a clean stop: %v", d)
+	}
+
+	s.node.mu.Lock()
+	s.node.st.LastRunCrashed = true
+	s.node.diag.LastRun = agent.LastRun{Trace: "panic: boom\n\ngoroutine 1 [running]:\n", Truncated: true}
+	s.node.mu.Unlock()
+	if d, err = c.Diagnose(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := WriteDiagnostics(&out, d); err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Status struct {
+			LastRunCrashed bool `json:"last_run_crashed"`
+		} `json:"status"`
+		LastRun struct {
+			Unreadable *string  `json:"unreadable"`
+			Lines      []string `json:"lines"`
+			Truncated  bool     `json:"truncated"`
+		} `json:"last_run"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if r := parsed.LastRun; !parsed.Status.LastRunCrashed || !slices.Equal(r.Lines, []string{"panic: boom", "", "goroutine 1 [running]:"}) || !r.Truncated ||
+		r.Unreadable == nil || *r.Unreadable != "" {
+		t.Fatalf("JSON:\n%s", out.String())
+	}
+	if !strings.Contains(render(d.GetStatus()), "last run:") {
+		t.Fatalf("status text:\n%s", render(d.GetStatus()))
+	}
+}
+
+// A trace that isn't UTF-8 (a panic may print any bytes) still reaches
+// Diagnose and its JSON, read from the file as a start reads it; an
+// unreadable trace is a status line of its own.
+func TestATraceOfAnyBytesIsServed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), agent.CrashTraceFile)
+	if err := os.WriteFile(path, []byte("panic: \xff\xfe raw\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stderr.Close() }()
+	ct, err := agent.TakeCrashTrace(path, stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := serve(t, me())
+	c := dial(t, s.socket)
+	ctx := context.Background()
+	s.node.mu.Lock()
+	s.node.st.LastRunCrashed = true
+	s.node.diag.LastRun = ct.LastRun
+	s.node.mu.Unlock()
+	d, err := c.Diagnose(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := d.GetLastRun().GetLines(); len(lines) != 1 || !strings.HasPrefix(lines[0], "panic: ") || !strings.HasSuffix(lines[0], " raw") {
+		t.Fatalf("lines %q", lines)
+	}
+	var out bytes.Buffer
+	if err := WriteDiagnostics(&out, d); err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(out.Bytes()) {
+		t.Fatalf("JSON:\n%s", out.String())
+	}
+
+	s.node.mu.Lock()
+	s.node.st.LastRunCrashed, s.node.st.LastRunUnreadable = false, true
+	s.node.mu.Unlock()
+	st, err := c.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text bytes.Buffer
+	if err := WriteStatus(&text, st, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text.String(), "its crash trace wasn't read") || strings.Contains(text.String(), "crashed, or exited") {
+		t.Fatalf("status text:\n%s", text.String())
+	}
+}
 
 func TestDiagnoseServesAVersionedSnapshot(t *testing.T) {
 	s := serve(t, me())
@@ -40,7 +156,7 @@ func TestDiagnoseServesAVersionedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.GetSchemaVersion() != DiagSchemaVersion || d.GetOs() != runtime.GOOS || d.GetAgentVersion() != testVersion ||
+	if d.GetSchemaVersion() != SchemaVersion || d.GetOs() != runtime.GOOS || d.GetAgentVersion() != testVersion ||
 		d.GetTakenAt().AsTime().Before(before.Truncate(time.Second)) {
 		t.Fatalf("header: %v", d)
 	}
@@ -72,13 +188,33 @@ func TestDiagnoseServesAVersionedSnapshot(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"schema_version", "taken_at", "os", "agent_version", "host_parts", "status", "tun", "last_apply", "routes", "policy_rules", "guard", "dns"} {
+	for _, key := range []string{"schema_version", "taken_at", "os", "agent_version", "host_parts", "status", "tun", "last_apply", "routes", "policy_rules", "guard", "kill_switch", "dns", "last_run"} {
 		if _, ok := parsed[key]; !ok {
 			t.Errorf("no %q in\n%s", key, out.String())
 		}
 	}
+	// The kill switch prints beside the guard.
+	dec := json.NewDecoder(bytes.NewReader(out.Bytes()))
+	if _, err := dec.Token(); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, key.(string))
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if i := slices.Index(keys, "guard"); i < 0 || i+1 == len(keys) || keys[i+1] != "kill_switch" {
+		t.Errorf("not beside the guard: %v", keys)
+	}
 	tun, _ := parsed["tun"].(map[string]any)
-	if parsed["schema_version"] != float64(DiagSchemaVersion) || tun["name"] != "utun9" || tun["unreadable"] != "" {
+	if parsed["schema_version"] != float64(SchemaVersion) || tun["name"] != "utun9" || tun["unreadable"] != "" {
 		t.Fatalf("JSON:\n%s", out.String())
 	}
 
@@ -146,7 +282,7 @@ func TestTheSnapshotHasNoSecretField(t *testing.T) {
 
 func TestWriteDiagnosticsFileIsTheOwnersOnly(t *testing.T) {
 	dir := t.TempDir()
-	d := &localapiv1.Diagnostics{SchemaVersion: DiagSchemaVersion, Os: "linux"}
+	d := &localapiv1.Diagnostics{SchemaVersion: SchemaVersion, Os: "linux"}
 	path := filepath.Join(dir, "diag.json")
 	check := func(t *testing.T) {
 		t.Helper()
@@ -158,7 +294,7 @@ func TestWriteDiagnosticsFileIsTheOwnersOnly(t *testing.T) {
 		var got struct {
 			SchemaVersion int `json:"schema_version"`
 		}
-		if err := json.Unmarshal(b, &got); err != nil || got.SchemaVersion != DiagSchemaVersion {
+		if err := json.Unmarshal(b, &got); err != nil || got.SchemaVersion != SchemaVersion {
 			t.Fatalf("%s: %v", b, err)
 		}
 	}
@@ -357,5 +493,105 @@ func TestDiagnoseCarriesTheHostParts(t *testing.T) {
 	s.node.mu.Unlock()
 	if d, err = c.Diagnose(ctx); err != nil || !proto.Equal(d.GetGuard(), &localapiv1.DiagGuard{Where: "pf anchor com.apple/000.thinkpol", Unreadable: "no pfctl"}) {
 		t.Fatalf("an unreadable guard: %v, %v", d.GetGuard(), err)
+	}
+}
+
+// TestDiagnoseCarriesTheKillSwitch: the kill switch as the host holds
+// it, Linux's table (chains, rules, set sizes) and macOS's anchor (pf's
+// state, its own reference); a part unreadable says why and holds nothing
+// else, an unknown presence is left out of the JSON, and one the host
+// doesn't hold is only where it would be.
+func TestDiagnoseCarriesTheKillSwitch(t *testing.T) {
+	s := serve(t, me())
+	c := dial(t, s.socket)
+	ctx := context.Background()
+	set := func(k firewall.KillSwitchReport) *localapiv1.DiagKillSwitch {
+		t.Helper()
+		s.node.mu.Lock()
+		s.node.diag.KillSwitch = k
+		s.node.mu.Unlock()
+		d, err := c.Diagnose(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d.GetKillSwitch()
+	}
+
+	got := set(firewall.KillSwitchReport{
+		Where: "nftables table inet thinkpol-killswitch", Present: true,
+		Rules: []routetable.GuardRuleReport{
+			{Chain: "output", Text: `meta oifname "lo" accept`},
+			{Chain: "forward", Text: "counter reject with icmpx admin-prohibited", Counted: true, Packets: 5, Bytes: 420},
+		},
+		Sets:     []firewall.KillSwitchSetReport{{Name: "allow4", Entries: 2}, {Name: "direct6", Unreadable: "EPERM", Entries: 9}},
+		NFTables: &routetable.NFTablesReport{Chains: []routetable.NFTChainReport{{Name: "output", Hook: "output", Priority: 2147483647, Policy: "accept"}}},
+	})
+	want := &localapiv1.DiagKillSwitch{
+		Where: "nftables table inet thinkpol-killswitch", Present: proto.Bool(true),
+		Rules: &localapiv1.DiagGuardRules{Rules: []*localapiv1.DiagGuardRule{
+			{Chain: "output", Text: `meta oifname "lo" accept`},
+			{Chain: "forward", Text: "counter reject with icmpx admin-prohibited", Counted: true, Packets: 5, Bytes: 420},
+		}},
+		Sets:     &localapiv1.DiagKillSwitchSets{Sets: []*localapiv1.DiagKillSwitchSet{{Name: "allow4", Entries: 2}, {Name: "direct6", Unreadable: "EPERM"}}},
+		Nftables: &localapiv1.DiagNftables{Chains: []*localapiv1.DiagNftChain{{Name: "output", Hook: "output", Priority: 2147483647, Policy: "accept"}}},
+	}
+	if !proto.Equal(got, want) {
+		t.Fatalf("linux: %v, want %v", got, want)
+	}
+
+	got = set(firewall.KillSwitchReport{
+		Where: "pf anchor com.apple/001.thinkpol-killswitch", RulesUnreadable: "pfctl: odd", PresentUnknown: true, SetsUnreadable: "never on macOS",
+		Sets: []firewall.KillSwitchSetReport{{Name: "thinkpol_killswitch", Entries: 4}},
+		PF: &firewall.KillSwitchPFReport{
+			Enabled:   true,
+			Reference: &routetable.PFReferenceReport{Recorded: true, Pid: 4130, Held: true},
+		},
+	})
+	want = &localapiv1.DiagKillSwitch{
+		Where: "pf anchor com.apple/001.thinkpol-killswitch",
+		Rules: &localapiv1.DiagGuardRules{Unreadable: "pfctl: odd"},
+		Sets:  &localapiv1.DiagKillSwitchSets{Unreadable: "never on macOS"},
+		Pf: &localapiv1.DiagKillSwitchPf{
+			Enabled:   &localapiv1.DiagPfEnabled{Enabled: true},
+			Reference: &localapiv1.DiagPfReference{Recorded: true, Pid: 4130, Held: true},
+		},
+	}
+	if !proto.Equal(got, want) {
+		t.Fatalf("macOS: %v, want %v", got, want)
+	}
+	s.node.mu.Lock()
+	d := diagnosticsProto(s.node.diag, time.Now(), testVersion)
+	s.node.mu.Unlock()
+	var out bytes.Buffer
+	if err := WriteDiagnostics(&out, d); err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		KillSwitch map[string]json.RawMessage `json:"kill_switch"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if _, there := parsed.KillSwitch["present"]; there || parsed.KillSwitch["pf"] == nil {
+		t.Fatalf("present: %q\n%s", parsed.KillSwitch["present"], out.String())
+	}
+
+	got = set(firewall.KillSwitchReport{Where: "pf anchor com.apple/001.thinkpol-killswitch", PF: &firewall.KillSwitchPFReport{
+		EnabledUnreadable: "pfctl -s info: odd", Enabled: true, ReferenceUnreadable: "trusteddir: permission denied",
+		Reference: &routetable.PFReferenceReport{Recorded: true},
+	}})
+	if pf := got.GetPf(); !proto.Equal(pf.GetEnabled(), &localapiv1.DiagPfEnabled{Unreadable: "pfctl -s info: odd"}) ||
+		!proto.Equal(pf.GetReference(), &localapiv1.DiagPfReference{Unreadable: "trusteddir: permission denied"}) {
+		t.Fatalf("pf unreadable: %v", pf)
+	}
+
+	if got = set(firewall.KillSwitchReport{Where: "nftables table inet thinkpol-killswitch"}); !proto.Equal(got, &localapiv1.DiagKillSwitch{
+		Where: "nftables table inet thinkpol-killswitch", Present: proto.Bool(false), Rules: &localapiv1.DiagGuardRules{}, Sets: &localapiv1.DiagKillSwitchSets{},
+	}) {
+		t.Fatalf("no kill switch: %v", got)
+	}
+	if got = set(firewall.KillSwitchReport{Where: "pf anchor com.apple/001.thinkpol-killswitch", Unreadable: "no pfctl", Present: true}); !proto.Equal(got,
+		&localapiv1.DiagKillSwitch{Where: "pf anchor com.apple/001.thinkpol-killswitch", Unreadable: "no pfctl"}) {
+		t.Fatalf("unreadable: %v", got)
 	}
 }

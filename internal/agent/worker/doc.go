@@ -54,7 +54,9 @@
 // over the data socket, whose writes go back out through the public
 // socket, to the addresses the supervisor allows; a stream listener
 // delivers the connections whose descriptors the supervisor passed over
-// the control socket. The transport's listener on top of them
+// the control socket (with reality, each with the target connection the
+// supervisor dialled for it), served with the listener's handoff
+// settings from the Listeners message. The transport's listener on top of them
 // ([SharedListener.Listen]) decrypts and filters again, as on any other
 // listener. Replies are sent to the supervisor blocking, so a full data
 // socket holds up only this worker.

@@ -3,6 +3,7 @@ id: TP-031
 title: "Hop groups and failover"
 milestone: M3
 area: dataplane/path
+stream: core
 repo: thinkpol-vpn
 size: L
 depends_on: [TP-030]

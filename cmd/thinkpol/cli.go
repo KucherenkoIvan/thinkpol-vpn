@@ -11,9 +11,11 @@ import (
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
+	localapiv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/localapi/v1"
 )
 
 // command is one subcommand. Its path is space-separated ("version",
@@ -56,7 +58,7 @@ func register(c command) {
 
 var (
 	// errUsage from a command makes run print the command's synopsis and
-	// exit with status 2.
+	// exit with exitUsage.
 	errUsage = errors.New("usage")
 	// errUsagePrinted is errUsage after parseFlags already printed it.
 	errUsagePrinted = errors.New("usage printed")
@@ -64,7 +66,8 @@ var (
 
 // parseFlags parses args into fs, which must be named after the command's
 // path. -h prints the synopsis and the flags and returns flag.ErrHelp (exit
-// 0); a bad flag prints the error and the same help (exit 2).
+// 0); a bad flag prints the error and the same help (exitUsage, where Go's
+// flag package would exit 2).
 func parseFlags(fs *flag.FlagSet, e env, args []string) error {
 	fs.SetOutput(e.stderr)
 	fs.Usage = func() {
@@ -114,9 +117,43 @@ func (c apiCommand) dial(e env, args []string, argsOK func(*flag.FlagSet) bool) 
 	return localapi.Dial(*c.socket)
 }
 
+// printOutcome prints the status a call that changes the node returned
+// with no error. A call that failed with exitFailure (the state not
+// reached, or reached in part: connected without DNS protection, a
+// toggle kept while the kill switch isn't enforced, a preset kept and
+// enforced failing closed) prints the status as it is now, if the service
+// still answers within statusAfterFailure: the verdict's 1 is "not
+// reached, with the status printed", so the failure is read with where
+// it left the node. err is returned either way, with the status's
+// printing error, if any.
+func printOutcome(ctx context.Context, e env, c *localapi.Client, st *localapiv1.Status, err error) error {
+	if err == nil {
+		return localapi.WriteStatus(e.stdout, st, time.Now())
+	}
+	if exitCode(err) != exitFailure {
+		return err
+	}
+	sctx, cancel := context.WithTimeout(ctx, statusAfterFailure)
+	defer cancel()
+	now, serr := c.Status(sctx)
+	if serr != nil {
+		return err
+	}
+	return errors.Join(err, localapi.WriteStatus(e.stdout, now, time.Now()))
+}
+
+// statusAfterFailure bounds printOutcome's second call: the failure is
+// told whether or not the status comes.
+const statusAfterFailure = 5 * time.Second
+
 // noArgs and oneArg are apiCommand.dial's usual argsOK.
 func noArgs(fs *flag.FlagSet) bool { return fs.NArg() == 0 }
 func oneArg(fs *flag.FlagSet) bool { return fs.NArg() == 1 }
+
+// onOffArgs takes no argument or one, on or off: a toggle's command.
+func onOffArgs(fs *flag.FlagSet) bool {
+	return fs.NArg() == 0 || fs.NArg() == 1 && (fs.Arg(0) == "on" || fs.Arg(0) == "off")
+}
 
 // commandWords counts args' leading words: the command path's candidate
 // words. Flags and arguments with spaces end a path.
@@ -142,7 +179,7 @@ func matchCommand(args []string) (command, []string, bool) {
 func run(ctx context.Context, e env, args []string) int {
 	if len(args) == 0 {
 		listCommands(e.stderr, "")
-		return 2
+		return exitUsage
 	}
 	if isHelp(args[0]) {
 		listCommands(e.stdout, "")
@@ -151,18 +188,15 @@ func run(ctx context.Context, e env, args []string) int {
 
 	if c, rest, ok := matchCommand(args); ok {
 		err := c.run(ctx, e, rest)
+		code := exitCode(err)
 		switch {
-		case err == nil, errors.Is(err, flag.ErrHelp):
-			return 0
-		case errors.Is(err, errUsagePrinted):
-			return 2
+		case code == exitOK, errors.Is(err, errUsagePrinted):
 		case errors.Is(err, errUsage):
 			synopsis(e.stderr, c.path)
-			return 2
 		default:
-			_, _ = fmt.Fprintf(e.stderr, "thinkpol %s: %v\n", c.path, err)
-			return 1
+			_, _ = fmt.Fprintf(e.stderr, "thinkpol %s: %v%s\n", c.path, err, codeSuffix(err))
 		}
+		return code
 	}
 
 	// No command matched: list the longest group the words name, if any.
@@ -179,11 +213,21 @@ func run(ctx context.Context, e env, args []string) int {
 			_, _ = fmt.Fprintf(e.stderr, "thinkpol: unknown command %q\n\n", group+" "+args[n])
 		}
 		listCommands(e.stderr, group)
-		return 2
+		return exitUsage
 	}
 	_, _ = fmt.Fprintf(e.stderr, "thinkpol: unknown command %q\n\n", args[0])
 	listCommands(e.stderr, "")
-	return 2
+	return exitUsage
+}
+
+// codeSuffix is the local API's code for err, " [code]", so a script
+// reads which refusal it was from stderr; empty when the API named none.
+func codeSuffix(err error) string {
+	var refusal localapi.Error
+	if !errors.As(err, &refusal) || refusal.Code() == "" {
+		return ""
+	}
+	return " [" + refusal.Code() + "]"
 }
 
 func isHelp(arg string) bool {

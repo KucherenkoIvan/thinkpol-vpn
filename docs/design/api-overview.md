@@ -1,0 +1,555 @@
+# thinkpol-vpn — API overview
+
+This is everything a person or a script sees of thinkpol today: the CLI, the local API, the configuration, and the files on disk. It also lists the surface that three pre-M2 tickets plan to add and what TP-140 and TP-166 added since, and ends with a consistency review. It describes the `rewrite` branch as built (TP-139). The command-by-command CLI and local API reference is in a second file, [API overview: reference](api-overview-reference.md), to keep each design file under 50 KB. The entry point is [DESIGN.md](../../DESIGN.md). Where this file and the code disagree, the code wins: this is a snapshot for review, not a source of truth.
+
+**Where the examples come from.** Every example output here and in the reference was captured on 2026-10-28 from this branch, in two ways. Commands that need no running node ran inside a lab node, through `run()` in a throwaway test (`make lab-gotest`). Commands that need one ran against `thinkpol up` in a lab topology (`go test -tags lab`): the M0 space, `device-a` started with `-connect=false`, `server-1` serving, and a systemd node for `service`. Neither capture test is committed. Users: `root`; `alice`, in the `thinkpol` group; `mallory`, in neither. Ids, versions and timings are random per run. The dev map uses `192.0.2.10` and `2001:db8::10` as the server's address. No output shown here names a lab address.
+
+## Summary
+
+**What exists.**
+
+- **One binary, `thinkpol`, with 19 visible commands and one hidden one.** There are four groups:
+  - the node: `up`;
+  - local API clients: `status`, `connect`, `disconnect`, `spaces`, `rules preset`, `logs`, `diag`;
+  - the service: `service install|uninstall|connect-on-boot`;
+  - development tooling: `dev keygen|map|lists …`.
+  
+  Plus `version` and the hidden `worker`.
+- **A gRPC local API, `LocalService`, with 8 calls,** over a Unix socket in a directory that only root and the `thinkpol` group can reach. The group may call everything except `TailLogs`. `Diagnose` gives the group its snapshot without the host parts.
+- **Configuration is environment plus flags.** There are 14 `THINKPOL_*` keys, all on `up`, and no config file. The installed service sets exactly one of them, `THINKPOL_CONNECT_ON_BOOT`.
+- **On-disk state:**
+  - the state directory: `node.key`, `space.pub`, `map.bin`, `blobs/`, `rules.local`;
+  - runtime locks and records under `/run/thinkpol` (macOS: `/private/var/db/thinkpol`);
+  - the API's socket directory;
+  - the service unit or plist;
+  - the resolver configuration the node rewrites while it runs;
+  - a server's cgroups under `/sys/fs/cgroup/thinkpol`.
+  
+  No log files.
+
+**Top 5 findings**, ordered by what they would cost to change once M2 builds on them (full list in [Consistency findings](#consistency-findings)):
+
+1. **F1. Nowhere to put a setting.** There is no node config file. The service definition carries only connect-on-boot. An edited one makes `service connect-on-boot` refuse to run, and `service install` writes it over. On Linux a systemd drop-in gets past this, but thinkpol neither knows about drop-ins nor removes them. macOS has only the one plist. TP-111 assumes "the root-owned file from TP-046", which was never built. TP-048's kill-switch toggle and M2's transport settings need a home too. Suggested verdict: **change**, decide the config home before TP-111 and TP-048.
+2. **F2. Three ways to change a setting.** They are flags or env on `up`, a root-only rewrite of the service definition (`service connect-on-boot`), and a local API call whose result the service stores (`rules preset`). The tray can only reach the third one. PRD D4 and D5 want tray toggles. Suggested verdict: **change**, so that member-facing toggles go through the local API.
+3. **F3. Two JSON dialects.** `status -json` uses protojson defaults: lowerCamelCase, zero values left out, 64-bit numbers as strings, `CONNECTION_CONNECTED`, no schema version. `diag` is snake_case, has every field, and is versioned. Suggested verdict: **change** `status -json` to diag's form before the harness and the kill-switch tests parse it.
+4. **F4. Exit codes say too little.** There are only 0, 1 and 2. A partial success exits 1: a rule preset that was stored but can't be built yet, and a connect that came up without DNS protection. "Not running" and "permission denied" are both 1. Suggested verdict: **change**, define codes for scripts.
+5. **F5. Enumerated strings use four spellings.** Problems and error codes are snake_case (`no_link_up`). Presets and a route's owner are kebab-case (`all-but-domestic`, `route-table`). Skip items use spaces (`inbound link`). JSON enums are SCREAMING_CASE. TP-140, TP-141 and TP-111 each add codes. Suggested verdict: **change**, write the rule down now.
+
+## Contents
+
+| Section | What it covers |
+|---|---|
+| [CLI](api-overview-reference.md#cli) (reference file) | dispatch, help, every command with flags, an example and its errors, as of the snapshot; its exit codes are stale: today's are [TP-167's](#tp-167-exit-codes-and-the-setting-shape) |
+| [Local API](api-overview-reference.md#local-api) (reference file) | the socket, the two gates, every call with its access and its shapes, refusals |
+| [Configuration](#configuration) | every key, its default and where it is documented; input files; lab variables |
+| [On-disk state](#on-disk-state) | every file the node, the service and the dev tools write or read |
+| [Built since the snapshot](#built-since-the-snapshot) | what TP-140, TP-166, TP-111, TP-048, TP-141, TP-195 and TP-167 added |
+| [Planned, not built](#planned-not-built) | what TP-183 and TP-133 propose |
+| [Consistency findings](#consistency-findings) | F1–F21 with suggested verdicts |
+| [Verdicts (owner, 2026-11-07)](#verdicts-owner-2026-11-07) | the decided conventions: configuration levels, status versus diag, exit codes, naming |
+
+## Configuration
+
+### Node keys
+
+There is no node config file. `up` reads the environment (`agent.LoadConfig`, with no `.env` files) and its flags override it. The state directory and the socket take their defaults from the OS (`ApplyOSDefaults`), and a variable set to empty stays empty.
+
+| Env key | Flag | Default | Documented in |
+|---|---|---|---|
+| `THINKPOL_STATE_DIR` | `-state` | `/var/lib/thinkpol`; macOS `/private/var/lib/thinkpol` | flag help; `agent` doc (as `-state`) |
+| `THINKPOL_MAP` | `-map` | `<state>/map.bin` | flag help; `agent` doc (as `-map`) |
+| `THINKPOL_MODE` | `-mode` | `device` (`auto` until TP-111) | flag help; `agent` doc; configuration.md; runbook; RESIDUAL-RISKS.md RR42 (as server mode) |
+| `THINKPOL_LOG_LEVEL` | `-log-level` | `info` | flag help; `agent` doc |
+| `THINKPOL_INTERFACE` | `-interface` | platform default | flag help only |
+| `THINKPOL_LINK_MTU` | `-link-mtu` | `0` (1500) | flag help only |
+| `THINKPOL_MAP_POLL` | `-map-poll` | `5s` | flag help; runbook; `agent` doc (as `-map-poll`) |
+| `THINKPOL_CONNECT` | `-connect` | `true` | flag help; `agent` doc; `localapi` doc (as `-connect`) |
+| `THINKPOL_CONNECT_ON_BOOT` | `-connect-on-boot` | empty (the service sets `on` or `off`) | flag help; `agent`, `service` docs |
+| `THINKPOL_API_SOCKET` | `-api-socket` (`up`), `-socket` (clients) | see [Socket and gates](api-overview-reference.md#socket-and-gates) | flag help; `localapi` doc (as `-api-socket`) |
+| `THINKPOL_API_GROUP` | `-api-group` | `thinkpol` | flag help; `localapi`, `service` docs (as `-api-group`) |
+| `THINKPOL_DNS` | `-dns` | `true` | flag help only |
+| `THINKPOL_DNS_UPSTREAM` | `-dns-upstream` | empty | flag help; `dns` doc (as `-dns-upstream`) |
+| `THINKPOL_EGRESS_ALLOWED` | `-egress-allowed` | empty | flag help; `dns` doc, RESIDUAL-RISKS.md (as `-egress-allowed`) |
+
+Other variables the binary reads:
+
+- `THINKPOL_API_SOCKET`: also read by every local API client, as the `-socket` default (`cmd/thinkpol/cli.go`).
+- `SUDO_USER`: `service install -user`'s default.
+- `DBUS_SYSTEM_BUS_ADDRESS`: the DNS reader's bus on Linux.
+- the spec's `${NAME}` values, read by `dev map build` and `dev map rotate`.
+
+### Input files
+
+| File | Read by | Format | Documented in |
+|---|---|---|---|
+| map spec (`spec.yaml`) | `dev map build`, `dev map rotate` | YAML | `thinkpol dev map spec` (`internal/devmap/reference.yaml`), `internal/devmap/spec.go` |
+| GeoIP source | `dev lists build` | v2fly `geoip.dat` or DB-IP Lite CSV, optionally gzipped | the command's help; `internal/lists/doc.go` |
+| list blobs (`<name>.geoip`) | `dev map build` (named in the spec's `lists`) | the blob format | `internal/lists/doc.go` |
+
+### Lab variables
+
+These are not user-facing. They are read by the lab tooling and by tests, never by a node in normal use.
+
+| Variable | Read by | Effect |
+|---|---|---|
+| `THINKPOL_LAB` | tests | set in lab nodes; tests that need root or namespaces skip without it |
+| `THINKPOL_LAB_PROJECT` | lab | replaces the checkout part of Compose project names |
+| `THINKPOL_LAB_RUN` | lab, Makefile | the run id in test and gotest labs' names; `make lab-test` sets one |
+| `THINKPOL_LAB_KEEP` | lab, Makefile | a failed test's lab stays up |
+| `THINKPOL_LAB_MAX_LABS` | lab | lab slots at once (default 12) |
+| `THINKPOL_LAB_SUBNET_POOL` | lab | IPv4 range for lab networks |
+| `THINKPOL_LAB_PERF` | tests | performance gates run only with it |
+| `THINKPOL_LAB_GOARCH` | lab | architecture to build for |
+
+All of these are documented in lab/README.md "Environment", except `THINKPOL_LAB` itself, which is documented in AGENTS.md.
+
+## On-disk state
+
+Paths are for Linux, with macOS in parentheses where it differs. "Node" means `thinkpol up` running as root.
+
+### State directory: `/var/lib/thinkpol` (`/private/var/lib/thinkpol`)
+
+The operator creates it, or the dev runbook does. It must be owned by root or the node's user, writable by no one else, and never a symlink anywhere on the path (`internal/agent/state.go`). PRD S1 says it holds exactly what the node needs.
+
+| File | Written by | Mode (lab) | Read by |
+|---|---|---|---|
+| directory | operator | 0700 root | node |
+| `node.key` | operator (from `dev keygen node`) | 0600 root | node; refused if `space.key` or `recovery.key` sits beside it |
+| `space.pub` | operator | 0644 root | node: every map is verified against it |
+| `map.bin` | operator (`dev map build`/`rotate`, copied in) | 0644 root | node, polled every `-map-poll` and on SIGHUP |
+| `blobs/` | node (a device: lists fetched from peers) | dir 0700, files 0600 | node (a server only reads its seeds) |
+| `blobs/index` | node | 0600 | node, after a restart |
+| `rules.local` | node, when the local API sets a preset | 0644 root | node at start; a file that can't be parsed stops the node |
+| `crash-trace` | a device's `service install`, created 0600 before the service starts; then its service manager: the agent's stderr (TP-141) | 0600 root (the agent fixes a wider one) | node at start, which empties it once it has the trace; removed by a server's `service install` (after the stop), by `service uninstall`, and by an agent that runs as a server under a device's definition |
+
+### Runtime directory: `/run/thinkpol` (`/private/var/db/thinkpol`)
+
+`/run` is a tmpfs on Linux. On macOS this directory survives a reboot, and each record carries its boot session.
+
+| File | Written by | Mode (lab) | Read by |
+|---|---|---|---|
+| directory | node | 0700 root | — |
+| `agent.lock` | node: one agent per host | 0600 root | node, `service install`, `service uninstall`, `rollback` |
+| `connect` | node, under the service: the boot's connect choice; `rollback`, recording it down | 0600 | node at start, under `agent.lock` |
+| `netcfg/<dev>-<ino>.<owner>.lock` (Linux) | node: one configurator per owner and namespace | 0600 | node |
+| `netcfg/` lock and route record per owner (macOS) | node | — | node; `diag` |
+| `forwarding.json` | a server's supervisor, only when it turned forwarding on | 0600 | the next supervisor, after a crash |
+| `pf-guard.token` (macOS only) | node: the guard's `pfctl -E` reference | — | node; `diag` |
+
+A server's worker gets a private tmpfs mounted at `/run/thinkpol` inside its sandbox (`internal/agent/worker/sandbox_linux.go`). Its netcfg locks go there, and nothing of the host's `/run` is visible. `service uninstall` removes locks, boot records and sockets from this directory and from the socket directory, and lists anything else it leaves.
+
+### Local API directory: `/run/thinkpol-api` (`/private/var/db/thinkpol-api`)
+
+`api.sock` (0660 root:`thinkpol`) and `api.lock` (0600 root) are written by the node. The directory is 0750 root:`thinkpol`. Clients connect to the socket.
+
+### Service files
+
+| File | Written by | Mode | Read by |
+|---|---|---|---|
+| `/usr/local/bin/thinkpol` | `service install` | 0755 root | the service manager |
+| `/etc/systemd/system/thinkpol.service` | `service install`, `service connect-on-boot` | 0644 | systemd; `service connect-on-boot` refuses one that isn't byte for byte what install writes; `service install` warns and writes it over; `service uninstall` removes it without comparing |
+| `/Library/LaunchDaemons/org.thinkpol.agent.plist` (macOS) | same | 0644 | launchd; `service *`, the same way |
+| `/etc/systemd/system/thinkpol.service.d/*.conf` (Linux) | no thinkpol command: only an operator, by hand | — | systemd only. thinkpol never reads, reports or removes drop-ins (F1) |
+| the `thinkpol` group | `service install` | — | the local API's policy |
+
+### Cgroups (Linux servers)
+
+| Path | Written by | Mode | Lifetime |
+|---|---|---|---|
+| `/sys/fs/cgroup/thinkpol` | a server's supervisor, on cgroup v2 with the memory and pids controllers delegated | 0755 root | removed when the supervisor closes |
+| `/sys/fs/cgroup/thinkpol/tp-space<slot>` | the supervisor, one per worker, named after the worker's link (`internal/agent/supervisor/cgroup_linux.go`) | 0755 root | removed when the worker stops; a crash leaves it behind, and the next supervisor reuses it (`Mkdir` accepts one that exists) |
+
+These live in the kernel's cgroup filesystem, not on disk. They are listed because they are paths the node creates on the host. A device makes none.
+
+### Resolver configuration the node edits
+
+| Where | What | Lifetime |
+|---|---|---|
+| `/etc/resolv.conf` (Linux, when not on resolved's stub) | replaced, 0644, with the header `# thinkpol: generated while the node runs; the original below is put back when it stops.`, then the node's servers, then the original kept in `#thinkpol-original` comment lines | put back on stop, or at the next start after a crash |
+| systemd-resolved (Linux) | over D-Bus, the TUN is the link for every name; nothing on disk | the connection's |
+| SCDynamicStore (macOS) | the node's own service DNS key, overrides of the services' DNS, and a backup of the originals in `State:/Network/thinkpol/DNS` | in memory until reboot; put back at the next start after a crash |
+
+### Files the dev tools write
+
+| File | Written by | Mode |
+|---|---|---|
+| `keys/` | `dev keygen *` | 0700 |
+| `space.key`, `recovery.key` | `dev keygen space` | 0600 |
+| `space.pub` | `dev keygen space` | 0644 |
+| `<name>.key` / `<name>.pub` | `dev keygen node` | 0600 / 0644 |
+| `map.bin` | `dev map build`, `dev map rotate` (written aside, then renamed) | 0644 |
+| `<name>.geoip` | `dev lists build` (directory 0755) | 0644 |
+| the `diag -o` file | `diag` (written aside, then renamed; regular files only) | 0600 |
+
+### Logs
+
+The node writes no log file. The log goes to stderr and into an in-memory ring, which `thinkpol logs` reads (PRD S2); grpc's own log joins it. Under a device's service stderr is the crash trace (TP-141, below), and the log goes only to the ring, as it does under `up -service` whenever stderr is a regular file. Under launchd, a server's stderr goes nowhere. Under systemd, a server's stderr goes to the journal, which is on disk unless the journal is volatile (RR40). `service install` doesn't make it volatile: PRD S2 gives that to provisioning, at M4.
+
+## Built since the snapshot
+
+### TP-140: health counts dials that never linked
+
+| Surface | Behaviour |
+|---|---|
+| health | a node the device dials with no link is a neighbor, down, once a dial attempt has failed (no route, refused) or the path layer's dead interval (6 s) has passed since the dial started, whichever comes first; a first dial still waiting for an answer isn't listed before that. With no other neighbor up it is `no_link_up` (down), else `neighbor_down` (degraded). The code is reused: the case reads the same, no adjacent node answers |
+| health | a device's resolver with no direct upstream to ask, or an OS that names no DNS server now (its previous upstreams are still asked): `dns_no_upstream` (degraded). Not raised beside `dns_upstreams_stale`: unknown upstreams aren't absent ones |
+| `status`, `diag` | show them with the existing rendering; the never-linked node is listed under neighbors as `down` with no links |
+
+Answered (F5): `no_link_up` is reused; the new code is snake_case.
+
+**What `health: ok` covers.** The neighbor check is about the first hop only; TP-195 grades exits, direct or behind it, by their WireGuard handshake.
+
+### TP-166: node.json, device.json and connect-on-boot
+
+The node file `node.json` and the device file `device.json` exist, `rules.local` is carried into `device.json` and removed, connect-on-boot is the member's toggle (`thinkpol connect-on-boot on|off`, local API `SetConnectOnBoot`), the service runs `up -service` with no `THINKPOL_CONNECT_ON_BOOT`, `service connect-on-boot` and `service install -connect-on-boot` are refused, a bad configuration exits 78, and `diag` reports systemd drop-ins. [Configuration](configuration.md) is current; the rest of this file, the reference and the findings are not updated for TP-166.
+
+### TP-111: `-mode` defaults to `device`
+
+| Surface | Behaviour |
+|---|---|
+| `-mode` / `THINKPOL_MODE` / node file `mode` | `device` (the default) or `server`; flags over the environment over the node file over the default. `auto` is gone: the map's node kind no longer picks how a node runs (PRD A4). `auto`, or any other value, exits 78 (`mode "auto" is gone: want device or server (a server sets mode server)`) |
+| a server section run as a device | runs nothing of the map: no listener, link, relay or egress, and the host's network is left alone; status shows `mode_mismatch`, and the log says to set `"mode": "server"` in `node.json` (or `-mode server`) and restart. A map that makes a running device a server stops its data plane the same way |
+| `service install` | a node file without `mode` is installed as a device only while the map shows the node as one; otherwise a server's definition (no crash trace), warning that a server sets `"mode": "server"` |
+| upgrade | a server that relied on `auto` needs `"mode": "server"` in `node.json` (or `-mode server`) before it runs the new binary (runbook, "Updating a binary over SSH") |
+
+
+### TP-048: the kill switch and allow-LAN
+
+| Surface | Behaviour |
+|---|---|
+| `thinkpol kill-switch [on\|off]`, local API `SetKillSwitch` | no value shows it (`kill-switch: on, allow-LAN off (in place)`); a value sets it, stored in `device.json` (`kill_switch`), in effect before the call returns; the status follows. The access group may call it; a server refuses it (`server_mode`) |
+| `thinkpol allow-lan [on\|off]`, local API `SetAllowLAN` | the same shape for allow-LAN (`allow_lan`): private and link-local unicast, broadcast, and link-local and site-local multicast of both families pass the kill switch; while the tunnel is down DNS to them doesn't (RR62) |
+| `node.json` `kill_switch`, `allow_lan`, `fail_closed_after_crash`; flags `-kill-switch`, `-allow-lan`, `-fail-closed-after-crash` | the node's defaults until a member sets a toggle; `fail_closed_after_crash` (default true) is the crash posture's opt-out |
+| `status`, `Status.kill_switch` | `kill switch: on, allow-LAN off (in place)`, or `(held by the crash posture while the connection is meant up)`, or `(not enforced: apply_failed, retrying)` (the codes: `apply_failed`, `remove_failed`, `unsupported`), or `(not applied yet)` before the agent's first apply (`not_applied`, which the health leaves to the start); JSON `on`, `allow_lan`, `active`, `enforced`, `error` |
+| health | `kill_switch_not_enforced` (degraded): putting it in place or removing it failed, retried every 10 s; `kill_switch_unsupported` (degraded): the OS can't hold it while it should be in |
+
+There is no captive-portal pause (owner, 2026-11-12): behind a portal the member turns the kill switch off and back on, and the tray makes the off state unmissable (TP-049; RR17). Exit codes: [TP-167](#tp-167-exit-codes-and-the-setting-shape).
+
+### TP-141: a device's crash trace
+
+| Surface | Behaviour |
+|---|---|
+| file | `crash-trace` in the state directory, chosen over the runtime directory because it survives a reboot (`/run` is a tmpfs on Linux) and exists before the agent makes any directory, so the manager can open it. A device's `service install` creates it 0600 root (exclusively, not through a symlink) before the service starts. A start that finds it wider, or someone else's, fixes it and logs what it fixed; one with another link isn't read (emptied, removed, the run's stderr sent to the null device); one it can't fix, cut or empty stops the start without writing to it. Holds what the runtime writes to stderr and the error `up` exits with, never the log (which then goes only to the ring) and nothing on a clean stop. A start reads its head (64 KiB, kept in memory as valid UTF-8) and cuts the file to it; the node empties it once it has the trace, so a start that fails before keeps the trace and adds its error |
+| service definition | a device's plist gets `StandardErrorPath`, its unit `StandardError=append:` (systemd 240+; an older one ignores the line and keeps no trace); a server's is unchanged. `service install` picks one by the mode the node will run in: the node file's; with none, a device's only while the map shows the node as one, else a server's, with a warning (TP-111). An agent that runs as a server under a device's definition detaches from the file and removes it, and warns to reinstall; right after reading it, before anything else can fail, unless the node is known to be a device (its node file says so, or sets no mode and its map shows a device), so a failing start of a server, or of a node the map makes a server or doesn't hold, adds nothing to it |
+| `diag` | `last_run`: `unreadable`, `lines` (the trace's head, line by line) and `truncated`. Root only: the group's snapshot has it unreadable, "root only", when there is one. Still schema 1 |
+| `status` | `last_run_crashed` and `last_run_unreadable` (`-json`), and a `last run:` line in the text for each. No health problem: health is the node's state now, and a code would hold until the next restart |
+
+Answered: the path (`crash-trace`), the field names (`last_run`, `last_run_crashed`, `last_run_unreadable`, F5), no problem code, and the file's size bound: its head and one run's output, never the log.
+
+### TP-195: health grades an exit by its WireGuard handshake
+
+| Surface | Behaviour |
+|---|---|
+| health | an exit the device routes through (the exit of a chain its rules use), directly or behind a relay, that has left a WireGuard handshake initiation unanswered for 15 s while its first hop was up: `exit_no_handshake`. Down when the exit of the chain carrying either address family's background (`/0`) route is unanswered (a chain has one exit, so none of its exits answers): that family's destinations no other route names are lost. The background route is the action with the most addresses in the family, which may not be the default rule's: `cidr:0.0.0.0/0 -> chain:de`, `cidr:::/0 -> chain:de`, `default -> chain:nl` puts everything through de. Degraded for any other exit unanswered, including every exit when the background routes go direct. Only a completed handshake clears it, even if the device goes idle. While the exit's first hop is down only `no_link_up` or `neighbor_down` is raised, and the 15 s start over when it comes back; an exit sent no initiation since its first hop came up (WireGuard gave up retrying for want of traffic) isn't graded until one is |
+| `status`, `diag` | show it with the existing rendering |
+
+The deadline is three of WireGuard's initiations in a row, which it sends 5 s apart (REKEY_TIMEOUT) while it has traffic for the exit, so one lost packet doesn't flip health; it is also how long WireGuard waits on a session that stopped hearing back (KEEPALIVE_TIMEOUT + REKEY_TIMEOUT). A session that dies under traffic is noticed after about 30 s: WireGuard re-initiates once it has heard nothing back for 15 s, then the deadline runs. The age of the last handshake is no test: no persistent keepalive is set, so an idle exit's last handshake grows old on a healthy device. That is also what still reads ok: an exit nothing was sent to, and every peer that isn't an exit, direct or relayed (RR48). An exit once flagged stays flagged after traffic stops, until a handshake completes: reading ok for an exit that went silent would be the worse mistake.
+
+### TP-167: exit codes and the setting shape
+
+Every command exits by BSD `sysexits.h` ([verdict](#exit-codes-f4)). One table maps what a command failed with to its code, first match first (`exitCodes`, then `refusalExits` for the local API's refusals by code, `cmd/thinkpol/exitcode.go`); a command returns an error, never a number. Only typed errors are matched, never an errno alone: a test fails if a local API refusal has no code there, and the refusals are one list in the localapi package (`Refusals`), outside which no refusal code can be built.
+
+| Exit | When | What maps to it |
+|---|---|---|
+| 0 | the requested state was reached | success; `-h`, `help` |
+| 1 | not reached, or reached in part; a change made through the local API prints the status as it is now, then the error | `dns_not_protected` (connected, the tunnel stays up), `kill_switch_not_enforced` (a kill switch or allow-LAN toggle kept while the kill switch isn't as meant: `apply_failed`, `remove_failed`, `unsupported`, `not_applied`; the node retries), `rule_preset_unavailable` (kept, enforced failing closed), `server_mode`, `start_failed`, `membership_check_failed` (asking the OS for the caller's group failed: retrying won't help until it is fixed), and anything not named below, a missing output directory included |
+| 64 | bad arguments | no command, an unknown command or group, a bad flag (where Go's `flag` exits 2), wrong arguments, a removed form (`service connect-on-boot`, `service install -connect-on-boot`), `unknown_rule_preset` |
+| 66 | a named input is missing | `ENOENT` on an input the command line names or defaults (`inputError`): `up`'s state directory, its map, key or trust file, a spec, a key directory, a lists source, the map `dev map rotate` replaces, `dev map inspect`'s map and keys |
+| 69 | the service isn't running | `service_down` (nothing listens at the socket), `not_running` (the service answers, its node doesn't run; a kill switch toggle is kept for its next start) |
+| 75 | busy, try again | another agent holds the host (`up`, `rollback`: while the installed service runs, retrying doesn't clear it); `membership_unknown` (the OS didn't say in time whether the caller is in the group) |
+| 77 | permission denied | `permission_denied`, `root_only`; `rollback` and `service install`, `service uninstall` not run as root (`agent.NeedsRootError`); a named input the caller may not read (`up`'s state directory as a member). An `EACCES` deep in a command is 1 |
+| 78 | bad configuration | a node file, environment or flag value `up` can't run with (`agent.ConfigError`) |
+
+| Surface | Behaviour |
+|---|---|
+| stderr | `thinkpol <cmd>: <message>`; a local API refusal (or the client's `service_down`, `start_failed`, `kill_switch_not_enforced`) ends with its code: `thinkpol connect: connected, but DNS is not protected: … the tunnel stays up [dns_not_protected]` |
+| a change not reached | `connect`, `disconnect`, `rules preset`, and a setting given a value: on exit 1 the current status goes to stdout (if the service answers within 5 s), the error to stderr. Other failures print nothing to stdout |
+| `kill-switch [on\|off]`, `connect-on-boot [on\|off]` (and `allow-lan`) | `<setting> [value]`: no value prints the setting alone (`kill-switch: off, allow-LAN off`), a value sets it and prints the status. TP-048 and TP-166 built them so; no other forms exist |
+
+Answered (implementer, open to the owner): `server_mode` is 1, not 78 (a server isn't misconfigured; the call means nothing there). Decided in review (round 1): `membership_unknown` is 75 only for a lookup that timed out, any other failure is `membership_check_failed`, 1; a missing output directory is 1 (sysexits' 73 isn't in the table); a toggle kept while the kill switch isn't enforced is 1, for every client, since the server refuses it. `rules preset` on a stopped node still exits 0 (it stores the preset for the next start): TP-197 changes what that path reports.
+
+## Planned, not built
+
+**Planned, not built.** These come from the tickets' scopes. Each needs the owner's verdict before it starts (ORCHESTRATION.md, "Pre-M2 phase"). The open naming questions are listed last in each part, and the findings they touch are named.
+
+### TP-183: the node's capability ceiling (planned, not built)
+
+Split from TP-111 (owner's MVP cut, 2026-11-07); TP-111 built the `device` default, above.
+
+| Surface | Proposal |
+|---|---|
+| setting | a preset, `device` (the default) or `server`; within `server`, separate switches for ingress, egress (with `EgressAllowed`) and relaying |
+| where | "the root-owned file from TP-046", plus flags for the lab and development. **That file doesn't exist**: TP-046 shipped env plus flags, and a service definition that the `service` commands compare byte for byte (F1) |
+| at start | a map that asks for more than the ceiling leaves the node down, with a health problem naming what was asked and what is allowed (code not named yet) |
+| while running | a map asking for more keeps the last accepted capabilities, takes the rest, and reports the refusal in health and the log. The accepted capabilities are saved, so a restart comes back to them. **Where they are saved isn't named** (a new on-disk file?) |
+| ceiling lowered | "the owner lowering the ceiling under a running map is handled the same way" (the ticket's words), so it is refused and reported in health and the log as in the row above. **Not spelled out:** what happens to capabilities already in use that the lower ceiling no longer allows |
+| macOS | a `server` preset is refused: "server nodes need Linux" |
+| docs | runbook: the operator sets the ceiling on each server |
+
+Open naming questions:
+
+- the setting's name (keep `-mode`, or something new);
+- the capability switches' spelling (F7);
+- the problem code (F5);
+- the file name and location (F1);
+- where accepted capabilities are kept.
+
+### TP-133: `diag` without a running agent (planned, not built)
+
+| Surface | Proposal |
+|---|---|
+| behaviour | when the local API doesn't answer, root's `diag` reads the host itself and writes the same snapshot |
+| output | `agent: "not running"`, with `status`, `tun` and `last_apply` unreadable for that reason. **`Diagnostics` has no `agent` field today**: this adds one, a string, with schema still 1 |
+| non-root | an error, not a partial snapshot (exit 1, F4) |
+| side effects | none: no lock, no directory made |
+
+Open questions:
+
+- whether the fallback is automatic or needs a flag (e.g. `-offline`): automatic hides an API that is down for another reason;
+- the `agent` field's values;
+- the exit code when it falls back (F4).
+
+## Consistency findings
+
+Nothing here is fixed by TP-139. They are ordered by what each would cost to change once M2 builds on it: most expensive first. Each finding has a suggested verdict: keep, change or drop. The owner's verdicts go into the ticket's Notes.
+
+### F1. There is no place for a node setting except the environment and flags
+
+The service's definition is a fixed text with one variable (`THINKPOL_CONNECT_ON_BOOT`). The `service` commands compare the unit file or plist, byte for byte, with the two texts install writes (`installed()`, `internal/agent/service/install.go:333-348`). Each command treats a definition that differs in its own way:
+
+| Command | An edited definition |
+|---|---|
+| `service connect-on-boot` (showing or setting) | **refused**: "the service's definition was changed by hand: … isn't what thinkpol service install writes; install again" |
+| `service install` | **written over**, after a warning: the edit is lost and connect-on-boot goes back to off unless `-connect-on-boot` says otherwise (`install.go:151`) |
+| `service uninstall` | **not compared**: stopped and removed like any other (`install.go:261-308`) |
+
+So on macOS an installed node can't keep any other setting. There is one plist and no drop-in mechanism. A key added to its `EnvironmentVariables` makes `service connect-on-boot` refuse, and the next `service install` removes it.
+
+On Linux there is a route around the check. A systemd drop-in, `/etc/systemd/system/thinkpol.service.d/<name>.conf`, can add `Environment=` lines (`THINKPOL_DNS_UPSTREAM`, `THINKPOL_MODE`, a log level, an interface) or replace `ExecStart` with flags. The check reads only the unit file, so connect-on-boot keeps working. But no part of thinkpol handles drop-ins:
+
+- no thinkpol command writes them, and no doc mentions them;
+- `status` and `diag` don't show the settings they add;
+- `service install` keeps them;
+- `service uninstall` leaves them behind, so a later install picks them up without saying so;
+- a drop-in that sets `THINKPOL_CONNECT_ON_BOOT` wins over the unit's line (systemd applies drop-ins after the unit), so `service connect-on-boot` then shows and sets a value that has no effect.
+
+The lab already uses a drop-in to hold off a restart (`lab/service_test.go`). So a setting has no designed home. macOS has none at all, and on Linux the only one is a systemd mechanism that thinkpol ignores. TP-111 puts its ceiling in "the root-owned file from TP-046", which was never built. TP-048's kill-switch toggle, its allow-LAN option and opt-out, and M2's transport settings all need a home.
+
+- Costs after M2: every M2 setting would be invented separately.
+- **Suggested verdict: change.** Decide now: one root-owned node config file, read by `up`, which the service definition points at and the exact-match check ignores, or settings the service stores, like `rules.local`. Then let TP-111 and TP-048 use it. Also decide on Linux drop-ins: either support them (`diag` shows them, uninstall removes them) or document them as unsupported.
+
+### F2. Three ways to change a setting, and the tray can reach only one
+
+- Operator settings are env or flags on `up`.
+- Connect-on-boot is `service connect-on-boot`: root only, a rewrite of the definition, effective from the next boot. The local API has no call for it.
+- The rule preset is `SetRulePreset`: the group may call it, the service stores it in `rules.local`, and it takes effect at once.
+
+PRD D5 and the M5 tray need a connect-on-boot toggle. D4 needs a kill-switch toggle, and D8 needs the CLI to cover everything the tray does. Only the third path works for an unprivileged tray.
+
+- **Suggested verdict: change.** Settings a member toggles (connect-on-boot, the kill switch, allow-LAN) go through the local API and are stored by the service, as the rule preset is. Settings an operator sets go to F1's home.
+
+### F3. `status -json` and `diag` speak different JSON
+
+| | `status -json` | `diag` |
+|---|---|---|
+| field names | lowerCamelCase (`spaceId`, `mapVersion`) | snake_case (`space_id`, `map_version`) |
+| zero values | left out (`removed: false` is absent) | always present |
+| schema version | none ("not the contract", localapi doc) | `schema_version: 1` |
+| whitespace | protojson inserts random extra spaces so that output isn't byte-stable | same |
+
+Both spell 64-bit numbers as strings (`"mapVersion": "1793188210"`) and enums as `CONNECTION_CONNECTED`, while the text view says `connected`. The same `Status` appears in both, spelled two ways.
+
+- The device harness (TP-082), lab verdicts and later the tray will parse `status -json`.
+- **Suggested verdict: change.** Make `status -json` use diag's options (proto names, every field), and call it the `Status` part of the v1 contract. Keep protojson's enum and int64 spelling, but write it down.
+
+### F4. Exit codes: only 0, 1 and 2, and a partial success is 1
+
+- `rules preset everything` stores and enforces the preset (failing closed), yet exits 1 with an error.
+- `connect` that comes up without DNS protection exits 1 and prints no status, though the tunnel is up.
+- "Not running", "permission denied", "server mode" and a real failure are all 1. A script can tell them apart only by parsing stderr prose, and the CLI never shows the machine code (`server_mode`).
+- `service uninstall` with nothing installed exits 0.
+- TP-133 adds a "fell back" case. The kill-switch and harness scripts will branch on these.
+- **Suggested verdict: change.** Define a small table: for example 0 done, 1 failed, 2 usage, 3 not running, 4 permission denied, 5 done with a warning (print the status, put the warning on stderr). Or keep 0/1/2, make partial successes exit 0 with a warning on stderr, and put the machine code in the message.
+
+### F5. Enumerated strings use four spellings
+
+| Spelling | Where |
+|---|---|
+| snake_case | health problems (`no_link_up`, `worker_restarted`), refusal codes (`server_mode`), uplink errors, Apply steps (`route_table`), counters (`route_table.routes`) |
+| kebab-case | rule presets (`all-but-domestic`), a route's owner in `diag` (`route-table`), flags |
+| words with spaces | a skipped item (`inbound link`), the text renderings |
+| SCREAMING_CASE | proto enums in JSON (`HEALTH_LEVEL_OK`) |
+
+The same thing appears as `route_table` (a step), `route-table` (an owner) and `route table` (text).
+
+- TP-140, TP-141 and TP-111 add codes, and TP-048 will add more.
+- **Suggested verdict: change.** One rule: snake_case for every machine code and enumerated value. Presets and flags are typed by people and stay kebab-case. Rename `route-table` (the owner) and `inbound link` before more readers depend on them.
+
+### F6. Command shapes: getters, setters, verbs and nouns are mixed
+
+- Verbs: `connect`, `disconnect`, `up`, `install`. Nouns: `status`, `spaces`, `logs`, `diag`.
+- `up` has no `down`: you stop it with a signal or the service manager.
+- `service connect-on-boot [on|off]` shows the value without an argument and sets it with one. `rules preset <name>` only sets, and its value is read through `status`.
+- The kill switch will need a third shape unless one is chosen.
+- `spaces` lists, but nothing switches (D9 is M5).
+- **Suggested verdict: change (small).** Adopt "`<setting> [value]`: no value shows it" for every setting (`rules preset` with no argument prints the current preset), and use the same shape for the kill switch. Keep the verb and noun commands as they are.
+
+### F7. Flag spelling
+
+- One socket has two names: `up -api-socket` and the clients' `-socket`. One variable feeds both.
+- Output files: `diag -o` but `dev … -out`.
+- Single letters only on `logs` (`-n`, `-f`) and `diag` (`-o`).
+- Three boolean styles: Go booleans (`-connect`, `-dns`, `-json`), an on/off string flag (`up -connect-on-boot on|off`, `service install -connect-on-boot on|off`), and a positional argument (`service connect-on-boot on`).
+- In `up -h`, every flag's type shows as `value` (go-kernel's binder). Elsewhere it shows `string`, `int` or `duration`, and string defaults are quoted on clients and unquoted on `up`.
+- **Suggested verdict: change** before the kill-switch flags. Pick on/off strings or booleans for toggles, rename `diag -o` to `-out` (keeping `-o` as an alias), and make the socket one name, `-socket` everywhere, or `-api-socket` everywhere.
+
+### F8. Settings that a member sets need root, while connect doesn't
+
+Alice, in the group, may connect, disconnect and change the rule preset. She may not set connect-on-boot: "the service is the host's: run it as root (sudo)". PRD D5 is a member's toggle.
+
+- **Suggested verdict: change**, together with F2.
+
+### F9. `permission denied: only root may do that` is shown for any refused call
+
+The refusal's client message is fixed text, whatever the call. On macOS, before TP-094, the per-call check sees only the groups a process got at login, and only the first 16 of them (`LOCAL_PEERCRED`, `peercred_darwin.go:24`). So a member who was added since their login, or whose `thinkpol` group is past the first 16, gets through the directory gate and is then refused every call, `status` included. They are told "only root may do that", which is false and points the wrong way. TP-094's device evidence shows this happening in practice.
+
+- **Suggested verdict: change.** Word the message per call ("the log is root's only"), or make it generic ("your user may not do that: …").
+
+### F10. Usage errors don't say what was wrong
+
+`logs -n 0`, `service install -connect-on-boot maybe`, `service connect-on-boot maybe`, `rules preset` without an argument and `worker` without `-space` print only the synopsis. `up -mode bogus`, though, says `mode "bogus": want device or server`. Its message also carries the go-kernel prefix `config: validation:`.
+
+- **Suggested verdict: change (cheap).** Print one line of why before the synopsis, and drop the prefix.
+
+### F11. `help` goes to stdout and `<cmd> -h` goes to stderr
+
+Both exit 0. `thinkpol help | less` works, but `thinkpol status -h | less` doesn't.
+
+- **Suggested verdict: change (cheap).** Write asked-for help to stdout, and keep usage errors on stderr.
+
+### F12. Output formats: only `status` has a machine form
+
+`connect`, `disconnect` and `rules preset` print the status but take no `-json`. Neither do `spaces`, `logs` and `service connect-on-boot`. `diag` has no human form.
+
+- **Suggested verdict: change (small).** Add `-json` to every command that prints a `Status` or a list, using F3's form. `diag` stays JSON only.
+
+### F13. The CLI and the API differ in small ways
+
+- `WatchStatus` clamps an interval below 250ms without saying so. `-interval 10ms` silently means 250ms.
+- `TailLogs` treats `lines: 0` as 100. `logs -n 0` is a usage error.
+- The CLI accepts a relative `-socket`. The server requires an absolute path.
+- The API returns codes. The CLI shows only prose (see F4).
+- `Connect` with `dns_not_protected` returns an error and no status, so a client can't show the state it reached.
+- **Suggested verdict: keep, with one change:** `Connect` and `SetRulePreset` return the status together with the warning, so that clients can show both.
+
+### F14. Docs and code disagree
+
+- There is no user-facing CLI reference: README shows only `version`, and the runbook covers the dev and service commands. This file is the first complete list.
+- Node keys missing from the docs. Method: every tracked `.md` outside `tickets/` (this overview and its reference left out) and every package `doc.go` was searched for `THINKPOL_<KEY>` and for `-<flag>` as a whole word.
+  - By env name, 9 of the 14 keys appear in no doc: `THINKPOL_STATE_DIR`, `THINKPOL_MAP`, `THINKPOL_INTERFACE`, `THINKPOL_LINK_MTU`, `THINKPOL_API_SOCKET`, `THINKPOL_API_GROUP`, `THINKPOL_DNS`, `THINKPOL_DNS_UPSTREAM`, `THINKPOL_EGRESS_ALLOWED`. Six of them are documented under their flag only (the table in [Node keys](#node-keys)).
+  - Counting a key as documented when either its env name or its flag appears, 3 keys appear nowhere but their flag help: `-interface` (`THINKPOL_INTERFACE`), `-link-mtu` (`THINKPOL_LINK_MTU`) and `-dns` (`THINKPOL_DNS`).
+- DESIGN.md's package table lists `cmd/thinkpol-tray` and the `admin serve` command as if they existed. Both are planned (TP-086, TP-042). AGENTS.md also names `cmd/thinkpol-tray`.
+- `up -log-level`'s help says "logs go to stderr only", but the same lines go to the ring that `thinkpol logs` reads.
+- `diag`'s summary, "(root's names entry and other public addresses)", is hard to read.
+- TP-139's own inventory puts the connect record (`connect`) in the state directory. It is in `/run/thinkpol` (macOS `/private/var/db/thinkpol`), next to the host lock.
+- **Suggested verdict: change (docs only).** Mark planned packages as planned in DESIGN.md, fix the two help texts, and link this file from the README as the CLI reference until one exists.
+
+### F15. PRD S2 and the systemd journal
+
+Under systemd the agent's stderr goes to the journal, which is on disk unless volatile. `service install` doesn't change that: S2 gives it to provisioning, at M4 (RR40). TP-141 adds a deliberate on-disk exception for devices.
+
+- **Suggested verdict: keep** (already tracked as RR40). Note in S2's amendment (TP-141) that the journal is a separate, known gap.
+
+### F16. Status rendering nits
+
+- `re-applied 1 times`.
+- On a server, `uplink:` lines up with the workers' columns and lands far to the right.
+- Two `udp` public listeners (IPv4 and IPv6) look the same.
+- `health: ok` with a peer at `no path yet` (TP-140's case for exits; for a device peer it's expected).
+- **Suggested verdict: change (cheap)** for the first three. The fourth is TP-140's, built: a first hop that never linked is `no_link_up` or `neighbor_down`; an exit, direct or behind a relay, that leaves WireGuard's initiations unanswered is `exit_no_handshake` (TP-195), down for the exit carrying a background route and degraded for another, and stays so until a handshake completes; an exit nothing was sent to still reads ok (RR48).
+
+### F17. `service uninstall` with nothing installed
+
+It exits 0 and says "the group thinkpol stays", even when there is no group.
+
+- **Suggested verdict: keep** the exit 0, because uninstall is idempotent. **Change** the line so it is printed only when the group exists.
+
+### F18. `worker` reads the node's whole config
+
+The hidden `worker` runs `agent.LoadConfig()`, which reads every `THINKPOL_*` variable, but it uses only the log level.
+
+- **Suggested verdict: keep.** It is harmless while validation is deferred, and TP-145 moves env reads to the composition root anyway.
+
+### F19. `dev lists build -only kz` says "(it has 0 others)"
+
+The count is that of the requested lists it found, not of the source's lists. The source in the example has three.
+
+- **Suggested verdict: change** (a one-line bug).
+
+### F20. `rules.local` is 0644 and the blobs are 0600
+
+`rules.local` reveals the member's routing choice. It is safe only because the state directory is expected to be 0700, but `state.go` checks that the directory is not *writable* by others, not that it is unreadable.
+
+- **Suggested verdict: change (cheap).** Write it 0600, like the other private files.
+
+### F21. The planned surface repeats today's open choices
+
+Each of the four planned tickets needs a code, a path or a flag name that F1, F4, F5 and F7 would decide:
+
+- TP-111: the ceiling file, the problem code, and the change of `-mode`'s default from `auto` to `device`;
+- TP-141: the trace file's path, its `diag` field and its problem code;
+- TP-133: the new `agent` field, and automatic versus explicit fallback;
+- TP-140: reuse `no_link_up` or add codes (answered and built: `no_link_up` is reused, `dns_no_upstream` is new).
+
+- **Suggested verdict: change.** Settle F1, F4, F5 and F7 in the owner's session, then write the answers into those four tickets before they start.
+
+## Verdicts (owner, 2026-11-07)
+
+The owner's session on the findings above. The findings stay as they were found: they are the record. This section states the conventions decided, and TP-139's Notes give one line per finding with the ticket it went to. Configuration's design is in [configuration](configuration.md).
+
+### Configuration (F1, F2, F8)
+
+- **Three levels.** Network: the signed map, each node getting only its own part. Node: operator settings (mode, interface, MTU, DNS upstream, TP-111's capability ceiling, kill-switch defaults) in one root-owned file in the state directory, 0600 in a 0700 directory, operating settings only, read by `up`. Device: a member's toggles on a device (connect-on-boot, kill switch, allow-LAN, rule preset), changed through the local API by a member of the access group and stored by the service in a small file next to the node file, replacing `rules.local`.
+- **Precedence:** flags, then env, then the node file, then defaults. The map can only narrow what the node allows; device toggles choose within what the node and the map allow.
+- **Connect-on-boot** is a member's toggle: the service always starts at boot, and the stored toggle decides whether it connects. No root needed.
+- **File format:** JSON, one format for both files (owner, 2026-11-07; this revises the session's first answer, `key = value` lines, because nesting is expected).
+- **Linux systemd drop-ins** are unsupported; `diag` reports one if present.
+- **Keys** stay as designed. Rotating a node's keys, revoking a seized node through the map, and later sealing device keys in the OS keystore are documented now and built after the concept is proven; ephemeral nodes stay after the MVP ([security](security.md#node-safety)).
+- Node groups carrying settings: a proposal, not confirmed ([configuration](configuration.md#node-groups-proposal)).
+
+### `status` and `diag` (F3, F12)
+
+- **`status`** prints the service's local state: interface, spaces, links and their state, health, toggles. Fast, with no network access.
+- **`diag`** diagnoses deeper and reaches over the network: DNS through the tunnel, peers, path MTU, a leak check, the guard. Its report reveals no private information, so it can be shared. It includes a status snapshot as one section rather than computing the same thing a second way.
+- **Machine output:** one convention for both: snake_case field names, every field, `schema_version`. Opt-in with `-json`, which every command that prints a status or a list gets. Human output stays text.
+- After the MVP, to be decided: user-defined diag scripts over an SDK.
+
+### Exit codes (F4)
+
+BSD `sysexits.h`. Anything short of the requested state is not 0.
+
+| Code | Name | When |
+|---|---|---|
+| 0 | — | success: the requested state was reached |
+| 1 | — | failure: not reached, even when it failed closed; the status is still printed |
+| 64 | EX_USAGE | bad arguments; Go's flag default of 2 maps to 64 |
+| 66 | EX_NOINPUT | a named input, such as a map or a file, is missing |
+| 69 | EX_UNAVAILABLE | the service isn't running |
+| 75 | EX_TEMPFAIL | busy, try again (e.g. the host lock is held) |
+| 77 | EX_NOPERM | permission denied |
+| 78 | EX_CONFIG | bad configuration |
+
+For example, `connect` that comes up without DNS protection exits 1, prints the status, and names the machine code on stderr.
+
+### Naming (F5, F6, F7)
+
+Easy to redesign later, in the owner's words.
+
+- **Machine codes and enumerated values** are snake_case everywhere (`route_table`, `inbound_link`). Human text uses words. What people type, presets and flags, is kebab-case.
+- **Every setting has the shape `<setting> [value]`:** no value shows it, a value sets it (`rules preset`, `kill-switch on`).
+- **Toggles take `on|off`.** Plain booleans only for output switches (`-json`, `-f`).
+- **One socket flag, `-socket`, everywhere**; `up` keeps `-api-socket` as an alias. **`-out` everywhere**, with `-o` kept as an alias.
+
+### The other findings (F9–F21)
+
+The suggested verdicts stand: the orchestrator proposed them and the owner didn't object. F13 keep, but `Connect` and `SetRulePreset` return the status together with the warning. F15 keep (RR40). F17 keep exit 0, and print the group line only when the group exists. F18 keep. All others change as suggested. F21 is settled by the above; the answers are written into TP-111, TP-141, TP-133 and TP-140.

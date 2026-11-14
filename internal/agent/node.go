@@ -32,8 +32,9 @@ type Node struct {
 	logs  Logs
 	// plat is what the node needs of its host.
 	plat Platform
-	// conn is a device's connection, moved only by the goroutine that
-	// runs the node. bootChoice: it keeps its connect choice and started
+	// conn is a device's connection, set as the node starts, under the
+	// host lock (takeConnectChoice), then moved only by the goroutine
+	// that runs the node. bootChoice: it keeps its connect choice and started
 	// as configured, with no record of this boot, so its start records
 	// that choice (a restart in this boot then follows it, whatever the
 	// configuration says by then).
@@ -51,18 +52,36 @@ type Node struct {
 	stopped chan struct{}
 	// tuning is a device's data plane's (DataPlane.tuning): tests set it.
 	tuning tuning
+	// crashTrace is the trace file stderr goes to (KeepLastRun), until
+	// the node runs as a server.
+	crashTrace *CrashTrace
 
-	// rulesMu serializes SetRulePreset; local is the device's last good
-	// rules, as LocalRulesFile holds them (read by run while it builds
-	// the data plane, under rulesMu).
-	rulesMu       sync.Mutex
-	local         rules.Local
+	// settingsMu serializes the changes to device, the member's toggles
+	// as DeviceFile holds them (read by run while it builds the data
+	// plane, under settingsMu).
+	settingsMu sync.Mutex
+	device     DeviceSettings
+	// presetMu keeps SetRulePreset's store and its request to the data
+	// plane in one order. Never held with settingsMu while it waits: run
+	// takes settingsMu before it reads rulesRequests.
+	presetMu      sync.Mutex
 	rulesRequests chan rulesRequest
+	// killSwitchRequests asks the node's goroutine to act on a kill
+	// switch toggle stored (SetKillSwitch, SetAllowLAN); it closes the
+	// channel sent once it did.
+	killSwitchRequests chan chan struct{}
+	// rememberMu serializes the record's writes; choice is the connect
+	// choice the node last took (remember), which a Disconnect that never
+	// reached it writes back.
+	rememberMu sync.Mutex
+	choice     bool
+	// ks keeps a device's kill switch, on the node's goroutine.
+	ks killSwitchKeeper
 }
 
-// Prepare reads and checks what a node runs from (LoadState) and decides
-// its mode: a node whose map is invalid, or holds no section for its keys,
-// never starts. The platform is the host's adapters, per OS.
+// Prepare reads and checks what a node runs from (LoadState): a node
+// whose map is invalid never starts. The platform is the host's
+// adapters, per OS.
 func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -94,40 +113,47 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	n := &Node{
 		cfg: cfg, state: st, logs: logs, plat: plat, dnsUpstreams: upstreams,
 		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
+		killSwitchRequests: make(chan chan struct{}),
+		ks:                 killSwitchKeeper{newKS: plat.NewKillSwitch, log: logs.Logger},
 	}
-	connect, recorded := startConnected(cfg, plat.ConnectRecord, logs)
-	n.conn, n.bootChoice = newConnection(connect, st.Removed), !recorded && keepsConnect(cfg)
-	n.local = st.LocalRules
-	mode := cfg.Mode
-	if !st.Removed {
-		mode = n.resolveMode()
-	}
-	n.report = report{mode: mode, space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed,
-		conn: n.conn.state, preset: n.local.Preset.String()}
-	if mode == ModeDevice && !cfg.Connect && cfg.APISocket == "" {
-		return nil, errors.New("a device that starts disconnected needs the local API to connect: set an API socket")
+	n.device = st.Device
+	n.report = report{mode: cfg.Mode, space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed,
+		mismatch: modeMismatch(cfg.Mode, st), preset: n.device.Rules.Preset.String(), connectOnBoot: n.device.ConnectOnBoot}
+	if cfg.Mode != ModeServer {
+		n.report.killSwitch = n.killSwitchSettings().notApplied()
 	}
 	return n, nil
 }
 
-// keepsConnect is whether the node keeps its connect choice for the boot:
-// the service's connect-on-boot is set (Validate refuses it without a
-// local API).
-func keepsConnect(cfg Config) bool { return cfg.ConnectOnBoot != "" }
+// takeConnectChoice sets whether the device starts connected
+// (startConnected). Adapters calls it under the host lock, which
+// `thinkpol rollback` records the boot's choice under: a start reads the
+// record after a rollback's, or runs before the rollback can take the
+// lock.
+func (n *Node) takeConnectChoice() {
+	connect, recorded := startConnected(n.cfg, n.state.Device.ConnectOnBoot, n.plat.ConnectRecord, n.logs)
+	n.conn = newConnection(connect, n.state.Removed || modeMismatch(n.cfg.Mode, n.state))
+	n.bootChoice = !recorded && keepsConnect(n.cfg)
+	n.choice = !n.conn.disconnected()
+	n.report.set(func(p *report) { p.conn = n.conn.state })
+}
 
-// startConnected is whether a device starts connected: when it keeps its
-// choice, as recorded in this boot (recorded true), else as
-// connect-on-boot says; run by hand, as Config.Connect says. A record
-// that can't be read is logged and connect-on-boot decides.
-func startConnected(cfg Config, rec ConnectRecord, logs Logs) (connect, recorded bool) {
+// keepsConnect is whether the node keeps its connect choice for the boot:
+// it runs as the service (Validate refuses that without a local API).
+func keepsConnect(cfg Config) bool { return cfg.Service }
+
+// startConnected is whether a device starts connected: under the service,
+// as recorded in this boot (recorded true), else as the device's
+// connect-on-boot (onBoot) says; run by hand, as Config.Connect says. A
+// record that can't be read is logged and connect-on-boot decides.
+func startConnected(cfg Config, onBoot bool, rec ConnectRecord, logs Logs) (connect, recorded bool) {
 	if !keepsConnect(cfg) {
 		return cfg.Connect, false
 	}
-	onBoot := cfg.ConnectOnBoot == ConnectOnBootOn
 	connect, ok, err := rec.Load()
 	switch {
 	case err != nil:
-		logs.Warn("the connect choice of this boot can't be read: starting as connect-on-boot says", "connect_on_boot", cfg.ConnectOnBoot, "err", err)
+		logs.Warn("the connect choice of this boot can't be read: starting as connect-on-boot says", "connect_on_boot", onOff(onBoot), "err", err)
 		return onBoot, false
 	case !ok:
 		return onBoot, false
@@ -136,28 +162,92 @@ func startConnected(cfg Config, rec ConnectRecord, logs Logs) (connect, recorded
 	return connect, true
 }
 
-// remember records a connect choice (ConnectRecord), when the node keeps
-// it, before it is acted on; a failure is logged, and the node goes
-// ahead.
+// remember records a connect choice the node takes (ConnectRecord), when
+// the node keeps it, before it is acted on; a failure is logged, and the
+// node goes ahead.
 func (n *Node) remember(connect bool) {
+	n.record(func() bool { n.choice = connect; return connect })
+}
+
+// record writes what pick returns to the record, under rememberMu: one
+// writer at a time (the record is replaced through one temporary file
+// name), and the node's choice read and written in the same order as
+// the writes.
+func (n *Node) record(pick func() bool) {
 	if !keepsConnect(n.cfg) {
 		return
 	}
+	n.rememberMu.Lock()
+	defer n.rememberMu.Unlock()
+	connect := pick()
 	if err := n.plat.ConnectRecord.Save(connect); err != nil {
 		n.logs.Error("recording the connect request failed: a restart in this boot starts as configured", "connect", connect, "err", err)
 	}
 }
 
-// resolveMode is the node's mode, ModeAuto decided by its kind in its
-// section.
-func (n *Node) resolveMode() Mode {
+// ModeUnknown says why a node's mode isn't known from its state
+// directory (knownMode), ModeKnown when it is.
+type ModeUnknown int
+
+const (
+	ModeKnown ModeUnknown = iota
+	// UnknownMapShowsServer: the node file sets no mode and the map makes
+	// the node a server, say a server whose node file lost its mode.
+	UnknownMapShowsServer
+	// UnknownNotInMap: the node file sets no mode and the map holds no
+	// section for the node (removed, or not in it yet), or can't be read.
+	UnknownNotInMap
+)
+
+// knownMode is the mode a node is known to run in: its node file's (set),
+// whatever its map (a device whose map is broken is one still), or, with
+// none set, device by default while its map (st, unless stErr) shows it
+// as one.
+func knownMode(set *Mode, st State, stErr error) (Mode, ModeUnknown) {
 	switch {
-	case n.cfg.Mode != ModeAuto:
-		return n.cfg.Mode
-	case n.state.Section.Node.Kind == netmap.NodeServer:
-		return ModeServer
+	case set != nil:
+		return *set, ModeKnown
+	case stErr != nil || st.Removed:
+		return "", UnknownNotInMap
+	case st.Section.Node.Kind == netmap.NodeDevice:
+		return ModeDevice, ModeKnown
 	}
-	return ModeDevice
+	return "", UnknownMapShowsServer
+}
+
+// ServiceMode reads the node's state directory as `thinkpol up` would
+// (an error: the node can't run yet), and says which mode its service is
+// installed for: the known mode (knownMode), else server, whose
+// definition keeps no crash trace (PRD S2), with why it isn't known.
+func ServiceMode(dir string) (Mode, ModeUnknown, error) {
+	s, err := ReadNodeFile(dir)
+	if err != nil {
+		return "", ModeKnown, err
+	}
+	st, err := LoadState(dir, filepath.Join(dir, MapFileName))
+	if err != nil {
+		return "", ModeKnown, err
+	}
+	mode, why := knownMode(s.Mode, st, nil)
+	if why != ModeKnown {
+		mode = ModeServer
+	}
+	return mode, why, nil
+}
+
+// knownDevice is whether the node of state directory dir is known to be
+// a device (knownMode); a node file that can't be read says nothing.
+func knownDevice(dir string) bool {
+	s, err := ReadNodeFile(dir)
+	if err != nil {
+		return false
+	}
+	var st State
+	if s.Mode == nil {
+		st, err = LoadState(dir, filepath.Join(dir, MapFileName))
+	}
+	mode, why := knownMode(s.Mode, st, err)
+	return why == ModeKnown && mode == ModeDevice
 }
 
 // Status reports the node's state; safe to call from any goroutine.
@@ -171,12 +261,34 @@ func (n *Node) Connect(ctx context.Context) error { return n.request(ctx, true) 
 
 // Disconnect takes a device's data plane down, leaving nothing of it on
 // the host, and returns once it is down. The device goes on following its
-// space's maps. ErrServerMode on a server.
-func (n *Node) Disconnect(ctx context.Context) error { return n.request(ctx, false) }
+// space's maps. ErrServerMode on a server. The choice is recorded for the
+// boot (ConnectRecord) before the node hears of it, so a node that can't
+// act on it, busy with a first start that fails and returns while the
+// caller waits (ErrNotRunning), starts disconnected next time, its kill
+// switch removed unless toggled on. A caller that gives up first (its
+// ctx ends) while the node still runs puts the node's own choice back in
+// the record: the node goes on as it was, and so does its next start.
+func (n *Node) Disconnect(ctx context.Context) error {
+	if n.Mode() == ModeServer {
+		return ErrServerMode
+	}
+	n.record(func() bool { return false })
+	taken, err := n.ask(ctx, false)
+	if !taken {
+		select {
+		case <-n.stopped:
+		default:
+			// The caller gave up before the running node took it: the
+			// record says what the node does.
+			n.record(func() bool { return n.choice })
+		}
+	}
+	return err
+}
 
 // SetRulePreset switches a device's rules to preset ("space",
 // "everything", "all-but-domestic"), keeping its own rules: the choice is
-// stored in LocalRulesFile (only the service writes it), then enforced.
+// stored in DeviceFile (only the service writes it), then enforced.
 // ErrUnknownPreset for another name; ErrPresetUnavailable when the
 // space's map can't build the preset, which is then kept and enforced
 // failing closed (see rules.PresetRules); ErrServerMode on a server.
@@ -188,28 +300,21 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrUnknownPreset, err)
 	}
-	n.rulesMu.Lock()
-	defer n.rulesMu.Unlock()
-	next := n.local
-	next.Preset = p
-	data, err := next.MarshalText()
+	n.presetMu.Lock()
+	defer n.presetMu.Unlock()
+	n.settingsMu.Lock()
+	next := n.device
+	next.Rules.Preset = p
+	err = n.storeDevice(next)
+	n.settingsMu.Unlock()
 	if err != nil {
 		return err
 	}
-	d, err := openTrustedDir(n.cfg.StateDir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = d.Close() }()
-	if err := d.write(LocalRulesFile, data, 0o644); err != nil {
-		return err
-	}
-	n.local = next
 	n.report.set(func(r *report) { r.preset = p.String() })
 	n.logs.Info("rule preset set", "preset", p)
 	done := make(chan error, 1)
 	select {
-	case n.rulesRequests <- rulesRequest{rules: next, done: done}:
+	case n.rulesRequests <- rulesRequest{rules: next.Rules, done: done}:
 	case <-n.stopped:
 		return nil // stored: the next start takes it
 	case <-ctx.Done():
@@ -223,32 +328,152 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	}
 }
 
-func (n *Node) request(ctx context.Context, connect bool) error {
+// SetConnectOnBoot sets a device's connect-on-boot, stored in DeviceFile
+// (only the service writes it). It takes effect at the next boot: under
+// the service, a boot's first start connects only if it is on; a start
+// later in the same boot, and the running node, are left as they are.
+// ErrServerMode on a server, which serves its spaces whenever it runs.
+func (n *Node) SetConnectOnBoot(on bool) error {
 	if n.Mode() == ModeServer {
 		return ErrServerMode
+	}
+	n.settingsMu.Lock()
+	defer n.settingsMu.Unlock()
+	next := n.device
+	next.ConnectOnBoot = on
+	if err := n.storeDevice(next); err != nil {
+		return err
+	}
+	n.report.set(func(r *report) { r.connectOnBoot = on })
+	n.logs.Info("connect-on-boot set: from the next boot", "connect_on_boot", onOff(on))
+	return nil
+}
+
+// storeDevice writes s to DeviceFile, 0600, then keeps it as the device's
+// settings; on an error nothing changed. The caller holds settingsMu.
+func (n *Node) storeDevice(s DeviceSettings) error {
+	data, err := s.marshal()
+	if err != nil {
+		return err
+	}
+	d, err := openTrustedDir(n.cfg.StateDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	if err := d.write(DeviceFile, data, 0o600); err != nil {
+		return err
+	}
+	n.device = s
+	return nil
+}
+
+// carryLocalRules moves a LocalRulesFile into DeviceFile, once: the
+// device's preset and own rules, as read at Prepare, are written to
+// DeviceFile, then rules.local is removed, and the log says so. A
+// directory holding both had the move stopped after the write: rules.local
+// is only removed. A server has no rules of its own: it leaves the file
+// alone.
+func (n *Node) carryLocalRules() error {
+	if !n.state.hasLocalRules || n.Mode() == ModeServer {
+		return nil
+	}
+	n.settingsMu.Lock()
+	defer n.settingsMu.Unlock()
+	if !n.state.hasDeviceFile {
+		if err := n.storeDevice(n.device); err != nil {
+			return fmt.Errorf("carrying %s over into %s: %w", LocalRulesFile, DeviceFile, err)
+		}
+		n.state.hasDeviceFile = true
+	}
+	d, err := openTrustedDir(n.cfg.StateDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	if err := d.remove(LocalRulesFile, false); err != nil {
+		return fmt.Errorf("%s is carried over into %s, removing it: %w", LocalRulesFile, DeviceFile, err)
+	}
+	n.state.hasLocalRules = false
+	n.logs.Info("the device's rules moved from rules.local into device.json; rules.local is removed", "preset", n.device.Rules.Preset, "own_rules", len(n.device.Rules.Rules))
+	return nil
+}
+
+func (n *Node) request(ctx context.Context, connect bool) error {
+	_, err := n.ask(ctx, connect)
+	return err
+}
+
+// ask has the node's goroutine take a connect request and waits for its
+// answer; taken says the goroutine took it.
+func (n *Node) ask(ctx context.Context, connect bool) (taken bool, err error) {
+	if n.Mode() == ModeServer {
+		return false, ErrServerMode
 	}
 	done := make(chan error, 1)
 	select {
 	case n.requests <- connectRequest{connect: connect, done: done}:
 	case <-n.stopped:
-		return ErrNotRunning
+		return false, ErrNotRunning
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	}
 	select {
 	case err := <-done:
-		return err
+		return true, err
 	case <-ctx.Done():
-		return ctx.Err()
+		return true, ctx.Err()
 	}
 }
 
-// Mode is the mode the node runs in; ModeAuto while the node is removed
-// from its space and its kind unknown. Safe to call from any goroutine.
-func (n *Node) Mode() Mode {
-	n.report.mu.Lock()
-	defer n.report.mu.Unlock()
-	return n.report.mode
+// Mode is the mode the node runs in (Config.Mode), fixed at Prepare.
+func (n *Node) Mode() Mode { return n.cfg.Mode }
+
+// modeMismatch is whether a node run in mode on st can't run its section:
+// device mode never runs a server's (PRD A4).
+func modeMismatch(mode Mode, st State) bool {
+	return mode == ModeDevice && !st.Removed && st.Section.Node.Kind == netmap.NodeServer
+}
+
+// KeepLastRun keeps what TakeCrashTrace found for Status and Diagnose,
+// and logs it: what was fixed of the file, and that the previous run
+// crashed. Then the file is the node's to empty (CrashTrace.Release), or,
+// for a server, to stop writing to (keepNoTrace). Call it before the node
+// runs; a file it can't empty fails the start, stderr detached.
+func (n *Node) KeepLastRun(ct *CrashTrace) error {
+	if ct.Fixed != "" {
+		n.logs.Warn("the crash trace file was wider than root's 0600; fixed", "file", CrashTraceFile, "fixed", ct.Fixed)
+	}
+	switch {
+	case ct.LastRun.Crashed():
+		n.logs.Warn("the previous run crashed or exited with an error; thinkpol diag shows its trace (root only)")
+	case ct.LastRun.Unreadable != "":
+		n.logs.Warn("the previous run's crash trace wasn't read", "why", ct.LastRun.Unreadable)
+	}
+	n.report.set(func(p *report) { p.lastRun = ct.LastRun })
+	n.crashTrace = ct
+	if n.Mode() == ModeServer {
+		n.keepNoTrace()
+		return nil
+	}
+	return ct.Release()
+}
+
+// keepNoTrace stops a server's stderr going to a crash trace (PRD S2: a
+// server keeps no logs on disk): under a device's definition (its node
+// file set device mode when it was installed), the file is emptied and
+// removed, and stderr goes nowhere. A trace file left in the state
+// directory is warned about.
+func (n *Node) keepNoTrace() {
+	if ct := n.crashTrace; ct != nil && ct.Tracing {
+		if err := ct.detach(false); err != nil {
+			n.logs.Error("a server's stderr still goes to the crash trace file", "err", err)
+		}
+		n.logs.Warn("a server under a device's service definition: run thinkpol service install; its stderr goes nowhere and the crash trace file is removed")
+	}
+	if _, err := os.Lstat(filepath.Join(n.cfg.StateDir, CrashTraceFile)); err == nil {
+		n.logs.Warn("the state directory holds a crash trace, which a server keeps none of; it is not used (thinkpol service install removes it)", "entry", CrashTraceFile)
+	}
 }
 
 // Subscribe has f hear the node's events, each once Status shows what it
@@ -298,6 +523,12 @@ func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
+	n.takeConnectChoice()
+	// Under the host lock, so two starts never carry it over at once.
+	if err := n.carryLocalRules(); err != nil {
+		unlock()
+		return nil, err
+	}
 	reg, err := n.plat.Transports(true)
 	if err != nil {
 		unlock()
@@ -316,25 +547,29 @@ func (n *Node) Adapters(reload <-chan os.Signal) ([]app.Adapter, error) {
 
 func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byte) error {
 	defer close(n.stopped)
+	defer n.ks.warnLeftInPlace()
 	h := n.state.Map.Header()
 	n.logs.Info("starting", "mode", n.Mode(), "space", h.SpaceID, "node", n.state.Keys.ID, "version", h.Version, "map", n.state.MapPath)
 	if n.bootChoice && n.Mode() != ModeServer {
 		n.remember(!n.conn.disconnected())
 	}
-	if n.Mode() != ModeServer && n.conn.state != connConnecting {
-		// What the data plane left in the host's routing when the node
-		// died connected (a crash, kill -9): a device that starts
-		// without connecting has nothing holding it, and connecting
-		// takes it over anyway.
-		n.plat.clearNetwork(n.logs.Logger)
+	// A server's section in device mode (a server whose node file lost
+	// its mode) leaves the host alone: nothing is put back or taken over
+	// until a map makes the node a device.
+	mismatch := modeMismatch(n.Mode(), n.state)
+	// The kill switch is narrowed first: until then a crashed run's lets
+	// out what it let out connected (on macOS DNS to the direct upstreams
+	// from any socket), and restoring the host points the OS at them.
+	if !mismatch {
+		n.startKillSwitch(ctx)
+		n.restoreHost()
 	}
-	// A resolver configuration a crash left behind goes back first,
-	// whatever the node does next.
-	if err := n.plat.RestoreDNS(); err != nil {
-		n.logs.Warn("DNS: restoring the system's resolver configuration left behind", "err", err)
-	}
-	if n.state.Removed && !n.awaitSection(ctx, maps) {
+	if (n.state.Removed || mismatch) && !n.awaitSection(ctx, maps) {
 		return nil
+	}
+	if mismatch {
+		n.startKillSwitch(ctx)
+		n.restoreHost()
 	}
 	if n.Mode() == ModeServer {
 		return n.runServer(ctx, reg, maps)
@@ -362,51 +597,120 @@ func (n *Node) run(ctx context.Context, reg *transport.Registry, maps chan []byt
 		remember:      n.remember,
 		events:        n.emit,
 		rulesRequests: n.rulesRequests,
+
+		killSwitch:         n.enforceKillSwitch,
+		killSwitchRequests: n.killSwitchRequests,
 	}
-	n.rulesMu.Lock()
-	dp.Rules = n.local
-	n.rulesMu.Unlock()
+	n.settingsMu.Lock()
+	dp.Rules = n.device.Rules
+	n.settingsMu.Unlock()
 	dp.tuning = n.tuning
 	return RunDataPlane(ctx, dp)
 }
 
-// awaitSection follows the space's maps while the node is removed from it,
-// until one includes the node (true) or ctx ends (false). A node removed
-// while it was down starts this way instead of failing, which under a
-// service manager would only restart it over and over.
+// startKillSwitch puts a device's kill switch as it starts: a crashed or
+// stopped run's is narrowed to the down shape (or removed, if not meant)
+// before anything connects. A server removes what a device run on the
+// host left: it would refuse the server's traffic but to the entries.
+func (n *Node) startKillSwitch(ctx context.Context) {
+	if n.Mode() == ModeServer {
+		n.removeDeviceKillSwitch()
+		return
+	}
+	v := killSwitchView{meantUp: !n.conn.disconnected()}
+	if !n.state.Removed {
+		v.entries = entries(n.state.Section)
+	}
+	n.enforceKillSwitch(ctx, v)
+}
+
+// removeDeviceKillSwitch removes, on a server, the kill switch a device
+// run on the host left; a failure is logged and left for `thinkpol
+// service uninstall`.
+func (n *Node) removeDeviceKillSwitch() {
+	if n.plat.NewKillSwitch == nil {
+		return
+	}
+	ks := n.plat.NewKillSwitch()
+	if ks == nil {
+		return
+	}
+	if err := ks.Close(); err != nil {
+		n.logs.Error("a device run's kill switch is still in place and refuses the server's traffic; thinkpol service uninstall removes it", "err", err)
+	}
+}
+
+// restoreHost puts back what a crashed run left on the host.
+func (n *Node) restoreHost() {
+	if n.Mode() != ModeServer && n.conn.state != connConnecting {
+		// What the data plane left in the host's routing when the node
+		// died connected (a crash, kill -9): a device that starts
+		// without connecting has nothing holding it, and connecting
+		// takes it over anyway.
+		n.plat.clearNetwork(n.logs.Logger)
+	}
+	// A resolver configuration a crash left behind goes back first,
+	// whatever the node does next.
+	if err := n.plat.RestoreDNS(); err != nil {
+		n.logs.Warn("DNS: restoring the system's resolver configuration left behind", "err", err)
+	}
+}
+
+// awaitSection follows the space's maps while the node runs nothing of
+// them, removed from its space or, in device mode, made a server by its
+// map, until one gives the node a section it runs (true) or ctx ends
+// (false). A node removed while it was down starts this way instead of
+// failing, which under a service manager would only restart it over and
+// over; so does a device-mode node the map makes a server.
 func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 	f := mapFollower{log: n.logs.Logger, keys: n.state.Keys, report: &n.report,
-		removedMsg: "waiting for a map that includes it"}
-	f.markRemoved(n.state.Map)
-	// The report gets the map, the connection and, once back, the mode;
-	// the events are told after it shows them.
-	mode := ModeAuto
+		removedMsg: "waiting for a map that includes it", device: n.Mode() == ModeDevice}
+	if n.state.Removed {
+		f.markRemoved(n.state.Map)
+	} else {
+		f.cur, f.section = n.state.Map, n.state.Section
+		f.checkKind()
+	}
+	// The report gets the map and the connection; the events are told
+	// after it shows them.
 	publish := func() {
 		n.report.set(func(p *report) {
-			p.version, p.removed, p.conn = f.cur.Header().Version, f.removed, n.conn.state
-			if mode != ModeAuto {
-				p.mode = mode
-			}
+			p.version, p.removed, p.mismatch, p.conn = f.cur.Header().Version, f.removed, f.mismatch, n.conn.state
 		})
 	}
+	keepKillSwitch := func(ctx context.Context, meantUp bool) { n.keepRemovedKillSwitch(ctx, f.mismatch, meantUp) }
+	reapply := time.NewTicker(killSwitchReapply)
+	defer reapply.Stop()
 	publish()
-	emitter(n.emit).emit(EventRemovedFromSpace, f.cur.Header().Version)
-	requested := false
+	if f.removed {
+		emitter(n.emit).emit(EventRemovedFromSpace, f.cur.Header().Version)
+	}
+	sayBack := func() {
+		f.sayBack("mode", n.Mode())
+		emitter(n.emit).emit(EventBackInSpace, f.cur.Header().Version)
+	}
 	for {
 		select {
 		case <-ctx.Done():
-			// The node returns: its connection is down.
-			if !n.conn.disconnected() {
-				logRefused(n.logs.Logger, n.conn.disconnect())
-			}
+			// The node returns: its connection is down; its kill switch
+			// stays as a crash would leave it (runner.shutdown).
+			stopCtx, cancel := context.WithTimeout(context.Background(), killSwitchStopTimeout)
+			keepKillSwitch(stopCtx, n.dropConnection())
+			cancel()
 			publish()
 			return false
+		case <-reapply.C:
+			keepKillSwitch(ctx, !n.conn.disconnected())
+		case done := <-n.killSwitchRequests:
+			keepKillSwitch(ctx, !n.conn.disconnected())
+			publish()
+			close(done)
 		case req := <-n.rulesRequests:
 			// Stored already: the data plane starts with them.
+			keepKillSwitch(ctx, !n.conn.disconnected())
 			req.done <- nil
 		case req := <-n.requests:
-			// Kept for when the node is back in its space.
-			requested = true
+			// Kept for when the node runs its section.
 			n.remember(req.connect)
 			var err error
 			switch {
@@ -416,6 +720,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 				err = n.conn.disconnect()
 			}
 			logRefused(n.logs.Logger, err)
+			keepKillSwitch(ctx, !n.conn.disconnected())
 			publish()
 			req.done <- err
 		case env, ok := <-maps:
@@ -423,28 +728,67 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 				maps = nil
 				continue
 			}
-			taken, _, back := f.take(env)
+			taken, back := n.takeWaitingMap(ctx, &f, env)
 			if !taken {
 				continue
 			}
-			if !back {
+			if f.out() {
 				publish() // still out, on a newer map
+				if back {
+					sayBack()
+				}
 				continue
 			}
 			n.state.Map, n.state.Section, n.state.Removed = f.cur, f.section, false
-			mode = n.resolveMode()
-			if mode != ModeServer && n.conn.state == connRemoved {
+			if n.Mode() != ModeServer && n.conn.state == connRemoved {
 				logRefused(n.logs.Logger, n.conn.resume())
 			}
 			publish()
-			if requested && mode == ModeServer {
-				n.logs.Warn("a connect or disconnect taken while removed is dropped: this node is a server, which always serves its spaces")
+			if back {
+				sayBack()
 			}
-			f.sayBack("mode", mode)
-			emitter(n.emit).emit(EventBackInSpace, f.cur.Header().Version)
 			return true
 		}
 	}
+}
+
+// takeWaitingMap is f.take for awaitSection: a map that moves the node
+// into or out of mismatch, while it still waits, keeps the kill switch at
+// once, so the status the next publish shows has both, not a kill switch
+// status from the other role until the next re-apply.
+func (n *Node) takeWaitingMap(ctx context.Context, f *mapFollower, env []byte) (taken, back bool) {
+	wasMismatch := f.mismatch
+	taken, _, back = f.take(env)
+	if taken && f.out() && f.mismatch != wasMismatch {
+		n.keepRemovedKillSwitch(ctx, f.mismatch, !n.conn.disconnected())
+	}
+	return taken, back
+}
+
+// keepRemovedKillSwitch keeps a device's kill switch while it waits for a
+// section (awaitSection): removed, it lets out no entry, as the device has
+// none; made a server by its map (mismatch), the host is left alone, and
+// the status says not_applied, whatever an earlier enforce left in it: a
+// toggle set meanwhile changes nothing on the host.
+func (n *Node) keepRemovedKillSwitch(ctx context.Context, mismatch, meantUp bool) {
+	switch {
+	case n.Mode() != ModeDevice:
+	case mismatch:
+		st := n.killSwitchSettings().notApplied()
+		n.report.set(func(p *report) { p.killSwitch = st })
+	default:
+		n.enforceKillSwitch(ctx, killSwitchView{meantUp: meantUp})
+	}
+}
+
+// dropConnection takes a waiting node's connection down as it returns,
+// and says whether it was meant up.
+func (n *Node) dropConnection() bool {
+	meantUp := !n.conn.disconnected()
+	if meantUp {
+		logRefused(n.logs.Logger, n.conn.disconnect())
+	}
+	return meantUp
 }
 
 // serverRemovedMsg completes the removal warning for a server's spaces:

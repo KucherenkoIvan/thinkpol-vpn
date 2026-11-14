@@ -88,7 +88,7 @@ func TestLocalAPI(t *testing.T) {
 	devA.MustExec(t, "install", "-d", "-m", "2777", "/run/thinkpol-api")
 	devB.MustExec(t, "install", "-d", "-m", "755", "-o", malloryUID, "/run/foreign-api")
 	up := map[string]*lab.Process{
-		"server-1": server.Start(t, "thinkpol", "up"),
+		"server-1": server.Start(t, "thinkpol", "up", "-mode", "server"),
 		"device-a": devA.Start(t, "thinkpol", "up", "-connect=false"),
 		"device-b": devB.Start(t, "env", "THINKPOL_API_SOCKET=/run/foreign-api/api.sock", "thinkpol", "up"),
 	}
@@ -100,12 +100,12 @@ func TestLocalAPI(t *testing.T) {
 	t.Run("an API that can't serve leaves the VPN up", func(t *testing.T) {
 		waitLog(t, up["device-b"], `level=ERROR msg="the local API is down`)
 		ping(t, devB, s4)
-		// Only the CLI's own service_down shows nothing serves there; the
-		// CLI prints it after "thinkpol status: ", and its wording begins
-		// with the prefix errors.go documents.
+		// Only the CLI's own service_down (EX_UNAVAILABLE) shows nothing
+		// serves there; the CLI prints it after "thinkpol status: ", and
+		// its wording begins with the prefix errors.go documents.
 		if res, err := cli(t, devB, as("", "", "status", "-socket", "/run/foreign-api/api.sock")); err == nil {
 			t.Fatal("status from an API that can't serve")
-		} else if res.ExitCode != 1 || !strings.Contains(res.Stderr, "thinkpol status: the thinkpol service") {
+		} else if res.ExitCode != 69 || !strings.Contains(res.Stderr, "thinkpol status: the thinkpol service") {
 			t.Fatalf("status from an API that can't serve: %v\n%s%s", err, res.Stdout, res.Stderr)
 		}
 	})
@@ -146,7 +146,7 @@ func TestLocalAPI(t *testing.T) {
 		}
 		clean(t, "device-a's status", res.Stdout)
 		res, err = cli(t, devA, as("", "", "status", "-json"))
-		if err != nil || !regexp.MustCompile(`"connection":\s+"CONNECTION_CONNECTED"`).MatchString(res.Stdout) {
+		if err != nil || !regexp.MustCompile(`"connection":\s+"connected"`).MatchString(res.Stdout) {
 			t.Fatalf("json: %v\n%s", err, res.Stdout)
 		}
 		clean(t, "device-a's JSON status", res.Stdout)
@@ -188,11 +188,11 @@ func TestLocalAPI(t *testing.T) {
 		if err == nil || !strings.Contains(res.Stderr, "enforced failing closed") {
 			t.Fatalf("preset: %v\n%s%s", err, res.Stdout, res.Stderr)
 		}
-		if got := devA.MustExec(t, "stat", "-c", "%a %U", stateDir+"/rules.local"); got != "644 root\n" {
-			t.Errorf("rules.local: %q", got)
+		if got := devA.MustExec(t, "stat", "-c", "%a %U", stateDir+"/device.json"); got != "600 root\n" {
+			t.Errorf("device.json: %q", got)
 		}
-		if got := devA.MustExec(t, "cat", stateDir+"/rules.local"); got != "preset everything\n" {
-			t.Errorf("rules.local holds %q", got)
+		if got := devA.MustExec(t, "cat", stateDir+"/device.json"); !strings.Contains(got, `"rule_preset": "everything"`) {
+			t.Errorf("device.json holds %q", got)
 		}
 		res, err = cli(t, devA, as(aliceUID, apiGID, "status"))
 		if err != nil || !regexp.MustCompile(`rule preset: +everything \(unavailable in this space: failing closed\)`).MatchString(res.Stdout) {

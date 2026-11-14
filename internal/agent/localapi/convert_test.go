@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -136,7 +137,7 @@ func TestEveryCounterHasAName(t *testing.T) {
 		}
 	}
 	dp.InterfaceReapplies = n + 1
-	got := dataPlaneProto(&dp, 0).GetCounters()
+	got := dataPlaneProto(&dp, 0, "").GetCounters()
 	seen := map[uint64]bool{}
 	for _, v := range got {
 		seen[v] = true
@@ -147,7 +148,7 @@ func TestEveryCounterHasAName(t *testing.T) {
 		}
 	}
 	dp.RouteTable.Enforced = false
-	for name := range dataPlaneProto(&dp, 0).GetCounters() {
+	for name := range dataPlaneProto(&dp, 0, "").GetCounters() {
 		if strings.HasPrefix(name, "route_table.") {
 			t.Errorf("%s outside route-table mode", name)
 		}
@@ -167,6 +168,55 @@ func TestMapsRefusedReachStatusAndCLI(t *testing.T) {
 		}
 		if shown := strings.Contains(text.String(), "maps refused:"); shown != (n > 0) || (n > 0 && !strings.Contains(text.String(), "3 since")) {
 			t.Errorf("%d refused:\n%s", n, text.String())
+		}
+	}
+}
+
+// A corrupt route record reaches the CLI with its count, whatever the
+// route table holds, and the health only while routes no record names
+// are left; none, no line.
+func TestACorruptRecordReachesStatusAndCLI(t *testing.T) {
+	for _, tc := range []struct {
+		routes, corrupt, unowned int
+		line                     string
+		flagged                  bool
+	}{
+		{9, 0, 3, "", false},
+		{9, 1, 0, "1 corrupt (see the log for which and why); no route left that no record names", false},
+		{9, 2, 3, "2 corrupt (see the log for which and why); 3 thinkpol routes no record names (an owner already running when its record went bad still removes its own; the rest stay until reboot, unless they went with their owner's interface)", true},
+		{0, 1, 1, "1 corrupt (see the log for which and why); 1 thinkpol route no record names (an owner already running when its record went bad still removes its own; otherwise it stays until reboot, unless it went with its owner's interface)", true},
+	} {
+		rt := dataplane.RouteTableStatus{Enforced: true, Routes: tc.routes, CorruptRecords: tc.corrupt, UnownedRoutes: tc.unowned}
+		if tc.routes == 0 { // it failed before its first apply
+			rt.Enforced, rt.Error = false, dataplane.RouteTableApplyFailed
+		}
+		out := statusProto(agent.Status{Connection: agent.Connected, DataPlane: &dataplane.Status{RouteTable: rt}})
+		var text bytes.Buffer
+		if err := WriteStatus(&text, out, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		shown := strings.Contains(text.String(), "route records:")
+		flagged := slices.Contains(out.GetHealth().GetProblems(), "route_records_corrupt")
+		if shown != (tc.line != "") || !strings.Contains(text.String(), tc.line) || flagged != tc.flagged {
+			t.Errorf("%+v:\n%s", tc, text.String())
+		}
+	}
+}
+
+// The kill switch's line says what it does now: not applied yet before
+// the agent's first apply, not enforced after a failure, in place.
+func TestKillSwitchText(t *testing.T) {
+	for _, c := range []struct {
+		k    agent.KillSwitchStatus
+		want string
+	}{
+		{agent.KillSwitchStatus{On: true, Error: agent.KillSwitchNotApplied}, "on, allow-LAN off (not applied yet)"},
+		{agent.KillSwitchStatus{On: true, Active: true, Error: agent.KillSwitchApplyFailed}, "on, allow-LAN off (not enforced: apply_failed, retrying)"},
+		{agent.KillSwitchStatus{On: true, AllowLAN: true, Active: true, Enforced: true}, "on, allow-LAN on (in place)"},
+	} {
+		got := KillSwitchText(statusProto(agent.Status{Mode: agent.ModeDevice, KillSwitch: c.k}).GetKillSwitch())
+		if got != c.want {
+			t.Errorf("%+v: %q, want %q", c.k, got, c.want)
 		}
 	}
 }

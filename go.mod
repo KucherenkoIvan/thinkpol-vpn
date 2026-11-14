@@ -2,7 +2,7 @@ module github.com/KucherenkoIvan/thinkpol-vpn
 
 go 1.26.0
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
 	github.com/KucherenkoIvan/go-kernel v0.20.0
@@ -15,6 +15,7 @@ require (
 	github.com/refraction-networking/utls v1.8.2
 	github.com/vishvananda/netlink v1.3.1
 	github.com/vishvananda/netns v0.0.5
+	github.com/xtls/reality v0.0.0-20260908062103-8cdf7bf9c7f0 // the newest commit whose go.mod says go 1.24: move the toolchain to Go 1.27 before moving it
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.61.0
 	golang.org/x/sys v0.49.0
@@ -24,10 +25,14 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/andybalholm/brotli v1.2.7 // indirect
+	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/klauspost/compress v1.18.7 // indirect
+	github.com/juju/ratelimit v1.0.2 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
+	github.com/kr/pretty v0.3.1 // indirect
 	github.com/mdlayher/socket v0.5.1 // indirect
+	github.com/pires/go-proxyproto v0.11.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect

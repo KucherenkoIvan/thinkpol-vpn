@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -238,6 +240,8 @@ type fakeConfigurator struct {
 	order   *[]string // what was closed, in order
 	// watchErr: what Watch returns; nil: it watches.
 	watchErr error
+	// attempts: when each Apply was called, failed ones included.
+	attempts []time.Time
 }
 
 // setFailErr makes Apply fail with err.
@@ -256,6 +260,7 @@ func (f *fakeConfigurator) setWatchErr(err error) {
 func (f *fakeConfigurator) Apply(_ context.Context, cfg netcfg.Config) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.attempts = append(f.attempts, time.Now())
 	if f.fail {
 		if f.failErr != nil {
 			return f.failErr
@@ -264,6 +269,13 @@ func (f *fakeConfigurator) Apply(_ context.Context, cfg netcfg.Config) error {
 	}
 	f.applies = append(f.applies, cfg)
 	return nil
+}
+
+// attemptTimes is when each Apply was called, failed ones included.
+func (f *fakeConfigurator) attemptTimes() []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.attempts)
 }
 
 func (f *fakeConfigurator) count() int {
@@ -391,7 +403,7 @@ func TestEnforcerAppliesChangesAndReappliesOnEvents(t *testing.T) {
 		return !st.Enforced && st.Error == routetable.ErrorReapply
 	})
 	f.setFail(false)
-	eventually(t, "a retry within RetryAfter", func() bool { return e.Status().Enforced })
+	eventually(t, "a retry RetryAfter after the failed re-Apply", func() bool { return e.Status().Enforced })
 
 	// A failed Enforce keeps what was in place and says so; the same Want
 	// again is tried again, not skipped.
@@ -423,6 +435,133 @@ func TestEnforcerAppliesChangesAndReappliesOnEvents(t *testing.T) {
 	}
 }
 
+// While the routes fail, events don't retry them every debounce: a failing
+// Apply's undo removes rules of ours, itself an event, so a Watch fires
+// after every attempt. The retries come RetryAfter apart; before the
+// failure, an event re-applies a debounce later.
+func TestAFailingApplyIsRetriedAtRetryAfterNotOnEachEvent(t *testing.T) {
+	t.Parallel()
+	f := &fakeConfigurator{events: make(chan struct{}), survey: up()}
+	e := routetable.Open(f, nil)
+	t.Cleanup(func() {
+		if err := e.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := e.Enforce(ctx, routetable.Want{TUN: "thinkpol0"}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the check after Enforce", func() bool { return e.Status().Reapplies == 1 })
+	attempts := f.attemptTimes
+	// Not failing: an event re-applies a debounce later, not a retry later.
+	n, sent := len(attempts()), time.Now()
+	f.events <- struct{}{}
+	eventually(t, "a re-Apply on an event", func() bool { return len(attempts()) > n })
+	// Loose for a loaded machine, still well short of RetryAfter.
+	if took := time.Since(sent); took > 2500*time.Millisecond {
+		t.Errorf("an event while not failing re-applied %v later, want a debounce", took)
+	}
+
+	// Failing: events keep coming, as the undo of each attempt makes them.
+	f.setFail(true)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case f.events <- struct{}{}:
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+	}()
+	eventually(t, "a failed re-Apply", func() bool { return e.Status().Error == routetable.ErrorReapply })
+	eventually(t, "a retry while failing", func() bool { return len(attempts()) >= n+3 })
+	time.Sleep(time.Second) // room for a retry that comes too soon
+	cancel()
+	all := attempts()
+	failed := all[n+1:] // the first failed attempt on
+	if len(failed) < 2 {
+		t.Fatalf("%d attempts while failing over more than RetryAfter, want a retry", len(failed))
+	}
+	for i := 1; i < len(failed); i++ {
+		if gap := failed[i].Sub(failed[i-1]); gap < routetable.RetryAfter-10*time.Millisecond {
+			t.Errorf("attempt %d came %v after the one before, want RetryAfter (%v): %d attempts in all", i, gap, routetable.RetryAfter, len(failed))
+			break
+		}
+	}
+}
+
+// The watcher's check after a failed Enforce waits for the retry too:
+// RetryAfter after the failed attempt, not a debounce later.
+func TestTheCheckAfterAFailedEnforceWaitsForRetryAfter(t *testing.T) {
+	t.Parallel()
+	f := &fakeConfigurator{events: make(chan struct{}), survey: up(), fail: true}
+	e := routetable.Open(f, nil)
+	t.Cleanup(func() { _ = e.Close() })
+	if err := e.Enforce(t.Context(), routetable.Want{TUN: "thinkpol0"}); err == nil {
+		t.Fatal("Enforce succeeded on a failing configurator")
+	}
+	eventually(t, "a retry", func() bool { return len(f.attemptTimes()) >= 2 })
+	a := f.attemptTimes()
+	if gap := a[1].Sub(a[0]); gap < routetable.RetryAfter-10*time.Millisecond {
+		t.Errorf("the failed Enforce was tried again %v later, want RetryAfter (%v)", gap, routetable.RetryAfter)
+	}
+}
+
+// The fix while the routes fail (the TUN coming up, say) is taken by the
+// next retry: at most RetryAfter after its event, not a retry later still.
+func TestAFixWhileFailingIsTakenWithinRetryAfter(t *testing.T) {
+	t.Parallel()
+	const slack = time.Second
+	f := &fakeConfigurator{events: make(chan struct{}), survey: up(), fail: true}
+	e := routetable.Open(f, nil)
+	t.Cleanup(func() { _ = e.Close() })
+	if err := e.Enforce(t.Context(), routetable.Want{TUN: "thinkpol0"}); err == nil {
+		t.Fatal("Enforce succeeded on a failing configurator")
+	}
+	f.setFail(false)
+	sent := time.Now()
+	f.events <- struct{}{}
+	eventually(t, "the routes in after the fix", func() bool { return e.Status().Enforced })
+	if took := time.Since(sent); took > routetable.RetryAfter+slack {
+		t.Errorf("the fix was taken %v after its event, want at most RetryAfter (%v)", took, routetable.RetryAfter)
+	}
+}
+
+// While the routes fail, the guard's events don't push their retry back:
+// it comes RetryAfter after the failed attempt however often the guard's
+// Watch fires meanwhile.
+func TestGuardEventsDontPushTheRoutesRetryBack(t *testing.T) {
+	t.Parallel()
+	e, f, g := failingRig(t, routetable.Want{TUN: "thinkpol0"})
+	f.events <- struct{}{}
+	eventually(t, "a failed re-Apply", func() bool { return e.Status().Error == routetable.ErrorReapply })
+	a := f.attemptTimes()
+	n, failed, k := len(a), a[len(a)-1], g.count()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case g.events <- struct{}{}:
+				time.Sleep(300 * time.Millisecond)
+			}
+		}
+	}()
+	eventually(t, "the routes retried", func() bool { return len(f.attemptTimes()) > n })
+	cancel()
+	if gap := f.attemptTimes()[n].Sub(failed); gap > routetable.RetryAfter+time.Second {
+		t.Errorf("the routes were retried %v after the failed attempt, want RetryAfter (%v)", gap, routetable.RetryAfter)
+	}
+	if g.count() < k+3 {
+		t.Errorf("%d guard Applies while the routes failed, want the guard's events taken", g.count()-k)
+	}
+}
+
 // A kernel that can't hold the table at all stops the enforcer for good:
 // no retries, and the status says why.
 func TestEnforcerStopsOnAnUnsupportedKernel(t *testing.T) {
@@ -443,5 +582,54 @@ func TestEnforcerStopsOnAnUnsupportedKernel(t *testing.T) {
 	}
 	if err := e.Enforce(context.Background(), w); !errors.Is(err, errors.ErrUnsupported) {
 		t.Errorf("Enforce again: %v", err)
+	}
+}
+
+// A corrupt route record netcfg found is counted in the status with the
+// unowned routes, and warned of once, by its path and why, however often
+// the table is put back while it is there unchanged; once it goes and
+// comes back, or comes back with a new reason or mtime, it is warned of
+// again.
+func TestACorruptRecordIsCountedAndWarnedOnceWhileUnchanged(t *testing.T) {
+	const path, reason = "/state/netcfg/overlay.routes.corrupt-boot", "no boot session"
+	f := &fakeConfigurator{survey: up()}
+	f.survey.CorruptRecords = []netcfg.CorruptRecord{{Path: path, Reason: reason}}
+	f.survey.UnownedRoutes = 3
+	var buf lockedBuffer
+	e := routetable.OpenWithClock(f, nil, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})), (&fakeClock{now: time.Unix(0, 0)}).read)
+	defer func() { _ = e.Close() }()
+	if err := e.Enforce(t.Context(), routetable.Want{TUN: "thinkpol0"}); err != nil {
+		t.Fatal(err)
+	}
+	routetable.PauseWatching(e)
+	if st := e.Status(); st.CorruptRecords != 1 || st.UnownedRoutes != 3 {
+		t.Errorf("CorruptRecords %d, UnownedRoutes %d, want 1, 3", st.CorruptRecords, st.UnownedRoutes)
+	}
+	routetable.Reapply(t.Context(), e)
+	if w := buf.lines("corrupt route record"); len(w) != 1 || !strings.Contains(w[0], path) || !strings.Contains(w[0], reason) {
+		t.Errorf("warns %q, want one naming %s and %q", w, path, reason)
+	}
+	// Removed by hand: no longer counted.
+	f.mu.Lock()
+	f.survey.CorruptRecords, f.survey.UnownedRoutes = nil, 0
+	f.mu.Unlock()
+	routetable.Reapply(t.Context(), e)
+	if st := e.Status(); st.CorruptRecords != 0 || st.UnownedRoutes != 0 {
+		t.Errorf("CorruptRecords %d, UnownedRoutes %d after the record went, want 0", st.CorruptRecords, st.UnownedRoutes)
+	}
+	// Corrupted again: warned again, and again for a new reason or mtime.
+	for i, r := range []netcfg.CorruptRecord{
+		{Path: path, Reason: reason},
+		{Path: path, Reason: "bad line 2 after the boot line: bad scope"},
+		{Path: path, Reason: "bad line 2 after the boot line: bad scope", Modified: time.Unix(60, 0)},
+	} {
+		f.mu.Lock()
+		f.survey.CorruptRecords = []netcfg.CorruptRecord{r}
+		f.mu.Unlock()
+		routetable.Reapply(t.Context(), e)
+		routetable.Reapply(t.Context(), e)
+		if w := buf.lines("corrupt route record"); len(w) != i+2 || !strings.Contains(w[i+1], r.Reason) {
+			t.Errorf("after %+v: warns %q, want %d", r, w, i+2)
+		}
 	}
 }

@@ -1,8 +1,9 @@
 ---
 id: TP-084
 title: "Link survives a NAT rebind or source-port change"
-milestone: M2
+milestone: later
 area: dataplane/path
+stream: transports
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-019, TP-080]
@@ -30,3 +31,4 @@ Device run 4: when the client restarted on a new local port, the exit logged `li
 ## Log
 - 2026-10-15 created in backlog (split from TP-080, backlog grooming)
 - 2026-10-15 docs (backlog grooming, review fixes): depends_on TP-019; DESIGN ref slug; subsumed-by-TP-080 note
+- 2026-11-07 milestone → later (owner's MVP cut: follows TP-080)

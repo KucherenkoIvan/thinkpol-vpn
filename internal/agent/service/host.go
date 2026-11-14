@@ -4,7 +4,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -42,6 +41,7 @@ func HostInstaller(out io.Writer, plat agent.Platform) (Installer, error) {
 		Run:         runTool,
 		Executable:  exe,
 		Ready:       nodeReady,
+		CrashTrace:  agent.CrashTracePath(),
 		LockHost:    plat.LockHost,
 		ClearHost:   plat.ClearHost,
 		RuntimeDirs: []string{agent.HostLockDir(), filepath.Dir(agent.DefaultAPISocket())},
@@ -53,7 +53,7 @@ func HostInstaller(out io.Writer, plat agent.Platform) (Installer, error) {
 // installed for the whole host.
 func CheckRoot() error {
 	if os.Geteuid() != 0 {
-		return errors.New("the service is the host's: run this as root (sudo)")
+		return ErrNeedsRoot
 	}
 	return nil
 }
@@ -68,10 +68,11 @@ func InstallingUser() string {
 }
 
 // nodeReady checks the node's default state directory as `thinkpol up`
-// would read it: without keys and a map the service would only restart.
-func nodeReady() error {
-	_, err := agent.LoadState(agent.DefaultStateDir, filepath.Join(agent.DefaultStateDir, agent.MapFileName))
-	return err
+// would read it: without keys and a map, or with a node file it refuses,
+// the service would only restart. It returns the mode the service is
+// installed for (agent.ServiceMode).
+func nodeReady() (agent.Mode, agent.ModeUnknown, error) {
+	return agent.ServiceMode(agent.DefaultStateDir)
 }
 
 func runTool(ctx context.Context, tool string, args ...string) (string, error) {

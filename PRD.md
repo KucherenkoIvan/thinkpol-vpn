@@ -21,7 +21,7 @@ Scale is small on purpose: a handful of servers, up to ~20 devices per space, a 
 
 ## Goals
 
-1. Reach the open internet from behind DPI, active probing and whitelists, with routing you control per destination.
+1. Reach the open internet from behind DPI and active probing, with routing you control per destination. Whitelists: deferred: whitelist mode is under research (owner, 2026-11-07).
 2. One private network across all your devices: any device reaches any other, through a relay if needed.
 3. A fresh Linux VPS becomes a working node with one command; the network is managed from a web panel, not config files.
 4. Nothing in the data path depends on the controller or on third-party servers.
@@ -61,7 +61,7 @@ Scale is small on purpose: a handful of servers, up to ~20 devices per space, a 
 **Everyday use**
 - As a member, I click the tray icon to connect or disconnect, and see whether I'm connected, through which chain, and whether something is wrong.
 - As a member, I choose what goes through the tunnel: everything, everything except domestic sites (the default), or my own rules on top of the space's defaults.
-- As a member, I turn on the kill switch so nothing leaks when the tunnel drops, and still log into hotel Wi-Fi (allow-LAN, temporary pause).
+- As a member, I turn on the kill switch so nothing leaks when the tunnel drops, and still log into hotel Wi-Fi with allow-LAN or with the switch off, which the tray makes impossible to miss.
 - As a member on "everything" or "all but domestic", I'm not exposed when the agent crashes: nothing leaks until it is back, without my having changed a setting.
 - As a member, I turn on connect-on-boot (off by default).
 - As a member, I reach my other devices (SSH to my desktop, a file share) by name, wherever they are.
@@ -133,7 +133,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | ID | Requirement | Pri | M |
 |---|---|---|---|
 | S1 | Nodes keep only what they need to run: their own keys and their own part of the map. No member names, no other nodes' credentials, no rules they don't enforce; servers know devices by opaque ids | must | M0 for the map format, M4 complete |
-| S2 | No logs on disk: agent logs stay in memory; provisioning makes the system journal volatile | must | M4 |
+| S2 | No logs on disk: agent logs stay in memory; provisioning makes the system journal volatile. One exception, on devices only: a device's crash trace, one root-only (0600) file in the state directory holding what the agent's last run under the service wrote to stderr (a panic's trace, the error it exited with), overwritten at each start once read. Servers and entry nodes keep none. The journal is a separate, known gap until provisioning makes it volatile (RR40) | must | M4 |
 | S3 | Telemetry is buffered on nodes only in memory, bounded (minutes, kilobytes), encrypted to the space's key as it's recorded; oldest dropped first when full, everything lost on reboot | must | M4 |
 | S4 | Telemetry holds aggregates per link and per device id; never public IP addresses or destinations | must | M4 |
 | S5 | Ephemeral nodes: nothing on disk but the binary; after a reboot, the node owner's controller re-provisions them | later | — |
@@ -146,7 +146,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | D1 | Runs on macOS, Linux, Windows | must | M1 (macOS, Linux), M5 (Windows) |
 | D2 | Privileged background service + unprivileged tray app; the tray app talks to the service locally | must | M5 |
 | D3 | Tray: connect/disconnect, status (chain, entry in use, health), space switcher, rule preset switcher | must | M5 |
-| D4 | Kill switch toggle (default off): when on and the tunnel is down, nothing leaves except traffic to entry nodes; allow-LAN option; temporary pause. After an agent crash the device **fails closed by default** under the "everything" and "all but domestic" presets (opt-out); a deliberate disconnect follows the toggle | must | M2 (macOS, Linux), M5 (Windows) |
+| D4 | Kill switch toggle (default off): when on and the tunnel is down, nothing leaves except traffic to entry nodes; allow-LAN option. Its off state is made unmissable: the tray's colour and notifications (TP-049), and status shows it (owner, 2026-11-12). After an agent crash the device **fails closed by default** under the "everything" and "all but domestic" presets (opt-out); a deliberate disconnect follows the toggle | must | M2 (macOS, Linux), M5 (Windows) |
 | D5 | Connect-on-boot toggle (default off) | must | M2 (macOS, Linux), M5 (tray toggle, Windows) |
 | D6 | No IPv6 leaks: IPv6 goes through the tunnel or is blocked while connected, and stays blocked after a crash, but for the rows of [RESIDUAL-RISKS.md](RESIDUAL-RISKS.md) whose Breaks column names D6 | must | M1 (Linux); macOS device proof once a network with native IPv6 is available (TP-096) |
 | D7 | Join a space from an invite link or QR code without a terminal; the device stays pending until the admin approves it | must | M5 |
@@ -193,7 +193,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | M0 | Overlay | Two Linux nodes in the lab, hand-made signed map in the need-to-know format, `udp` transport, relay paths, device ↔ device ping. The server agent already runs each space as its own isolated worker |
 | M1 | Working core | Per-node ingress/egress settings, an egress node, rules with GeoIP, DNS, IPv6 handling, macOS and Linux clients via CLI. Leak guarantees are proven on Linux. On macOS, M1 proves the data plane, DNS resolution and that the IPv6 guard loads; what is unproven there is in [milestones](docs/design/milestones.md). Confinement after a crash (kill switch, TP-048) comes in M2. Daily use starts once a disguised transport passes the censor lab (M2) |
 | M2 | Disguise | `reality` transport with probe fallback, censor lab v1; kill switch and connect-on-boot on macOS/Linux (TP-048, TP-046) |
-| M3 | Chains | Multi-hop chains, hop groups with failover, lab whitelist mode (chains through an allowlisted entry; obtaining one is not promised) |
+| M3 | Chains | Multi-hop chains, hop groups with failover; lab whitelist mode (chains through an allowlisted entry): deferred: whitelist mode is under research (owner, 2026-11-07) |
 | M4 | Control plane | Controller on go-kernel: spaces, members, invites, SSH provisioning, map gossip, hosting grants and shared nodes, node safety, telemetry, admin panel with canvas and dashboards |
 | M5 | Desktop client | Tray app on macOS, Linux, Windows; invite links; space switcher (kill-switch and connect-on-boot toggles in the tray; Windows enforcement) |
 | — | **MVP = M0–M5** | |
@@ -202,7 +202,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 
 ## Success metrics
 
-1. **Lab:** every MVP transport has a known result against every censor module; `reality` passes everything except whitelist mode, and chains pass whitelist mode through an allowlisted entry.
+1. **Lab:** every MVP transport has a known result against every censor module; `reality` passes everything except whitelist mode. Chains through an allowlisted entry: deferred: whitelist mode is under research (owner, 2026-11-07).
 2. **Daily use:** once a disguised transport passes the censor lab (M2), the author replaces VLESS + Reality on macOS for a month without falling back.
 3. **Hand-off:** one family member or friend installs, joins and uses it without help.
 4. **Sharing:** a second space runs through the author's entry node, and the lab confirms nothing crosses between the two.
@@ -215,7 +215,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | The censor seizes or compromises a member's device | It holds valid credentials, so it passes as the member until revoked. Per-device grants (A3) bound what it reaches; revocation spreads by gossip once one honest entry is reachable; the section shows only that device's entries, chains and rules |
 | Government-affiliated apps on members' devices probe for blocked services and for VPN state | A TUN interface, its routes and the DNS configuration are visible to local apps and can't be hidden; Android's VpnService is detectable. "All but domestic" keeps domestic apps' traffic on the domestic path; per-app split tunnelling in userspace mode is the later mitigation; researched in TP-065 |
 | The censor learns our transports (the repo is public) | Probe resistance and fingerprint mimicry don't rely on secrecy; private plugins for experiments; transports swappable per link without releases |
-| Whitelists tighten to the point where even domestic VPS IPs are filtered | This happened in 2026: allowlisted services were moved into subnets of their own, and a rented VPS address rarely passes. An allowlisted entry, where a node owner has one, is shared between spaces; hop groups and failover; otherwise members on a filtered mobile network use fixed broadband or wait for the regional switch to turn off; CDN-fronted `ws` only while an allowlisted CDN still carries it |
+| Whitelists tighten to the point where even domestic VPS IPs are filtered | This happened in 2026: allowlisted services were moved into subnets of their own, and a rented VPS address rarely passes. An allowlisted entry, where a node owner has one, is shared between spaces (deferred: whitelist mode is under research (owner, 2026-11-07)); hop groups and failover; otherwise members on a filtered mobile network use fixed broadband or wait for the regional switch to turn off; CDN-fronted `ws` only while an allowlisted CDN still carries it |
 | Running an entry inside Russia exposes its owner | Since 2025 KoAP article 13.52 fines the owner of hardware or software that gives access to blocked resources, private persons included; since 26 June 2026 a hosting provider must stop serving such an owner (law 210-FZ), and users report virtual machines closed on suspicion of VPN use. An in-country entry is a legal risk to whoever runs it, not only a seizure risk: the docs say so before anyone sets one up, and such entries are treated as disposable (ephemeral nodes later) |
 | A shared node is lost or its node owner stops cooperating | Guest spaces keep alternative entries in their hop groups; revocation is clean on both sides |
 | Scope: this is several products in one | Milestones each deliver something usable; the lab defines "done"; the MVP excludes mobile and direct paths |
@@ -230,11 +230,12 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 - **Traffic shape.** Delegated to transports (C6); there's no better layer for it.
 - **Reality.** The owner wants REALITY support: the `reality`-style transport is pulled forward as a VLESS/Reality-compatible transport, so existing VLESS/Reality servers and tooling can interoperate; researched first (TP-064). A "bridge" node type (a VLESS ingress routed into the overlay) was considered and set aside as too complex for now.
 - **REALITY is the M2 disguised transport (2026-10-15).** After the TP-064 findings, thinkpol implements REALITY's handshake (a uTLS browser ClientHello with the session-id seal; failed auth is spliced to a real target site) for client → entry links (TP-087). Our own `tls` transport (TP-028) moves to after the MVP: adding REALITY doesn't block a TLS/TCP transport later, and it saves time to the MVP. Reuse over rewrite where licences allow: uTLS (BSD-3) is imported; XTLS/REALITY and Xray-core (MPL-2.0) may be used as unmodified Go module dependencies, but their files are never copied into this tree under MIT; TP-087 decides between depending on XTLS/REALITY's server and reimplementing it. Stock VLESS clients and servers are not supported by this transport: thinkpol is a WireGuard mesh, VLESS is a proxy protocol.
-- **Whitelist scope (2026-10-16).** Chains pass whitelist mode through an allowlisted entry where a node owner has one; thinkpol doesn't promise to obtain one. Public research in October 2026 found the shared-subnet route closed (allowlisted services moved into subnets of their own, January and August 2026), and only legal entities can apply for the list. Under whitelist mode only TCP passes, so an entry under it needs a TCP transport (`reality`).
+- **Whitelist scope (2026-10-16).** Now deferred: whitelist mode is under research (owner, 2026-11-07); what follows was the earlier scope. Chains pass whitelist mode through an allowlisted entry where a node owner has one; thinkpol doesn't promise to obtain one. Public research in October 2026 found the shared-subnet route closed (allowlisted services moved into subnets of their own, January and August 2026), and only legal entities can apply for the list. Under whitelist mode only TCP passes, so an entry under it needs a TCP transport (`reality`).
 - **Agent modelling (2026-10-18).** The agent's connection lifecycle is an entity with typed states, transitions and events; invariants live in its methods. One state file does not warrant repositories or a transaction manager.
 - **The node's own configuration caps the map (2026-10-18).** A node does only what it was allowed to on the machine itself: a fresh install is a device, and running as a server, ingress, egress and relaying are opted into locally, the way Tailscale exit nodes are advertised before an admin can use them. The space's signed map acts within that and never widens it. A map that asks for more leaves a starting node down and a running node on its last accepted capabilities, reported loudly; peers, keys and revocations are always taken. Why: a member's machine is theirs, and a stolen signing key or a compromised controller must not turn the space's nodes into exits. Devices as exits and as routers into a home network are set aside until after the MVP (docs/design/milestones.md, Out of scope).
 - **Crash posture.** Fail-closed after an agent crash is the default for the "everything" and "all but domestic" presets, opt-out (D4): a crash is the likeliest mass-exposure event and the members affected can least act on it.
 - **Invites are not membership.** A redeemed invite creates a pending device the admin must approve (A2), because invites travel through surveilled channels.
+- **Node placement (owner, 2026-11-07).** thinkpol is a research project for now: a prototype and a lab for studying censorship and how to get past it. Until it becomes a real service, the MVP makes no promise about where nodes live; in-country entries are neither designed for nor ruled out. Revisit when it becomes a service.
 - **What a node owner sees.** A shared entry sees guest members' IPs and traffic volume; under a whitelist it must be their first hop, so nothing can hide that. Accepted between friends and family, and disclosed: the tray labels such entries `owned by <space>` (D10).
 
 ## Open questions

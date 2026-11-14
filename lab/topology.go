@@ -88,6 +88,25 @@ func Standard() Topology {
 	}
 }
 
+// Names used by Upstream.
+const (
+	NetWorld   = "world"
+	Camouflage = "camouflage"
+)
+
+// Upstream is Standard with a camouflage target, the real site a
+// disguised entry forwards unrecognized clients to, on a network of its
+// own behind the router: an entry's connection to it crosses the router,
+// where the censor sees it (TP-026's upstream tell), as a client's
+// connection to the entry does.
+func Upstream() Topology {
+	t := Standard().WithNetworks(Network{Name: NetWorld})
+	return t.With(
+		NodeSpec{Name: Router, Networks: []string{NetDevices, NetServers, NetWorld}, Forward: true},
+		NodeSpec{Name: Camouflage, Networks: []string{NetWorld}, Gateway: Router},
+	)
+}
+
 // With returns a copy of the topology with nodes added, or replaced when a
 // node of the same name exists.
 func (t Topology) With(nodes ...NodeSpec) Topology {

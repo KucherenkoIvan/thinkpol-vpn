@@ -3,9 +3,10 @@ id: TP-043
 title: "Network canvas"
 milestone: M4
 area: features/topology
+stream: administration
 repo: thinkpol-vpn
 size: epic
-depends_on: [TP-042, TP-086]
+depends_on: [TP-042, TP-086, TP-186]
 refs: [A7]
 needs_human: decision
 owner: ""
@@ -24,10 +25,10 @@ The network drawn like Packet Tracer: nodes, links, transports and chains, with 
 - Record the kernel lesson: do islands like this belong in `webui`?
 
 ## Blocked by
-The admin panel's organisation, authentication and authorization are not designed (DESIGN "Open questions"); no ticket owns that design yet. Only the author can provide it.
+The admin panel's organisation, authentication and authorization are not designed (DESIGN "Open questions"). TP-186 owns that design (since 2026-11-07); only the author can decide it.
 
 ## Notes
-- **Don't start before the panel's design exists (TP-062).** Same as TP-042: the panel's organisation, authentication and authorization are on hold (DESIGN "Open questions"), and the canvas JSON endpoint and live stream are part of what that design must cover.
+- **Don't start before the panel's design exists (TP-062).** Same as TP-042: the panel's organisation, authentication and authorization are on hold (DESIGN "Open questions"), and the canvas JSON endpoint and live stream are part of what that design must cover. The design is TP-186 (2026-11-07).
 
 ## Log
 - 2026-10-10 created in backlog
@@ -35,3 +36,4 @@ The admin panel's organisation, authentication and authorization are not designe
 - 2026-10-15 backlog → blocked — panel authn/authz design missing (backlog grooming)
 - 2026-10-15 docs (backlog grooming, review fixes): Blocked by names who can unblock
 - 2026-10-15 docs: depends on TP-086 (frontend stack revisit)
+- 2026-11-07 docs: the panel design is TP-186; depends on it
