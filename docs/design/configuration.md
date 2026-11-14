@@ -86,7 +86,7 @@ The levels then combine by narrowing:
 
 | Setting | Level | Takes effect |
 |---|---|---|
-| rule preset | device | at once: the call returns once the node stored it and its data plane follows it; with no data plane running, once stored, for the next start. Until then neither `device.json` nor the status shows it, and a call given up before the node took it changes nothing. If laying out its routes fails, it stays stored, the status shows it as not enforced yet (`rule_preset_not_enforced`, retried) while the previous preset stays enforced, and the call is refused with `rule_preset_not_enforced` |
+| rule preset | device | at once: the call returns once the node stored it and its data plane follows it; with no data plane running, once stored, for the next start. Until then neither `device.json` nor the status shows it, and a call given up before the node took it changes nothing. If laying it out fails, it stays stored and is retried, and the call is refused by where the failure left the router: before the router took it, the router keeps the preset it had and the status shows the new one as not enforced yet (`rule_preset_not_enforced`); after (an exit's device, or the OS routing table), the router enforces the new preset with the rest missing, and the status shows it enforced and incomplete (`rule_preset_incomplete`) |
 | connect-on-boot | device | at the next boot; a start later in the same boot, and the running node, are left as they are |
 | kill switch, allow-LAN | device | at once: the call returns once the node put the kill switch in place or removed it (TP-048) |
 | node file settings | node | at the next start of `up` (TP-166: none is reloaded while running; SIGHUP re-reads only the map) |
