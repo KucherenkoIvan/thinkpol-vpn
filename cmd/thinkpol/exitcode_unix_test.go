@@ -43,7 +43,8 @@ func (unknownMembership) IsMember(context.Context, uint32, uint32) (bool, error)
 }
 
 // exitRow is one command line and the code it exits with; stdout and
-// stderr, when set, are patterns its output must match.
+// stderr, when set, are patterns its output must match. A failure with
+// no stdout pattern prints nothing to stdout.
 type exitRow struct {
 	name           string
 	args           []string
@@ -185,7 +186,9 @@ func TestEveryCommandExitsBySysexits(t *testing.T) {
 	for _, r := range rows {
 		t.Run(r.name, func(t *testing.T) {
 			code, stdout, stderr := runCLI(t, r.args...)
-			if code != r.code || !regexp.MustCompile(r.stdout).MatchString(stdout) || !regexp.MustCompile(r.stderr).MatchString(stderr) {
+			// Only a failure that says where it left the node prints.
+			quiet := r.code == exitOK || r.stdout != "" || stdout == ""
+			if code != r.code || !quiet || !regexp.MustCompile(r.stdout).MatchString(stdout) || !regexp.MustCompile(r.stderr).MatchString(stderr) {
 				t.Errorf("%q: exit %d, want %d\nstdout:\n%s\nstderr:\n%s", r.args, code, r.code, stdout, stderr)
 			}
 		})
