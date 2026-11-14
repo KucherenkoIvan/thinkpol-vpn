@@ -108,13 +108,14 @@ func TestEveryCommandExitsBySysexits(t *testing.T) {
 			exitRow{name: name + ": bad arguments", args: line("-socket", ok, "-bogus"), code: exitUsage, stderr: "flag provided but not defined"},
 			exitRow{name: name + ": service down", args: line("-socket", down), code: exitUnavailable, stderr: `\[service_down\]`},
 		)
-		refused := "permission_denied"
-		if c.rootOnly {
-			refused = "root_only"
-		} else {
-			rows = append(rows, exitRow{name: name + ": busy", args: line("-socket", busy), code: exitTempFail, stderr: `\[membership_unknown\]`})
-		}
-		if !root { // root may always call
+		// Root may always call: no group is asked, nothing refused.
+		if !root {
+			refused := "permission_denied"
+			if c.rootOnly {
+				refused = "root_only"
+			} else {
+				rows = append(rows, exitRow{name: name + ": busy", args: line("-socket", busy), code: exitTempFail, stderr: `\[membership_unknown\]`})
+			}
 			rows = append(rows, exitRow{name: name + ": permission denied", args: line("-socket", denied), code: exitNoPerm, stderr: `\[` + refused + `\]`})
 		}
 		if c.refusal != nil {
