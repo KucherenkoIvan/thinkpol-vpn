@@ -93,3 +93,4 @@ Review round 2 (delta check, adversarial): R1.2–R1.5 closed; no leaks found; o
 - 2026-11-15 on 79d07df: `make lint` and `make test` green (umask 022); go test -race of the package's TestResolvConf tests, 10 runs on Linux, passed
 - 2026-11-15 full `make lab-test` green on 53c6715 (GOFLAGS=-p=2, LAB_P=1, under the full-lab lock): lab phase and 39 packages
 - 2026-11-15 has-errors → in-progress (round 2 findings R2.1–R2.5 fixed)
+- 2026-11-15 in-progress → review
