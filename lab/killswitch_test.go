@@ -186,7 +186,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 		t.Helper()
 		dev.WriteFile(t, "/run/systemd/system/thinkpol.service.d/lab-hold.conf", []byte("[Service]\nRestartSec=1h\n"))
 		dev.MustExec(t, "systemctl", "daemon-reload")
-		dev.MustExec(t, "systemctl", "kill", "-s", "KILL", "thinkpol.service")
+		signalAgent(t, dev, "KILL")
 		lab.Eventually(t, 30*time.Second, func() error {
 			got, err := execRead(dev, pollTimeout, "systemctl", "show", "-p", "SubState", "--value", "thinkpol.service")
 			if err != nil || got != "auto-restart\n" {

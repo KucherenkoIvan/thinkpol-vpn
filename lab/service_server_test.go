@@ -134,7 +134,7 @@ func TestServiceUninstallAfterAServerCrash(t *testing.T) {
 	// Killed, its restart held off as TestServiceUnderSystemd's is.
 	server.WriteFile(t, "/run/systemd/system/thinkpol.service.d/lab-hold.conf", []byte("[Service]\nRestartSec=1h\n"))
 	server.MustExec(t, "systemctl", "daemon-reload")
-	server.MustExec(t, "systemctl", "kill", "-s", "KILL", "thinkpol.service")
+	signalAgent(t, server, "KILL")
 	lab.Eventually(t, 30*time.Second, func() error {
 		got, err := execRead(server, pollTimeout, "systemctl", "show", "-p", "SubState", "--value", "thinkpol.service")
 		if err != nil || got != "auto-restart\n" {

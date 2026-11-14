@@ -13,6 +13,16 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
 
+// signalAgent sends sig to the agent's process alone, as a crash or a
+// SIGQUIT reaches it; its workers die with it (PR_SET_PDEATHSIG). Not to
+// the whole unit: systemd 252 (the image's) then walks the unit's
+// cgroup.procs, and on Linux 7.0 that walk fails with EIO while a
+// SIGKILLed agent exits, though the signal landed.
+func signalAgent(t *testing.T, n *lab.Node, sig string) {
+	t.Helper()
+	n.MustExec(t, "systemctl", "kill", "--kill-whom=main", "-s", sig, "thinkpol.service")
+}
+
 // TestServiceUnderSystemd installs device-a as a service in a node that
 // runs systemd, and checks what PRD D5 and the crash posture ask of it:
 // it starts at boot, connect-on-boot is off until alice, a member of the
@@ -151,7 +161,7 @@ func TestServiceUnderSystemd(t *testing.T) {
 	crash := func() {
 		t.Helper()
 		before := restarts()
-		dev.MustExec(t, "systemctl", "kill", "-s", "KILL", "thinkpol.service")
+		signalAgent(t, dev, "KILL")
 		lab.Eventually(t, 60*time.Second, func() error {
 			if got := restarts(); got == before {
 				return fmt.Errorf("NRestarts still %q", got)
@@ -184,7 +194,7 @@ func TestServiceUnderSystemd(t *testing.T) {
 	}
 	lastRun(false)
 	before := restarts()
-	dev.MustExec(t, "systemctl", "kill", "-s", "QUIT", "thinkpol.service")
+	signalAgent(t, dev, "QUIT")
 	lab.Eventually(t, 60*time.Second, func() error {
 		if got := restarts(); got == before {
 			return fmt.Errorf("NRestarts still %q", got)
@@ -289,7 +299,7 @@ func TestServiceUnderSystemd(t *testing.T) {
 	// took them down itself.
 	dev.WriteFile(t, "/run/systemd/system/thinkpol.service.d/lab-hold.conf", []byte("[Service]\nRestartSec=1h\n"))
 	dev.MustExec(t, "systemctl", "daemon-reload")
-	dev.MustExec(t, "systemctl", "kill", "-s", "KILL", "thinkpol.service")
+	signalAgent(t, dev, "KILL")
 	lab.Eventually(t, 30*time.Second, func() error {
 		got, err := execRead(dev, pollTimeout, "systemctl", "show", "-p", "SubState", "--value", "thinkpol.service")
 		if err != nil || got != "auto-restart\n" {
