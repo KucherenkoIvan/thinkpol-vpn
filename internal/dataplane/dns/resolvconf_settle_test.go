@@ -97,7 +97,8 @@ func startInPlace(t *testing.T, timing resolvConfTiming) (string, *resolvConf, c
 // there are none (the watch only polls there).
 func hasChangeEvents(t *testing.T) {
 	t.Helper()
-	ch, closeWatch := watchFile(filepath.Join(t.TempDir(), "x"))
+	start, closeWatch := watchFile(filepath.Join(t.TempDir(), "x"))
+	ch := start()
 	closeWatch()
 	if ch == nil {
 		t.Skip("no change notifications here")
@@ -307,19 +308,28 @@ func TestResolvConfAFileRenamedInIsTakenAtOnce(t *testing.T) {
 	checkInPlaceRenewal(t, path, r, told)
 }
 
-// withWatchHook runs hook with the file at path when the watch of a
-// resolv.conf begins, then sets up the real watch.
-func withWatchHook(t *testing.T, hook func(path string)) {
+// withWatchHook runs setUp with the file at path when the watch of a
+// resolv.conf is set up, and started when it is started, each before the
+// real step. Either may be nil.
+func withWatchHook(t *testing.T, setUp, started func(path string)) {
 	t.Helper()
-	setUp := watchResolvConf
-	t.Cleanup(func() { watchResolvConf = setUp })
-	watchResolvConf = func(path string) (<-chan bool, func()) {
-		hook(path)
-		return setUp(path)
+	watch := watchResolvConf
+	t.Cleanup(func() { watchResolvConf = watch })
+	watchResolvConf = func(path string) (func() <-chan bool, func()) {
+		if setUp != nil {
+			setUp(path)
+		}
+		start, closeWatch := watch(path)
+		return func() <-chan bool {
+			if started != nil {
+				started(path)
+			}
+			return start()
+		}, closeWatch
 	}
 }
 
-// The watch begins before the take-over writes the file, and so before
+// The watch is set up before the take-over writes the file, and so before
 // it returns: another program's file renamed in right after the
 // take-over (reacting to the new TUN) is seen at once, not at the poll.
 func TestResolvConfIsWatchedBeforeTheTakeOverWrites(t *testing.T) {
@@ -328,31 +338,72 @@ func TestResolvConfIsWatchedBeforeTheTakeOverWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	var mu sync.Mutex
-	var atWatch []byte
-	watched := false
+	var atSetUp []byte
+	setUp, started := false, false
 	withWatchHook(t, func(path string) {
 		b, _ := os.ReadFile(path)
 		mu.Lock()
 		defer mu.Unlock()
-		atWatch, watched = b, true
+		atSetUp, setUp = b, true
+	}, func(string) {
+		mu.Lock()
+		defer mu.Unlock()
+		started = true
 	})
 	r, err := setResolvConfTimed(path, "", testSystem, resolvConfTiming{check: time.Hour, settle: time.Hour, settleMax: time.Hour})
 	mu.Lock()
-	gotWatched, gotAtWatch := watched, string(atWatch)
+	gotSetUp, gotStarted, gotAtSetUp := setUp, started, string(atSetUp)
 	mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = r.Restore() })
-	if !gotWatched {
-		t.Fatal("not watched yet when the take-over returned")
+	if !gotSetUp || !gotStarted {
+		t.Fatalf("set up %t, started %t when the take-over returned", gotSetUp, gotStarted)
 	}
-	if gotAtWatch != isp {
-		t.Fatalf("watched only after the take-over wrote the file; it held:\n%s", gotAtWatch)
+	if gotAtSetUp != isp {
+		t.Fatalf("watched only after the take-over wrote the file; it held:\n%s", gotAtSetUp)
 	}
 	if !managedWith(t, path, isp) {
 		t.Fatalf("not taken over:\n%s", readString(t, path))
 	}
+}
+
+// Another program's file renamed in after the take-over wrote the file,
+// but before the watch started, is not lost to the poll: its event, one
+// signal with the take-over's own, is no rename, so it settles.
+func TestResolvConfAFileRenamedInDuringTheTakeOverIsSeen(t *testing.T) {
+	hasChangeEvents(t)
+	withWatchHook(t, nil, func(path string) { writeFileAtomic(t, path, renewedInPlace) })
+	path, r, told := startInPlace(t, resolvConfTiming{check: time.Hour, settle: 300 * time.Millisecond, settleMax: 10 * time.Second})
+	checkInPlaceRenewal(t, path, r, told)
+}
+
+// A file another program creates at the path after the take-over wrote
+// it, before the watch started, settles: the take-over's own rename
+// doesn't make the empty file a renamed-in one.
+func TestResolvConfAFileCreatedDuringTheTakeOverSettles(t *testing.T) {
+	hasChangeEvents(t)
+	var f *os.File
+	withWatchHook(t, nil, func(path string) {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		if f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	})
+	path, r, told := startInPlace(t, resolvConfTiming{check: time.Hour, settle: 300 * time.Millisecond, settleMax: 10 * time.Second})
+	time.Sleep(100 * time.Millisecond) // the creation is seen, empty
+	_, err := f.WriteString(renewedInPlace)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkInPlaceRenewal(t, path, r, told)
 }
 
 // The take-over's own write raises a change event, the watch being set
@@ -364,31 +415,34 @@ func TestResolvConfTheTakeOverOwnEventIsNotAnotherProgramsWrite(t *testing.T) {
 	events := 0
 	forwarded := make(chan struct{}, 64)
 	ctx := t.Context()
-	setUp := watchResolvConf
-	t.Cleanup(func() { watchResolvConf = setUp })
-	watchResolvConf = func(path string) (<-chan bool, func()) {
-		ch, closeWatch := setUp(path)
-		mine := make(chan bool) // unbuffered: a send ends once the watch took it
-		go func() {
-			for {
-				var renamed bool
-				select {
-				case renamed = <-ch:
-				case <-ctx.Done():
-					return
+	watch := watchResolvConf
+	t.Cleanup(func() { watchResolvConf = watch })
+	watchResolvConf = func(path string) (func() <-chan bool, func()) {
+		start, closeWatch := watch(path)
+		return func() <-chan bool {
+			ch := start()
+			mine := make(chan bool) // unbuffered: a send ends once the watch took it
+			go func() {
+				for {
+					var renamed bool
+					select {
+					case renamed = <-ch:
+					case <-ctx.Done():
+						return
+					}
+					mu.Lock()
+					events++
+					mu.Unlock()
+					select {
+					case mine <- renamed:
+						forwarded <- struct{}{}
+					case <-ctx.Done():
+						return
+					}
 				}
-				mu.Lock()
-				events++
-				mu.Unlock()
-				select {
-				case mine <- renamed:
-					forwarded <- struct{}{}
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
-		return mine, closeWatch
+			}()
+			return mine
+		}, closeWatch
 	}
 	path, r, _ := startInPlace(t, resolvConfTiming{check: time.Hour, settle: time.Hour, settleMax: time.Hour})
 	written, err := os.Lstat(path)

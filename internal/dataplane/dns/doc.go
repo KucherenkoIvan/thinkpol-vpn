@@ -254,9 +254,11 @@
 // over a half-written one, and the writer's later lines would land in
 // the managed file, outside its original. Where it can't be told which
 // way a file was written (no file at all; the poll, which has no event;
-// a bind mount, where every write is in place, the node's own too), the
-// write settles. Problem reports [ErrUnprotected] by one rule, with no
-// model of how the other program writes, once the watch has seen the
+// a bind mount, where every write is in place, the node's own too; a
+// change made during the take-over, before the watch starts, whose
+// event is one with the take-over's own rename), the write settles.
+// Problem reports [ErrUnprotected] by one rule, with no model of how
+// the other program writes, once the watch has seen the
 // write: at once on a change event, within the 2 s poll otherwise (a
 // change no event reports; we suspect that is every write in place on a
 // bind mount, whose events go to the source file's own directory, not

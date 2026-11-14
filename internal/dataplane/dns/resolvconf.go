@@ -366,9 +366,9 @@ func setResolvConfTimed(path, uplink string, c SystemConfig, timing resolvConfTi
 	r := &resolvConf{path: path, uplink: uplink, timing: timing, cfg: c, untold: startsUntold(c), rewrite: rewriteResolvConf,
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), stopped: make(chan struct{})}
 	// Watched from before the take-over's read: another program's change
-	// right after the take-over is seen at once, not at the poll. The
-	// take-over's own write raises an event too, read as the node's own.
-	changes, closeWatch := watchResolvConf(r.path)
+	// right after the take-over is seen at once, not at the poll. Its
+	// event and the take-over's own are one signal, never a rename.
+	startWatch, closeWatch := watchResolvConf(r.path)
 	r.mu.Lock()
 	tell, err := r.apply(readResolvConfFile(r.path))
 	r.mu.Unlock()
@@ -376,12 +376,12 @@ func setResolvConfTimed(path, uplink string, c SystemConfig, timing resolvConfTi
 		closeWatch()
 		return nil, err
 	}
-	go r.watch(tell, changes, closeWatch)
+	go r.watch(tell, startWatch(), closeWatch)
 	return r, nil
 }
 
 // watchResolvConf is watchFile; a variable so a test can see when the
-// watch begins.
+// watch is set up and started.
 var watchResolvConf = watchFile
 
 // apply writes the managed resolv.conf over f, what a read of it found
@@ -433,7 +433,12 @@ func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error
 		return tell, err
 	}
 	r.written, r.failedWrite = content, nil
-	if fi, err := os.Lstat(r.path); err == nil {
+	// Content already there isn't written (rewriteResolvConf): the file
+	// read is the node's, and a stat now may find another program's file
+	// renamed in since the read.
+	if bytes.Equal(content, f.content) && f.info != nil {
+		r.writtenInfo = f.info
+	} else if fi, err := os.Lstat(r.path); err == nil {
 		r.writtenInfo = fi
 	}
 	return tell, nil
@@ -560,7 +565,7 @@ func rewriteResolvConf(path string, f resolvConfFile, content []byte) error {
 // watch takes the file back whenever another program writes it: a file
 // renamed into the path at once, any other write once it settles
 // (resolvConfTiming). changes are the file's change events from
-// watchFile; watch calls closeWatch when it returns.
+// watchFile's start; watch calls closeWatch when it returns.
 func (r *resolvConf) watch(first func(), changes <-chan bool, closeWatch func()) {
 	defer close(r.stopped)
 	defer closeWatch()
