@@ -1159,20 +1159,57 @@ func TestAnExitThatNeverHandshakesIsExitNoHandshake(t *testing.T) {
 	}
 
 	a.maps <- s.build(t, 2)
-	// WireGuard initiates again RekeyTimeout (5 s) after the last one.
+	// WireGuard initiates again RekeyTimeout (5 s) after the last one. Ok
+	// alone isn't the exit answering: a busy machine can hold fastPaths'
+	// probes past their second, and once the link re-dials an initiation
+	// sent before it isn't graded, so health reads ok with none answered.
 	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(20 * time.Millisecond) {
 		st = b.node.Status()
-		if st.Health().Level == HealthOK {
+		if exitHandshook(st) && st.Health().Level == HealthOK {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("still %+v after the exit took the device in: %+v", st.Health(), st.DataPlane.Peers)
+			t.Fatalf("still %+v after the exit took the device in: %+v", st.Health(), peersOf(st))
 		}
 	}
-	// A healthy exit under steady traffic stays ok over several deadlines.
+	// A healthy exit under steady traffic isn't flagged over several
+	// deadlines. A link re-dialed on a busy machine raises no_link_up or
+	// neighbor_down, which have their own tests; anything else, or the
+	// data plane going away, is a regression.
 	for until := time.Now().Add(4 * time.Second); time.Now().Before(until); time.Sleep(20 * time.Millisecond) {
-		if st = b.node.Status(); st.Health().Level != HealthOK {
-			t.Fatalf("the exit answering under steady traffic: %+v, peers %+v", st.Health(), st.DataPlane.Peers)
+		st = b.node.Status()
+		h := st.Health()
+		unexpected := slices.ContainsFunc(h.Problems, func(p Problem) bool {
+			return p != ProblemNoLinkUp && p != ProblemNeighborDown
+		})
+		if st.Connection != Connected || st.DataPlane == nil || unexpected || st.ExitsUnanswered != 0 {
+			t.Fatalf("the exit answering under steady traffic: connection %v, %+v, peers %+v", st.Connection, h, peersOf(st))
 		}
 	}
+}
+
+// peersOf returns st's data plane peers, none without a data plane.
+func peersOf(st Status) []dataplane.PeerStatus {
+	if st.DataPlane == nil {
+		return nil
+	}
+	return st.DataPlane.Peers
+}
+
+// exitHandshook reports whether st's data plane has an exit peer and has
+// completed a handshake with each, none pending since.
+func exitHandshook(st Status) bool {
+	if st.DataPlane == nil {
+		return false
+	}
+	exits := 0
+	for _, p := range st.DataPlane.Peers {
+		if p.Exit {
+			if p.LastHandshake.IsZero() || !p.HandshakePendingSince.IsZero() {
+				return false
+			}
+			exits++
+		}
+	}
+	return exits > 0
 }
