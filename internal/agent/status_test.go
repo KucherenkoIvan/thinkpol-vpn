@@ -621,6 +621,7 @@ func TestRulePresetIsStoredByTheService(t *testing.T) {
 	if st.RulePreset != "everything" || !st.PresetUnavailable || !slices.Contains(st.Health().Problems, ProblemPresetUnavailable) {
 		t.Fatalf("status %+v", st)
 	}
+	wantPreset(t, b.node, "everything")
 	// Read back at the next start.
 	n, err := Prepare(b.node.cfg, Logs{}, testPlatform())
 	if err != nil || n.Status().RulePreset != "everything" {
@@ -632,6 +633,7 @@ func TestRulePresetIsStoredByTheService(t *testing.T) {
 	if st := b.node.Status(); st.RulePreset != "space" || st.PresetUnavailable {
 		t.Fatalf("status %+v", st)
 	}
+	wantPreset(t, b.node, "space")
 	// A server has no rules of its own.
 	if a, err := Prepare(serverConfig(s.stateDir(t, s.a, 1)), Logs{}, testPlatform()); err != nil || !errors.Is(a.SetRulePreset(ctx, "everything"), ErrServerMode) {
 		t.Fatalf("server: %v", err)
@@ -639,7 +641,8 @@ func TestRulePresetIsStoredByTheService(t *testing.T) {
 }
 
 // A preset set before the node's data plane runs is taken once it does:
-// the request never holds up the run that would take it.
+// the request never holds up the run that would take it, and nothing
+// shows it before the data plane follows it.
 func TestARulePresetSetBeforeTheNodeRunsIsTaken(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
@@ -651,11 +654,16 @@ func TestARulePresetSetBeforeTheNodeRunsIsTaken(t *testing.T) {
 			defer cancel()
 			set <- n.SetRulePreset(ctx, "all-but-domestic")
 		}()
-		// Stored: the request now waits for the data plane.
+		// The request waits for the data plane, holding presetMu:
+		// nothing is stored or shown until the data plane takes it.
 		eventually(t, func() bool {
-			got, err := os.ReadFile(filepath.Join(n.cfg.StateDir, DeviceFile))
-			return err == nil && strings.Contains(string(got), `"rule_preset": "all-but-domestic"`)
+			if n.presetMu.TryLock() {
+				n.presetMu.Unlock()
+				return false
+			}
+			return true
 		})
+		wantPreset(t, n, "space")
 	}})
 	select {
 	case err := <-set:
@@ -665,8 +673,79 @@ func TestARulePresetSetBeforeTheNodeRunsIsTaken(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("SetRulePreset never returned")
 	}
-	if st := b.connection(t, Connected); st.RulePreset != "all-but-domestic" {
+	b.connection(t, Connected)
+	wantPreset(t, b.node, "all-but-domestic")
+}
+
+// A preset request whose caller gives up before the data plane takes it
+// changes nothing: Status, the device file and the next start all keep
+// the preset the data plane enforces.
+func TestARulePresetRequestTheNodeNeverTookChangesNothing(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	b := startDevice(t, s, reg, true, deviceOpt{node: func(n *Node) {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		if err := n.SetRulePreset(ctx, "all-but-domestic"); !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("got %v, want the context's error", err)
+		}
+		wantPreset(t, n, "space")
+	}})
+	b.connection(t, Connected)
+	wantPreset(t, b.node, "space")
+	if n, err := Prepare(b.node.cfg, Logs{}, testPlatform()); err != nil || n.Status().RulePreset != "space" {
+		t.Fatalf("restart: %v", err)
+	}
+}
+
+// A preset set while the device is disconnected is the one its next
+// Connect enforces.
+func TestARulePresetSetWhileDisconnectedIsTakenByTheConnect(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	b := startDevice(t, s, reg, false)
+	ctx := context.Background()
+	b.connection(t, Disconnected)
+	if err := b.node.SetRulePreset(ctx, "all-but-domestic"); err != nil {
+		t.Fatal(err)
+	}
+	wantPreset(t, b.node, "all-but-domestic")
+	if err := b.node.Connect(ctx); err != nil && !errors.Is(err, ErrPresetUnavailable) {
+		t.Fatal(err)
+	}
+	if st := b.connection(t, Connected); st.DataPlane == nil {
 		t.Fatalf("status %+v", st)
+	}
+	wantPreset(t, b.node, "all-but-domestic")
+}
+
+// wantPreset fails t unless Status, the device file and, while it runs,
+// the data plane all say preset.
+func wantPreset(t *testing.T, n *Node, preset string) {
+	t.Helper()
+	st := n.Status()
+	if st.RulePreset != preset {
+		t.Errorf("status shows %q, want %q", st.RulePreset, preset)
+	}
+	if st.DataPlane != nil && st.DataPlane.Rules.Preset.String() != preset {
+		t.Errorf("the data plane enforces %q, want %q", st.DataPlane.Rules.Preset, preset)
+	}
+	stored := "space"
+	data, err := os.ReadFile(filepath.Join(n.cfg.StateDir, DeviceFile))
+	switch {
+	case err == nil:
+		d, err := parseDeviceSettings(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored = d.Rules.Preset.String()
+	case !errors.Is(err, os.ErrNotExist):
+		t.Fatal(err)
+	}
+	if stored != preset {
+		t.Errorf("the device file holds %q, want %q", stored, preset)
 	}
 }
 

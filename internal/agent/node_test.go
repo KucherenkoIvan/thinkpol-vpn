@@ -244,6 +244,36 @@ func TestARemovedNodeWaitsForAMapWithIt(t *testing.T) {
 	}
 }
 
+// A device waiting for a map with it takes a preset as it waits: stored
+// and shown, for the data plane that runs once a map has it.
+func TestARemovedDeviceTakesARulePreset(t *testing.T) {
+	s := newTestSpace(t)
+	dir := s.stateDir(t, s.b, 1)
+	writeFile(t, filepath.Join(dir, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
+	n, err := Prepare(testConfig(dir), Logs{}, testPlatform())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	maps := make(chan []byte, 1)
+	result := make(chan bool, 1)
+	go func() { result <- n.awaitSection(ctx, maps) }()
+	if err := n.SetRulePreset(ctx, "all-but-domestic"); err != nil {
+		t.Fatal(err)
+	}
+	wantPreset(t, n, "all-but-domestic")
+	maps <- s.build(t, 2)
+	if !<-result {
+		t.Fatal("gave up")
+	}
+	n.settingsMu.Lock()
+	defer n.settingsMu.Unlock()
+	if p := n.device.Rules.Preset.String(); p != "all-but-domestic" {
+		t.Fatalf("the data plane starts with %q", p)
+	}
+}
+
 // A server removed while it was down is a server all the same: it
 // refuses a connect at once, its mode known before a map has it, and its
 // one back-in-space line has its mode.

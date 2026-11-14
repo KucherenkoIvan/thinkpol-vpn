@@ -219,12 +219,15 @@ type connectRequest struct {
 	done    chan<- error
 }
 
-// rulesRequest replaces a device's own rules; done gets what enforcing
-// them said (rules.ErrPresetUnavailable: enforced failing closed) and
-// must have room for it.
+// rulesRequest replaces a device's own rules. Only the goroutine that
+// runs the device calls take, once it has the request: take stores the
+// rules (DeviceFile) and returns them, or fails having changed nothing.
+// done gets take's error or what enforcing them said
+// (rules.ErrPresetUnavailable: enforced failing closed) and must have
+// room for it.
 type rulesRequest struct {
-	rules rules.Local
-	done  chan<- error
+	take func() (rules.Local, error)
+	done chan<- error
 }
 
 // runner follows the space's maps (follow) and runs the data plane while
@@ -524,15 +527,29 @@ func (r *runner) loop(ctx context.Context) error {
 		case ups := <-r.dp.dnsUpstreams:
 			r.setUpstreams(ups)
 		case req := <-r.dp.rulesRequests:
-			r.dp.Rules = req.rules
-			var err error
-			if r.engine != nil {
-				err = r.engine.SetRules(req.rules)
-			}
-			r.publish()
-			req.done <- err
+			req.done <- r.takeRules(req)
 		}
 	}
+}
+
+// takeRules has the data plane take the rules req asks for: stored
+// first, so a failure changes nothing, then followed (the engine's, and
+// every later start's), then reported. Status never shows a preset
+// before the data plane follows it. An engine that fails to lay out the
+// routes still follows the new rules (its next Apply or reload lays them
+// out again), and its Status says the route table isn't enforced.
+func (r *runner) takeRules(req rulesRequest) error {
+	l, err := req.take()
+	if err != nil {
+		return err
+	}
+	r.dp.Rules = l
+	if r.engine != nil {
+		err = r.engine.SetRules(l)
+	}
+	r.dp.report.set(func(p *report) { p.preset = l.Preset.String() })
+	r.publish()
+	return err
 }
 
 // publish puts the data plane's state into the device's report, then

@@ -61,9 +61,10 @@ type Node struct {
 	// plane, under settingsMu).
 	settingsMu sync.Mutex
 	device     DeviceSettings
-	// presetMu keeps SetRulePreset's store and its request to the data
-	// plane in one order. Never held with settingsMu while it waits: run
-	// takes settingsMu before it reads rulesRequests.
+	// presetMu has one SetRulePreset at a time: a stopped node's store
+	// and its report keep one order. Never held with settingsMu while it
+	// waits: the request's take, on the node's goroutine, takes
+	// settingsMu.
 	presetMu      sync.Mutex
 	rulesRequests chan rulesRequest
 	// killSwitchRequests asks the node's goroutine to act on a kill
@@ -287,11 +288,16 @@ func (n *Node) Disconnect(ctx context.Context) error {
 }
 
 // SetRulePreset switches a device's rules to preset ("space",
-// "everything", "all-but-domestic"), keeping its own rules: the choice is
-// stored in DeviceFile (only the service writes it), then enforced.
-// ErrUnknownPreset for another name; ErrPresetUnavailable when the
-// space's map can't build the preset, which is then kept and enforced
-// failing closed (see rules.PresetRules); ErrServerMode on a server.
+// "everything", "all-but-domestic"), keeping its own rules. The goroutine
+// that runs the node takes the choice: it stores it in DeviceFile (only
+// the service writes it), has the data plane follow it, then Status shows
+// it, before SetRulePreset returns. A caller that gives up (its ctx ends)
+// before the node took the request changed nothing; one that gives up
+// after finds the choice taken. A node that stopped only stores it, for
+// its next start. ErrUnknownPreset for another name;
+// ErrPresetUnavailable when the space's map can't build the preset,
+// which is then kept and enforced failing closed (see
+// rules.PresetRules); ErrServerMode on a server.
 func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	if n.Mode() == ModeServer {
 		return ErrServerMode
@@ -302,21 +308,17 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	}
 	n.presetMu.Lock()
 	defer n.presetMu.Unlock()
-	n.settingsMu.Lock()
-	next := n.device
-	next.Rules.Preset = p
-	err = n.storeDevice(next)
-	n.settingsMu.Unlock()
-	if err != nil {
-		return err
-	}
-	n.report.set(func(r *report) { r.preset = p.String() })
-	n.logs.Info("rule preset set", "preset", p)
+	take := func() (rules.Local, error) { return n.storePreset(p) }
 	done := make(chan error, 1)
 	select {
-	case n.rulesRequests <- rulesRequest{rules: next.Rules, done: done}:
+	case n.rulesRequests <- rulesRequest{take: take, done: done}:
 	case <-n.stopped:
-		return nil // stored: the next start takes it
+		// Nothing runs the rules: the next start takes them.
+		l, err := take()
+		if err == nil {
+			n.report.set(func(r *report) { r.preset = l.Preset.String() })
+		}
+		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -326,6 +328,20 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// storePreset stores preset as the device's (DeviceFile, keeping the rest
+// of its settings as they are now) and returns the device's rules.
+func (n *Node) storePreset(p rules.Preset) (rules.Local, error) {
+	n.settingsMu.Lock()
+	defer n.settingsMu.Unlock()
+	next := n.device
+	next.Rules.Preset = p
+	if err := n.storeDevice(next); err != nil {
+		return rules.Local{}, err
+	}
+	n.logs.Info("rule preset set", "preset", p)
+	return next.Rules, nil
 }
 
 // SetConnectOnBoot sets a device's connect-on-boot, stored in DeviceFile
@@ -706,9 +722,14 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			publish()
 			close(done)
 		case req := <-n.rulesRequests:
-			// Stored already: the data plane starts with them.
+			// Nothing runs them yet: run reads the stored rules once
+			// this returns, and the data plane starts with them.
+			l, err := req.take()
+			if err == nil {
+				n.report.set(func(p *report) { p.preset = l.Preset.String() })
+			}
 			keepKillSwitch(ctx, !n.conn.disconnected())
-			req.done <- nil
+			req.done <- err
 		case req := <-n.requests:
 			// Kept for when the node runs its section.
 			n.remember(req.connect)
