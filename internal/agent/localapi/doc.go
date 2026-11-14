@@ -50,9 +50,10 @@
 // kill_switch_not_enforced:<reason> (the client's
 // [ErrKillSwitchNotEnforced]), so no client takes it for done. A node
 // that isn't running takes them at its next start, refused as
-// not_running; a device whose map makes it a server (mode mismatch)
-// stores them and leaves the host alone, refused as the status says
-// (not_applied before it ever acted).
+// not_running; a device that waits on a map making it a server (mode
+// mismatch, at its start or after waiting removed from its space) stores
+// them and leaves the host alone, refused as
+// kill_switch_not_enforced:not_applied.
 // GetStatus
 // shows the toggles and whether the kill switch is in place as meant.
 //

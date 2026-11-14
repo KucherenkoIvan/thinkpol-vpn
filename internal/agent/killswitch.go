@@ -285,6 +285,12 @@ func (k *killSwitchKeeper) status(s killSwitchSettings, active bool) KillSwitchS
 	return st
 }
 
+// notApplied is the status of a kill switch the node hasn't put as meant
+// (KillSwitchNotApplied).
+func (s killSwitchSettings) notApplied() KillSwitchStatus {
+	return KillSwitchStatus{On: s.on, AllowLAN: s.allowLAN, Error: KillSwitchNotApplied}
+}
+
 // killSwitchSettings are the device's kill switch settings in effect:
 // its device file's toggles, else the node's defaults.
 func (n *Node) killSwitchSettings() killSwitchSettings {

@@ -209,12 +209,15 @@
 // left (its resolver configuration, the route table's rules, its kill
 // switch) until a map makes it a device again, or `thinkpol rollback`
 // ([Rollback]) or `thinkpol service uninstall` clears the host
-// ([Platform.ClearHost]) while no agent runs; `thinkpol
-// disconnect` and `thinkpol kill-switch off` in that state clear none of
-// it, and report success: the toggle is stored and the connection down,
-// as asked, but the host is left alone. A mismatch is told to no subscriber: no event says it
-// starts or ends (nothing subscribes in production yet), only Status and
-// the log.
+// ([Platform.ClearHost]) while no agent runs. `thinkpol disconnect` and
+// `thinkpol kill-switch off` in that state clear none of it: the
+// disconnect reports success (the connection down, as asked, the host
+// left alone); a kill switch toggle is stored and refused as not applied
+// ([KillSwitchNotEnforcedError], `not_applied`), as is one set while a
+// node that waited removed from its space is then made a server: its
+// status says not_applied from then on, whatever it enforced before. A
+// mismatch is told to no subscriber: no event says it starts or ends
+// (nothing subscribes in production yet), only Status and the log.
 //
 // Planned (TP-183): the node's own configuration as a ceiling over what
 // the map asks of it (docs/design/overlay.md "Node agent"). Until it

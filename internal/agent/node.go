@@ -119,8 +119,8 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	n.device = st.Device
 	n.report = report{mode: cfg.Mode, space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed,
 		mismatch: modeMismatch(cfg.Mode, st), preset: n.device.Rules.Preset.String(), connectOnBoot: n.device.ConnectOnBoot}
-	if ks := n.killSwitchSettings(); cfg.Mode != ModeServer {
-		n.report.killSwitch = KillSwitchStatus{On: ks.on, AllowLAN: ks.allowLAN, Error: KillSwitchNotApplied}
+	if cfg.Mode != ModeServer {
+		n.report.killSwitch = n.killSwitchSettings().notApplied()
 	}
 	return n, nil
 }
@@ -754,9 +754,16 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 
 // keepRemovedKillSwitch keeps a device's kill switch while it waits for a
 // section (awaitSection): removed, it lets out no entry, as the device has
-// none; made a server by its map (mismatch), the host is left alone.
+// none; made a server by its map (mismatch), the host is left alone, and
+// the status says not_applied, whatever an earlier enforce left in it: a
+// toggle set meanwhile changes nothing on the host.
 func (n *Node) keepRemovedKillSwitch(ctx context.Context, mismatch, meantUp bool) {
-	if n.Mode() == ModeDevice && !mismatch {
+	switch {
+	case n.Mode() != ModeDevice:
+	case mismatch:
+		st := n.killSwitchSettings().notApplied()
+		n.report.set(func(p *report) { p.killSwitch = st })
+	default:
 		n.enforceKillSwitch(ctx, killSwitchView{meantUp: meantUp})
 	}
 }
