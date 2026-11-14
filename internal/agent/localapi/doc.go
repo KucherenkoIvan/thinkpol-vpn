@@ -164,8 +164,9 @@
 // guard's own check of pf comes with its evidence.
 //
 // Its JSON ([WriteDiagnostics]) is in the convention below, and part of
-// the v1 contract; only a guard's `present` is left out, when it couldn't
-// be told (protojson omits an unset proto3 optional field even then).
+// the v1 contract; only a guard's or a kill switch's `present` is left
+// out, when it couldn't be told (protojson omits an unset proto3
+// optional field even then).
 // Taking it changes nothing on the host. It holds:
 //
 //   - the schema version, when it was taken, the agent's OS and version,
@@ -189,6 +190,13 @@
 //     its lines up to the hook, every skipped interface and the anchors
 //     before the guard's, and the guard's `pfctl -E` reference and whether
 //     pf still holds it;
+//   - the kill switch as the host holds it, on or off, whatever left it
+//     ([firewall.InspectKillSwitch]): on Linux the nftables table's flags,
+//     chains, rules (rendered nft-like) with their counters, and each
+//     set's size; on macOS the pf anchor's rules with their counters, its
+//     tables' sizes, pf's enabled state, and the kill switch's own
+//     `pfctl -E` reference and whether pf still holds it. Sizes only: the
+//     entries are public addresses, the direct ones possibly thousands;
 //   - the resolvers the host uses, for the overlay's names and the rest
 //     ([dns.Inspect]): resolv.conf and systemd-resolved's links on Linux,
 //     `scutil --dns` on macOS;
@@ -207,17 +215,19 @@
 //     and `last_run_unreadable` that there was a file it didn't read
 //     (`unreadable` says why, to root).
 //
-// The routes, rules, guard and resolvers are read from the host whatever
-// the data plane's state, so a snapshot after a crash or a stop shows
-// what was left. They name public addresses (the entries', the direct
-// destinations', the gateway's, the upstreams'), so they are root's: the
+// The routes, rules, guard, kill switch and resolvers are read from the
+// host whatever the data plane's state, so a snapshot after a crash or a
+// stop shows what was left. They name public addresses (the entries', the
+// direct destinations', the gateway's, the upstreams'), so they are
+// root's: the
 // group's snapshot has each of them unreadable, "root only", and the
 // agent doesn't read them for it.
 //
 // The snapshot holds no key, token or session id: what it carries comes
 // from the status, which holds none, and from reading the host, which
-// holds none of the node's. The pf reference shows by its pid; its token
-// stays in the guard's record, whose errors never quote it. A test walks
+// holds none of the node's. A pf reference shows by its pid; its token
+// stays in its owner's record (the guard's or the kill switch's), whose
+// errors never quote it. A test walks
 // the schema for fields named for a secret, and another looks for a
 // device's keys and its links' credentials in a real node's snapshot.
 //
