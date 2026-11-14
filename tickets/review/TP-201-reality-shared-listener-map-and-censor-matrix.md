@@ -147,3 +147,4 @@ Round 3 (2026-11-14):
 - 2026-11-14 merged origin/rewrite (TP-210 and board changes) at 484d914, no conflicts
 - 2026-11-14 make lint (govulncheck included) and make test (umask 022) green on 484d914; reality's package with -race green on macOS before the merge
 - 2026-11-14 full make lab-test on 484d914 green: lab phase ok (lab 689 s, censor, ip, labctl, prototypes), node phase ok, 39 packages (internal/agent included, TP-210's fix now merged). lab/RESULTS.md regenerated and not committed. R3.1–R3.6 diffs re-read against the findings and the boxes ticked. Not verified: a slow reader against nginx's real send_timeout; our listener against a stock Xray client; the 1024/1024 bounds under a real flood
+- 2026-11-14 in-progress → review
