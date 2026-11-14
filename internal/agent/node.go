@@ -730,9 +730,10 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			publish()
 			close(done)
 		case req := <-n.rulesRequests:
-			err := n.takeIdle(req)
+			// The kill switch follows the preset after the reply, as
+			// the runner's does at the top of its loop.
+			req.done <- n.takeIdle(req)
 			keepKillSwitch(ctx, !n.conn.disconnected())
-			req.done <- err
 		case req := <-n.requests:
 			// Kept for when the node runs its section.
 			n.remember(req.connect)
