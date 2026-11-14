@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-166]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-197"
+branch: "tp-197-rule-preset-status-truthful"
 ---
 
 ## Goal
@@ -35,3 +35,4 @@ The preset list and the rules each preset contains. This ticket is about what st
 
 ## Log
 - 2026-11-07 created in backlog
+- 2026-11-14 backlog → in-progress, owner: agent-tp-197
