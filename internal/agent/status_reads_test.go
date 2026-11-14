@@ -14,6 +14,7 @@ import (
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
@@ -61,6 +62,10 @@ func (h *hostCalls) record(plat *Platform) {
 		Guard: func(ctx context.Context) routetable.GuardReport {
 			h.add("Inspect.Guard")
 			return insp.Guard(ctx)
+		},
+		KillSwitch: func(ctx context.Context) firewall.KillSwitchReport {
+			h.add("Inspect.KillSwitch")
+			return insp.KillSwitch(ctx)
 		},
 		DNS:     func(ctx context.Context) dns.HostReport { h.add("Inspect.DNS"); return insp.DNS(ctx) },
 		DropIns: func() DropInReport { h.add("Inspect.DropIns"); return insp.DropIns() },

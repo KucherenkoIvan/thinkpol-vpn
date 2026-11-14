@@ -4,9 +4,12 @@ package lab_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"net/netip"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -112,6 +115,87 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 			return nil
 		})
 	}
+	// diagShows checks `thinkpol diag`'s kill switch against nft: no
+	// table, or the table with both chains, every rule (the TUN's passing
+	// only connected) and each set's size as nft lists them.
+	diagShows := func(when string, present, connected bool) {
+		t.Helper()
+		lab.Eventually(t, 30*time.Second, func() error {
+			var d struct {
+				KillSwitch diagKillSwitch `json:"kill_switch"`
+			}
+			out := thinkpol("diag")
+			if err := json.Unmarshal([]byte(out), &d); err != nil {
+				return fmt.Errorf("%s: diag's JSON: %w\n%s", when, err, out)
+			}
+			k := d.KillSwitch
+			if k.Unreadable != "" || k.Where != "nftables table inet thinkpol-killswitch" || k.Present == nil || *k.Present != present ||
+				k.Rules.Unreadable != "" || k.Sets.Unreadable != "" {
+				return fmt.Errorf("%s: diag's kill switch, want present %v:\n%s", when, present, out)
+			}
+			if !present {
+				if len(k.Rules.Rules) != 0 || len(k.Sets.Sets) != 0 {
+					return fmt.Errorf("%s: no table, but diag lists:\n%s", when, out)
+				}
+				return nil
+			}
+			var chains []string
+			for _, c := range k.Nftables.Chains {
+				chains = append(chains, fmt.Sprintf("%s %s %d %s", c.Name, c.Hook, c.Priority, c.Policy))
+			}
+			if want := []string{"output output 2147483647 accept", "forward forward 2147483647 accept"}; k.Nftables.Dormant || !slices.Equal(chains, want) {
+				return fmt.Errorf("%s: chains %q, want %q", when, chains, want)
+			}
+			perChain := map[string]int{}
+			tun := false
+			for _, r := range k.Rules.Rules {
+				perChain[r.Chain]++
+				tun = tun || r.Text == `meta oifname "thinkpol0" accept`
+			}
+			for _, chain := range []string{"output", "forward"} {
+				listed, err := execRead(dev, execTimeout, "nft", "-a", "list", "chain", "inet", "thinkpol-killswitch", chain)
+				if err != nil {
+					return err
+				}
+				if n := nftRuleLines(listed); perChain[chain] != n {
+					return fmt.Errorf("%s: chain %s: diag lists %d rules, nft %d", when, chain, perChain[chain], n)
+				}
+			}
+			if tun != connected {
+				return fmt.Errorf("%s: the TUN passes %v, want %v:\n%s", when, tun, connected, out)
+			}
+			sizes, nftSizes := map[string]int{}, map[string]int{}
+			for _, set := range k.Sets.Sets {
+				if set.Unreadable != "" {
+					return fmt.Errorf("%s: set %s unreadable: %s", when, set.Name, set.Unreadable)
+				}
+				sizes[set.Name] = set.Entries
+				listed, err := execRead(dev, execTimeout, "nft", "-j", "list", "set", "inet", "thinkpol-killswitch", set.Name)
+				if err != nil {
+					return err
+				}
+				var l struct {
+					Nftables []struct {
+						Set *struct {
+							Elem []json.RawMessage `json:"elem"`
+						} `json:"set"`
+					} `json:"nftables"`
+				}
+				if err := json.Unmarshal([]byte(listed), &l); err != nil {
+					return err
+				}
+				for _, o := range l.Nftables {
+					if o.Set != nil {
+						nftSizes[set.Name] = len(o.Set.Elem)
+					}
+				}
+			}
+			if !maps.Equal(sizes, nftSizes) || len(sizes) != 6 || sizes["allow4"] == 0 || sizes["allow6"] == 0 || (sizes["direct4"] > 0) != connected {
+				return fmt.Errorf("%s: set sizes %v, nft %v", when, sizes, nftSizes)
+			}
+			return nil
+		})
+	}
 	// reaches says whether ping from device-a, unbound or bound to its
 	// physical interface, gets an answer from dst.
 	reaches := func(dst netip.Addr, bound bool) bool {
@@ -202,6 +286,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 
 	state("disconnected")
 	wantTable("installed, off", false, false)
+	diagShows("installed, off", false, false)
 	open("installed, kill switch off")
 
 	// On: in place at once, the tunnel down.
@@ -212,6 +297,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 		t.Fatalf("kill-switch: %q", got)
 	}
 	wantTable("on, disconnected", true, false)
+	diagShows("on, disconnected", true, false)
 	confined("on, disconnected", false)
 	thinkpol("allow-lan", "on")
 	confined("on, disconnected, allow-LAN", true)
@@ -222,6 +308,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	thinkpol("connect")
 	ping(t, dev, s4)
 	wantTable("on, connected", true, true)
+	diagShows("on, connected", true, true)
 	thinkpol("disconnect")
 	wantTable("on, disconnected again", true, false)
 	confined("on, after a disconnect", false)
@@ -253,6 +340,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	// traffic direct.
 	thinkpol("kill-switch", "off")
 	wantTable("off, space preset", false, false)
+	diagShows("off, space preset", false, false)
 	thinkpol("disconnect")
 	open("off, disconnected")
 
@@ -325,4 +413,49 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	dev.MustExec(t, "thinkpol", "service", "uninstall")
 	wantTable("uninstalled", false, false)
 	open("uninstalled")
+}
+
+// diagKillSwitch is the part of `thinkpol diag`'s kill switch the lab
+// checks.
+type diagKillSwitch struct {
+	Unreadable string `json:"unreadable"`
+	Where      string `json:"where"`
+	Present    *bool  `json:"present"`
+	Rules      struct {
+		Unreadable string `json:"unreadable"`
+		Rules      []struct {
+			Chain string `json:"chain"`
+			Text  string `json:"text"`
+		} `json:"rules"`
+	} `json:"rules"`
+	Sets struct {
+		Unreadable string `json:"unreadable"`
+		Sets       []struct {
+			Name       string `json:"name"`
+			Unreadable string `json:"unreadable"`
+			Entries    int    `json:"entries"`
+		} `json:"sets"`
+	} `json:"sets"`
+	Nftables struct {
+		Dormant bool `json:"dormant"`
+		Chains  []struct {
+			Name     string `json:"name"`
+			Hook     string `json:"hook"`
+			Priority int    `json:"priority"`
+			Policy   string `json:"policy"`
+		} `json:"chains"`
+	} `json:"nftables"`
+}
+
+// nftRuleLines counts the rules in `nft -a list chain`'s output: the
+// lines with a handle that open no block (the table's and the chain's
+// lines have one too).
+func nftRuleLines(listed string) int {
+	n := 0
+	for _, l := range strings.Split(listed, "\n") {
+		if strings.Contains(l, "# handle") && !strings.Contains(l, "{") {
+			n++
+		}
+	}
+	return n
 }
