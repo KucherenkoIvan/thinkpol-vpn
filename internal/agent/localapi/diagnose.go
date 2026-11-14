@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/KucherenkoIvan/go-kernel/grpckit"
@@ -387,12 +386,13 @@ func (s silentAgent) why(socket string) string {
 }
 
 // dialTimedOut: Dial found a socket that something holds but couldn't
-// connect in time, or (Linux) its backlog full: a listener not
-// accepting. macOS refuses a full backlog (ECONNREFUSED), which can't be
-// told from a dead agent's socket: that is not running.
+// connect in time, or (Linux) its backlog full, EAGAIN, which
+// syscall.Errno counts as a timeout: a listener not accepting. macOS
+// refuses a full backlog (ECONNREFUSED), which can't be told from a dead
+// agent's socket: that is not running.
 func dialTimedOut(err error) bool {
 	var ne net.Error
-	return errors.As(err, &ne) && ne.Timeout() || errors.Is(err, syscall.EAGAIN)
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // WriteDiagnostics writes d as `thinkpol diag` prints it, the snapshot's
