@@ -219,9 +219,10 @@ type connectRequest struct {
 	done    chan<- error
 }
 
-// rulesRequest replaces a device's own rules. Only the goroutine that
-// runs the device calls take, once it has the request: take stores the
-// rules (DeviceFile) and returns them, or fails having changed nothing.
+// rulesRequest replaces a device's own rules. The goroutine that runs
+// the device calls take once it has the request (a stopped node's caller
+// calls it instead): take stores the rules (DeviceFile) and returns them,
+// or fails having changed nothing.
 // done gets take's error or what enforcing them said
 // (rules.ErrPresetUnavailable: enforced failing closed) and must have
 // room for it.
@@ -533,8 +534,8 @@ func (r *runner) loop(ctx context.Context) error {
 }
 
 // takeRules has the data plane take the rules req asks for: stored
-// first, so a failure changes nothing, then followed (the engine's, and
-// every later start's), then reported. Status never shows a preset
+// first (a store that fails changes nothing), then followed (the
+// engine's, and every later start's), then reported. Status never shows a preset
 // before the data plane follows it. An engine that fails to lay out the
 // routes still follows the new rules (its next Apply or reload lays them
 // out again), and its Status says the route table isn't enforced.

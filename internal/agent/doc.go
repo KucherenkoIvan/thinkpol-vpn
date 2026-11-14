@@ -299,9 +299,13 @@
 // decides.
 //
 // A rule preset chosen through the local API ([Node.SetRulePreset]) is
-// stored in [DeviceFile], then handed to the engine
-// ([dataplane.Engine.SetRules]) at once; every start takes it as
-// [dataplane.EngineConfig.Rules].
+// taken by the goroutine that runs the node: it stores the preset in
+// [DeviceFile], hands it to the engine ([dataplane.Engine.SetRules]) at
+// once, and only then has Status show it. Status and the device file
+// never show a preset the data plane doesn't follow: a request the node
+// never took (its caller gave up first) changes nothing, and a store
+// that fails leaves the old preset everywhere. Every start takes the
+// stored preset as [dataplane.EngineConfig.Rules].
 //
 // The device file ([DeviceFile], device.json in the state directory) is
 // the member's toggles ([DeviceSettings]), as strict as the node file, 0600:
