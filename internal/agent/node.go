@@ -313,12 +313,7 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	select {
 	case n.rulesRequests <- rulesRequest{take: take, done: done}:
 	case <-n.stopped:
-		// Nothing runs the rules: the next start takes them.
-		l, err := take()
-		if err == nil {
-			n.report.set(func(r *report) { r.preset = l.Preset.String() })
-		}
-		return err
+		return n.takeIdle(rulesRequest{take: take})
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -328,6 +323,19 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// takeIdle takes the rules req asks for while no data plane runs (the
+// node waits for a section, or stopped): stored, then shown. Run reads
+// the stored rules before its data plane starts, so that start follows
+// them.
+func (n *Node) takeIdle(req rulesRequest) error {
+	l, err := req.take()
+	if err != nil {
+		return err
+	}
+	n.report.set(func(p *report) { p.preset = l.Preset.String() })
+	return nil
 }
 
 // storePreset stores preset as the device's (DeviceFile, keeping the rest
@@ -722,12 +730,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			publish()
 			close(done)
 		case req := <-n.rulesRequests:
-			// Nothing runs them yet: run reads the stored rules once
-			// this returns, and the data plane starts with them.
-			l, err := req.take()
-			if err == nil {
-				n.report.set(func(p *report) { p.preset = l.Preset.String() })
-			}
+			err := n.takeIdle(req)
 			keepKillSwitch(ctx, !n.conn.disconnected())
 			req.done <- err
 		case req := <-n.requests:
