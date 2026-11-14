@@ -1238,8 +1238,8 @@ func TestTheDevicesOwnRulesAreKept(t *testing.T) {
 		t.Fatalf("read %+v", n.device)
 	}
 	close(n.stopped) // not running: the choice is only stored
-	if err := n.SetRulePreset(context.Background(), "all-but-domestic"); err != nil {
-		t.Fatal(err)
+	if err := n.SetRulePreset(context.Background(), "all-but-domestic"); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("got %v, want ErrNotRunning", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, DeviceFile))
 	if err != nil || !strings.Contains(string(got), `"rule_preset": "all-but-domestic"`) || !strings.Contains(string(got), `"cidr:192.0.2.0/24 -> direct"`) {
