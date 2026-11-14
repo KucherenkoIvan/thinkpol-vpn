@@ -122,7 +122,18 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 			Labels:     labels,
 			// Docker would NAT whatever reaches the bridge out to the real
 			// network; nodes have no route there anyway (see configureNode).
-			DriverOpts: map[string]string{"com.docker.network.bridge.enable_ip_masquerade": "false"},
+			// In its default "nat" gateway mode Docker 28 and later also
+			// drop, in the host's raw PREROUTING, a packet to a container's
+			// address that didn't arrive on that container's own bridge.
+			// Where the host has br_netfilter, that sees frames a node sends
+			// to the router for a node on another lab network: every packet
+			// the router would forward. "routed" has no such rule, and no
+			// NAT; Docker 27 knows it too ("nat-unprotected" it doesn't).
+			DriverOpts: map[string]string{
+				"com.docker.network.bridge.enable_ip_masquerade": "false",
+				"com.docker.network.bridge.gateway_mode_ipv4":    "routed",
+				"com.docker.network.bridge.gateway_mode_ipv6":    "routed",
+			},
 			IPAM:       ipam,
 		}
 	}

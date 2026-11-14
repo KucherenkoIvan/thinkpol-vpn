@@ -87,6 +87,9 @@ func TestRenderCompose(t *testing.T) {
 		if net.DriverOpts["com.docker.network.bridge.enable_ip_masquerade"] != "false" {
 			t.Errorf("network %s masquerades", name)
 		}
+		if net.DriverOpts["com.docker.network.bridge.gateway_mode_ipv4"] != "routed" || net.DriverOpts["com.docker.network.bridge.gateway_mode_ipv6"] != "routed" {
+			t.Errorf("network %s: gateway modes are not routed: %v", name, net.DriverOpts)
+		}
 		want := 2
 		if name == "v4" {
 			want = 1
