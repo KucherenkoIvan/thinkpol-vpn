@@ -44,6 +44,14 @@ Review round 1 (go-paranoid, go-style), accepted by the orchestrator. The design
 - [x] R1.7 (should-fix, ticket) the make test box: log the accepted dns flake (TP-217 fixes it) and tick it.
 - [x] R1.8 (nit) TestARulePresetSetBeforeTheNodeRunsIsTaken polls presetMu.TryLock(): wait on something a caller can observe.
 
+Review round 2 (go-paranoid delta check), accepted by the orchestrator. The safety property holds; R1.2–R1.8 are closed.
+- [ ] R2.1 (should-fix) the refusal, doc.go, configuration.md and the Log say "the previous preset stays enforced until a retry succeeds": false when the layout fails after a setTable (the route table's growth after the change, or devices.add after devices.remove set the table), which leaves the router on the new preset: decide the refusal by the engine's routed preset after the error; fix the docs; correct the Log line; test with a failure after setTable, refusal and status matching the router.
+- [ ] R2.2 (should-fix) the test seam fails before Engine.SetRules, so the engine keeps its old rules; production stores the new rules first: make the seam fail after the engine stores them, during layout; re-check the tests and MI.
+- [ ] R2.3 (nit) node.go: the wait after the take is bounded by the engine call, not "under its ctx" (the engine's own, cancelled only by Close): correct the comment.
+- [ ] R2.4 (nit) while the route table grows (engine lock let go) during a successful switch, status shows the old preset as rule_preset_not_enforced: suppress the blip if cheap, else document it.
+- [ ] R2.5 (nit) each retry of a failing layout logs "map applied" at Info; a later successful preset leaves the old retryAt: clear it on success, log the retried layout quieter.
+- [ ] R2.6 (nit) rule_preset_not_enforced uses gRPC Unavailable: use FailedPrecondition unless the localapi's refusal convention says otherwise.
+
 ## Log
 - 2026-11-07 created in backlog
 - 2026-11-14 backlog → in-progress, owner: agent-tp-197
@@ -72,3 +80,4 @@ Review round 1 (go-paranoid, go-style), accepted by the orchestrator. The design
 - 2026-11-15 couldn't verify: nothing device-only; platform-independent agent code, covered by unit tests and the lab.
 - 2026-11-15 has-errors → in-progress (round 1 findings R1.1–R1.8 picked up)
 - 2026-11-15 in-progress → review
+- 2026-11-15 review → has-errors (round 2 findings R2.1–R2.6)
