@@ -960,8 +960,11 @@ func TestADialThatFailedBesideALinkIsNeighborDown(t *testing.T) {
 // carries each family's background route.
 // A chain has one exit (netmap.Chain), so "none of the default chain's
 // exits answers" is that exit unanswered, whatever the others do.
+// Each status was read long before it is graded (now is the read), and
+// is graded as of its read: what it shows pending for less than the
+// deadline then isn't unanswered, however late the grading.
 func TestExitsAreGradedByTheirHandshakes(t *testing.T) {
-	now := time.Now()
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 	const deadline = dataplane.ExitHandshakeDeadline
 	var nl, de, relay, dev netmap.NodeID
 	nl[0], de[0], relay[0], dev[0] = 1, 2, 3, 4
@@ -1008,6 +1011,7 @@ func TestExitsAreGradedByTheirHandshakes(t *testing.T) {
 		{"all live under steady traffic", both, []dataplane.PeerStatus{live(nl), live(de)}, defNL, Health{}},
 		{"all idle", both, []dataplane.PeerStatus{idle(nl), idle(de)}, defNL, Health{}},
 		{"default nl pending for less than the deadline", both, []dataplane.PeerStatus{pendingFor(nl, nl, deadline-time.Second)}, defNL, Health{}},
+		{"default nl pending for a millisecond less than the deadline when read", both, []dataplane.PeerStatus{pendingFor(nl, nl, deadline-time.Millisecond)}, defNL, Health{}},
 		{"default nl dead behind a relay", []path.NeighborStatus{upFor(relay, time.Hour)}, []dataplane.PeerStatus{pendingFor(nl, relay, time.Hour)}, defNL, exitDown},
 		{"default nl's first hop down: the neighbor's problem only", []path.NeighborStatus{downNeighbor},
 			[]dataplane.PeerStatus{pendingFor(nl, netmap.NodeID{}, time.Hour)}, defNL, Health{HealthDown, []Problem{ProblemNoLinkUp}}},
@@ -1028,9 +1032,9 @@ func TestExitsAreGradedByTheirHandshakes(t *testing.T) {
 		{"a device peer pending for long", []path.NeighborStatus{upFor(dev, time.Hour)},
 			[]dataplane.PeerStatus{{ID: dev, FirstHop: dev, HandshakePendingSince: now.Add(-time.Hour)}}, defNL, Health{}},
 	} {
-		dp := &dataplane.Status{Neighbors: tc.neighbors, Peers: tc.peers, Rules: dataplane.RuleStatus{DefaultExits: tc.def}}
+		dp := &dataplane.Status{ReadAt: now, Neighbors: tc.neighbors, Peers: tc.peers, Rules: dataplane.RuleStatus{DefaultExits: tc.def}}
 		s := Status{Connection: Connected, DataPlane: dp}
-		s.ExitsUnanswered, s.DefaultExitUnanswered = exitHandshakes(dp, now, deadline)
+		s.ExitsUnanswered, s.DefaultExitUnanswered = exitHandshakes(dp, deadline)
 		if got := s.Health(); got.Level != tc.want.Level || !slices.Equal(got.Problems, tc.want.Problems) {
 			t.Errorf("%s: health %+v, want %+v", tc.name, got, tc.want)
 		}

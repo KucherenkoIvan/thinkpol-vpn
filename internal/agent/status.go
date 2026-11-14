@@ -312,7 +312,7 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		// Unknown upstreams (stale) aren't absent ones: one cause, one code.
 		s.DNSNoUpstream = !s.DNSUpstreamsStale &&
 			(errors.Is(problem, dns.ErrNoSystemUpstream) || p.dnsNoUpstream != nil && p.dnsNoUpstream())
-		s.ExitsUnanswered, s.DefaultExitUnanswered = exitHandshakes(&st, time.Now(), p.exitDeadline)
+		s.ExitsUnanswered, s.DefaultExitUnanswered = exitHandshakes(&st, p.exitDeadline)
 	}
 	if p.workers != nil {
 		for _, w := range p.workers.Workers() {
@@ -333,8 +333,11 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 	return s
 }
 
-// exitHandshakes grades the exits among st.Peers at now: how many are
-// unanswered, and whether the default rule's exit is one of them. An exit
+// exitHandshakes grades the exits among st.Peers as of st.ReadAt: how
+// many are unanswered, and whether the default rule's exit is one of them.
+// Ages are measured to the read, never to a later clock reading: a stall
+// before grading would age the snapshot's initiations past answers it
+// can't show. An exit
 // is unanswered once the first initiation sent to it since its first hop
 // came up has gone deadline without an answer: while the first hop is
 // down that is the neighbor's problem (one cause, one code), and
@@ -347,14 +350,14 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 // even if traffic to it stops. A chain has one exit, so a default exit
 // unanswered (RuleStatus.DefaultExits: what carries either family's
 // background route) is the internet lost, whatever the other exits do.
-func exitHandshakes(st *dataplane.Status, now time.Time, deadline time.Duration) (unanswered int, defaultUnanswered bool) {
+func exitHandshakes(st *dataplane.Status, deadline time.Duration) (unanswered int, defaultUnanswered bool) {
 	up := make(map[netmap.NodeID]bool, len(st.Neighbors))
 	for _, n := range st.Neighbors {
 		up[netmap.NodeID(n.Node)] = n.Up
 	}
 	for _, p := range st.Peers {
 		sent := p.FirstInitiationSinceLinkUp
-		if !p.Exit || !up[p.FirstHop] || sent.IsZero() || now.Sub(sent) < deadline {
+		if !p.Exit || !up[p.FirstHop] || sent.IsZero() || st.ReadAt.Sub(sent) < deadline {
 			continue
 		}
 		unanswered++

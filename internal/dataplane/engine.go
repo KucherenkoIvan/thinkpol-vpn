@@ -463,6 +463,11 @@ func (e *Engine) Inbound(transportName string) transport.Peers {
 // holds no network addresses but the overlay's, and nothing quoted from
 // the map: what was skipped and what failed come from fixed vocabularies.
 type Status struct {
+	// ReadAt is when the status was read, before any of it: what is in it
+	// is as of then or later. A reader grading ages in it (an initiation
+	// pending past a deadline) measures them to ReadAt, never to a later
+	// clock reading, which would add the time in between.
+	ReadAt time.Time
 	// MTU is the overlay's MTU; 0 before the first Apply that got that far.
 	MTU int
 	// IPv6 says whether the overlay carries IPv6, and IPv6Off why not.
@@ -547,6 +552,7 @@ func (e *Engine) StatusAndLastApply() (Status, ApplyTrace, bool) {
 
 func (e *Engine) statusLocked() Status {
 	s := Status{
+		ReadAt:         time.Now(),
 		MTU:            e.mtu,
 		IPv6:           e.mtu > 0 && e.ipv6Off == nil,
 		Neighbors:      e.node.Neighbors(),
@@ -561,11 +567,10 @@ func (e *Engine) statusLocked() Status {
 
 		InterfaceReapplies: e.ifcReapplies,
 	}
-	now := time.Now()
 	linkUp := make(map[path.NodeID]time.Time, len(s.Neighbors))
 	for _, n := range s.Neighbors {
 		if n.Up {
-			linkUp[n.Node] = now.Add(-n.UpFor)
+			linkUp[n.Node] = n.UpSince
 		}
 	}
 	s.Rules.Skipped = slices.Clone(s.Rules.Skipped)
