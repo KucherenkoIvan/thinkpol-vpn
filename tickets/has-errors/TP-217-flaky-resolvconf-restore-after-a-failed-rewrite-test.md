@@ -38,6 +38,14 @@ branch: "tp-217-flaky-resolvconf-restore-test"
   The fifth try was under way at the read (counted before its write) and the file was empty; a run on macOS (poll only, no change events) failed once in 100 the same way at +500.07 ms.
 - **A second flake in the package, fixed here too (product code).** `make test` on the loaded machine then failed `TestResolvConfAFileRenamedInIsTakenAtOnce` ("not taken back", 5 s). setResolvConfTimed started the watch goroutine, which set up the inotify watch itself; under load it started after the test had renamed its file in, so no event came, and the poll (an hour in that test) was the only way left. In the product the poll is 2 s: a file renamed in right after the take-over went unseen, and Problem said nothing, for up to 2 s. The watch is now set up before setResolvConfTimed returns (resolvconf.go, doc.go's watch paragraph says so).
 
+## Review findings
+Review round 1 (adversarial; Go style): no proven defect in the diff; the test fix is honest (the test raced its own fake). Accepted findings:
+- [ ] R1.1 (should-fix) resolvconf.go: the watch is set up after the take-over's own write, so a gap remains (the Lstat, the Unlock and the inotify syscalls). A file renamed in during it (another program reacting to the new TUN) raises no event, Problem reports nil, and the change waits for the 2 s poll. Set the watch up before apply and close it when apply fails; check that the node's own rename (an ownFile event) causes no rewrite loop and no false Problem; a deterministic test of the ordering (a hook on watchFile), mutation-checked.
+- [ ] R1.2 (should-fix; in the product before this branch) The bind-mount fallback (writeFile → writeInPlace) opens with O_TRUNC, then writes; a resolver reading in between sees no nameserver. Not fixed here: a RESIDUAL-RISKS.md row, and one follow-up ticket filed (the empty-file window on the in-place fallback).
+- [ ] R1.3 (should-fix) Scope and Acceptance name only the restore test; the branch also fixes TestResolvConfAFileRenamedInIsTakenAtOnce with a product change. Add a Scope bullet and an Acceptance box with its evidence, widen the title, and log the widened scope.
+- [ ] R1.4 (should-fix) resolvconf_settle_test.go: readBetweenRewrites holds r.mu, so its read can never fall between a rewrite's truncate and its write: rename it readUnderLock.
+- [ ] R1.5 (nit) doc.go: rewrap the changed comment; resolvconf.go: reword the watch comment so `changes` doesn't read as the thing closed.
+
 ## Log
 - 2026-11-14 created in backlog (from TP-117)
 - 2026-11-14 backlog → in-progress, owner: agent-tp-217
@@ -49,3 +57,4 @@ branch: "tp-217-flaky-resolvconf-restore-test"
 - 2026-11-15 merged origin/rewrite at 16b2f25 (1a2b58e); on 731c903 `make lint` and `make test` green (umask 022), and full `make lab-test` green (GOFLAGS=-p=2, LAB_P=1, under the full-lab lock): lab phase and 39 packages
 - 2026-11-15 not verified: the original `make test` failure (no log kept); the reproduction matches its test and assertion only. Out of scope: none found; the resolved watch (system_linux.go) only polls, so it has no such race
 - 2026-11-15 in-progress → review
+- 2026-11-15 review → has-errors (round 1 findings R1.1–R1.5)
