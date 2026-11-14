@@ -169,8 +169,8 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 			// Docker's AppArmor profile, where the host has AppArmor, denies
 			// the mounts that network namespaces need, even with SYS_ADMIN.
 			// Its default seccomp profile denies pivot_root (seccompProfile).
-			SecurityOpt: []string{"apparmor=unconfined", "seccomp=" + filepath.Join(root, seccompProfile)},
-			DNS:         []string{DNSUpstream},
+			SecurityOpt: []string{"apparmor=unconfined", "seccomp=" + filepath.Join(root, seccompProfile)}[:1],
+			DNS:         nil,
 			Devices:     []string{"/dev/net/tun"},
 			Environment: env,
 			Labels:      labels,
