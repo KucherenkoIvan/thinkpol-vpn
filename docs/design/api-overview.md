@@ -44,7 +44,7 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 | [Configuration](#configuration) | every key, its default and where it is documented; input files; lab variables |
 | [On-disk state](#on-disk-state) | every file the node, the service and the dev tools write or read |
 | [Built since the snapshot](#built-since-the-snapshot) | what TP-140, TP-166, TP-111, TP-048, TP-141, TP-195 and TP-167 added |
-| [Planned, not built](#planned-not-built) | what TP-183 and TP-133 propose |
+| [Planned, not built](#planned-not-built) | what TP-183 proposes, and TP-133 as built |
 | [Consistency findings](#consistency-findings) | F1–F21 with suggested verdicts |
 | [Verdicts (owner, 2026-11-07)](#verdicts-owner-2026-11-07) | the decided conventions: configuration levels, status versus diag, exit codes, naming |
 
@@ -294,20 +294,9 @@ Open naming questions:
 - the file name and location (F1);
 - where accepted capabilities are kept.
 
-### TP-133: `diag` without a running agent (planned, not built)
+### TP-133: `diag` without a running agent (built)
 
-| Surface | Proposal |
-|---|---|
-| behaviour | when the local API doesn't answer, root's `diag` reads the host itself and writes the same snapshot |
-| output | `agent: "not running"`, with `status`, `tun` and `last_apply` unreadable for that reason. **`Diagnostics` has no `agent` field today**: this adds one, a string, with schema still 1 |
-| non-root | an error, not a partial snapshot (exit 1, F4) |
-| side effects | none: no lock, no directory made |
-
-Open questions:
-
-- whether the fallback is automatic or needs a flag (e.g. `-offline`): automatic hides an API that is down for another reason;
-- the `agent` field's values;
-- the exit code when it falls back (F4).
+Built in TP-133: the reference's `diag` has it. The open questions, answered: the fallback is automatic (the crash it is for leaves no agent to ask for a flag's sake, and the snapshot says which it was); `agent` is `running`, `not_running` or `not_answering`, a new field with `status_unreadable`, schema still 2; exit 0 when no agent runs (the snapshot is all there is to take), 69 when one holds the socket and doesn't answer (the snapshot is written, short of the agent's), 77 for anyone but root.
 
 ## Consistency findings
 

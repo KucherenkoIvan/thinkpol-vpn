@@ -23,10 +23,12 @@ import (
 
 // diagSnapshot is the part of `thinkpol diag`'s JSON the lab checks.
 type diagSnapshot struct {
-	SchemaVersion int    `json:"schema_version"`
-	Os            string `json:"os"`
-	HostParts     bool   `json:"host_parts"`
-	Status        struct {
+	SchemaVersion    int    `json:"schema_version"`
+	Os               string `json:"os"`
+	Agent            string `json:"agent"`
+	HostParts        bool   `json:"host_parts"`
+	StatusUnreadable string `json:"status_unreadable"`
+	Status           *struct {
 		Connection string `json:"connection"`
 	} `json:"status"`
 	Tun struct {
@@ -94,6 +96,11 @@ type diagSnapshot struct {
 			} `json:"chains"`
 		} `json:"nftables"`
 	} `json:"guard"`
+	KillSwitch struct {
+		Unreadable string `json:"unreadable"`
+		Where      string `json:"where"`
+		Present    *bool  `json:"present"`
+	} `json:"kill_switch"`
 	LastApply struct {
 		Unreadable string `json:"unreadable"`
 		Started    string `json:"started"`
@@ -140,6 +147,58 @@ func resolvectlLinks(t *testing.T, n *lab.Node, what string) map[string][]string
 		}
 	}
 	return out
+}
+
+// routeLines are the snapshot's routes, one line each as hostRoutes
+// writes ip's, sorted.
+func (d diagSnapshot) routeLines() []string {
+	var routes []string
+	for _, r := range d.Routes.Routes {
+		routes = append(routes, fmt.Sprintf("%s %s %s %s via %q dev %q metric %d table %d", r.Owner, r.Family, r.Type, r.Destination, r.Gateway, r.Interface, r.Metric, r.Table))
+	}
+	slices.Sort(routes)
+	return routes
+}
+
+// ruleLines are the snapshot's policy rules, one line each as hostRules
+// writes ip's, sorted.
+func (d diagSnapshot) ruleLines() []string {
+	var rules []string
+	for _, r := range d.Rules.Rules {
+		mark := ""
+		if r.Mark != 0 {
+			mark = fmt.Sprintf("0x%x", r.Mark)
+			if r.Mask != 0xffffffff {
+				mark += fmt.Sprintf("/0x%x", r.Mask)
+			}
+		}
+		suppress := ""
+		if r.SuppressPrefixlen != nil && *r.SuppressPrefixlen >= 0 {
+			suppress = strconv.Itoa(*r.SuppressPrefixlen)
+		}
+		rules = append(rules, fmt.Sprintf("%s %s %d %s table %d to %q oif %q fwmark %q not %v suppress %q", r.Owner, r.Family, r.Priority, r.Action, r.Table, r.Destination, r.Oif, mark, r.Invert, suppress))
+	}
+	slices.Sort(rules)
+	return rules
+}
+
+// resolvedLinks are systemd-resolved's links in the snapshot (its
+// second source), as resolvectlLinks reads resolvectl's: per link, its
+// servers, and its domains and search domains together, sorted.
+func (d diagSnapshot) resolvedLinks() (servers, domains map[string][]string) {
+	servers, domains = map[string][]string{}, map[string][]string{}
+	if len(d.DNS.Sources) < 2 {
+		return servers, domains
+	}
+	for _, r := range d.DNS.Sources[1].Resolvers {
+		if len(r.Servers) > 0 {
+			servers[r.Interface] = slices.Sorted(slices.Values(r.Servers))
+		}
+		if all := slices.Concat(r.Domains, r.Search); len(all) > 0 {
+			domains[r.Interface] = slices.Sorted(slices.Values(all))
+		}
+	}
+	return servers, domains
 }
 
 // ipTable is a table as ip names it, by number.
@@ -399,7 +458,7 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 		if err := json.Unmarshal([]byte(out), &d); err != nil {
 			t.Fatalf("diag's JSON: %v\n%s", err, out)
 		}
-		if d.SchemaVersion != 2 || d.Os != "linux" || d.Status.Connection != "connected" || d.HostParts != !slices.Contains(args, "setpriv") {
+		if d.SchemaVersion != 2 || d.Os != "linux" || d.Agent != "running" || d.Status == nil || d.Status.Connection != "connected" || d.HostParts != !slices.Contains(args, "setpriv") {
 			t.Fatalf("diag: %+v", d)
 		}
 		return d, out
@@ -431,27 +490,7 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 		if d.Routes.Unreadable != "" || d.Rules.Unreadable != "" {
 			t.Fatalf("unreadable: %s", out)
 		}
-		var routes []string
-		for _, r := range d.Routes.Routes {
-			routes = append(routes, fmt.Sprintf("%s %s %s %s via %q dev %q metric %d table %d", r.Owner, r.Family, r.Type, r.Destination, r.Gateway, r.Interface, r.Metric, r.Table))
-		}
-		slices.Sort(routes)
-		var rules []string
-		for _, r := range d.Rules.Rules {
-			mark := ""
-			if r.Mark != 0 {
-				mark = fmt.Sprintf("0x%x", r.Mark)
-				if r.Mask != 0xffffffff {
-					mark += fmt.Sprintf("/0x%x", r.Mask)
-				}
-			}
-			suppress := ""
-			if r.SuppressPrefixlen != nil && *r.SuppressPrefixlen >= 0 {
-				suppress = strconv.Itoa(*r.SuppressPrefixlen)
-			}
-			rules = append(rules, fmt.Sprintf("%s %s %d %s table %d to %q oif %q fwmark %q not %v suppress %q", r.Owner, r.Family, r.Priority, r.Action, r.Table, r.Destination, r.Oif, mark, r.Invert, suppress))
-		}
-		slices.Sort(rules)
+		routes, rules := d.routeLines(), d.ruleLines()
 		// A route-table device holds a table of its own with a default into
 		// the TUN, throws, unreachable defaults, and four rules a family.
 		if len(routes) < 6 || len(rules) < 8 {
@@ -524,15 +563,7 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 		if !slices.Equal(conf.Resolvers[0].Servers, want) || len(want) == 0 {
 			t.Errorf("resolv.conf's servers %q, the file's %q", conf.Resolvers[0].Servers, want)
 		}
-		servers, domains := map[string][]string{}, map[string][]string{}
-		for _, r := range resolved.Resolvers {
-			if len(r.Servers) > 0 {
-				servers[r.Interface] = slices.Sorted(slices.Values(r.Servers))
-			}
-			if all := slices.Concat(r.Domains, r.Search); len(all) > 0 {
-				domains[r.Interface] = slices.Sorted(slices.Values(all))
-			}
-		}
+		servers, domains := d.resolvedLinks()
 		// The TUN takes every name ("~.") and searches the space's zone;
 		// the device's own link keeps its server.
 		if !slices.Contains(domains["thinkpol0"], "~.") || len(servers["thinkpol0"]) == 0 || len(servers[dev.Interface(lab.NetDevices)]) == 0 {
@@ -590,6 +621,87 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 		diag(t, as("", "", "diag", "-o", "/tmp/diag.json")...)
 		if got := dev.MustExec(t, "stat", "-c", "%a %U", "/tmp/diag.json"); got != "600 root\n" {
 			t.Errorf("diag.json: %q", got)
+		}
+	})
+
+	// Last: it kills the agent (TP-133).
+	t.Run("after a SIGKILL root's diag reads what the agent left", func(t *testing.T) {
+		dev.MustExec(t, "pkill", "-KILL", "-f", "thinkpol up")
+		select {
+		case <-up.Done():
+		case <-time.After(30 * time.Second):
+			t.Fatal("the agent outlived its SIGKILL")
+		}
+		// No agent and no root: refused, no snapshot.
+		res, err := cli(t, dev, as(aliceUID, apiGID, "diag"))
+		if err == nil || res.ExitCode != 77 || res.Stdout != "" || !strings.Contains(res.Stderr, "as root") {
+			t.Errorf("the group without an agent: exit %d, %v\n%s%s", res.ExitCode, err, res.Stdout, res.Stderr)
+		}
+
+		res, err = cli(t, dev, as("", "", "diag", "-o", "/tmp/diag-dead.json"))
+		if err != nil || res.ExitCode != 0 {
+			t.Fatalf("diag: exit %d, %v\n%s%s", res.ExitCode, err, res.Stdout, res.Stderr)
+		}
+		out := dev.MustExec(t, "cat", "/tmp/diag-dead.json")
+		var d diagSnapshot
+		if err := json.Unmarshal([]byte(out), &d); err != nil {
+			t.Fatalf("diag's JSON: %v\n%s", err, out)
+		}
+		const why = "the agent is not running: only it knows this"
+		if d.SchemaVersion != 2 || d.Agent != "not_running" || d.Status != nil || d.StatusUnreadable != why || d.Tun.Unreadable != why ||
+			d.LastApply.Unreadable != why || !d.HostParts {
+			t.Fatalf("without the agent:\n%s", out)
+		}
+		if d.Routes.Unreadable != "" || d.Rules.Unreadable != "" || d.Guard.Unreadable != "" || d.DNS.Unreadable != "" || d.KillSwitch.Unreadable != "" {
+			t.Fatalf("unreadable:\n%s", out)
+		}
+
+		// The dead route-table device's rules and its table's routes, as
+		// ip shows them (the TUN went with the agent, and its routes).
+		routes, rules := d.routeLines(), d.ruleLines()
+		if len(rules) < 8 || len(routes) == 0 {
+			t.Fatalf("the kill left %d routes and %d rules:\n%s", len(routes), len(rules), out)
+		}
+		if host := hostRoutes(t, dev); !slices.Equal(routes, host) {
+			t.Errorf("routes:\n%s\nip:\n%s", strings.Join(routes, "\n"), strings.Join(host, "\n"))
+		}
+		if host := hostRules(t, dev); !slices.Equal(rules, host) {
+			t.Errorf("rules:\n%s\nip:\n%s", strings.Join(rules, "\n"), strings.Join(host, "\n"))
+		}
+
+		// The guard, still in place, as nft lists it.
+		counters, exempt, chain := hostGuard(t, dev)
+		g := d.Guard
+		if g.Present == nil || !*g.Present || g.Rules.Unreadable != "" || len(g.Nftables.Chains) != 1 || len(g.Rules.Rules) != len(counters) || len(counters) < 8 {
+			t.Fatalf("guard (nft lists %d rules):\n%s", len(counters), out)
+		}
+		if c := g.Nftables.Chains[0]; fmt.Sprintf("%s %s %d %s", c.Name, c.Hook, c.Priority, c.Policy) != chain {
+			t.Errorf("chain %+v, nft %q", c, chain)
+		}
+		for i, r := range g.Rules.Rules {
+			if r.Counted != (counters[i] >= 0) || r.Counted && int64(r.Packets) > counters[i] {
+				t.Errorf("rule %d %q: counted %v, %d packets; nft: %d", i, r.Text, r.Counted, r.Packets, counters[i])
+			}
+		}
+		if !slices.Equal(g.Exempt.Prefixes, exempt) {
+			t.Errorf("exempt %q, nft %q", g.Exempt.Prefixes, exempt)
+		}
+		// The kill switch was off: no table, and the snapshot says so.
+		_, nftErr := execRead(dev, execTimeout, "nft", "list", "table", "inet", "thinkpol-killswitch")
+		if ks := d.KillSwitch; ks.Present == nil || *ks.Present != (nftErr == nil) {
+			t.Errorf("kill switch present %v, nft's table there %v:\n%s", ks.Present, nftErr == nil, out)
+		}
+
+		// The resolvers as resolvectl shows them now.
+		servers, domains := d.resolvedLinks()
+		if len(d.DNS.Sources) != 2 || d.DNS.Sources[1].Name != "systemd-resolved" || d.DNS.Sources[1].Unreadable != "" {
+			t.Fatalf("dns:\n%s", out)
+		}
+		if host := resolvectlLinks(t, dev, "dns"); !maps.EqualFunc(servers, host, slices.Equal) || len(host) == 0 {
+			t.Errorf("servers %q, resolvectl %q", servers, host)
+		}
+		if host := resolvectlLinks(t, dev, "domain"); !maps.EqualFunc(domains, host, slices.Equal) {
+			t.Errorf("domains %q, resolvectl %q", domains, host)
 		}
 	})
 }

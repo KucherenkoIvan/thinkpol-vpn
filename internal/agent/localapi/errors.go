@@ -69,13 +69,17 @@ var (
 	// ErrServiceDown is nothing listening at the local API's socket: what
 	// the client finds when it dials, never sent by the server.
 	ErrServiceDown = Error{code: "service_down"}
+	// ErrServiceNotAnswering is something accepting the local API's
+	// connection without answering diag in time (DiagnoseOrReadHost):
+	// what the client finds, never sent by the server.
+	ErrServiceNotAnswering = Error{code: "service_not_answering"}
 )
 
 // refusals are every refusal: its gRPC code, which the server sends it
 // with, and what a client tells a person of it, a detail filling the %s
 // of a refusal sent with one (detailed). A detailed refusal's code varies,
 // so it goes as grpckit's default, FailedPrecondition, the code its row
-// says; service_down's is never sent. A refusal's wording lives here
+// says; service_down's and service_not_answering's are never sent. A refusal's wording lives here
 // only; the client's dial-time refusal reuses ErrPermissionDenied's.
 // Both permission refusals ([IsPermission]) begin with "permission
 // denied", and service_down's with "the thinkpol service" (the lab checks
@@ -98,6 +102,7 @@ var refusals = []struct {
 	{ErrStartFailed, codes.FailedPrecondition, "starting the data plane failed at step %q", true},
 	{ErrKillSwitchNotEnforced, codes.FailedPrecondition, "the setting is kept, but the kill switch is not enforced: %s", true},
 	{ErrServiceDown, codes.Unavailable, "the thinkpol service is not running", false},
+	{ErrServiceNotAnswering, codes.Unavailable, "the thinkpol service is not answering", false},
 }
 
 // Refusals are every refusal a client may find in an error (errors.Is):

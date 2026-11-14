@@ -37,7 +37,7 @@ commands:
   dev map inspect          development tooling: verify a map and print its header, and a node's section
   dev map rotate           development tooling: rebuild the deployed map with fresh link credentials and a version past it
   dev map spec             development tooling: print the map spec format, annotated
-  diag                     print a JSON snapshot of what the node changed on the host (root's names entry and other public addresses)
+  diag                     print a JSON snapshot of what the node changed on the host (root's names entry and other public addresses); with no agent answering, root's reads the host itself (agent: not_running, exit 0; not_answering, exit 69)
   disconnect               disconnect this device: take its data plane down (the service keeps running)
   logs                     print the running node's in-memory log (root only)
   rollback                 after an agent died: remove what it left on this host (routes, leak guard, DNS changes, the kill switch) and record this boot disconnected; as root, refused (exit 75) while another thinkpol process holds the host
@@ -471,9 +471,13 @@ Root's snapshot fills those five parts. An excerpt from the same run:
 
 The full schema is the `Diagnostics` message in `proto/thinkpol/localapi/v1/localapi.proto`.
 
+Without the agent (TP-133), root's `diag` reads the host itself with the agent's readers, read-only, and writes the same snapshot: `"agent": "not_running"` when nothing accepts the socket's connection (exit 0), `"not_answering"` when nothing answers within a minute (the snapshot written, exit 69, `service_not_answering`). `status` is null with `status_unreadable` saying why, `tun` and `last_apply` are unreadable for that reason, and `agent_version` is the CLI's. Anyone else gets exit 77 and no snapshot. A running agent's snapshot says `"agent": "running"`.
+
 Errors:
 
 ```
+$ thinkpol diag      # as alice, no agent
+thinkpol diag: no agent answered, and reading the host without it is root's: its parts name public addresses: run it as root (sudo)
 $ thinkpol diag -o /dev/null
 thinkpol diag: /dev/null: not a regular file: refusing to replace it
 ```
@@ -832,4 +836,4 @@ Nothing in it is a public address, a key or a secret. Nodes and spaces are opaqu
 
 ### `Diagnostics`
 
-`schema_version` (2, the service's; `diag`'s JSON says the CLI's), `taken_at`, `os`, `agent_version`, `host_parts`, `status`, `tun`, `last_apply`, `routes`, `policy_rules`, `guard`, `kill_switch`, `dns`, `service_drop_ins`, `last_run`. `routes`, `policy_rules`, `guard`, `kill_switch` and `dns` are host parts: root's only, because they name public addresses (`kill_switch` gives its sets' sizes, not their entries); `last_run` is root's too. The schema version is bumped when a field is removed or renamed or changes type or meaning. An added field doesn't bump it.
+`schema_version` (2, the service's; `diag`'s JSON says the CLI's), `taken_at`, `os`, `agent_version`, `agent`, `status_unreadable`, `host_parts`, `status`, `tun`, `last_apply`, `routes`, `policy_rules`, `guard`, `kill_switch`, `dns`, `service_drop_ins`, `last_run`. `routes`, `policy_rules`, `guard`, `kill_switch` and `dns` are host parts: root's only, because they name public addresses (`kill_switch` gives its sets' sizes, not their entries); `last_run` is root's too. The schema version is bumped when a field is removed or renamed or changes type or meaning. An added field doesn't bump it.

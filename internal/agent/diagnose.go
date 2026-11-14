@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"io/fs"
+	"os"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
@@ -16,7 +19,13 @@ import (
 // says why in its Unreadable, so "nothing there" and "couldn't look" stay
 // apart.
 type Diagnostics struct {
+	// Agent is who took it: AgentRunning, the agent itself; AgentNotRunning
+	// or AgentNotAnswering, root's diag reading the host without it
+	// (DiagnoseHost).
+	Agent  AgentPresence
 	Status Status
+	// StatusUnreadable says why there is no Status: no agent answered.
+	StatusUnreadable string
 	// TUN is a device's overlay interface as the host reports it.
 	TUN netcfg.InterfaceReport
 	// LastApply is a device's running data plane's last Apply, its steps
@@ -70,6 +79,89 @@ const (
 	// caller who isn't root.
 	UnreadableRootOnly = "root only: it names public addresses"
 )
+
+// AgentPresence is whether an agent took a snapshot, its JSON value
+// (snake_case: docs/design/api-overview.md, "Naming").
+type AgentPresence string
+
+const (
+	// AgentRunning: the agent answered and took the snapshot.
+	AgentRunning AgentPresence = "running"
+	// AgentNotRunning: nothing accepted the local API's connection (no
+	// socket, or one nothing listens on): root's diag read the host
+	// itself.
+	AgentNotRunning AgentPresence = "not_running"
+	// AgentNotAnswering: something accepted the connection but no snapshot
+	// came in time: root's diag read the host itself, beside an agent that
+	// may still be changing it.
+	AgentNotAnswering AgentPresence = "not_answering"
+)
+
+// Why a part only the agent knows (the status, the TUN, the last Apply)
+// is unreadable in a snapshot taken without it.
+const (
+	UnreadableAgentNotRunning   = "the agent is not running: only it knows this"
+	UnreadableAgentNotAnswering = "the agent didn't answer: only it knows this"
+)
+
+// ErrDiagNeedsRoot: diag found no agent to answer, and its caller isn't
+// root, who alone may read the host's parts itself.
+var ErrDiagNeedsRoot = &NeedsRootError{Why: "no agent answered, and reading the host without it is root's: its parts name public addresses"}
+
+// DiagnoseHost is the snapshot root's `thinkpol diag` takes itself when
+// no agent answers (TP-133), whatever a dead run left: the host parts
+// through insp, the agent's own readers, the drop-ins, and the crash
+// trace file at tracePath, read as it is. The parts only the agent knows
+// are unreadable, saying which of not running and not answering it was.
+// Like the agent's readers it only reads: no lock, no directory made,
+// nothing written. A caller who isn't root gets ErrDiagNeedsRoot and no
+// snapshot.
+func DiagnoseHost(ctx context.Context, insp Inspector, presence AgentPresence, tracePath string) (Diagnostics, error) {
+	if os.Geteuid() != 0 {
+		return Diagnostics{}, ErrDiagNeedsRoot
+	}
+	return diagnoseHost(ctx, insp, presence, tracePath), nil
+}
+
+// diagnoseHost is DiagnoseHost past its root check.
+func diagnoseHost(ctx context.Context, insp Inspector, presence AgentPresence, tracePath string) Diagnostics {
+	why := UnreadableAgentNotRunning
+	if presence == AgentNotAnswering {
+		why = UnreadableAgentNotAnswering
+	}
+	return Diagnostics{
+		Agent:            presence,
+		StatusUnreadable: why,
+		TUN:              netcfg.InterfaceReport{Unreadable: why},
+		LastApply:        ApplyReport{Unreadable: why},
+		HostParts:        true,
+		Routes:           insp.Routes(),
+		Guard:            insp.Guard(ctx),
+		KillSwitch:       insp.KillSwitch(ctx),
+		DNS:              insp.DNS(ctx),
+		DropIns:          insp.DropIns(),
+		LastRun:          readLastRun(tracePath),
+	}
+}
+
+// readLastRun reads the crash trace file at path as a start would
+// (readCrashTrace), without a start's fixing, cutting or emptying it: a
+// panic's or a fatal error's trace a dead run left. No file is none. A
+// file that isn't a regular one with a single link isn't read.
+func readLastRun(path string) LastRun {
+	fi, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return LastRun{}
+	case err != nil:
+		return LastRun{Unreadable: err.Error()}
+	case !fi.Mode().IsRegular():
+		return LastRun{Unreadable: "not a regular file, not read"}
+	case linkCount(fi) != 1:
+		return LastRun{Unreadable: "the trace file has more than one link, not read"}
+	}
+	return readCrashTrace(path, fi)
+}
 
 // ApplyReport is a data plane's last Apply; Unreadable says why there is
 // none.

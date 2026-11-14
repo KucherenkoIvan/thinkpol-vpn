@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
@@ -82,6 +84,9 @@ type apiCommandLine struct {
 	path, values []string
 	partials     []partial
 	rootOnly     bool
+	// readsTheHostWhenDown: with the service down, root's reads the host
+	// itself (diag, TP-133), and anyone else's is refused for it.
+	readsTheHostWhenDown bool
 }
 
 // Every command exits by sysexits (docs/design/api-overview.md,
@@ -128,7 +133,7 @@ func TestEveryCommandExitsBySysexits(t *testing.T) {
 		{path: []string{"status"}},
 		{path: []string{"spaces"}},
 		{path: []string{"logs"}, rootOnly: true},
-		{path: []string{"diag"}},
+		{path: []string{"diag"}, readsTheHostWhenDown: true},
 		{path: []string{"kill-switch"}},
 		{path: []string{"allow-lan"}},
 		{path: []string{"connect-on-boot"}},
@@ -142,10 +147,17 @@ func TestEveryCommandExitsBySysexits(t *testing.T) {
 	} {
 		line := func(flags ...string) []string { return slices.Concat(c.path, flags, c.values) }
 		name := strings.Join(line(), " ")
+		serviceDown := exitRow{name: name + ": service down", args: line("-socket", down), code: exitUnavailable, stderr: `\[service_down\]`}
+		switch {
+		case c.readsTheHostWhenDown && root:
+			serviceDown = exitRow{name: name + ": service down, root reads the host", args: line("-socket", down), code: exitOK, stdout: `"agent": "not_running"`}
+		case c.readsTheHostWhenDown:
+			serviceDown = exitRow{name: name + ": service down, not root", args: line("-socket", down), code: exitNoPerm, stderr: "as root"}
+		}
 		rows = append(rows,
 			exitRow{name: name + ": success", args: line("-socket", ok), code: exitOK},
 			exitRow{name: name + ": bad arguments", args: line("-socket", ok, "-bogus"), code: exitUsage, stderr: "flag provided but not defined"},
-			exitRow{name: name + ": service down", args: line("-socket", down), code: exitUnavailable, stderr: `\[service_down\]`},
+			serviceDown,
 		)
 		// Root may always call: no group is asked, nothing refused.
 		if !root {
@@ -326,5 +338,64 @@ func TestAFailedChangeKeepsTheStatusWriteError(t *testing.T) {
 	}
 	if code := exitCode(err); code != exitFailure {
 		t.Errorf("exit %d, want %d", code, exitFailure)
+	}
+}
+
+// diag without an agent answering exits by what it got (TP-133): the
+// host's snapshot with no agent running is all there is to take, 0; with
+// one that holds the socket and doesn't answer, the snapshot is kept but
+// short of the agent's, 69 (EX_UNAVAILABLE, the service unavailable);
+// a caller who may not read the host, 77 either way (EX_NOPERM: root
+// gets the snapshot, which is the way out).
+func TestDiagWithoutAnAgentExitsBySysexits(t *testing.T) {
+	hostRead := func(_ context.Context, p agent.AgentPresence) (agent.Diagnostics, error) {
+		return agent.Diagnostics{Agent: p, StatusUnreadable: "test"}, nil
+	}
+	refused := func(context.Context, agent.AgentPresence) (agent.Diagnostics, error) {
+		return agent.Diagnostics{}, agent.ErrDiagNeedsRoot
+	}
+	// Not t.TempDir: a unix socket's path is short (104 bytes on macOS).
+	dir, err := os.MkdirTemp("", "tpdg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	hangs, down := filepath.Join(dir, "api.sock"), filepath.Join(dir, "none.sock")
+	l, err := net.Listen("unix", hangs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		var held []net.Conn
+		defer func() {
+			for _, c := range held {
+				_ = c.Close()
+			}
+		}()
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			held = append(held, c)
+		}
+	}()
+	for _, row := range []struct {
+		name   string
+		socket string
+		read   localapi.HostReader
+		code   int
+		agent  string
+	}{
+		{"not running", down, hostRead, exitOK, "not_running"},
+		{"not answering", hangs, hostRead, exitUnavailable, "not_answering"},
+		{"not running, not root", down, refused, exitNoPerm, ""},
+		{"not answering, not root", hangs, refused, exitNoPerm, ""},
+	} {
+		d, err := localapi.DiagnoseOrReadHost(context.Background(), row.socket, 200*time.Millisecond, row.read, "test")
+		if code := exitCode(err); code != row.code || d.GetAgent() != row.agent {
+			t.Errorf("%s: exit %d, agent %q (%v); want %d, %q", row.name, code, d.GetAgent(), err, row.code, row.agent)
+		}
 	}
 }

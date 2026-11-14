@@ -181,8 +181,10 @@
 // Taking it changes nothing on the host. It holds:
 //
 //   - the schema version, when it was taken, the agent's OS and version,
-//     and `host_parts`: whether the caller got the host parts;
-//   - the status GetStatus serves;
+//     `agent` (who took it: `running`, or without the agent, below) and
+//     `host_parts`: whether the caller got the host parts;
+//   - the status GetStatus serves (null without the agent,
+//     `status_unreadable` saying why);
 //   - a device's TUN as the host reports it ([netcfg.InspectInterface]:
 //     name, index, MTU, up and running flags, addresses), unreadable while
 //     the data plane is down, and on a server, whose data planes run in
@@ -233,6 +235,26 @@
 // root's: the
 // group's snapshot has each of them unreadable, "root only", and the
 // agent doesn't read them for it.
+//
+// Without the agent (TP-133), root's `diag` takes the snapshot itself
+// ([DiagnoseOrReadHost], [agent.DiagnoseHost]): when nothing accepts the
+// socket's connection (no socket, or a dead agent's), `agent` is
+// `not_running`, and it exits 0, the snapshot being all there is to
+// take; when something accepts it but no snapshot comes within
+// [DiagnoseWait] (or the connection fails with nothing said), `agent` is
+// `not_answering`, the snapshot is written all the same, and it exits 69
+// (`service_not_answering`): the evidence is kept, the agent that didn't
+// answer is still a failure. The host parts, the drop-ins and `last_run`
+// (the crash trace file, read as it is, never fixed, cut or emptied as a
+// start does) are read with the agent's own readers, which only read: no
+// lock taken, no directory made, nothing written but the snapshot. The
+// status, the TUN and the last Apply, which only the agent knows, are
+// unreadable, saying which it was; `agent_version` and `os` are the
+// CLI's. A caller who isn't root gets [agent.ErrDiagNeedsRoot] (77) and
+// no snapshot, whichever it was. A refusal by a running agent, and the
+// caller giving up, read nothing. macOS refuses a connection to a full
+// backlog as it does to a dead agent's socket, so a hung agent there
+// with every slot taken reads as `not_running`.
 //
 // The snapshot holds no key, token or session id: what it carries comes
 // from the status, which holds none, and from reading the host, which
