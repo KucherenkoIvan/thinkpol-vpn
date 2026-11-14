@@ -93,6 +93,8 @@ func runTestWorker() int {
 		serve = probe
 	case os.Getenv(envShared) != "":
 		serve = sharedServe
+	case os.Getenv(envReality) != "":
+		serve = realityServe
 	}
 	if err := worker.Run(ctx, id, serve); err != nil {
 		fmt.Fprintln(os.Stderr, err)

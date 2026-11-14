@@ -29,7 +29,7 @@
 //	supervisor → worker  Config  (JSON, or a sealed memfd for a large one) after Init and on change
 //	worker → supervisor  Ready   (empty) once sandboxed: the worker serves from now on
 //	supervisor → worker  Listeners (JSON []Listener) after Ready and whenever the shared listeners change
-//	supervisor → worker  Stream  (listener id + consumed bytes, the connection's fd attached) per routed connection
+//	supervisor → worker  Stream  (listener id, consumed bytes, bytes read from the target; the connection's fd and the target's, if any) per routed connection
 //	supervisor → worker  Counters (JSON SharedCounters) periodically: the space's own shared-listener figures
 //	supervisor → worker  Blob    (a sealed memfd attached) each of the space's blob seeds, once per worker, before the Config that names it
 //	supervisor → worker  Stop    (empty) shut down and exit 0

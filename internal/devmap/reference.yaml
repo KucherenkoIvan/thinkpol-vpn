@@ -51,16 +51,29 @@ nodes:
     ipv4: 100.64.0.1
     ipv6: fd12:3456:789a::1
     # Endpoints: where other nodes dial this one, transport://ip:port. IP
-    # literals only: nodes never resolve names. Transports: udp.
+    # literals only: nodes never resolve names. Transports: udp, reality
+    # (the disguised one, for devices: it borrows the target's TLS below).
     endpoints:
       - udp://192.0.2.1:4500
       - udp://[2001:db8::1]:4500
+      - reality://192.0.2.1:443
     # Listeners: optional. Without them, one per transport, port and address
     # family of the endpoints, on every address of the family; here that is
     # what is written out.
     listen:
       - udp://0.0.0.0:4500
       - udp://[::]:4500
+      - reality://0.0.0.0:443
+    # Reality: needed exactly when the node has reality endpoints. target is
+    # the real site whose TLS its listeners borrow and that gets anyone
+    # without a valid short id (an IP literal and port, chosen per node:
+    # the choice is security-relevant); server_names are names the target
+    # serves, the first being what dialers ask for. The target's
+    # certificate must verify against the node's roots, over TLS 1.3. The
+    # listener's key is fresh on every build, like link secrets.
+    reality:
+      target: 192.0.2.80:443
+      server_names: [www.example.net]
     # Server settings, both off unless written. ingress: devices may connect
     # to this server; with it off the server accepts only other servers, and
     # no device's section gets its address. egress: internet traffic may

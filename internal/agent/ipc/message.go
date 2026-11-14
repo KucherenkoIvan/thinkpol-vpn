@@ -12,7 +12,7 @@ import (
 // Version is the protocol version carried in Init; a worker refuses an Init
 // whose version differs, so a half-replaced binary can't mismatch its
 // supervisor. Bump it on any wire change here.
-const Version = 4
+const Version = 5
 
 // ErrFull is returned by TrySend when the socket's send buffer is full, so
 // the message was not sent; the caller drops it.
@@ -27,7 +27,7 @@ const (
 	KindStop      Kind = 3
 	KindConfig    Kind = 4
 	KindDatagram  Kind = 5 // data socket: DatagramHeader + datagram, both ways
-	KindStream    Kind = 6 // control socket: stream handoff, listener id + consumed bytes, fd attached
+	KindStream    Kind = 6 // control socket: stream handoff (Stream), its connection's fd and the target's, if any, attached
 	KindListeners Kind = 7 // control socket: JSON []Listener
 	KindCounters  Kind = 8 // control socket: JSON SharedCounters, periodically
 	KindBlob      Kind = 9 // control socket: one blob seed, a sealed memfd attached
@@ -156,6 +156,9 @@ type Listener struct {
 	Stream bool `json:"stream,omitempty"`
 	// Address is the public address the supervisor listens on.
 	Address string `json:"address"`
+	// Handoff is a stream transport's handoff settings for the listener
+	// (transport.StreamListener.HandoffSettings), opaque here.
+	Handoff []byte `json:"handoff,omitempty"`
 }
 
 // ListenersMessage lists every shared listener the worker is forwarded from.
@@ -237,24 +240,53 @@ func ParseDatagram(payload []byte) (DatagramHeader, []byte, error) {
 	return h, payload[DatagramHeaderSize:], nil
 }
 
-// StreamMessage hands a connection to a worker: conn is the connection's
-// descriptor (the sender keeps and closes its own copy), consumed the bytes
-// the supervisor's router already read from it.
-func StreamMessage(listener uint32, conn *os.File, consumed []byte) Message {
-	p := make([]byte, 4+len(consumed))
-	binary.BigEndian.PutUint32(p, listener)
-	copy(p[4:], consumed)
-	return Message{Kind: KindStream, Payload: p, Files: []*os.File{conn}}
+// Stream is a connection handed to a worker: which listener it came from,
+// what the supervisor's router read from it (Consumed), and, when the
+// router opened a target connection that goes with it, what it read from
+// that one and didn't pass on (TargetRead). On the wire:
+//
+//	listener id [4] | len(Consumed) [4] | Consumed | TargetRead
+//
+// with the connection's descriptor attached, then the target's, if any.
+type Stream struct {
+	Listener   uint32
+	Consumed   []byte
+	TargetRead []byte
 }
 
-// DecodeStream returns a Stream message's listener id, connection and
-// consumed bytes; the caller owns the file.
-func DecodeStream(m Message) (listener uint32, conn *os.File, consumed []byte, err error) {
-	if m.Kind != KindStream || len(m.Payload) < 4 || len(m.Files) != 1 {
-		m.CloseFiles()
-		return 0, nil, nil, fmt.Errorf("ipc: malformed %v message", m.Kind)
+// StreamMessage hands a connection to a worker: conn is its descriptor and
+// target, or nil, the target connection's (the sender keeps and closes its
+// own copies).
+func StreamMessage(s Stream, conn, target *os.File) Message {
+	p := make([]byte, 8, 8+len(s.Consumed)+len(s.TargetRead))
+	binary.BigEndian.PutUint32(p, s.Listener)
+	binary.BigEndian.PutUint32(p[4:], uint32(len(s.Consumed)))
+	p = append(append(p, s.Consumed...), s.TargetRead...)
+	files := []*os.File{conn}
+	if target != nil {
+		files = append(files, target)
 	}
-	return binary.BigEndian.Uint32(m.Payload), m.Files[0], m.Payload[4:], nil
+	return Message{Kind: KindStream, Payload: p, Files: files}
+}
+
+// DecodeStream returns a Stream message's contents, its connection and its
+// target connection (nil if none); the caller owns the files. On error it
+// closes them.
+func DecodeStream(m Message) (s Stream, conn, target *os.File, err error) {
+	if m.Kind != KindStream || len(m.Payload) < 8 || len(m.Files) < 1 || len(m.Files) > 2 {
+		m.CloseFiles()
+		return Stream{}, nil, nil, fmt.Errorf("ipc: malformed %v message", m.Kind)
+	}
+	n := binary.BigEndian.Uint32(m.Payload[4:])
+	if uint64(n) > uint64(len(m.Payload)-8) || len(m.Files) == 1 && uint64(n) != uint64(len(m.Payload)-8) {
+		m.CloseFiles()
+		return Stream{}, nil, nil, fmt.Errorf("ipc: malformed %v message", m.Kind)
+	}
+	s = Stream{Listener: binary.BigEndian.Uint32(m.Payload), Consumed: m.Payload[8 : 8+n], TargetRead: m.Payload[8+n:]}
+	if len(m.Files) == 2 {
+		target = m.Files[1]
+	}
+	return s, m.Files[0], target, nil
 }
 
 // SharedCounters are what the supervisor's shared listeners did for one

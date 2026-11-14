@@ -31,8 +31,11 @@ type Options struct {
 
 // Transport is the reality adapter.
 type Transport struct {
-	control     func(network, address string, c syscall.RawConn) error
-	now         func() time.Time
+	control func(network, address string, c syscall.RawConn) error
+	now     func() time.Time
+	// elapsed is the time from start to now, two readings of the clock:
+	// now.Sub(start), but for tests that move a fake clock.
+	elapsed     func(start, now time.Time) time.Duration
 	targetRoots *x509.CertPool // nil: the system roots
 	sent        *transport.SendMeter
 }
@@ -41,7 +44,7 @@ var _ transport.Transport = (*Transport)(nil)
 
 // New returns the reality adapter.
 func New(o Options) *Transport {
-	t := &Transport{control: o.Control, now: o.Now, targetRoots: o.TrustTargetRoots, sent: &transport.SendMeter{}}
+	t := &Transport{control: o.Control, now: o.Now, targetRoots: o.TrustTargetRoots, sent: &transport.SendMeter{}, elapsed: func(start, now time.Time) time.Duration { return now.Sub(start) }}
 	if t.now == nil {
 		t.now = time.Now
 	}
@@ -56,8 +59,10 @@ func (t *Transport) Network() string { return "tcp" }
 func (t *Transport) Dialer() transport.Dialer { return t }
 
 // Overhead implements transport.Transport: the fixed Overhead plus the most
-// random padding adds.
-func (t *Transport) Overhead(s transport.Shaping) int { return Overhead + s.Padding.Growth() }
+// random padding adds, for the shaping a link actually writes with.
+func (t *Transport) Overhead(s transport.Shaping) int {
+	return Overhead + effectiveShaping(s).Padding.Growth()
+}
 
 // SendStats is what this adapter's links put on the wire so far.
 func (t *Transport) SendStats() transport.SendStats { return t.sent.Stats() }
@@ -78,7 +83,7 @@ type dialTarget struct {
 func checkDial(endpoint string, cfg transport.DialConfig) (dialTarget, error) {
 	var d dialTarget
 	var err error
-	if d.addr, err = parseAddrPort(endpoint); err != nil {
+	if d.addr, err = transport.ParseEndpoint(endpoint); err != nil {
 		return d, invalid("endpoint: %v", err)
 	}
 	if d.id, err = parseShortID(cfg.Credential); err != nil {

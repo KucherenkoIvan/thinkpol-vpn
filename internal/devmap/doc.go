@@ -23,8 +23,12 @@
 //	    endpoints:              # what other nodes dial: transport://ip:port
 //	      - udp://192.0.2.1:4500
 //	      - udp://[2001:db8::1]:4500
+//	      - reality://192.0.2.1:443
 //	    listen:                 # optional, derived from endpoints
 //	      - udp://0.0.0.0:4500
+//	    reality:                # with reality endpoints: what they imitate
+//	      target: 192.0.2.80:443
+//	      server_names: [www.example.net]
 //	    ingress: true           # devices may connect (servers; default false)
 //	    egress: true            # internet traffic may leave (servers; default false)
 //	  - name: device-a
@@ -68,8 +72,13 @@
 //     dialer's link lists all of the other node's endpoints; the dialed node
 //     gets an inbound link per transport.
 //   - Credentials: one random secret per link and transport, fresh on every
-//     build: the dialer's credential and, udp being symmetric, the
-//     listener's verifier.
+//     build: the dialer's credential and the listener's verifier, the same
+//     bytes (udp's shared secret, reality's 8-byte short id).
+//   - Reality: each server with reality endpoints gets a listener key, an
+//     X25519 key fresh on every build like the secrets; its reality
+//     listeners' settings carry it with the target and server names, and
+//     a dialer's reality endpoints the first server name, its public key
+//     and the chrome fingerprint.
 //   - Names: with a space name, each device's section holds it, the
 //     device's own name and its peers' (a node is named only to the
 //     devices that have it as a peer); servers' sections hold no names.

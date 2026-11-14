@@ -24,3 +24,19 @@ RUN apt-get update \
       nginx=1.22.1-9+deb12u10 netcat-openbsd socat \
       dbus-daemon systemd-resolved \
  && rm -rf /var/lib/apt/lists/*
+# The lab CA, made when the image is built and private to it, and the
+# camouflage site's certificate it signs (lab.StartCamouflage): every node
+# trusts the CA as a system root, so a reality listener's certificate
+# check, and REALITY's own detection of the target's records, verify the
+# lab's camouflage site as they would a real one.
+RUN mkdir -p /etc/lab/ca /etc/lab/camouflage \
+ && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 \
+      -subj "/CN=thinkpol lab CA" -keyout /etc/lab/ca/ca.key -out /etc/lab/ca/ca.crt 2>/dev/null \
+ && printf 'subjectAltName=DNS:camouflage.example.net,DNS:www.example.net\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n' \
+      > /etc/lab/camouflage/ext.cnf \
+ && openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj "/CN=camouflage.example.net" \
+      -keyout /etc/lab/camouflage/key.pem -out /etc/lab/camouflage/req.pem 2>/dev/null \
+ && openssl x509 -req -in /etc/lab/camouflage/req.pem -CA /etc/lab/ca/ca.crt -CAkey /etc/lab/ca/ca.key \
+      -CAcreateserial -days 3650 -extfile /etc/lab/camouflage/ext.cnf -out /etc/lab/camouflage/cert.pem 2>/dev/null \
+ && cp /etc/lab/ca/ca.crt /usr/local/share/ca-certificates/thinkpol-lab-ca.crt \
+ && update-ca-certificates

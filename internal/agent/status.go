@@ -149,6 +149,9 @@ type PublicListenerStatus struct {
 	Transport                        string
 	Routed, Unauthenticated, NoSpace uint64
 	StreamsOverloaded                uint64
+	// StreamsBoundClosed counts connections the transport closed past its
+	// own bounds.
+	StreamsBoundClosed uint64
 	// Rejected counts the peer links the transport refused to route.
 	Rejected int
 }
@@ -328,7 +331,7 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		for _, l := range p.workers.Listeners() {
 			s.PublicListeners = append(s.PublicListeners, PublicListenerStatus{
 				Transport: l.Transport, Routed: l.Routed, Unauthenticated: l.Unauthenticated, NoSpace: l.NoSpace,
-				StreamsOverloaded: l.StreamsOverloaded, Rejected: len(l.Rejected),
+				StreamsOverloaded: l.StreamsOverloaded, StreamsBoundClosed: l.StreamsBoundClosed, Rejected: len(l.Rejected),
 			})
 		}
 	}

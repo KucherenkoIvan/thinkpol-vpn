@@ -1,6 +1,7 @@
 package devmap
 
 import (
+	"crypto/ecdh"
 	"crypto/hmac"
 	"crypto/sha256"
 	"errors"
@@ -15,21 +16,27 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/blobs"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/reality"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/udp"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
+	transportv1 "github.com/KucherenkoIvan/thinkpol-vpn/proto/gen/thinkpol/transport/v1"
 )
 
 // transports are the transports a spec can use, each with the length of the
-// link secret Plan makes for it. Their settings are all empty for now; a
-// transport with settings needs them in the spec first.
+// link secret Plan makes for it: udp's is the shared secret, reality's the
+// short id (credential and verifier). Only reality has settings, from the
+// server's reality section.
 var transports = map[string]struct {
 	t          transport.Transport
 	secretSize int
 }{
-	udp.Name: {udp.New(udp.Options{}), udp.MinSecretSize},
+	udp.Name:     {udp.New(udp.Options{}), udp.MinSecretSize},
+	reality.Name: {reality.New(reality.Options{}), reality.ShortIDSize},
 }
 
 func transportNames() []string { return slices.Sorted(maps.Keys(transports)) }
@@ -91,6 +98,9 @@ func Plan(s *Spec, k Keys, version uint64, secrets Secrets) (netmap.Contents, Na
 	if err := p.assignAddresses(); err != nil {
 		return netmap.Contents{}, nil, err
 	}
+	if err := p.makeRealityKeys(); err != nil {
+		return netmap.Contents{}, nil, err
+	}
 	if err := p.writeSections(); err != nil {
 		return netmap.Contents{}, nil, err
 	}
@@ -130,6 +140,9 @@ type planner struct {
 	ipv6     []netip.Addr
 	sections []netmap.Section
 	header   []netmap.BlobRef
+	// realityKeys are the reality listener keys of the servers with reality
+	// endpoints, by node index: fresh per build, like link secrets.
+	realityKeys map[int]*ecdh.PrivateKey
 }
 
 func (p *planner) fail(n Node, format string, args ...any) error {
@@ -190,7 +203,16 @@ func (p *planner) writeSections() error {
 			AllowIngress: n.Ingress, AllowEgress: n.Egress,
 		}
 		for _, l := range n.Listeners {
-			node.Listeners = append(node.Listeners, netmap.Listener{Transport: l.Transport, Address: l.AddrPort})
+			nl := netmap.Listener{Transport: l.Transport, Address: l.AddrPort}
+			if l.Transport == reality.Name {
+				var err error
+				if nl.Settings, err = proto.Marshal(&transportv1.RealityListenSettings{
+					PrivateKey: p.realityKeys[i].Bytes(), Target: n.Reality.Target.String(), ServerNames: n.Reality.ServerNames,
+				}); err != nil {
+					return err
+				}
+			}
+			node.Listeners = append(node.Listeners, nl)
 		}
 		p.sections[i].Node = node
 		for _, l := range n.Lists {
@@ -210,6 +232,40 @@ func (p *planner) writeSections() error {
 		p.header = append(p.header, ref)
 	}
 	return nil
+}
+
+// makeRealityKeys gives every server with reality endpoints its listener's
+// X25519 key, from the link secrets' source: fresh on every build, seeded
+// for a lab spec.
+func (p *planner) makeRealityKeys() error {
+	p.realityKeys = map[int]*ecdh.PrivateKey{}
+	for i, n := range p.s.Nodes {
+		if n.Reality == nil {
+			continue
+		}
+		b, err := p.secrets(n.Name, n.Name, "reality listener key", reality.KeySize)
+		if err != nil {
+			return err
+		}
+		if p.realityKeys[i], err = ecdh.X25519().NewPrivateKey(b); err != nil {
+			return p.fail(n, "reality key: %v", err)
+		}
+	}
+	return nil
+}
+
+// endpointSettings are what a dialer of to's endpoints over tr needs
+// besides the credential: for reality, the first server name, the
+// listener's public key and the fingerprint.
+func (p *planner) endpointSettings(to int, tr string) ([]byte, error) {
+	if tr != reality.Name {
+		return nil, nil
+	}
+	return proto.Marshal(&transportv1.RealityDialSettings{
+		ServerName:  p.s.Nodes[to].Reality.ServerNames[0],
+		PublicKey:   p.realityKeys[to].PublicKey().Bytes(),
+		Fingerprint: reality.FingerprintChrome,
+	})
 }
 
 // addPeersAndRoutes makes peers of every path's ends and routes the
@@ -259,7 +315,8 @@ func (p *planner) addPeersAndRoutes() error {
 
 // addLinkSecrets gives each link one secret per transport the dialed node
 // has endpoints for: the dialer's credential, and the listener's verifier
-// (udp is symmetric, so they are the same bytes).
+// (udp's shared secret and reality's short id are the same bytes on both
+// ends).
 func (p *planner) addLinkSecrets() error {
 	s := p.s
 	for _, l := range p.links {
@@ -278,7 +335,11 @@ func (p *planner) addLinkSecrets() error {
 					Peer: p.ids[l.From], PeerKind: from.Kind, Transport: e.Transport, Credential: secret,
 				})
 			}
-			link.Endpoints = append(link.Endpoints, netmap.Endpoint{Transport: e.Transport, Address: e.AddrPort, Credential: secret})
+			settings, err := p.endpointSettings(l.To, e.Transport)
+			if err != nil {
+				return err
+			}
+			link.Endpoints = append(link.Endpoints, netmap.Endpoint{Transport: e.Transport, Address: e.AddrPort, Credential: secret, Settings: settings})
 		}
 		p.sections[l.From].Links = append(p.sections[l.From].Links, link)
 	}

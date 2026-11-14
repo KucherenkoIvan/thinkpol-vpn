@@ -52,7 +52,7 @@ func statusProto(st agent.Status) *localapiv1.Status {
 	for _, l := range st.PublicListeners {
 		out.PublicListeners = append(out.PublicListeners, &localapiv1.PublicListener{
 			Transport: agent.Sanitize(l.Transport), Routed: l.Routed, Unauthenticated: l.Unauthenticated, NoSpace: l.NoSpace,
-			StreamsOverloaded: l.StreamsOverloaded, Rejected: uint32(l.Rejected),
+			StreamsOverloaded: l.StreamsOverloaded, StreamsBoundClosed: l.StreamsBoundClosed, Rejected: uint32(l.Rejected),
 		})
 	}
 	return out
