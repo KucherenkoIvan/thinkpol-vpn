@@ -255,8 +255,12 @@
 // the managed file, outside its original. Where it can't be told which
 // way a file was written (no file at all; the poll, which has no event;
 // a bind mount, where every write is in place, the node's own too; a
-// change made during the take-over, before the watch starts, whose
-// event can't be told from the take-over's own), the write settles.
+// change made after the take-over's write, before the watch starts,
+// whose event can't be told from the take-over's own: inotify merges
+// another program's rename into the path with the take-over's when
+// they are queued back to back, so the file is read once the watch has
+// started, and anything but the node's own write is a change), the
+// write settles.
 // Problem reports [ErrUnprotected] by one rule, with no model of how
 // the other program writes, once the watch has seen the
 // write: at once on a change event, within the 2 s poll otherwise (a
@@ -301,6 +305,10 @@
 // progress from a finished one; the lines a writer appends after it are
 // caught by the backstop, but a writer that writes through one open
 // file loses what it writes after the take-over (RESIDUAL-RISKS.md RR5).
+// Another program's write between the take-over's read and its write
+// (a file renamed in, or a write in place) is overwritten by it: what
+// that program wrote is lost, the original is the file read before it,
+// and nothing reports it until the program writes the file again (RR5).
 //
 // An empty /etc/resolv.conf can be a valid configuration (the resolver
 // then asks the local host), so one that stays empty through the settle
