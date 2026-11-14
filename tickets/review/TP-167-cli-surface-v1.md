@@ -85,3 +85,4 @@ Round 1 (go-paranoid, go-style, pocket-torvalds), with the orchestrator's decisi
 - 2026-11-15 6f5a702: full `make lab-test` green (lab phase: lab, lab/censor, lab/ip, lab/labctl, reality; 39 in-node packages), TestTheCLIExitsBySysexits and lab/killswitch_test.go's toggles among them
 - 2026-11-15 has-errors → in-progress, owner: agent-tp-167, branch: tp-167-cli-surface-v1 (round 1 findings)
 - 2026-11-15 in-progress → review
+- 2026-11-15 merged origin/rewrite (TP-201) after the move to review: 3b92143 `make lint` green, `make test` green (umask 022, no failures), full `make lab-test` green (lab phase and 39 in-node packages); the ticket stays in review
