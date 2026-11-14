@@ -59,6 +59,10 @@ Round 2 (go-paranoid delta check), with the orchestrator's decisions. R1.2, R1.3
 - [x] R2.3 the refusal coverage test sees only the `refusals` rows and three hand-added client codes; a new Error{Code: …} without a row exits 1 with no [code] and the test passes. Make a refusal code impossible to build outside the list (named constants in one place that Refusals() returns, constructors take them, a test fails on an Error literal with a code built elsewhere). If TP-197 is on origin/rewrite, merge it and map `rule_preset_not_enforced` → 1 with the status.
 - [x] R2.4 (nit, predates the branch) devmap/keys.go: a missing <node>.pub in an existing key directory drops the path error and exits 1, while a missing space.key there exits 66. Wrap the path error so both exit 66; add a row.
 
+Round 3 (orchestrator's check): R2.1–R2.4 closed, no defect; merge, with two nits.
+- [ ] R3.1 internal/agent/localapi/membership_test.go: the AST test catches only composite literals of the type named Error; `e := ErrNotRunning; e.code = "x"; return e` inside the package and `type alias = Error; alias{code: "x"}` get past it. Flag any assignment to a `.code` field outside errors.go, and a composite literal of any type whose underlying type is Error. Mutation-check both.
+- [ ] R3.2 internal/agent/node.go awaitSection and agent/doc.go: when a map moves a waiting device into or out of mismatch, publish() updates ModeMismatch but not the kill switch status, so Status is stale for up to killSwitchReapply (10 s); toggles are unaffected. Refresh the kill switch status in that publish (test, mutation), or say in doc.go that the status catches up within the re-apply interval.
+
 ## Log
 - 2026-11-07 created in backlog
 - 2026-11-07 split (owner's MVP cut): exit codes and the kill-switch/connect-on-boot setting shape stay; the rest → TP-181
@@ -104,3 +108,4 @@ Round 2 (go-paranoid delta check), with the orchestrator's decisions. R1.2, R1.3
 - 2026-11-15 out of scope: internal/devmap TestRealityEndpointsLinkANodeAndADevice (from TP-201) fails now and then, on rewrite d191d00 too: its Dial goroutine calls t.Error after the test returned (the deferred cancel ends a handshake still running); not touched here, no ticket filed
 - 2026-11-15 couldn't verify: the not_applied refusal end to end in the lab (a node removed, then made a server); covered by agent and CLI unit tests
 - 2026-11-15 in-progress → review
+- 2026-11-15 review round 3: merge, nits R3.1–R3.2

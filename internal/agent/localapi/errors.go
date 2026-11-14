@@ -16,7 +16,7 @@ import (
 // can't be set outside this file's list: every Error is one of the values
 // declared below, all of them in [refusals] (which [Refusals] returns), or
 // one of them with a detail ([Error.withDetail]); a test fails on an Error
-// built anywhere else in the package.
+// built, or a code set, anywhere else in the package.
 type Error struct {
 	ddd.DomainError
 	code string

@@ -490,16 +490,19 @@ func TestRefusalWording(t *testing.T) {
 // No refusal code exists outside the list: every Error literal in the
 // package is a value declared at the top of errors.go, each of them a
 // row of refusals (Refusals), or the one withDetail builds from one of
-// them. An Error built anywhere else would reach a client, and the CLI's
-// exit table, as a code nothing names.
+// them; and nothing outside errors.go sets a code. An Error built or
+// changed anywhere else would reach a client, and the CLI's exit table,
+// as a code nothing names. An Error literal is one of any type whose
+// underlying type is Error (an alias, or a type defined from it), and
+// any literal with a code key (an element whose type is elided).
 func TestEveryRefusalIsDeclaredInTheList(t *testing.T) {
-	files, err := filepath.Glob("*.go")
+	names, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	fset := token.NewFileSet()
-	declared := map[string]bool{}
-	for _, name := range files {
+	files := map[string]*ast.File{}
+	for _, name := range names {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
 		}
@@ -507,6 +510,24 @@ func TestEveryRefusalIsDeclaredInTheList(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		files[name] = f
+	}
+	errorTypes := errorTypeNames(files)
+	isError := func(lit *ast.CompositeLit) bool {
+		if id, ok := lit.Type.(*ast.Ident); ok && errorTypes[id.Name] {
+			return true
+		}
+		for _, el := range lit.Elts {
+			if kv, ok := el.(*ast.KeyValueExpr); ok {
+				if id, ok := kv.Key.(*ast.Ident); ok && id.Name == "code" {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	declared := map[string]bool{}
+	for name, f := range files {
 		allowed := map[*ast.CompositeLit]bool{}
 		for _, d := range f.Decls {
 			switch d := d.(type) {
@@ -534,8 +555,21 @@ func TestEveryRefusalIsDeclaredInTheList(t *testing.T) {
 			}
 		}
 		ast.Inspect(f, func(n ast.Node) bool {
-			if lit, ok := n.(*ast.CompositeLit); ok && isError(lit) && !allowed[lit] {
-				t.Errorf("%s: an Error built outside the refusals declared in errors.go", fset.Position(lit.Pos()))
+			switch n := n.(type) {
+			case *ast.CompositeLit:
+				if isError(n) && !allowed[n] {
+					t.Errorf("%s: an Error built outside the refusals declared in errors.go", fset.Position(n.Pos()))
+				}
+			case *ast.AssignStmt:
+				for _, lhs := range n.Lhs {
+					if isCodeField(lhs) && name != "errors.go" {
+						t.Errorf("%s: a code set outside errors.go", fset.Position(lhs.Pos()))
+					}
+				}
+			case *ast.UnaryExpr:
+				if n.Op == token.AND && isCodeField(n.X) && name != "errors.go" {
+					t.Errorf("%s: a code's address taken outside errors.go", fset.Position(n.Pos()))
+				}
 			}
 			return true
 		})
@@ -552,6 +586,55 @@ func TestEveryRefusalIsDeclaredInTheList(t *testing.T) {
 			t.Errorf("refusal %s is declared but not in refusals", code)
 		}
 	}
+}
+
+// errorTypeNames are Error and every type in files, at any scope, whose
+// underlying type is Error: an alias of it or a type defined from it,
+// directly or through another such type.
+func errorTypeNames(files map[string]*ast.File) map[string]bool {
+	var specs []*ast.TypeSpec
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			if s, ok := n.(*ast.TypeSpec); ok {
+				specs = append(specs, s)
+			}
+			return true
+		})
+	}
+	names := map[string]bool{"Error": true}
+	for grew := true; grew; {
+		grew = false
+		for _, s := range specs {
+			typ := s.Type
+			for {
+				p, ok := typ.(*ast.ParenExpr)
+				if !ok {
+					break
+				}
+				typ = p.X
+			}
+			if id, ok := typ.(*ast.Ident); ok && names[id.Name] && !names[s.Name.Name] {
+				names[s.Name.Name] = true
+				grew = true
+			}
+		}
+	}
+	return names
+}
+
+// isCodeField reports whether x is a selector of a field named code
+// (e.code). Only errors.go may set one: Error's and the refusals rows'
+// are the package's only code fields.
+func isCodeField(x ast.Expr) bool {
+	for {
+		p, ok := x.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		x = p.X
+	}
+	sel, ok := x.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "code"
 }
 
 // The client finds each refusal in what the server sends, with a detail
@@ -575,11 +658,6 @@ func TestTheClientFindsEveryRefusalInItsCode(t *testing.T) {
 	if err := c.explain(&grpckit.RemoteDomainError{Code: "made_up"}); errors.As(err, &e) {
 		t.Errorf("made_up is the refusal %s", e.code)
 	}
-}
-
-func isError(lit *ast.CompositeLit) bool {
-	id, ok := lit.Type.(*ast.Ident)
-	return ok && id.Name == "Error"
 }
 
 // literalCode is a declared refusal's code: Error{code: "..."}.

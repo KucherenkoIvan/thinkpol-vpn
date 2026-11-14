@@ -728,11 +728,17 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 				maps = nil
 				continue
 			}
+			wasMismatch := f.mismatch
 			taken, _, back := f.take(env)
 			if !taken {
 				continue
 			}
 			if f.out() {
+				if f.mismatch != wasMismatch {
+					// The kill switch's status follows the role now,
+					// not at the next re-apply.
+					keepKillSwitch(ctx, !n.conn.disconnected())
+				}
 				publish() // still out, on a newer map
 				if back {
 					sayBack()

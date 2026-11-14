@@ -411,6 +411,38 @@ func TestAToggleWhileTheMapMakesADeviceAServerIsNotApplied(t *testing.T) {
 	eventually(t, func() bool { st := b.node.Status().KillSwitch; return st.Enforced && st.Error == "" && !st.On })
 }
 
+// A map that moves a waiting device into or out of mismatch brings the
+// kill switch's status along with it, not at the next re-apply
+// (killSwitchReapply): Status never shows the mismatch and a kill switch
+// status from the other role together.
+func TestTheKillSwitchStatusFollowsAMismatchAtOnce(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	host := &memKillSwitches{}
+	b := startDevice(t, s, reg, false, withKillSwitch(host, nil), deviceOpt{prepare: func(c *Config, _ *Platform) {
+		writeFile(t, filepath.Join(c.StateDir, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
+	}})
+	ctx := context.Background()
+	eventually(t, func() bool { return b.node.Status().Removed })
+	if err := b.node.SetKillSwitch(ctx, true); err != nil {
+		t.Fatalf("on while removed: %v", err)
+	}
+	inPlace(t, host, "down")
+
+	b.maps <- s.buildBoth(t, 2, func(a, b *netmap.Section) { b.Node.Kind, a.Inbound[0].PeerKind = netmap.NodeServer, netmap.NodeServer })
+	eventually(t, func() bool { return b.node.Status().ModeMismatch })
+	if st := b.node.Status().KillSwitch; st.Enforced || st.Error != KillSwitchNotApplied {
+		t.Fatalf("made a server: kill switch %+v, want not applied", st)
+	}
+
+	b.maps <- s.buildWithout(t, 3, s.b)
+	eventually(t, func() bool { st := b.node.Status(); return st.Removed && !st.ModeMismatch })
+	if st := b.node.Status().KillSwitch; !st.Enforced || st.Error != "" || !st.On {
+		t.Fatalf("removed again: kill switch %+v, want on and enforced", st)
+	}
+	inPlace(t, host, "down")
+}
+
 // The node file's kill switch keys are the defaults until a member sets a
 // toggle; the device file keeps a member's toggles, and writes them only
 // once set.
