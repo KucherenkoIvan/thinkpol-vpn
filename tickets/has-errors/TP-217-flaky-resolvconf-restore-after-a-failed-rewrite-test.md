@@ -48,6 +48,13 @@ Review round 1 (adversarial; Go style): no proven defect in the diff; the test f
 - [x] R1.4 (should-fix) resolvconf_settle_test.go: readBetweenRewrites holds r.mu, so its read can never fall between a rewrite's truncate and its write: rename it readUnderLock.
 - [x] R1.5 (nit) doc.go: rewrap the changed comment; resolvconf.go: reword the watch comment so `changes` doesn't read as the thing closed.
 
+Review round 2 (delta check, adversarial): R1.2–R1.5 closed; no leaks found; overflow and poll ordering sound. Accepted findings:
+- [ ] R2.1 (should-fix) watch_linux.go: start tells the take-over's own events from another program's only by count, and inotify merges an event into the one queued just before it when the watch, mask and name match (not the rename cookie): another program's file renamed in right after the take-over's own rename, before start, is one IN_MOVED_TO with it, dropped as the take-over's own, and waits for the 2 s poll with Problem nil. Test it with the other program's temporary file created before the take-over and only renamed in during it (on Linux, record whether it fails on the current code); add a state backstop after start (the path's file and content against the node's own write); mutation: the backstop removed.
+- [ ] R2.2 (should-fix, test gap) The mutation `own := 1` (the take-over always counted as a write) survives: every hook test starts from a file the take-over rewrites. Add a take-over over the node's own identical managed file, with a file renamed in during it; the mutation must fail it.
+- [ ] R2.3 (should-fix; in the product before this branch) apply re-stats the path after a rewrite it skipped (equal content), so another program's rename between the read and the stat makes writtenInfo its file: classify sees the same file, and the renamed-in file settles instead of being taken at once. Keep the read's f.info when nothing was written; a test through the hooks; mutation: the re-stat back.
+- [ ] R2.4 (nit; in the product before this branch) Another program's write between the take-over's read and its rename is overwritten and lost, not settled, while doc.go's new clause implies it is handled: doc.go says what happens, and RR5 lists the case.
+- [ ] R2.5 (nit) The Log doesn't say which platform M5, M6 and M8 ran on (on macOS hasChangeEvents skips those tests): re-run them on Linux and log the platform.
+
 ## Log
 - 2026-11-14 created in backlog (from TP-117)
 - 2026-11-14 backlog → in-progress, owner: agent-tp-217
@@ -73,3 +80,4 @@ Review round 1 (adversarial; Go style): no proven defect in the diff; the test f
 - 2026-11-15 out of scope, not fixed: apply re-stats the file after a rewrite it skipped (equal content), so a poll's ownFile apply can record another program's file renamed in since its read as the node's own, which then settles instead of being taken at once (seen only with an extra apply at the take-over, reverted); RESIDUAL-RISKS.md has two rows each numbered RR57 and RR58, from rewrite
 - 2026-11-15 has-errors → in-progress (round 1 findings R1.1–R1.5 fixed)
 - 2026-11-15 in-progress → review
+- 2026-11-15 review → has-errors (round 2 findings R2.1–R2.5)
