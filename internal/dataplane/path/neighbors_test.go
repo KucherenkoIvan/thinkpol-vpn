@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
@@ -112,5 +113,25 @@ func TestNeighborsListAnUnansweredDialPastDeadAfter(t *testing.T) {
 
 		close(open)
 		waitUpOnce(t, f, a)
+	})
+}
+
+// A neighbor's UpSince is when its link came up, on the node's clock, and
+// stays there as the clock moves on: a reader compares it with other
+// instants instead of subtracting UpFor from a clock reading of its own,
+// which a stall in between would move.
+func TestANeighborsUpSinceIsWhenItCameUp(t *testing.T) {
+	eachSemanticsFake(t, func(t *testing.T, f *fabric) {
+		a := dialB(f, f.tr)
+		waitUpOnce(t, f, a)
+		first, _ := f.neighbor("A", "B")
+		if want := f.clock.Now().Add(-first.UpFor); !first.UpSince.Equal(want) {
+			t.Fatalf("up since %v, want the clock less UpFor, %v", first.UpSince, want)
+		}
+		f.advance(3*time.Second, nil)
+		later, ok := f.neighbor("A", "B")
+		if !ok || !later.Up || !later.UpSince.Equal(first.UpSince) || later.UpFor < first.UpFor+3*time.Second {
+			t.Fatalf("3 s later: %+v, want up since %v", later, first.UpSince)
+		}
 	})
 }

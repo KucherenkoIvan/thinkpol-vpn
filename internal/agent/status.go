@@ -313,7 +313,7 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		// Unknown upstreams (stale) aren't absent ones: one cause, one code.
 		s.DNSNoUpstream = !s.DNSUpstreamsStale &&
 			(errors.Is(problem, dns.ErrNoSystemUpstream) || p.dnsNoUpstream != nil && p.dnsNoUpstream())
-		s.ExitsUnanswered, s.DefaultExitUnanswered = exitHandshakes(&st, time.Now(), p.exitDeadline)
+		s.ExitsUnanswered, s.DefaultExitUnanswered = exitHandshakes(&st, p.exitDeadline)
 	}
 	if p.workers != nil {
 		for _, w := range p.workers.Workers() {
@@ -334,33 +334,32 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 	return s
 }
 
-// exitHandshakes grades the exits among st.Peers at now: how many are
-// unanswered, and whether the default rule's exit is one of them. An exit
-// is unanswered once its oldest unanswered handshake initiation is
-// deadline old, counted from when its first hop came up if that is later:
-// while the first hop is down that is the neighbor's problem (one cause,
-// one code), and WireGuard's initiations can't get through. An exit
-// nothing was sent to has none pending, and neither counts one whose last
-// initiation went out before its first hop came up: WireGuard gives up
-// retrying after 90 s without traffic, so nothing has tested the link
-// since it returned. One flagged while its first hop stayed up stays so
-// until a handshake completes, even if traffic to it stops. A chain has
-// one exit, so a default exit unanswered (RuleStatus.DefaultExits: what
-// carries either family's background route) is the internet lost,
+// exitHandshakes grades the exits among st.Peers as of st.ReadAt: how
+// many are unanswered, and whether an exit carrying a background route
+// (RuleStatus.DefaultExits) is one of them. Ages are measured to the read,
+// never to a later clock reading: a stall before grading would age the
+// snapshot's initiations past answers it can't show.
+//
+// An exit is unanswered once the first initiation sent to it since its
+// first hop came up has gone deadline without an answer: while the first
+// hop is down that is the neighbor's problem (one cause, one code), and
+// WireGuard's initiations can't get through; one sent before the first
+// hop came back tells nothing of the exit, however long pending. So an
+// exit nothing was sent to isn't counted, nor one sent nothing since its
+// first hop came up (WireGuard gives up retrying after 90 s without
+// traffic): nothing has tested the link since it returned. One flagged
+// while its first hop stayed up stays so until a handshake completes,
+// even if traffic to it stops. A chain has one exit, so an exit carrying
+// either family's background route unanswered is the internet lost,
 // whatever the other exits do.
-func exitHandshakes(st *dataplane.Status, now time.Time, deadline time.Duration) (unanswered int, defaultUnanswered bool) {
-	upFor := make(map[netmap.NodeID]time.Duration, len(st.Neighbors))
+func exitHandshakes(st *dataplane.Status, deadline time.Duration) (unanswered int, defaultUnanswered bool) {
+	up := make(map[netmap.NodeID]bool, len(st.Neighbors))
 	for _, n := range st.Neighbors {
-		if n.Up {
-			upFor[netmap.NodeID(n.Node)] = n.UpFor
-		}
+		up[netmap.NodeID(n.Node)] = n.Up
 	}
 	for _, p := range st.Peers {
-		if !p.Exit || p.HandshakePendingSince.IsZero() {
-			continue
-		}
-		up, ok := upFor[p.FirstHop]
-		if !ok || min(now.Sub(p.HandshakePendingSince), up) < deadline || p.LastInitiation.Before(now.Add(-up)) {
+		sent := p.FirstInitiationSinceLinkUp
+		if !p.Exit || !up[p.FirstHop] || sent.IsZero() || st.ReadAt.Sub(sent) < deadline {
 			continue
 		}
 		unanswered++
@@ -484,8 +483,9 @@ const (
 	// the most addresses, which may not be the default rule's (rules
 	// before it can take every address). Degraded for any other exit
 	// unanswered. Only a completed handshake clears it, even if the device
-	// goes idle; an exit sent no initiation since its first hop came up
-	// isn't counted.
+	// goes idle. The deadline runs from the first initiation sent since the
+	// first hop came up: one pending from before doesn't count, and an exit
+	// sent none since isn't graded.
 	ProblemExitNoHandshake Problem = "exit_no_handshake"
 )
 
