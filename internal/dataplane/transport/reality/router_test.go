@@ -321,7 +321,11 @@ func TestAHelloWithBytesAfterItIsSplicedAsAStranger(t *testing.T) {
 		t.Fatalf("the captured stream replayed: verdict %d, want StreamReplayed", v)
 	}
 
-	fresh := startShared(t, tr, theTarget(t), k, map[transport.SpaceID][]transport.PeerLink{a: {peerLink(id)}})
+	// A router whose clock is behind, so it started in a second before
+	// the hello was sealed: on the real clock, a second ticking over since
+	// the dial would make the start rule refuse it (StreamStale).
+	behind := newTransport(Options{Now: func() time.Time { return time.Now().Add(-time.Minute) }})
+	fresh := startShared(t, behind, theTarget(t), k, map[transport.SpaceID][]transport.PeerLink{a: {peerLink(id)}})
 	probe(t, fresh.addr(), stream)
 	if v := fresh.verdict(t); v != transport.StreamUnknown {
 		t.Fatalf("verdict %d, want StreamUnknown", v)
