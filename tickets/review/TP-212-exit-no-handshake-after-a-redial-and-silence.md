@@ -37,14 +37,14 @@ An exit whose first hop re-dialed is graded from the first WireGuard initiation 
 - Source: TP-210's diagnosis (its Notes, "What a real device shows"). TP-210's test hit the same mechanism with the test's 1 s deadline; at production timings it needs WireGuard to have given up retrying.
 
 ## Review findings
-- [ ] R1.1 Out of scope's "Grading changes for an exit whose link never dropped" is false since TP-213's fix measures every exit's ages to the status read: say "beyond measuring ages to the status read (TP-213's scope)".
-- [ ] R1.2 Scope: add TP-213's part (Status.ReadAt, NeighborStatus.UpSince, exitHandshakes takes no clock of its own) and TP-213 to refs; cite ProblemExitNoHandshake by name, not by line numbers.
-- [ ] R1.3 status_test.go: `pendingAcrossARedial` is also used where nothing re-dials; name it after what it builds (firstSinceLinkUp).
-- [ ] R1.4 status.go: exitHandshakes' comment said "the default rule's exit", against its own later lines and api-overview; say "an exit carrying a background route (RuleStatus.DefaultExits)", and split the clock caveat from the grading rule.
-- [ ] R1.5 wg/doc.go presents FirstInitiationSince as exact: say only the first unanswered initiation and the 15 latest are kept, so for an older moment it answers with the oldest kept, over 70 s old like the true one.
-- [ ] R1.6 The new agent test computes linkUp as time.Now() less UpFor, the pattern TP-213 removed: use UpSince.
-- [ ] R1.7 No test catches the engine building link-up times from time.Now() less UpFor instead of UpSince: add a deterministic engine test, with a mutation, or say why not.
-- [ ] R1.8 (residual risk) The grading clock restarts whenever the first hop's active link changes, not only when the neighbor goes down; and after a first-hop switch, initiations through the old one count against the new one: add both to RR48 with the fix direction.
+- [x] R1.1 Out of scope's "Grading changes for an exit whose link never dropped" is false since TP-213's fix measures every exit's ages to the status read: say "beyond measuring ages to the status read (TP-213's scope)".
+- [x] R1.2 Scope: add TP-213's part (Status.ReadAt, NeighborStatus.UpSince, exitHandshakes takes no clock of its own) and TP-213 to refs; cite ProblemExitNoHandshake by name, not by line numbers.
+- [x] R1.3 status_test.go: `pendingAcrossARedial` is also used where nothing re-dials; name it after what it builds (firstSinceLinkUp).
+- [x] R1.4 status.go: exitHandshakes' comment said "the default rule's exit", against its own later lines and api-overview; say "an exit carrying a background route (RuleStatus.DefaultExits)", and split the clock caveat from the grading rule.
+- [x] R1.5 wg/doc.go presents FirstInitiationSince as exact: say only the first unanswered initiation and the 15 latest are kept, so for an older moment it answers with the oldest kept, over 70 s old like the true one.
+- [x] R1.6 The new agent test computes linkUp as time.Now() less UpFor, the pattern TP-213 removed: use UpSince.
+- [x] R1.7 No test catches the engine building link-up times from time.Now() less UpFor instead of UpSince: add a deterministic engine test, with a mutation, or say why not.
+- [x] R1.8 (residual risk) The grading clock restarts whenever the first hop's active link changes, not only when the neighbor goes down; and after a first-hop switch, initiations through the old one count against the new one: add both to RR48 with the fix direction.
 
 ## Log
 - 2026-11-14 created in backlog (from TP-210)
@@ -62,3 +62,5 @@ An exit whose first hop re-dialed is graded from the first WireGuard initiation 
 - 2026-11-15 out of scope, for the board: the two node-phase flakes above (dns TestResolvConfRestoreAfterARewriteFailedPartwayPutsBackTheWholeOriginal, supervisor TestIdleStreamsDontStarveRouting under load)
 - 2026-11-15 in-progress → review
 - 2026-11-15 review round 1: merge, nits R1.1–R1.8
+- 2026-11-15 R1.1–R1.8 (d0d0dfd, 6befea2): ticket Scope, Out of scope and refs; firstSinceLinkUp; exitHandshakes' comment; wg/doc.go on what FirstInitiationSince keeps; the agent test's link-up from UpSince; RR48 gains the restart on a link change and the first-hop switch. R1.7: dataplane TestTheFirstInitiationSinceLinkUpIsFromTheNeighborsUpSince stops the path clock, so a link is up for zero time while real time passes; M7 (the engine's link-up as time.Now() less UpFor again) fails it 5 of 5, its first since the link came up read as none. It passed 100 of 100 once it waits for the peer's first hop (6befea2; before that 1 of 20 read the status before the hop was chosen)
+- 2026-11-15 on 6befea2: `make lint` and `make test` green (umask 022, 39 packages); no full lab (test and doc changes only, engine.go untouched)
