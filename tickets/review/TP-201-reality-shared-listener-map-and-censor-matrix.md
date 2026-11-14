@@ -89,6 +89,11 @@ Round 3 (2026-11-14):
 - [x] R3.4 (nit) shared.go's "The send doesn't block" is false (TrySend takes the fd's write lock, held by SendTimeout): make it true or correct it and state the bound
 - [x] R3.5 (nits, tests that can't fail) (a) a replay of a hello with bytes after it, to the same listener, is StreamReplayed (mutation: no authenticate at splice.go:143); (b) the mirror bound's bound-closed verdict asserted (mutation: gate.go's mirror bound returns turnedAway)
 - [x] R3.6 (nit) nginx_test.go copies lab.StartCamouflage's nginx config: use the lab's own config, or a test that fails when the two differ
+Round 4 (2026-11-14):
+- [ ] R4.1 (nit) splice.go: pump reads from the target only after its whole 32 KB write to the client finishes, so behind a slow reader the target's nginx progresses about once per 32 KB the client drains, where served directly it progresses each time about a third of its send buffer drains (some 15 KB): a prober reading at about 0.3–0.5 KB/s gets nginx's 60 s send_timeout on the target leg, a truncated answer and a FIN, where nginx alone serves it whole (the reviewer's estimate). Fix if small: a relay buffer small enough that the target leg progresses at least as often as a direct connection (e.g. 8 KB), the size argued in a comment, the hello path and the tests' assumptions unchanged; either way RR38 gains the residual: what a prober can still measure, at what rates
+- [ ] R4.2 (nit) listener_unix_test.go's slow-reader test may be flaky on Linux: a writer on a Linux unix socket wakes only once its queued bytes fall to a quarter of the send buffer, about 8 KB with a 4 KB SO_SNDBUF, some 165 ms at 1 KB per 20 ms, against a 250 ms bound. Raise the bound to about 600 ms or derive it from the buffer sizes; the mutation "one deadline per Write" must still fail it; -count=50 on Linux, recorded
+- [ ] R4.3 (nit) reality_test.go: the R3.3 test catches its mutation only under -race. A deterministic test: an empty cache in r.bySpace[space], r.prune(nil, at), c.admit on the old cache reports it dead, r.admit admits the hello once and refuses its replay. Mutation: admit ignores the dead mark → it fails in a plain go test
+- [ ] R4.4 (nit) splice_unix.go: each write that makes progress re-arms the write deadline, so a deadline another goroutine sets to interrupt the write is overwritten; nothing in the package does that (it cancels with Close). A one-line comment at writeRearming: a write is cancelled by Close, not by a deadline
 
 ## Log
 - 2026-11-08 created in backlog (split from TP-087, owner-approved)
@@ -148,3 +153,4 @@ Round 3 (2026-11-14):
 - 2026-11-14 make lint (govulncheck included) and make test (umask 022) green on 484d914; reality's package with -race green on macOS before the merge
 - 2026-11-14 full make lab-test on 484d914 green: lab phase ok (lab 689 s, censor, ip, labctl, prototypes), node phase ok, 39 packages (internal/agent included, TP-210's fix now merged). lab/RESULTS.md regenerated and not committed. R3.1–R3.6 diffs re-read against the findings and the boxes ticked. Not verified: a slow reader against nginx's real send_timeout; our listener against a stock Xray client; the 1024/1024 bounds under a real flood
 - 2026-11-14 in-progress → review
+- 2026-11-14 review round 4: merge, nits R4.1–R4.4

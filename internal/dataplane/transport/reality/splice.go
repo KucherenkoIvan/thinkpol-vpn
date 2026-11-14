@@ -178,7 +178,7 @@ func (m *mirror) forward(b []byte) error {
 // REALITY.
 func (m *mirror) copyFromTarget() {
 	defer close(m.fromTarget)
-	buf := make([]byte, 32<<10)
+	buf := make([]byte, relayBuffer)
 	n, err := m.target.Read(buf)
 	m.mu.Lock()
 	if m.state == handedOff {
@@ -249,10 +249,21 @@ func (m *mirror) splice(rerr error) {
 	<-m.fromTarget
 }
 
+// relayBuffer is the most a splice reads from one side before writing it
+// to the other. The side read from makes progress only once that write
+// finished, so behind a client draining slowly, the target's nginx is
+// woken about once per relayBuffer the client drains, while nginx serving
+// that client itself is woken each time about a third of its send buffer
+// frees (some 15 KB at the usual starting size). Kept under that share,
+// the target leg progresses at least as often as a direct connection
+// would, so nginx's send_timeout cuts no slow reader nginx alone would
+// keep (at 32 KB it cut readers below about 0.5 KB/s).
+const relayBuffer = 8 << 10
+
 // pump copies src to dst until src's EOF (nil, nil), a read error or a
 // write error.
 func pump(dst, src *idleConn) (rerr, werr error) {
-	buf := make([]byte, 32<<10)
+	buf := make([]byte, relayBuffer)
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {

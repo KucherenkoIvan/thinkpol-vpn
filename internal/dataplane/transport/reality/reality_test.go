@@ -334,6 +334,28 @@ func TestAHelloAdmittedWhileItsSpaceIsPrunedIsRemembered(t *testing.T) {
 	}
 }
 
+// A cache prune dropped admits nothing, so a hello its lookup raced with
+// the prune goes into the space's next cache: admitted once there, its
+// replay refused.
+func TestAPrunedReplayCacheAdmitsNothing(t *testing.T) {
+	at := time.Unix(1_800_000_000, 0)
+	sent := uint32(at.Unix())
+	space := randomSpace()
+	r := newReplays(time.Minute)
+	c := newReplayCache(time.Minute)
+	r.bySpace[space] = c
+	r.prune(nil, at)
+	if _, live := c.admit(shortID{1}, sessionIDOf(0), sent, at); live {
+		t.Fatal("a cache prune dropped still admits")
+	}
+	if !r.admit(space, shortID{1}, sessionIDOf(0), sent, at) {
+		t.Fatal("a fresh hello refused once its space's cache was pruned")
+	}
+	if r.admit(space, shortID{1}, sessionIDOf(0), sent, at) {
+		t.Fatal("a replay admitted once its space's cache was pruned")
+	}
+}
+
 // The replay cache admits a session id once, forgets what left the
 // window, and so admits again once time moves on.
 func TestTheReplayCacheAdmitsOnceAndForgetsWhatLeftTheWindow(t *testing.T) {

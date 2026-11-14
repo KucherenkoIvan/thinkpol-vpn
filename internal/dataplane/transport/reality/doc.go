@@ -65,7 +65,11 @@
 // send_timeout, which runs between two successive writes, each that makes
 // progress starting it again: a client that stops reading is cut 60 s
 // after its last progress, both connections closed, rather than holding
-// its splice for good, and one that reads slowly isn't cut. Closing
+// its splice for good, and one that reads slowly isn't cut. A splice
+// relays at most 8 KB at a time, so behind a slow reader the target's
+// nginx progresses at least as often as it would serving that reader
+// itself (each time about a third of its send buffer frees), and its own
+// send_timeout cuts no reader the site alone would keep. Closing
 // the listener ends its splices, cancels its dials to the target and
 // waits for both. A standalone listener (a device-mode node's) gives the
 // hello at most 10 s from accept, as the supervisor's routing deadline

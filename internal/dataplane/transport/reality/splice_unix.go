@@ -54,7 +54,8 @@ func targetReset(c net.Conn) bool {
 // exact only below the share of the send buffer whose freeing wakes a
 // writer (a third on Linux), and the kernel resizes that buffer as it
 // goes. The poller still does the waiting, so c's Close ends it as it
-// ends c.Write.
+// ends c.Write. A write is cancelled by closing c, not by a deadline: the
+// next progress would overwrite it.
 func writeRearming(c net.Conn, p []byte, timeout time.Duration) (int, error) {
 	sc, ok := c.(syscall.Conn)
 	if !ok {
