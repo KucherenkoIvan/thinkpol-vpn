@@ -32,7 +32,8 @@ type GuardReport struct {
 	PF *PFReport
 }
 
-// GuardRuleReport is one rule of the guard as the host lists it.
+// GuardRuleReport is one rule of the guard's or the kill switch's as
+// the host lists it.
 type GuardRuleReport struct {
 	// Chain is the nftables chain it is in (Linux).
 	Chain string
@@ -49,15 +50,15 @@ type GuardRuleReport struct {
 	Evaluations, States uint64
 }
 
-// NFTablesReport is the guard table's own state.
+// NFTablesReport is the guard's or the kill switch's table's own state.
 type NFTablesReport struct {
-	// Dormant: the table's chains are unhooked, so it guards nothing.
+	// Dormant: the table's chains are unhooked, so it filters nothing.
 	Dormant          bool
 	ChainsUnreadable string
 	Chains           []NFTChainReport
 }
 
-// NFTChainReport is a chain of the guard's table.
+// NFTChainReport is a chain of the guard's or the kill switch's table.
 type NFTChainReport struct {
 	Name string
 	// Hook ("output", or "" for a regular chain), Priority and Policy
@@ -90,12 +91,12 @@ type PFReport struct {
 	ReferenceUnreadable string
 }
 
-// PFReferenceReport is the guard's pf reference, by the pid of the pfctl
-// that took it; the token, which names it to `pfctl -X`, stays in the
-// record.
+// PFReferenceReport is the guard's or the kill switch's pf reference, by
+// the pid of the pfctl that took it; the token, which names it to
+// `pfctl -X`, stays in its owner's record.
 type PFReferenceReport struct {
-	// Recorded: the guard's record names a reference (false: none, and
-	// the rest is empty).
+	// Recorded: its owner's record (the guard's or the kill switch's)
+	// names a reference (false: none, and the rest is empty).
 	Recorded bool
 	// Stale: the record is of another boot session, and holds nothing
 	// now. (A record that isn't a regular file or can't be parsed is

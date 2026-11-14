@@ -98,7 +98,7 @@ type staleWhy string
 
 const (
 	staleOtherBoot  staleWhy = "written in another boot session"
-	staleNotRegular staleWhy = "not a regular file (a symlink or a fifo is never the guard's)"
+	staleNotRegular staleWhy = "not a regular file"
 	staleNoBoot     staleWhy = "no boot line before its body"
 	staleBody       staleWhy = "a body that isn't one token line"
 )
