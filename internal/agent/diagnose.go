@@ -5,6 +5,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/dns"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 )
@@ -21,15 +22,17 @@ type Diagnostics struct {
 	// LastApply is a device's running data plane's last Apply, its steps
 	// with their timings.
 	LastApply ApplyReport
-	// HostParts says Routes, Guard and DNS were read: they name public
-	// addresses (the entries', the direct destinations', the gateway's,
-	// the upstreams'), so they are taken only for root.
+	// HostParts says Routes, Guard, KillSwitch and DNS were read: they
+	// name public addresses (the entries', the direct destinations', the
+	// gateway's, the upstreams'), so they are taken only for root.
 	HostParts bool
-	// Routes are the routes and rules the agent's owners hold, and Guard
-	// the leak guard, as the host holds them, whatever the data plane's
-	// state (a crashed run's show too).
-	Routes netcfg.Inspection
-	Guard  routetable.GuardReport
+	// Routes are the routes and rules the agent's owners hold, Guard the
+	// leak guard and KillSwitch the kill switch, as the host holds them,
+	// whatever the data plane's and the kill switch's state (what a
+	// crashed or stopped run left shows too).
+	Routes     netcfg.Inspection
+	Guard      routetable.GuardReport
+	KillSwitch firewall.KillSwitchReport
 	// DNS is the resolvers the host uses, for the overlay's names and the
 	// rest.
 	DNS dns.HostReport
@@ -85,6 +88,8 @@ type Inspector struct {
 	Routes func() netcfg.Inspection
 	// Guard reads the leak guard (firewall.InspectIPv6Guard).
 	Guard func(ctx context.Context) routetable.GuardReport
+	// KillSwitch reads the kill switch (firewall.InspectKillSwitch).
+	KillSwitch func(ctx context.Context) firewall.KillSwitchReport
 	// DNS reads the host's resolvers (dns.Inspect).
 	DNS func(ctx context.Context) dns.HostReport
 	// DropIns lists the service's systemd drop-ins (service.HostDropIns).
@@ -112,6 +117,7 @@ func (n *Node) Diagnose(ctx context.Context, withHostParts bool) Diagnostics {
 	if !withHostParts {
 		d.Routes = netcfg.Inspection{RoutesUnreadable: UnreadableRootOnly, RulesUnreadable: UnreadableRootOnly}
 		d.Guard = routetable.GuardReport{Unreadable: UnreadableRootOnly}
+		d.KillSwitch = firewall.KillSwitchReport{Unreadable: UnreadableRootOnly}
 		d.DNS = dns.HostReport{Unreadable: UnreadableRootOnly}
 		if d.Status.LastRunCrashed || d.Status.LastRunUnreadable {
 			d.LastRun = LastRun{Unreadable: UnreadableRootOnly}
@@ -122,6 +128,7 @@ func (n *Node) Diagnose(ctx context.Context, withHostParts bool) Diagnostics {
 	d.HostParts = true
 	d.Routes = n.plat.Inspect.Routes()
 	d.Guard = n.plat.Inspect.Guard(ctx)
+	d.KillSwitch = n.plat.Inspect.KillSwitch(ctx)
 	d.DNS = n.plat.Inspect.DNS(ctx)
 	return d
 }

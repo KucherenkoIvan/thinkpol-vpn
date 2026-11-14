@@ -26,17 +26,10 @@ func InspectIPv6Guard(ctx context.Context) routetable.GuardReport {
 
 func (g *IPv6Guard) inspect(ctx context.Context) routetable.GuardReport {
 	r := routetable.GuardReport{Where: "pf anchor " + GuardAnchor, PF: &routetable.PFReport{}}
-	rules, _, err := rulesOf(ctx, g.pf, GuardAnchor, true) // nil, no error: no such anchor
-	switch {
-	case errors.Is(err, errNoPfctl):
+	var err error
+	r.Rules, r.RulesUnreadable, err = inspectRules(ctx, g.pf, GuardAnchor)
+	if err != nil {
 		return routetable.GuardReport{Where: r.Where, Unreadable: err.Error()}
-	case err != nil:
-		r.RulesUnreadable = err.Error()
-	default:
-		r.Rules, err = parseVerboseRules(rules)
-		if err != nil {
-			r.Rules, r.RulesUnreadable = nil, err.Error()
-		}
 	}
 	r.Present, r.PresentUnknown = len(r.Rules) > 0, r.RulesUnreadable != ""
 	r.Exempt, err = g.listTable(ctx, exemptTable)
@@ -49,7 +42,61 @@ func (g *IPv6Guard) inspect(ctx context.Context) routetable.GuardReport {
 		r.PF.Enabled = on
 	}
 	g.inspectGuardCheck(ctx, r.PF)
-	r.PF.Reference, r.PF.ReferenceUnreadable = g.inspectReference(ctx)
+	r.PF.Reference, r.PF.ReferenceUnreadable = g.inspectReference(ctx, "guard")
+	return r
+}
+
+// inspectRules reads anchor's rules with their counters (`pfctl -a
+// anchor -s rules -v`): none for an anchor that doesn't exist, why when
+// they can't be read. err is errNoPfctl's alone: nothing of pf can be.
+func inspectRules(ctx context.Context, pf pfctl, anchor string) (rules []routetable.GuardRuleReport, unreadable string, err error) {
+	b, _, err := rulesOf(ctx, pf, anchor, true) // nil, no error: no such anchor
+	switch {
+	case errors.Is(err, errNoPfctl):
+		return nil, "", err
+	case err != nil:
+		return nil, err.Error(), nil
+	}
+	rules, err = parseVerboseRules(b)
+	if err != nil {
+		return nil, err.Error(), nil
+	}
+	return rules, "", nil
+}
+
+// InspectKillSwitch reads the kill switch as pf holds it, for
+// diagnostics: the anchor's rules with their counters, the sizes of its
+// tables, pf's enabled state, and the reference the kill switch's record
+// names and whether pf still holds it. It only reads, as
+// InspectIPv6Guard does, whether or not a kill switch runs.
+func InspectKillSwitch(ctx context.Context) KillSwitchReport {
+	return NewKillSwitch().inspect(ctx)
+}
+
+func (k *KillSwitch) inspect(ctx context.Context) KillSwitchReport {
+	r := KillSwitchReport{Where: "pf anchor " + KillSwitchAnchor, PF: &KillSwitchPFReport{}}
+	var err error
+	r.Rules, r.RulesUnreadable, err = inspectRules(ctx, k.pf, KillSwitchAnchor)
+	if err != nil {
+		return KillSwitchReport{Where: r.Where, Unreadable: err.Error()}
+	}
+	r.Present, r.PresentUnknown = len(r.Rules) > 0, r.RulesUnreadable != ""
+	for _, name := range []string{killSwitchTable, killSwitchNoDNS} {
+		table, err := listTable(ctx, k.pf, KillSwitchAnchor, name, true, "kill switch")
+		switch {
+		case errors.Is(err, errNoTable):
+		case err != nil:
+			r.Sets = append(r.Sets, KillSwitchSetReport{Name: name, Unreadable: err.Error()})
+		default:
+			r.Sets = append(r.Sets, KillSwitchSetReport{Name: name, Entries: len(table)})
+		}
+	}
+	if on, err := k.enabled(ctx); err != nil {
+		r.PF.EnabledUnreadable = err.Error()
+	} else {
+		r.PF.Enabled = on
+	}
+	r.PF.Reference, r.PF.ReferenceUnreadable = k.inspectReference(ctx, "kill switch")
 	return r
 }
 
@@ -82,25 +129,27 @@ func (g *IPv6Guard) inspectGuardCheck(ctx context.Context, pf *routetable.PFRepo
 	pf.MainRules, pf.Skipped, pf.AnchorsBefore = mainUpToHook(main.stdout), b.skipped, b.before
 }
 
-// inspectReference reads the guard's record (without making its
-// directory) and, if it names a reference, whether pf lists it as taken
-// by that pid. Only a record of another boot is stale; one that isn't a
-// regular file or can't be read is unreadable, said in fixed words (a
-// record's content never leaves it: it may hold a token).
-func (g *IPv6Guard) inspectReference(ctx context.Context) (*routetable.PFReferenceReport, string) {
-	t, state, why, err := g.tokens.peek()
+// inspectReference reads owner's record (without making its directory)
+// and, if it names a reference, whether pf lists it as taken by that
+// pid. Only a record of another boot is stale; one that isn't a regular
+// file or can't be read is unreadable, said in fixed words (a record's
+// content never leaves it: it may hold a token).
+func (pe *pfEnabler) inspectReference(ctx context.Context, owner string) (*routetable.PFReferenceReport, string) {
+	t, state, why, err := pe.tokens.peek()
 	switch {
 	case err != nil:
 		return nil, err.Error()
 	case state == recordStale && why == staleOtherBoot:
 		return &routetable.PFReferenceReport{Stale: true}, ""
+	case state == recordStale && why == staleNotRegular:
+		return nil, "the " + owner + "'s record: " + string(why) + " (a symlink or a fifo is never the " + owner + "'s)"
 	case state == recordStale:
-		return nil, "the guard's record: " + string(why)
+		return nil, "the " + owner + "'s record: " + string(why)
 	case state == recordNone:
 		return &routetable.PFReferenceReport{}, ""
 	}
 	ref := &routetable.PFReferenceReport{Recorded: true, Pid: t.pid, PidOnly: t.value == 0}
-	refs, understood, err := g.references(ctx)
+	refs, understood, err := pe.references(ctx)
 	switch {
 	case err != nil:
 		ref.HeldUnreadable = err.Error()
