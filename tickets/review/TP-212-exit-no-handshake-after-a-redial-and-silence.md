@@ -7,7 +7,7 @@ stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-210]
-refs: [docs/design/api-overview.md#tp-195-health-grades-an-exit-by-its-wireguard-handshake, TP-213]
+refs: [docs/design/api-overview.md#tp-195-health-grades-an-exit-by-its-wireguard-handshake]
 owner: "agent-tp-212"
 branch: "tp-212-exit-graded-from-the-first-initiation-since-the-link"
 ---
@@ -64,3 +64,4 @@ An exit whose first hop re-dialed is graded from the first WireGuard initiation 
 - 2026-11-15 review round 1: merge, nits R1.1–R1.8
 - 2026-11-15 R1.1–R1.8 (d0d0dfd, 6befea2): ticket Scope, Out of scope and refs; firstSinceLinkUp; exitHandshakes' comment; wg/doc.go on what FirstInitiationSince keeps; the agent test's link-up from UpSince; RR48 gains the restart on a link change and the first-hop switch. R1.7: dataplane TestTheFirstInitiationSinceLinkUpIsFromTheNeighborsUpSince stops the path clock, so a link is up for zero time while real time passes; M7 (the engine's link-up as time.Now() less UpFor again) fails it 5 of 5, its first since the link came up read as none. It passed 100 of 100 once it waits for the peer's first hop (6befea2; before that 1 of 20 read the status before the hop was chosen)
 - 2026-11-15 on 6befea2: `make lint` and `make test` green (umask 022, 39 packages); no full lab (test and doc changes only, engine.go untouched)
+- 2026-11-15 R1.2: TP-213 left out of refs, which take only PRD ids, RR rows and design files (board.py --check); Scope cites it
