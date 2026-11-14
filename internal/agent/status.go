@@ -335,22 +335,23 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 }
 
 // exitHandshakes grades the exits among st.Peers as of st.ReadAt: how
-// many are unanswered, and whether the default rule's exit is one of them.
-// Ages are measured to the read, never to a later clock reading: a stall
-// before grading would age the snapshot's initiations past answers it
-// can't show. An exit
-// is unanswered once the first initiation sent to it since its first hop
-// came up has gone deadline without an answer: while the first hop is
-// down that is the neighbor's problem (one cause, one code), and
+// many are unanswered, and whether an exit carrying a background route
+// (RuleStatus.DefaultExits) is one of them. Ages are measured to the read,
+// never to a later clock reading: a stall before grading would age the
+// snapshot's initiations past answers it can't show.
+//
+// An exit is unanswered once the first initiation sent to it since its
+// first hop came up has gone deadline without an answer: while the first
+// hop is down that is the neighbor's problem (one cause, one code), and
 // WireGuard's initiations can't get through; one sent before the first
 // hop came back tells nothing of the exit, however long pending. So an
 // exit nothing was sent to isn't counted, nor one sent nothing since its
 // first hop came up (WireGuard gives up retrying after 90 s without
 // traffic): nothing has tested the link since it returned. One flagged
 // while its first hop stayed up stays so until a handshake completes,
-// even if traffic to it stops. A chain has one exit, so a default exit
-// unanswered (RuleStatus.DefaultExits: what carries either family's
-// background route) is the internet lost, whatever the other exits do.
+// even if traffic to it stops. A chain has one exit, so an exit carrying
+// either family's background route unanswered is the internet lost,
+// whatever the other exits do.
 func exitHandshakes(st *dataplane.Status, deadline time.Duration) (unanswered int, defaultUnanswered bool) {
 	up := make(map[netmap.NodeID]bool, len(st.Neighbors))
 	for _, n := range st.Neighbors {

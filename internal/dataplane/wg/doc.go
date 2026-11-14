@@ -33,8 +33,11 @@
 // (Device.FirstInitiationSince), so a reader can grade a peer from the
 // first initiation sent since its link came back rather than from one
 // that predates it, and tell a peer still being tried from one WireGuard
-// gave up on before then. A peer WireGuard removes, or adds back with the
-// same key, starts afresh.
+// gave up on before then. Only the first unanswered initiation and the 15
+// latest are kept, so for an older moment it answers with the oldest kept:
+// later than the true one, but over 70 s old like it (wireguard-go sends
+// at most one initiation per peer every 5 s). A peer WireGuard removes,
+// or adds back with the same key, starts afresh.
 //
 // This depends on three of wireguard-go's messages, matched by substring:
 // "Sending handshake initiation" sets it, and "Received handshake

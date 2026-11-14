@@ -978,7 +978,7 @@ func TestExitsAreGradedByTheirHandshakes(t *testing.T) {
 	// Pending for an hour, the first initiation since the first hop came
 	// up sent d ago; never: none since.
 	const never time.Duration = -1
-	pendingAcrossARedial := func(n netmap.NodeID, d time.Duration) dataplane.PeerStatus {
+	firstSinceLinkUp := func(n netmap.NodeID, d time.Duration) dataplane.PeerStatus {
 		p := pendingFor(n, n, time.Hour)
 		p.FirstInitiationSinceLinkUp = time.Time{}
 		if d != never {
@@ -1018,15 +1018,15 @@ func TestExitsAreGradedByTheirHandshakes(t *testing.T) {
 		{"default nl's first hop down, its last hop kept", []path.NeighborStatus{downNeighbor, upFor(de, time.Hour)},
 			[]dataplane.PeerStatus{dead(nl), live(de)}, defNL, Health{HealthDegraded, []Problem{ProblemNeighborDown}}},
 		{"default nl's first hop back, retried since for less than the deadline", []path.NeighborStatus{upFor(nl, deadline-time.Second)},
-			[]dataplane.PeerStatus{pendingAcrossARedial(nl, deadline-2*time.Second)}, defNL, Health{}},
+			[]dataplane.PeerStatus{firstSinceLinkUp(nl, deadline-2*time.Second)}, defNL, Health{}},
 		{"default nl's first hop back, retried since for the deadline", []path.NeighborStatus{upFor(nl, deadline+time.Second)},
-			[]dataplane.PeerStatus{pendingAcrossARedial(nl, deadline)}, defNL, exitDown},
+			[]dataplane.PeerStatus{firstSinceLinkUp(nl, deadline)}, defNL, exitDown},
 		{"default nl's first hop back for long, no initiation since", []path.NeighborStatus{upFor(nl, time.Hour)},
-			[]dataplane.PeerStatus{pendingAcrossARedial(nl, never)}, defNL, Health{}},
+			[]dataplane.PeerStatus{firstSinceLinkUp(nl, never)}, defNL, Health{}},
 		{"default nl's first hop back for long, traffic resumed just now", []path.NeighborStatus{upFor(nl, 20*time.Second)},
-			[]dataplane.PeerStatus{pendingAcrossARedial(nl, 0)}, defNL, Health{}},
+			[]dataplane.PeerStatus{firstSinceLinkUp(nl, 0)}, defNL, Health{}},
 		{"default nl given up on while its first hop stayed up", []path.NeighborStatus{upFor(nl, time.Hour)},
-			[]dataplane.PeerStatus{pendingAcrossARedial(nl, time.Hour-time.Second)}, defNL, exitDown},
+			[]dataplane.PeerStatus{firstSinceLinkUp(nl, time.Hour-time.Second)}, defNL, exitDown},
 		{"both families' background through de, de dead, nl idle", both, []dataplane.PeerStatus{idle(nl), dead(de)}, defDE, exitDown},
 		{"IPv6's background through de, de dead, nl live", both, []dataplane.PeerStatus{live(nl), dead(de)}, [2]netmap.NodeID{nl, de}, exitDown},
 		{"a device peer pending for long", []path.NeighborStatus{upFor(dev, time.Hour)},
@@ -1177,7 +1177,7 @@ func TestAnExitPendingAcrossARedialIsGradedFromTheNextInitiation(t *testing.T) {
 		st := b.node.Status()
 		for _, n := range neighborsOf(st) {
 			if n.Up {
-				linkUp = time.Now().Add(-n.UpFor)
+				linkUp = n.UpSince
 				return true
 			}
 		}

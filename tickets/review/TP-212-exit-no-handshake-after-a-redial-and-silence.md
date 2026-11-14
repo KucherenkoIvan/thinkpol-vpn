@@ -7,7 +7,7 @@ stream: core
 repo: thinkpol-vpn
 size: S
 depends_on: [TP-210]
-refs: [docs/design/api-overview.md#tp-195-health-grades-an-exit-by-its-wireguard-handshake]
+refs: [docs/design/api-overview.md#tp-195-health-grades-an-exit-by-its-wireguard-handshake, TP-213]
 owner: "agent-tp-212"
 branch: "tp-212-exit-graded-from-the-first-initiation-since-the-link"
 ---
@@ -17,13 +17,14 @@ An exit whose first hop re-dialed is graded from the first WireGuard initiation 
 
 ## Scope
 - Trigger: the exit still had an initiation pending from before its first hop dropped; WireGuard stopped retrying for want of traffic; nothing went out for 15 s or more after the link returned; then traffic. Today the first new initiation is graded unanswered the moment it is sent, because the pending one dates from before the re-dial and its age counts from the link's return.
-- The flag contradicts docs/design/api-overview.md's health row (line 242) and the ProblemExitNoHandshake comment (internal/agent/status.go:473-476).
+- The flag contradicts docs/design/api-overview.md's health row (line 242) and the comment on ProblemExitNoHandshake (internal/agent/status.go).
 - What a member sees: a false `down` blaming the exit, for one round trip, or about 5 s on a lossy link (a phone coming out of a metro tunnel).
 - Fix direction: the wg package reports the first initiation sent since the link came up (today it keeps the first unanswered and the last), and exitHandshakes grades from it.
+- (from TP-213) Grade as of the status read: dataplane.Status.ReadAt and path.NeighborStatus.UpSince; exitHandshakes takes no clock of its own.
 
 ## Out of scope
 - The agent tests' 1 s path timings under load (TP-214).
-- Grading changes for an exit whose link never dropped.
+- Grading changes for an exit whose link never dropped, beyond measuring ages to the status read (TP-213's scope).
 
 ## Acceptance
 - [x] A test reproduces the trigger (a pending initiation, a re-dial, more than the deadline of silence, then traffic) and fails on today's grading; evidence: the failing run on the base commit in the Log.
@@ -34,6 +35,16 @@ An exit whose first hop re-dialed is graded from the first WireGuard initiation 
 
 ## Notes
 - Source: TP-210's diagnosis (its Notes, "What a real device shows"). TP-210's test hit the same mechanism with the test's 1 s deadline; at production timings it needs WireGuard to have given up retrying.
+
+## Review findings
+- [ ] R1.1 Out of scope's "Grading changes for an exit whose link never dropped" is false since TP-213's fix measures every exit's ages to the status read: say "beyond measuring ages to the status read (TP-213's scope)".
+- [ ] R1.2 Scope: add TP-213's part (Status.ReadAt, NeighborStatus.UpSince, exitHandshakes takes no clock of its own) and TP-213 to refs; cite ProblemExitNoHandshake by name, not by line numbers.
+- [ ] R1.3 status_test.go: `pendingAcrossARedial` is also used where nothing re-dials; name it after what it builds (firstSinceLinkUp).
+- [ ] R1.4 status.go: exitHandshakes' comment said "the default rule's exit", against its own later lines and api-overview; say "an exit carrying a background route (RuleStatus.DefaultExits)", and split the clock caveat from the grading rule.
+- [ ] R1.5 wg/doc.go presents FirstInitiationSince as exact: say only the first unanswered initiation and the 15 latest are kept, so for an older moment it answers with the oldest kept, over 70 s old like the true one.
+- [ ] R1.6 The new agent test computes linkUp as time.Now() less UpFor, the pattern TP-213 removed: use UpSince.
+- [ ] R1.7 No test catches the engine building link-up times from time.Now() less UpFor instead of UpSince: add a deterministic engine test, with a mutation, or say why not.
+- [ ] R1.8 (residual risk) The grading clock restarts whenever the first hop's active link changes, not only when the neighbor goes down; and after a first-hop switch, initiations through the old one count against the new one: add both to RR48 with the fix direction.
 
 ## Log
 - 2026-11-14 created in backlog (from TP-210)
@@ -50,3 +61,4 @@ An exit whose first hop re-dialed is graded from the first WireGuard initiation 
 - 2026-11-15 not verified: the trigger end to end at production timings (WireGuard giving up after 90 s, then traffic; the injected 1 s deadline with WireGuard's own retry stands in for it); the engine turning UpFor into an instant with its own clock again has no deterministic test (it needs a stall inside the engine's status read). TP-213's stalled false ok can't happen through the grading now (ages to ReadAt, link-up from UpSince), not re-run under its freezes here
 - 2026-11-15 out of scope, for the board: the two node-phase flakes above (dns TestResolvConfRestoreAfterARewriteFailedPartwayPutsBackTheWholeOriginal, supervisor TestIdleStreamsDontStarveRouting under load)
 - 2026-11-15 in-progress → review
+- 2026-11-15 review round 1: merge, nits R1.1–R1.8
