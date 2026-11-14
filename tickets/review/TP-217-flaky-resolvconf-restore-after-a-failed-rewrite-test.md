@@ -24,7 +24,7 @@ branch: "tp-217-flaky-resolvconf-restore-test"
 ## Acceptance
 - [x] The root cause named in Notes, with the evidence (a log or a trace from a failing run).
 - [x] The fix; the test passes 20 times under the same load, and a mutation that reverts the fix fails it; evidence: the Log.
-- [ ] `make lint`, `make test` pass.
+- [x] `make lint`, `make test` pass.
 
 ## Notes
 - Source: TP-117 (merged with it); the failure was reported by TP-208's implementer.
@@ -46,3 +46,6 @@ branch: "tp-217-flaky-resolvconf-restore-test"
 - 2026-11-15 under SIGSTOP freezes (gaps 0 to 300 ms, stops 50 to 700 ms), 100 runs each: unfixed with the trace (d139cb5) failed 3, each reading 0 bytes during the fifth try; fixed (a39e6b8) passed 100 of 100; mutation M1, readBetweenRewrites without the lock (the fix reverted), failed 4 with "the file is not cut inside the original"
 - 2026-11-15 fix (a39e6b8): setResolvConfTimed sets up the inotify watch before it returns (it was set up in the watch goroutine); doc.go updated. Under two busy loops beside the test, TestResolvConfAFileRenamedInIsTakenAtOnce failed 116 of the 178 runs that fit in go test's 10 min on 0b43931 (the mutation: the watch set up in the goroutine again) and passed 300 of 300 on a39e6b8
 - 2026-11-15 `make lint` and `make test` green on a39e6b8 (umask 022)
+- 2026-11-15 merged origin/rewrite at 16b2f25 (1a2b58e); on 731c903 `make lint` and `make test` green (umask 022), and full `make lab-test` green (GOFLAGS=-p=2, LAB_P=1, under the full-lab lock): lab phase and 39 packages
+- 2026-11-15 not verified: the original `make test` failure (no log kept); the reproduction matches its test and assertion only. Out of scope: none found; the resolved watch (system_linux.go) only polls, so it has no such race
+- 2026-11-15 in-progress → review
