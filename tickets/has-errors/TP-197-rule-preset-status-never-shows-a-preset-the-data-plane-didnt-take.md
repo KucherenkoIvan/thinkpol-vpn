@@ -33,6 +33,17 @@ The preset list and the rules each preset contains. This ticket is about what st
 - From TP-166's delta check, 2026-11-07.
 - Safety-adjacent: a member could believe all traffic goes through the tunnel while some goes direct.
 
+## Review findings
+Review round 1 (go-paranoid, go-style), accepted by the orchestrator. The design (status and device.json change only once the data plane has taken the preset) is accepted.
+- [ ] R1.1 (blocker) a layout failure after Engine.SetRules (change() failing in routes.around) leaves the router on the old preset while status and device.json show the new one as enforced, and nothing retries: retry on any SetRules error but ErrPresetUnavailable; never report a preset enforced until the engine's routedRules.Preset matches it (status: not enforced yet, retrying, with the reason); SetRulePreset returns a distinct error (ErrPresetNotEnforced) wrapping the cause, mapped in localapi to its own refusal code; test with an injected layout failure that converges once it clears; correct the Log line about the route table.
+- [ ] R1.2 (should-fix) no test makes the store fail: add tests for a store failure on the idle path (takeIdle) and on the running path (takeRules).
+- [ ] R1.3 (should-fix) M8's failure is timing-dependent: catch it deterministically, or prove it with -count=50.
+- [ ] R1.4 (should-fix) a caller whose ctx ends after the node took the request gets DeadlineExceeded for a change that happened: once taken, report the outcome; argue the bound in a comment; test.
+- [ ] R1.5 (nit) presetMu.Lock() ignores the caller's ctx: make the wait respect it; test.
+- [ ] R1.6 (should-fix, docs) doc.go and docs/design/configuration.md: with no data plane running, the preset is stored and shown, and the next start takes it; drop the "(TP-197)" reference; document the not-enforced-yet state and its refusal code.
+- [ ] R1.7 (should-fix, ticket) the make test box: log the accepted dns flake (TP-217 fixes it) and tick it.
+- [ ] R1.8 (nit) TestARulePresetSetBeforeTheNodeRunsIsTaken polls presetMu.TryLock(): wait on something a caller can observe.
+
 ## Log
 - 2026-11-07 created in backlog
 - 2026-11-14 backlog → in-progress, owner: agent-tp-197
@@ -46,3 +57,4 @@ The preset list and the rules each preset contains. This ticket is about what st
 - 2026-11-15 out of scope: setToggle (kill switch, allow-LAN) has the same stored-and-shown-before-acted order; its killSwitchReapply tick re-applies it, so it self-heals, but Status's kill-switch On can lead the firewall for up to one tick when the caller's ctx ends first.
 - 2026-11-15 couldn't verify: nothing device-only; the change is platform-independent agent code, covered by unit tests and the lab.
 - 2026-11-15 in-progress → review
+- 2026-11-15 review → has-errors (round 1 findings R1.1–R1.8)
