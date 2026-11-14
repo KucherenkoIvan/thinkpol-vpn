@@ -58,9 +58,9 @@ Review round 2 (delta check, adversarial): R1.2–R1.5 closed; no leaks found; o
 - [x] R2.5 (nit) The Log doesn't say which platform M5, M6 and M8 ran on (on macOS hasChangeEvents skips those tests): re-run them on Linux and log the platform.
 
 Review round 3 (delta check, adversarial): no proven defect; the state check's ordering confirmed. Verdict: merge, after these nits:
-- [ ] R3.1 (nit, doc) resolvconf.go's state check: a rename after the watch's start but before the state check's read is settled (up to settleMax, with Problem set), not taken at once; doc.go said the window ends when the watch starts, but it runs until that read. Fix the doc wording.
-- [ ] R3.2 (nit, comment) resolvconf.go's `own`: say what the count still guards (the take-over's own event, signalled, would merge with the first rename after the start and turn a take-back at once into a settle), and that the start signal's kind no longer changes an outcome.
-- [ ] R3.3 (note) In Notes: (a) the re-stat after a real rewrite, with its fix as a follow-up; (b) R2.3 recording a file already unlinked.
+- [x] R3.1 (nit, doc) resolvconf.go's state check: a rename after the watch's start but before the state check's read is settled (up to settleMax, with Problem set), not taken at once; doc.go said the window ends when the watch starts, but it runs until that read. Fix the doc wording.
+- [x] R3.2 (nit, comment) resolvconf.go's `own`: say what the count still guards (the take-over's own event, signalled, would merge with the first rename after the start and turn a take-back at once into a settle), and that the start signal's kind no longer changes an outcome.
+- [x] R3.3 (note) In Notes: (a) the re-stat after a real rewrite, with its fix as a follow-up; (b) R2.3 recording a file already unlinked.
 
 ## Log
 - 2026-11-14 created in backlog (from TP-117)
@@ -102,3 +102,7 @@ Review round 3 (delta check, adversarial): no proven defect; the state check's o
 - 2026-11-15 has-errors → in-progress (round 2 findings R2.1–R2.5 fixed)
 - 2026-11-15 in-progress → review
 - 2026-11-15 review round 3: merge, nits R3.1–R3.3
+- 2026-11-15 R3.1 (3a78666): doc.go's watch paragraph: a change settles until the file is read once the watch has started, a rename between the start and that read included; doc only, no code change, so no new test or mutation
+- 2026-11-15 R3.2 (3a78666): a comment at own in setResolvConfTimed says what the count still guards and that the start signal's kind changes no outcome
+- 2026-11-15 R3.3 (3a78666): Notes record the re-stat after a real rewrite (follow-up: stat the temporary file through its descriptor before the rename) and R2.3's near-nil unlinked-file case
+- 2026-11-15 on 3a78666: `make lint` and `make test` green (umask 022); comment and doc only, so no lab run; the full lab was last green on 53c6715
