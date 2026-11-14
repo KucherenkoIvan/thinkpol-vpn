@@ -14,10 +14,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// tempDir is 0755 whatever the umask, so the checks below see the modes
+// the tests give, not the umask's.
 func tempDir(t *testing.T) string {
 	t.Helper()
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return dir
