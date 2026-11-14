@@ -13,6 +13,8 @@ import (
 	"errors"
 	"math/big"
 	"net"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -137,7 +139,7 @@ func TestReplayIsSplicedToTheTarget(t *testing.T) {
 func TestAHelloSealedOutsideTheTimeWindowIsRefused(t *testing.T) {
 	k := newKeys(t)
 	id, _ := shortIDs()
-	l := listenFor(t, newTransport(Options{}), k, 60, peerLink(id))
+	l := listenFor(t, startedLongAgo(newTransport(Options{})), k, 60, peerLink(id))
 	skewed := func(d time.Duration) *Transport {
 		return newTransport(Options{Now: func() time.Time { return time.Now().Add(d) }})
 	}
@@ -293,6 +295,67 @@ func sessionIDOf(i int) []byte {
 	return b
 }
 
+// admits is c.admit's verdict.
+func (c *replayCache) admits(id shortID, sessionID []byte, sent uint32, now time.Time) bool {
+	admitted, _ := c.admit(id, sessionID, sent, now)
+	return admitted
+}
+
+// A hello admitted while a refresh prunes its space's cache is
+// remembered, whichever goes first: its replay is refused, never let
+// through because it went into a cache prune dropped. The window is a
+// few instructions wide: the race detector's scheduling finds it within
+// these rounds, a plain run rarely does.
+func TestAHelloAdmittedWhileItsSpaceIsPrunedIsRemembered(t *testing.T) {
+	at := time.Unix(1_800_000_000, 0)
+	sent := uint32(at.Unix())
+	space := randomSpace()
+	for i := range 5000 {
+		r := newReplays(time.Minute)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var admitted bool
+		wg.Go(func() {
+			<-start
+			admitted = r.admit(space, shortID{1}, sessionIDOf(i), sent, at)
+		})
+		wg.Go(func() {
+			<-start
+			r.prune(nil, at)
+		})
+		close(start)
+		wg.Wait()
+		if !admitted {
+			t.Fatalf("round %d: a fresh hello refused", i)
+		}
+		if r.admit(space, shortID{1}, sessionIDOf(i), sent, at) {
+			t.Fatalf("round %d: the replay of a hello admitted while its space was pruned admitted", i)
+		}
+	}
+}
+
+// A cache prune dropped admits nothing, so a hello its lookup raced with
+// the prune goes into the space's next cache: admitted once there, its
+// replay refused.
+func TestAPrunedReplayCacheAdmitsNothing(t *testing.T) {
+	at := time.Unix(1_800_000_000, 0)
+	sent := uint32(at.Unix())
+	space := randomSpace()
+	r := newReplays(time.Minute)
+	c := newReplayCache(time.Minute)
+	r.bySpace[space] = c
+	r.prune(nil, at)
+	if _, live := c.admit(shortID{1}, sessionIDOf(0), sent, at); live {
+		t.Fatal("a cache prune dropped still admits")
+	}
+	if !r.admit(space, shortID{1}, sessionIDOf(0), sent, at) {
+		t.Fatal("a fresh hello refused once its space's cache was pruned")
+	}
+	if r.admit(space, shortID{1}, sessionIDOf(0), sent, at) {
+		t.Fatal("a replay admitted once its space's cache was pruned")
+	}
+}
+
 // The replay cache admits a session id once, forgets what left the
 // window, and so admits again once time moves on.
 func TestTheReplayCacheAdmitsOnceAndForgetsWhatLeftTheWindow(t *testing.T) {
@@ -301,20 +364,20 @@ func TestTheReplayCacheAdmitsOnceAndForgetsWhatLeftTheWindow(t *testing.T) {
 	at := time.Unix(1_800_000_000, 0)
 	sent := uint32(at.Unix())
 	id := shortID{1}
-	if !c.admit(id, sessionIDOf(0), sent, at) || c.admit(id, sessionIDOf(0), sent, at) {
+	if !c.admits(id, sessionIDOf(0), sent, at) || c.admits(id, sessionIDOf(0), sent, at) {
 		t.Fatal("a session id admitted other than once")
 	}
-	if c.admit(id, sessionIDOf(1), sent-uint32(window/time.Second)-1, at) {
+	if c.admits(id, sessionIDOf(1), sent-uint32(window/time.Second)-1, at) {
 		t.Error("a hello sealed before the window admitted")
 	}
 	for i := 1; i < replayShare; i++ {
-		c.admit(id, sessionIDOf(i), sent, at)
+		c.admits(id, sessionIDOf(i), sent, at)
 	}
-	if c.admit(id, sessionIDOf(replayShare), sent, at) {
+	if c.admits(id, sessionIDOf(replayShare), sent, at) {
 		t.Fatal("a full share admitted")
 	}
 	later := at.Add(window + time.Second)
-	if !c.admit(id, sessionIDOf(replayShare), uint32(later.Unix()), later) {
+	if !c.admits(id, sessionIDOf(replayShare), uint32(later.Unix()), later) {
 		t.Error("a full share still refuses once its entries left the window")
 	}
 }
@@ -328,14 +391,14 @@ func TestOneShortIDFillsOnlyItsOwnReplayShare(t *testing.T) {
 	flood, other := shortID{1}, shortID{2}
 	admitted := 0
 	for i := range maxRemembered {
-		if c.admit(flood, sessionIDOf(i), sent, at) {
+		if c.admits(flood, sessionIDOf(i), sent, at) {
 			admitted++
 		}
 	}
 	if admitted != replayShare {
 		t.Errorf("one short id admitted %d hellos, want its share, %d", admitted, replayShare)
 	}
-	if !c.admit(other, sessionIDOf(0), sent, at) {
+	if !c.admits(other, sessionIDOf(0), sent, at) {
 		t.Error("another short id's fresh hello refused")
 	}
 }
@@ -349,19 +412,105 @@ func TestASealAheadOfTheClockHoldsOnlyItself(t *testing.T) {
 	ahead := uint32(at.Add(window).Unix())
 	for n := range maxRemembered / replayShare {
 		id := shortID{byte(n), byte(n >> 8), 1}
-		if !c.admit(id, sessionIDOf(0), ahead, at) {
+		if !c.admits(id, sessionIDOf(0), ahead, at) {
 			t.Fatalf("short id %d: a hello sealed at the window's edge refused", n)
 		}
 		for i := 1; i < replayShare; i++ {
-			c.admit(id, sessionIDOf(i), uint32(at.Unix()), at)
+			c.admits(id, sessionIDOf(i), uint32(at.Unix()), at)
 		}
 	}
-	if c.admit(shortID{9}, sessionIDOf(0), uint32(at.Unix()), at) {
+	if c.admits(shortID{9}, sessionIDOf(0), uint32(at.Unix()), at) {
 		t.Fatal("a full cache admitted")
 	}
 	later := at.Add(window + time.Second)
-	if !c.admit(shortID{9}, sessionIDOf(0), uint32(later.Unix()), later) {
+	if !c.admits(shortID{9}, sessionIDOf(0), uint32(later.Unix()), later) {
 		t.Error("a full cache still refuses once all but the hellos sealed ahead left the window")
+	}
+}
+
+// One space filling its replay cache, with as many credentials as it
+// takes, never refuses another space's hello: each space has a cache of
+// its own.
+func TestOneSpaceFillingItsReplayCacheDoesntRefuseAnothers(t *testing.T) {
+	r := newReplays(time.Minute)
+	at := time.Unix(1_800_000_000, 0)
+	sent := uint32(at.Unix())
+	guest, owner := randomSpace(), randomSpace()
+	for n := range maxRemembered / replayShare {
+		id := shortID{byte(n), byte(n >> 8), 1}
+		for i := range replayShare {
+			r.admit(guest, id, sessionIDOf(i), sent, at)
+		}
+	}
+	if r.admit(guest, shortID{9}, sessionIDOf(0), sent, at) {
+		t.Fatal("the guest space's full cache admitted")
+	}
+	if !r.admit(owner, shortID{9}, sessionIDOf(0), sent, at) {
+		t.Error("another space's fresh hello refused while the guest's cache is full")
+	}
+}
+
+// A space's cache outlives its leaving the table while it remembers
+// anything fresh, so a space that comes back still refuses its replays.
+func TestASpacesReplayCacheIsDroppedOnlyOnceItLeftTheWindow(t *testing.T) {
+	r := newReplays(time.Minute)
+	at := time.Unix(1_800_000_000, 0)
+	space := randomSpace()
+	if !r.admit(space, shortID{1}, sessionIDOf(0), uint32(at.Unix()), at) {
+		t.Fatal("a fresh hello refused")
+	}
+	r.prune(nil, at)
+	if r.admit(space, shortID{1}, sessionIDOf(0), uint32(at.Unix()), at) {
+		t.Fatal("a replay admitted after its space left the table")
+	}
+	later := at.Add(time.Minute + time.Second)
+	r.prune(nil, later)
+	if len(r.bySpace) != 0 {
+		t.Errorf("%d caches kept once all they remembered left the window", len(r.bySpace))
+	}
+}
+
+// Two links of different spaces sharing a short id: the one already in
+// the table stays and the newcomer is rejected, so one space's map can't
+// knock out another's link by listing its short id; with neither in the
+// table, both are rejected, as are two of one space, and another space's
+// refused entry doesn't close the incumbent.
+func TestASharedShortIDAcrossSpacesRejectsTheNewcomer(t *testing.T) {
+	tr := newTransport(Options{})
+	id, _ := shortIDs()
+	link := func(space transport.SpaceID) transport.PeerLink {
+		pl := peerLink(id)
+		pl.Peer.Space = space
+		return pl
+	}
+	owner, guest := link(randomSpace()), link(randomSpace())
+	sid := shortID(id)
+	rejected := func(tab table) []transport.Identity {
+		var out []transport.Identity
+		for _, e := range tab.rejected {
+			out = append(out, e.Peer)
+		}
+		return out
+	}
+
+	first := newTable(tr, []transport.PeerLink{owner}, nil)
+	tab := newTable(tr, []transport.PeerLink{guest, owner}, first.links)
+	if got := tab.links[sid]; got.Peer != owner.Peer || !slices.Equal(rejected(tab), []transport.Identity{guest.Peer}) {
+		t.Errorf("the incumbent's short id listed by a newcomer: kept %v, rejected %v", got.Peer, rejected(tab))
+	}
+	if both := newTable(tr, []transport.PeerLink{guest, owner}, nil); len(both.links) != 0 || len(both.rejected) != 2 {
+		t.Errorf("neither in the table before: kept %v, rejected %v", both.links, rejected(both))
+	}
+	twice := link(owner.Peer.Space)
+	twice.Peer.Node[0]++
+	if same := newTable(tr, []transport.PeerLink{owner, twice}, first.links); len(same.links) != 0 || len(same.rejected) != 2 {
+		t.Errorf("two of one space: kept %v, rejected %v", same.links, rejected(same))
+	}
+	bad := guest
+	bad.Settings = []byte{0xff}
+	refused := newTable(tr, []transport.PeerLink{bad, owner}, first.links)
+	if got := refused.links[sid]; got.Peer != owner.Peer || refused.refused[sid] != nil {
+		t.Errorf("another space's refused entry: kept %v, refused %v", got.Peer, refused.refused[sid])
 	}
 }
 
@@ -394,4 +543,84 @@ func TestOnlyREALITYsCertificateProvesTheKey(t *testing.T) {
 	if provesKey([][]byte{real}, authKey) {
 		t.Error("a real certificate proved the key")
 	}
+}
+
+// A link whose shaping asks for no padding pads every record to MinRecord,
+// both ways, as a capture of what the dialer and the listener send shows:
+// no record of application data after the handshake is smaller. One the
+// map pads to buckets is padded as it says.
+func TestRecordsArePaddedToMinRecordByDefault(t *testing.T) {
+	tr := newTransport(Options{})
+	k := newKeys(t)
+	id, _ := shortIDs()
+	for _, c := range []struct {
+		name    string
+		shaping transport.Shaping
+		want    int
+	}{{"no shaping", transport.Shaping{}, MinRecord}, {"buckets", transport.Shaping{Padding: transporttest.Buckets(1024)}, 1024}} {
+		t.Run(c.name, func(t *testing.T) {
+			pl := peerLink(id)
+			pl.Shaping = c.shaping
+			l := listenFor(t, tr, k, 0, pl)
+			tp := newTap(t, l.Addr().String())
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			client, err := tr.Dial(ctx, tp.addr(), transport.DialConfig{Credential: id, Settings: dialSettingsFor(t, k), Shaping: c.shaping})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = client.Close() }()
+			server, _, err := l.Accept(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = server.Close() }()
+			const packets = 3
+			for range packets {
+				if err := client.WritePacket([]byte("ping")); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := server.ReadPacket(make([]byte, 64)); err != nil {
+					t.Fatal(err)
+				}
+				if err := server.WritePacket([]byte("pong")); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := client.ReadPacket(make([]byte, 64)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, way := range []struct {
+				name   string
+				stream []byte
+			}{{"dialer → listener", tp.captured()[0]}, {"listener → dialer", tp.answered()[0]}} {
+				sizes := appDataRecords(way.stream)
+				if len(sizes) < packets {
+					t.Fatalf("%s: records %v", way.name, sizes)
+				}
+				for _, size := range sizes[len(sizes)-packets:] {
+					if size != c.want {
+						t.Errorf("%s: a packet's record of %d bytes, want %d (records %v)", way.name, size, c.want, sizes)
+					}
+				}
+			}
+		})
+	}
+}
+
+// appDataRecords is the sizes of the application-data records of stream,
+// headers included.
+func appDataRecords(stream []byte) []int {
+	var sizes []int
+	for len(stream) >= recordHeaderSize {
+		size := recordHeaderSize + (int(stream[3])<<8 | int(stream[4]))
+		if size > len(stream) {
+			break
+		}
+		if stream[0] == 23 {
+			sizes = append(sizes, size)
+		}
+		stream = stream[size:]
+	}
+	return sizes
 }

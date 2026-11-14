@@ -3,11 +3,12 @@ package agent
 import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/reality"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/udp"
 )
 
 // Transports is the node's transport registry: every transport a map may
-// name.
+// name (udp, reality).
 //
 // With markSockets, every link's socket carries routetable.Mark on Linux
 // and is bound to the physical interface on macOS
@@ -17,9 +18,11 @@ import (
 // (their namespaces route nothing into the TUN, and marking needs
 // CAP_NET_ADMIN over the namespace). Never WireGuard: it has no sockets.
 func Transports(markSockets bool) (*transport.Registry, error) {
-	var o udp.Options
+	var uo udp.Options
+	var ro reality.Options
 	if markSockets {
-		o.Control = routetable.SocketControl()
+		uo.Control = routetable.SocketControl()
+		ro.Control = uo.Control
 	}
-	return transport.NewRegistry(udp.New(o))
+	return transport.NewRegistry(udp.New(uo), reality.New(ro))
 }

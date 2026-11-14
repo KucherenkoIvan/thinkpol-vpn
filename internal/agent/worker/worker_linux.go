@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/ipc"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -194,16 +195,15 @@ func deliver(m ipc.Message, shared *sharedListeners, ch channels, seeds *Seeds) 
 		}
 		latest(ch.counters, c)
 	case ipc.KindStream:
-		id, f, consumed, err := ipc.DecodeStream(m)
+		st, f, tf, err := ipc.DecodeStream(m)
 		if err != nil {
 			return fmt.Errorf("worker: %w", err)
 		}
-		conn, err := net.FileConn(f)
-		_ = f.Close()
+		h, err := streamHandoff(st, f, tf)
 		if err != nil {
 			return nil // that connection is lost, the rest goes on
 		}
-		shared.stream(id, conn, consumed)
+		shared.stream(st.Listener, h)
 	default:
 		m.CloseFiles()
 		return fmt.Errorf("worker: unexpected %v message", m.Kind)
@@ -242,4 +242,24 @@ func readBlob(m ipc.Message) ([]byte, error) {
 		return nil, fmt.Errorf("a blob of %d bytes", fi.Size())
 	}
 	return io.ReadAll(io.NewSectionReader(m.Files[0], 0, fi.Size()))
+}
+
+// streamHandoff makes connections of a Stream message's descriptors,
+// closing the files either way.
+func streamHandoff(st ipc.Stream, f, tf *os.File) (transport.StreamHandoff, error) {
+	h := transport.StreamHandoff{Consumed: st.Consumed, TargetRead: st.TargetRead}
+	conn, err := net.FileConn(f)
+	_ = f.Close()
+	if tf != nil {
+		var terr error
+		h.Target, terr = net.FileConn(tf)
+		_ = tf.Close()
+		err = errors.Join(err, terr)
+	}
+	h.Conn = conn
+	if err != nil {
+		h.Close()
+		return transport.StreamHandoff{}, err
+	}
+	return h, nil
 }

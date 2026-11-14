@@ -202,7 +202,7 @@ func (sn *session) stuck(what string, err error) error {
 
 // sendListeners tells a worker which shared listeners it is forwarded from.
 func (sn *session) sendListeners() error {
-	m, err := ipc.ListenersMessage(sn.sup.shared.ipcListeners())
+	m, err := ipc.ListenersMessage(sn.sup.shared.ipcListeners(transport.SpaceID(sn.w.space)))
 	if err != nil {
 		return err
 	}

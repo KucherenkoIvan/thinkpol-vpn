@@ -31,12 +31,15 @@ const serverName = "www.example.net"
 // "site" to a line of input after the handshake. A connection idle for its
 // idle timeout is closed. What follows a failed handshake is failed's,
 // given the connection and a reader that records; nil reads on until the
-// far end closes.
+// far end closes. With greeting, it writes each of greeting first, as an
+// h2 site sends its SETTINGS once the handshake is done: records REALITY
+// learns as the target's post-handshake records.
 type target struct {
-	ln     net.Listener
-	cert   *x509.Certificate
-	idle   time.Duration
-	failed func(c *net.TCPConn, r io.Reader)
+	ln       net.Listener
+	cert     *x509.Certificate
+	idle     time.Duration
+	failed   func(c *net.TCPConn, r io.Reader)
+	greeting [][]byte
 
 	mu    sync.Mutex
 	conns []*recorder
@@ -59,6 +62,14 @@ func theTarget(t testing.TB) *target {
 	return sharedTarget
 }
 
+// startedLongAgo has tr's listeners and routers read their start as
+// MaxClockSkew earlier than it was, so their start rule refuses nothing:
+// for tests of the time window with a dialer whose clock is behind.
+func startedLongAgo(tr *Transport) *Transport {
+	tr.elapsed = func(start, now time.Time) time.Duration { return now.Sub(start) + transport.MaxClockSkew }
+	return tr
+}
+
 // newTargetAt starts a target listening on address.
 func newTargetAt(t testing.TB, address string) *target {
 	t.Helper()
@@ -66,6 +77,21 @@ func newTargetAt(t testing.TB, address string) *target {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = tg.ln.Close() })
+	return tg
+}
+
+// newGreetingTarget starts a target on loopback that writes greeting
+// once each handshake is done.
+func newGreetingTarget(t testing.TB, greeting ...[]byte) *target {
+	t.Helper()
+	tg, err := startTarget("127.0.0.1:0", time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tg.mu.Lock()
+	tg.greeting = greeting
+	tg.mu.Unlock()
 	t.Cleanup(func() { _ = tg.ln.Close() })
 	return tg
 }
@@ -146,6 +172,7 @@ func (tg *target) serve(c net.Conn, cfg *tls.Config) {
 	_ = c.SetDeadline(time.Now().Add(tg.idle))
 	tg.mu.Lock()
 	tg.conns = append(tg.conns, rec)
+	greeting := tg.greeting
 	tg.mu.Unlock()
 	tc := tls.Server(rec, cfg)
 	if err := tc.Handshake(); err != nil {
@@ -155,6 +182,11 @@ func (tg *target) serve(c net.Conn, cfg *tls.Config) {
 		}
 		_, _ = io.Copy(io.Discard, rec)
 		return
+	}
+	for _, g := range greeting {
+		if _, err := tc.Write(g); err != nil {
+			return
+		}
 	}
 	buf := make([]byte, 64)
 	if _, err := tc.Read(buf); err == nil {
@@ -274,13 +306,15 @@ func shortIDs() (credential, verifier []byte) {
 }
 
 // tap is a TCP man in the middle in front of an address: it passes
-// connections through and keeps what each dialer sent.
+// connections through and keeps what each dialer sent, and what it was
+// answered.
 type tap struct {
 	ln      net.Listener
 	address string
 
 	mu      sync.Mutex
 	streams []*bytes.Buffer
+	answers []*bytes.Buffer
 }
 
 func newTap(t *testing.T, address string) *tap {
@@ -302,15 +336,16 @@ func newTap(t *testing.T, address string) *tap {
 				_ = c.Close()
 				continue
 			}
-			buf := &bytes.Buffer{}
+			buf, answer := &bytes.Buffer{}, &bytes.Buffer{}
 			tp.mu.Lock()
 			tp.streams = append(tp.streams, buf)
+			tp.answers = append(tp.answers, answer)
 			tp.mu.Unlock()
 			go func() {
 				_, _ = io.Copy(io.MultiWriter(up, lockedWriter{&tp.mu, buf}), c)
 				_ = up.Close()
 			}()
-			go func() { _, _ = io.Copy(c, up); _ = c.Close() }()
+			go func() { _, _ = io.Copy(io.MultiWriter(c, lockedWriter{&tp.mu, answer}), up); _ = c.Close() }()
 		}
 	}()
 	return tp
@@ -319,11 +354,16 @@ func newTap(t *testing.T, address string) *tap {
 func (tp *tap) addr() string { return tp.ln.Addr().String() }
 
 // captured is what each dialer sent through the tap so far.
-func (tp *tap) captured() [][]byte {
+func (tp *tap) captured() [][]byte { return tp.copies(tp.streams) }
+
+// answered is what each dialer was sent through the tap so far.
+func (tp *tap) answered() [][]byte { return tp.copies(tp.answers) }
+
+func (tp *tap) copies(bufs []*bytes.Buffer) [][]byte {
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
-	out := make([][]byte, len(tp.streams))
-	for i, b := range tp.streams {
+	out := make([][]byte, len(bufs))
+	for i, b := range bufs {
 		out[i] = bytes.Clone(b.Bytes())
 	}
 	return out

@@ -48,7 +48,7 @@ type flow struct {
 	link  *serverLink // nil until a datagram opens one
 }
 
-func newListener(t *Transport, pc net.PacketConn, peers transport.Peers, camouflage transport.Camouflage, start startRule) *Listener {
+func newListener(t *Transport, pc net.PacketConn, peers transport.Peers, camouflage transport.Camouflage, start transport.StartRule) *Listener {
 	l := &Listener{
 		t:           t,
 		pc:          pc,

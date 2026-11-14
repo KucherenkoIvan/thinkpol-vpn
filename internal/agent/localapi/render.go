@@ -78,8 +78,8 @@ func WriteStatus(w io.Writer, st *localapiv1.Status, now time.Time) error {
 	if ls := st.GetPublicListeners(); len(ls) > 0 {
 		line("public listeners:")
 		for _, l := range ls {
-			line("  %s\trouted %d\tunauthenticated %d\tno space %d\toverloaded %d\trejected links %d",
-				l.GetTransport(), l.GetRouted(), l.GetUnauthenticated(), l.GetNoSpace(), l.GetStreamsOverloaded(), l.GetRejected())
+			line("  %s\trouted %d\tunauthenticated %d\tno space %d\toverloaded %d\tbound-closed %d\trejected links %d",
+				l.GetTransport(), l.GetRouted(), l.GetUnauthenticated(), l.GetNoSpace(), l.GetStreamsOverloaded(), l.GetStreamsBoundClosed(), l.GetRejected())
 		}
 	}
 	return tw.Flush()
