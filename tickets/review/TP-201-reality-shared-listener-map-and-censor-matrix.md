@@ -128,3 +128,4 @@ Round 2 (2026-11-12):
 - 2026-11-14 make lint (govulncheck included) and make test green on d0cfc51
 - 2026-11-14 full make lab-test on d0cfc51: lab phase ok (lab 755 s, censor, ip, labctl, prototypes; every matrix cell matched its expectation, reality's rows as on 40f2692, active prober's random 1000 closed as the reference's), node phase failed only in internal/agent TestAnExitThatNeverHandshakesIsExitNoHandshake (the known flake TP-210 is fixing; 38 other packages passed, reality's among them); make lab-gotest PKG=./internal/agent/ on d0cfc51 then passed, that test included. lab/RESULTS.md regenerated and not committed. Not verified: our listener against a stock Xray client; the 1024/1024 bounds under a real flood (unit tests with injected bounds only)
 - 2026-11-14 has-errors → in-progress (round 2 findings R2.x picked up), owner: agent-tp-201
+- 2026-11-14 in-progress → review
