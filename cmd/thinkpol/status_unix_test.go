@@ -72,6 +72,14 @@ func (n *statusNode) Diagnose(context.Context, bool) agent.Diagnostics {
 // returns the socket's path.
 func serveStatus(t *testing.T, node localapi.Node) string {
 	t.Helper()
+	return serveAPI(t, node, localapi.Policy{ServiceUID: uint32(os.Geteuid())})
+}
+
+// serveAPI is serveStatus deciding who may call by p; the socket is this
+// process's either way, so a caller reaches the service, and p alone
+// refuses it.
+func serveAPI(t *testing.T, node localapi.Node, p localapi.Policy) string {
+	t.Helper()
 	// Not t.TempDir: its long path would pass the unix socket path's
 	// limit (104 bytes on macOS).
 	dir, err := os.MkdirTemp("", "tpst")
@@ -80,8 +88,7 @@ func serveStatus(t *testing.T, node localapi.Node) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "api", "api.sock")
-	p := localapi.Policy{ServiceUID: uint32(os.Geteuid())}
-	l, err := localapi.Listen(socket, p)
+	l, err := localapi.Listen(socket, localapi.Policy{ServiceUID: uint32(os.Geteuid())})
 	if err != nil {
 		t.Fatal(err)
 	}

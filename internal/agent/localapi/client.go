@@ -9,7 +9,6 @@ import (
 	"math"
 	"net"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -27,7 +26,8 @@ import (
 // returns is sanitized (every string disarmed for a terminal) and its
 // errors are explained for a person; errors.Is finds ErrPermissionDenied,
 // ErrRootOnly, ErrNotRunning, ErrServerMode and the other refusals in them
-// ([IsPermission] either of the first two), and Dial's ErrServiceDown.
+// ([IsPermission] either of the first two; [Refusals] lists them all), and
+// Dial's ErrServiceDown.
 type Client struct {
 	conn *grpc.ClientConn
 	api  localapiv1.LocalServiceClient
@@ -141,7 +141,7 @@ func (c *Client) ConnectOnBoot(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if st.GetMode() == localapiv1.Mode_MODE_SERVER {
-		return false, &clientError{refusalMsg(ErrServerMode), ErrServerMode}
+		return false, &clientError{refusalMsg(ErrServerMode, ""), ErrServerMode}
 	}
 	return st.GetConnectOnBoot(), nil
 }
@@ -164,7 +164,7 @@ func (c *Client) KillSwitch(ctx context.Context) (*localapiv1.KillSwitch, error)
 		return nil, err
 	}
 	if st.GetMode() == localapiv1.Mode_MODE_SERVER {
-		return nil, &clientError{refusalMsg(ErrServerMode), ErrServerMode}
+		return nil, &clientError{refusalMsg(ErrServerMode, ""), ErrServerMode}
 	}
 	return st.GetKillSwitch(), nil
 }
@@ -230,9 +230,9 @@ func (e *clientError) Unwrap() error { return e.err }
 func dialError(path string, err error) error {
 	switch {
 	case errors.Is(err, fs.ErrPermission):
-		return &clientError{fmt.Sprintf("%s (%s)", refusalMsg(ErrPermissionDenied), path), ErrPermissionDenied}
+		return &clientError{fmt.Sprintf("%s (%s)", refusalMsg(ErrPermissionDenied, ""), path), ErrPermissionDenied}
 	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ECONNREFUSED):
-		return &clientError{fmt.Sprintf("%s (nothing listens at %s)", serviceDownMsg, path), ErrServiceDown}
+		return &clientError{fmt.Sprintf("%s (nothing listens at %s)", refusalMsg(ErrServiceDown, ""), path), ErrServiceDown}
 	}
 	return fmt.Errorf("connecting to the local API at %s: %w", path, err)
 }
@@ -245,12 +245,11 @@ func (c *Client) explain(err error) error {
 	}
 	var remote *grpckit.RemoteDomainError
 	if errors.As(err, &remote) {
-		if step, ok := strings.CutPrefix(remote.Code, startFailedPrefix); ok {
-			return &clientError{fmt.Sprintf(startFailedMsg, agent.Sanitize(step)), ErrStartFailed}
-		}
+		// Any refusal, with a detail or without: none reaches the caller
+		// as a bare code.
 		for _, r := range refusals {
-			if remote.Code == r.err.Code {
-				return &clientError{r.msg, r.err}
+			if detail, ok := r.err.detail(remote.Code); ok || remote.Code == r.err.code {
+				return &clientError{refusalMsg(r.err, detail), r.err}
 			}
 		}
 		return fmt.Errorf("refused: %s", agent.Sanitize(remote.Code))

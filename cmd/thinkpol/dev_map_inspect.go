@@ -32,11 +32,11 @@ func runDevMapInspect(_ context.Context, e env, args []string) error {
 	}
 	trust, err := devmap.ReadTrust(filepath.Join(*dir, devmap.TrustFile))
 	if err != nil {
-		return err
+		return input(err)
 	}
 	env, err := os.ReadFile(fs.Arg(0))
 	if err != nil {
-		return err
+		return input(err)
 	}
 	m, err := netmap.Verify(env, trust)
 	if err != nil {
@@ -53,7 +53,7 @@ func runDevMapInspect(_ context.Context, e env, args []string) error {
 	}
 	key, err := devmap.ReadNodeKey(*nodeKey)
 	if err != nil {
-		return err
+		return input(err)
 	}
 	section, err := m.Open(key.Map)
 	if err != nil {
@@ -61,7 +61,7 @@ func runDevMapInspect(_ context.Context, e env, args []string) error {
 	}
 	names, err := devmap.ReadNames(*dir)
 	if err != nil {
-		return err
+		return inputAt(err, nil, []string{*dir})
 	}
 	if _, err := fmt.Fprintf(e.stdout, "\nsection for %s\n", *nodeKey); err != nil {
 		return err

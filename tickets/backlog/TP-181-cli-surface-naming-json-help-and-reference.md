@@ -49,6 +49,7 @@ The rest of the CLI's one set of rules: machine codes are spelled one way, every
 - F16's fourth item (`health: ok` with a peer at `no path yet`) is TP-140's.
 - TP-168 defines the JSON convention; this ticket reuses its output code.
 - F20's item is moot if TP-166 has replaced `rules.local` by the time this starts.
+- From TP-167 review (2026-11-15): docs/design/api-overview-reference.md is at its 50 KB limit; split it (CLI, local API) and fix its stale exit codes there (exit 2, "exits 1 and prints no status"): the current table is api-overview.md's TP-167 section.
 
 ## Log
 - 2026-11-07 created in backlog (split from TP-167)
