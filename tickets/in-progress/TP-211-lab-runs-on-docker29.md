@@ -69,3 +69,4 @@ Round 1 (go-paranoid, go-style, pocket-torvalds), accepted by the orchestrator. 
 - 2026-11-14 couldn't verify: the routed gateway mode on a Docker 27 Linux host with br_netfilter (only Docker Desktop 27 and Linux Docker 29 were run); the systemd kill EIO is attributed to systemd 252's cgroup walk from its error path, not traced in the kernel
 - 2026-11-14 in-progress → review
 - 2026-11-15 review → has-errors (round 1 findings R1.1–R1.8)
+- 2026-11-15 has-errors → in-progress, owner: agent-tp-211 (round 1 fixes)
