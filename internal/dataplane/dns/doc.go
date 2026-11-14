@@ -255,12 +255,13 @@
 // the managed file, outside its original. Where it can't be told which
 // way a file was written (no file at all; the poll, which has no event;
 // a bind mount, where every write is in place, the node's own too; a
-// change made after the take-over's write, before the watch starts,
-// whose event can't be told from the take-over's own: inotify merges
-// another program's rename into the path with the take-over's when
-// they are queued back to back, so the file is read once the watch has
-// started, and anything but the node's own write is a change), the
-// write settles.
+// change made after the take-over's write and before the file is read
+// once the watch has started, whose event can't be told from the
+// take-over's own: inotify merges another program's rename into the
+// path with the take-over's when they are queued back to back, so the
+// file is read once the watch has started, and anything but the node's
+// own write is a change, a rename in the moment between the start and
+// that read included), the write settles.
 // Problem reports [ErrUnprotected] by one rule, with no model of how
 // the other program writes, once the watch has seen the
 // write: at once on a change event, within the 2 s poll otherwise (a

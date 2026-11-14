@@ -371,6 +371,11 @@ func setResolvConfTimed(path, uplink string, c SystemConfig, timing resolvConfTi
 	r.mu.Lock()
 	f, ferr := readResolvConfFile(r.path)
 	tell, err := r.apply(f, ferr)
+	// The state check below decides first, so the kind of the start's
+	// signal changes no outcome; own still keeps the take-over's own event
+	// from being signalled: that pending non-rename signal would merge
+	// with the first rename after the start (withPending) and turn its
+	// take-back at once into a settle.
 	own := 0 // the take-over's own write, if it wrote (rewriteResolvConf)
 	if err == nil && !bytes.Equal(r.written, f.content) {
 		own = 1
