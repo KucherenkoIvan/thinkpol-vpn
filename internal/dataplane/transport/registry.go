@@ -101,14 +101,90 @@ type PacketRouter interface {
 }
 
 // StreamRouter is a stream transport's half of a shared listener, as
-// PacketRouter is a datagram transport's: it says whose link each new
-// connection is.
+// PacketRouter is a datagram transport's: what every public listener of
+// the transport shares (the merged table, replay state), kept across
+// their reopens. ListenStream binds each public listener to it, and the
+// listener routes with it (StreamListener.RouteStream).
 type StreamRouter interface {
-	// RouteStream reads the start of a new connection (for tls, the
-	// ClientHello) without terminating anything, and reports whose link it
-	// is and the bytes it consumed.
-	RouteStream(conn net.Conn) (peer Identity, consumed []byte, ok bool)
 	Rejected() []PeerError
+}
+
+// StreamVerdict is a stream listener's decision on one connection.
+type StreamVerdict uint8
+
+const (
+	// StreamUnknown failed authentication, or was turned away before it
+	// could show who it is.
+	StreamUnknown StreamVerdict = iota
+	// StreamUnserved authenticated as a link of a space the caller
+	// doesn't serve.
+	StreamUnserved
+	// StreamStale authenticated but was sealed outside the clock window,
+	// or before the router started.
+	StreamStale
+	// StreamReplayed authenticated but was seen before (or the space's
+	// replay memory is full and can't vouch for it).
+	StreamReplayed
+	// StreamRouted authenticated, fresh and new: handed over.
+	StreamRouted
+	// StreamBoundClosed was closed past the listener's own bounds (on
+	// connections being decided, or kept spliced to its camouflage),
+	// whatever it authenticated as: a flood, or connections pinned open.
+	StreamBoundClosed
+)
+
+// StreamHandoff is a connection a stream listener authenticated, on its
+// way to its space's worker (a HandoffListener).
+type StreamHandoff struct {
+	Peer Identity
+	// Conn is the dialer's connection; Consumed what the router read from
+	// it.
+	Conn     net.Conn
+	Consumed []byte
+	// Target, if set, is a connection the router opened on Conn's behalf
+	// and that goes with it (reality's target, dialled at accept), and
+	// TargetRead what the router read from it and didn't pass on. What
+	// was written to it is the transport's business.
+	Target     net.Conn
+	TargetRead []byte
+}
+
+// Close closes the handoff's connections.
+func (h StreamHandoff) Close() {
+	if h.Conn != nil {
+		_ = h.Conn.Close()
+	}
+	if h.Target != nil {
+		_ = h.Target.Close()
+	}
+}
+
+// StreamListener is a stream transport's public listener behind a shared
+// listener, as its ListenStream opened it, bound to its StreamRouter.
+type StreamListener interface {
+	net.Listener
+	// HandoffSettings is what a worker's Handoff needs to serve the
+	// connections routed from this listener: the transport's own encoding,
+	// opaque to the supervisor, which passes it on as is.
+	HandoffSettings() []byte
+	// Camouflage is where the transport sends a connection it turns away
+	// (reality's splice to its target); never nil. The caller sends there
+	// what it turns away before routing.
+	Camouflage() Camouflage
+	// RouteStream reads the start of conn, accepted on this listener,
+	// without terminating anything, and decides it. Only StreamRouted
+	// comes back with connections, for the worker of the handoff's
+	// space; anything else the listener turned away itself, to its
+	// Camouflage or closed, and the handoff carries only the identity it
+	// authenticated as (none for StreamUnknown and StreamBoundClosed). serves is asked while the
+	// connection is decided, so a link of a space that isn't served is
+	// turned away like a stranger (StreamUnserved). waiting, if set, is
+	// called at most once, when conn needs no more routing work, only its
+	// dialer's bytes, and is held under the listener's own bounds: a
+	// caller bounding the connections being routed lets go of this one
+	// there. RouteStream returns once the connection is decided; where it
+	// was turned away to runs on.
+	RouteStream(conn net.Conn, serves func(Identity) bool, waiting func()) (StreamHandoff, StreamVerdict)
 }
 
 // Verdict is a PacketRouter's decision on one datagram.
@@ -130,10 +206,12 @@ const (
 
 // HandoffListener is a worker's listener for a stream transport behind a
 // shared listener: the supervisor accepted and routed the connection and
-// passes it on with the bytes its router consumed.
+// passes it on as its router handed it over. ServeStream owns h's
+// connections from then on, and returns at once: the worker hands it
+// every connection of the listener in turn.
 type HandoffListener interface {
 	Listener
-	ServeStream(conn net.Conn, consumed []byte)
+	ServeStream(h StreamHandoff)
 }
 
 // PacketRoutable is a datagram transport behind a shared listener. The
@@ -154,22 +232,21 @@ type PacketRoutable interface {
 }
 
 // StreamRoutable is a stream transport behind a shared listener. The
-// supervisor accepts connections on the public listener ListenStream opens,
-// routes each with the StreamRouter (which reads the start of the
-// connection) and passes the connection, with the bytes the router
-// consumed, to its space's worker, whose Handoff listener takes it from
-// there.
+// supervisor accepts connections on the public listener ListenStream
+// opens, has it route each (it reads the start of the connection) and
+// passes what it hands over to its space's worker, whose
+// Handoff listener takes it from there.
 type StreamRoutable interface {
 	Transport
-	// StreamRouter routes for peers, following their changes.
+	// StreamRouter is the routing state for peers, following their
+	// changes, shared by the transport's listeners.
 	StreamRouter(peers Peers) StreamRouter
 	// ListenStream opens the public listener a listener of the map
-	// describes.
-	ListenStream(ctx context.Context, cfg ListenConfig) (net.Listener, error)
+	// describes, checking its settings as Listen would, routing with
+	// router; a router of another transport is an error.
+	ListenStream(ctx context.Context, cfg ListenConfig, router StreamRouter) (StreamListener, error)
 	// Handoff is a worker's listener for the connections the supervisor
-	// passes on. The listener's settings stay with the supervisor's public
-	// listener (ListenStream): a worker's shared listener doesn't carry
-	// them yet, so a transport whose handoff needs them (tls, TP-028)
-	// adds them to the shared listener's message first.
-	Handoff(admission Admission) (HandoffListener, error)
+	// passes on from one public listener, address being where that
+	// listener is bound and settings its HandoffSettings.
+	Handoff(address string, settings []byte, admission Admission) (HandoffListener, error)
 }

@@ -19,10 +19,6 @@ import (
 // real thing: nginx as the camouflage site, behind the router in
 // lab.Upstream, and the servers a censor should tell from it.
 
-// camouflageName is the camouflage site's name: its certificate's, and
-// the one the prober's TLS handshake asks for.
-const camouflageName = "camouflage.example.net"
-
 // startNginx runs nginx in node as an ordinary HTTPS site for name: TLS
 // 1.2 and 1.3 (nginx 1.22 leaves 1.3 out unless told) on port on each of
 // addrs, HTTP/2 and HTTP/1.1, a self-signed certificate, Debian's default
@@ -62,23 +58,6 @@ http {
 	waitSockets(t, node, "-lnt", port, len(addrs))
 }
 
-// startCamouflage runs the camouflage site on lab.Upstream's camouflage
-// node, both families, port 443, unless it runs already (a row and its
-// case may both need it), and returns its addresses.
-func startCamouflage(t *testing.T, l *lab.Lab) []netip.AddrPort {
-	t.Helper()
-	node := l.Node(lab.Camouflage)
-	addrs := []netip.Addr{node.IPv4(lab.NetWorld), node.IPv6(lab.NetWorld)}
-	res, err := execResult(node, pollTimeout, "test", "-e", "/tmp/camouflage/nginx.conf")
-	switch {
-	case err != nil && res.ExitCode == 1:
-		startNginx(t, node, "/tmp/camouflage", camouflageName, 443, addrs)
-	case err != nil:
-		t.Fatalf("camouflage: %v\n%s", err, res.Stderr)
-	}
-	return []netip.AddrPort{netip.AddrPortFrom(addrs[0], 443), netip.AddrPortFrom(addrs[1], 443)}
-}
-
 // proberSettings points the prober at the camouflage site, server-1's
 // connections its suspects, and fully-encrypted's tags too.
 func proberSettings(t *testing.T, l *lab.Lab, camouflage []netip.AddrPort) json.RawMessage {
@@ -86,7 +65,7 @@ func proberSettings(t *testing.T, l *lab.Lab, camouflage []netip.AddrPort) json.
 	server := l.Node(lab.Server1)
 	b, err := json.Marshal(map[string]any{
 		"reference": map[string]any{
-			"name":      camouflageName,
+			"name":      lab.CamouflageName,
 			"addresses": []string{camouflage[0].String(), camouflage[1].String()},
 		},
 		"destinations": []string{server.IPv4(lab.NetServers).String(), server.IPv6(lab.NetServers).String()},
@@ -246,8 +225,8 @@ func TestProberTellsEchoFromNginx(t *testing.T) {
 	t.Parallel()
 	l := lab.Start(t, lab.Upstream())
 	server, dev := l.Node(lab.Server1), l.Node(lab.DeviceA)
-	camouflage := startCamouflage(t, l)
-	startNginx(t, server, "/tmp/entry", camouflageName, 443, serverAddrs(server))
+	camouflage := lab.StartCamouflage(t, l)
+	startNginx(t, server, "/tmp/entry", lab.CamouflageName, 443, serverAddrs(server))
 	const echoPort, relayPort = 7443, 9443
 	startEcho(t, server, echoPort)
 	startRelay(t, server, relayPort, camouflage)
@@ -261,7 +240,7 @@ func TestProberTellsEchoFromNginx(t *testing.T) {
 		}
 		for _, port := range []int{443, relayPort} {
 			res, err := execResult(dev, pollTimeout, "curl", "-sS", "-k", "--max-time", "5", "-o", "/dev/null",
-				"--resolve", fmt.Sprintf("%s:%d:%s", camouflageName, port, host), fmt.Sprintf("https://%s:%d/", camouflageName, port))
+				"--resolve", fmt.Sprintf("%s:%d:%s", lab.CamouflageName, port, host), fmt.Sprintf("https://%s:%d/", lab.CamouflageName, port))
 			if err != nil {
 				t.Fatalf("curl via %s:%d: %v\n%s", a, port, err, res.Stderr)
 			}
@@ -298,18 +277,18 @@ func TestServerHelloAgainstTheSite(t *testing.T) {
 	t.Parallel()
 	l := lab.Start(t, lab.Upstream())
 	server, dev := l.Node(lab.Server1), l.Node(lab.DeviceA)
-	camouflage := startCamouflage(t, l)
-	startNginx(t, server, "/tmp/entry", camouflageName, 443, serverAddrs(server))
+	camouflage := lab.StartCamouflage(t, l)
+	startNginx(t, server, "/tmp/entry", lab.CamouflageName, 443, serverAddrs(server))
 	const oldPort = 8443
 	server.MustExec(t, "sh", "-ec", "mkdir -p /tmp/old && cd /tmp/old && "+
 		"openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 "+
-		"-keyout key.pem -out cert.pem -subj /CN="+camouflageName+" 2>/dev/null")
+		"-keyout key.pem -out cert.pem -subj /CN="+lab.CamouflageName+" 2>/dev/null")
 	for _, a := range serverAddrs(server) {
 		server.Start(t, "openssl", "s_server", "-quiet", "-www", "-tls1_2", "-accept", netip.AddrPortFrom(a, oldPort).String(),
 			"-cert", "/tmp/old/cert.pem", "-key", "/tmp/old/key.pem")
 	}
 	waitSockets(t, server, "-lnt", oldPort, 2)
-	sites, err := json.Marshal(map[string]map[string]string{"sites": {camouflageName: camouflage[0].String()}})
+	sites, err := json.Marshal(map[string]map[string]string{"sites": {lab.CamouflageName: camouflage[0].String()}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +301,7 @@ func TestServerHelloAgainstTheSite(t *testing.T) {
 		}
 		for _, port := range []int{443, oldPort} {
 			_, _ = execResult(dev, pollTimeout, "curl", "-sS", "-k", "--max-time", "3", "-o", "/dev/null",
-				"--resolve", fmt.Sprintf("%s:%d:%s", camouflageName, port, host), fmt.Sprintf("https://%s:%d/", camouflageName, port))
+				"--resolve", fmt.Sprintf("%s:%d:%s", lab.CamouflageName, port, host), fmt.Sprintf("https://%s:%d/", lab.CamouflageName, port))
 		}
 		for _, cs := range []struct {
 			port    uint16

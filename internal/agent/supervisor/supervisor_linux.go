@@ -212,7 +212,11 @@ func (s *Supervisor) leaveSpaces(want map[netmap.SpaceID]Space) ([]*worker, erro
 	for id, sp := range want {
 		inbound[transport.SpaceID(id)] = sp.Inbound
 	}
-	s.shared.setSpaces(inbound)
+	for _, id := range s.shared.setSpaces(inbound) {
+		if w := s.workers[netmap.SpaceID(id)]; w != nil {
+			w.signal(w.listenersChanged)
+		}
+	}
 	var stopping []*worker
 	for id, w := range s.workers {
 		if _, ok := want[id]; !ok {
@@ -502,8 +506,13 @@ func (s *Supervisor) rollback(ws []*worker) {
 	for id, w := range s.workers {
 		inbound[transport.SpaceID(id)] = w.inbound
 	}
+	changed := s.shared.setSpaces(inbound)
+	for _, id := range changed {
+		if w := s.workers[netmap.SpaceID(id)]; w != nil {
+			w.signal(w.listenersChanged)
+		}
+	}
 	s.mu.Unlock()
-	s.shared.setSpaces(inbound)
 	for _, w := range ws {
 		close(w.done) // it was never supervised; keep Workers()/Close consistent
 		if w.cg != nil {

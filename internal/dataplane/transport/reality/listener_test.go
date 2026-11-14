@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
+	mathrand "math/rand/v2"
 	"net"
 	"slices"
 	"strings"
@@ -89,11 +91,252 @@ func TestAStallingProbeIsClosedWhenTheTargetClosesIt(t *testing.T) {
 	}
 }
 
+// A target that closes its side before it sent anything, as nginx does
+// on bytes that aren't TLS (a lingering close: its FIN, then it reads on),
+// is passed on as the site's own close would be: the client gets the FIN,
+// and what it still sends goes on to the target rather than being reset,
+// so a prober sees the site's close, not a reset.
+func TestATargetsSilentCloseReachesTheClientAsItsFIN(t *testing.T) {
+	setLinger(t, 2*time.Second)
+	header := []byte{23, 3, 3, 0, 16} // application data first: no hello
+	after := make(chan []byte, 1)
+	tg := newIdleTarget(t, 5*time.Second, func(c *net.TCPConn, r io.Reader) {
+		if !bytes.HasPrefix(r.(*recorder).bytes(), header) {
+			_, _ = io.Copy(io.Discard, r) // Listen's own checks of the target
+			return
+		}
+		_ = c.CloseWrite()
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		rest, _ := io.ReadAll(r)
+		after <- rest
+	})
+	l := listenTo(t, newTransport(Options{}), tg, newKeys(t))
+	c := probe(t, l.Addr().String(), header)
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err := c.Read(make([]byte, 1)); n != 0 || err != io.EOF {
+		t.Fatalf("the client read %d bytes, %v; want the target's FIN", n, err)
+	}
+	more := bytes.Repeat([]byte{0x42}, 995)
+	if _, err := c.Write(more); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.(*net.TCPConn).CloseWrite()
+	select {
+	case rest := <-after:
+		if !bytes.HasSuffix(rest, more) {
+			t.Errorf("the target read %d bytes after its FIN, want the client's %d", len(rest), len(more))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the target never finished reading")
+	}
+}
+
 // setLinger sets spliceLinger for one test.
 func setLinger(t *testing.T, d time.Duration) {
 	linger := spliceLinger
 	spliceLinger = d
 	t.Cleanup(func() { spliceLinger = linger })
+}
+
+// setWriteTimeout sets spliceWriteTimeout for one test.
+func setWriteTimeout(t *testing.T, d time.Duration) {
+	was := spliceWriteTimeout
+	spliceWriteTimeout = d
+	t.Cleanup(func() { spliceWriteTimeout = was })
+}
+
+// setHelloTimeout sets helloTimeout for one test.
+func setHelloTimeout(t *testing.T, d time.Duration) {
+	was := helloTimeout
+	helloTimeout = d
+	t.Cleanup(func() { helloTimeout = was })
+}
+
+// setGateBounds sets the listeners' bounds for one test.
+func setGateBounds(t *testing.T, mirrors, splices int) {
+	was := gateBounds
+	gateBounds.mirrors, gateBounds.splices = mirrors, splices
+	t.Cleanup(func() { gateBounds = was })
+}
+
+// afterTheFIN is a prober comparing a server with its site: it sends what
+// to address, reads until the far end ends the connection, then writes
+// every 200 ms, and says how the connection ended and which write after
+// the FIN failed first.
+func afterTheFIN(t *testing.T, address string, what []byte) string {
+	t.Helper()
+	c, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, err := c.Write(what); err != nil {
+		return fmt.Sprintf("the probe's write failed: %v", err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	switch _, err := io.Copy(io.Discard, c); {
+	case isTimeout(err):
+		return "still open"
+	case err != nil:
+		return "reset before any FIN"
+	}
+	for i := range 4 {
+		time.Sleep(200 * time.Millisecond)
+		if _, err := c.Write([]byte("after the FIN")); err != nil {
+			return fmt.Sprintf("FIN, then write %d failed", i+1)
+		}
+	}
+	return "FIN, then 4 writes went through"
+}
+
+// probesAfterTheFIN are random probes of 1000 bytes, as the lab's prober
+// sends, starting as a TLS record, an SSLv2 hello and plain text would.
+func probesAfterTheFIN() map[string][]byte {
+	r := mathrand.New(mathrand.NewPCG(1, 2))
+	out := map[string][]byte{}
+	for name, first := range map[string]byte{"tls record": recordTypeHandshake, "sslv2": 0x8f, "text": 'Q'} {
+		b := make([]byte, 1000)
+		for i := range b {
+			b[i] = byte(r.Uint32())
+		}
+		b[0] = first
+		out[name] = b
+	}
+	return out
+}
+
+// A site that closes whole once it read a probe that isn't TLS resets a
+// prober writing after its FIN; through the listener the same write
+// fails. The site here is a model: it reads all it is sent, then closes.
+func TestAfterTheSitesFINTheSameWriteFails(t *testing.T) {
+	tg := newIdleTarget(t, time.Minute, func(c *net.TCPConn, r io.Reader) {
+		_ = c.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		_, _ = io.Copy(io.Discard, r)
+	})
+	l := listenTo(t, newTransport(Options{}), tg, newKeys(t))
+	for name, what := range probesAfterTheFIN() {
+		t.Run(name, func(t *testing.T) {
+			site := afterTheFIN(t, tg.addr(), what)
+			if site != "FIN, then write 2 failed" {
+				t.Fatalf("the model site: %s", site)
+			}
+			if got := afterTheFIN(t, l.Addr().String(), what); got != site {
+				t.Errorf("through the listener: %s; the site: %s", got, site)
+			}
+		})
+	}
+}
+
+// A stranger that stops reading, its splice's writes stalled on its full
+// window, is cut once a write waited spliceWriteTimeout, freeing its
+// splice slot for the next stranger, whom the bound would close.
+func TestAClientThatNeverReadsFreesItsSpliceSlot(t *testing.T) {
+	setWriteTimeout(t, 300*time.Millisecond)
+	setGateBounds(t, maxMirrors, 1)
+	tg := newIdleTarget(t, time.Minute, func(c *net.TCPConn, _ io.Reader) {
+		_ = c.SetDeadline(time.Time{})
+		chunk := make([]byte, 64<<10)
+		for {
+			if _, err := c.Write(chunk); err != nil {
+				return
+			}
+		}
+	})
+	n := startShared(t, newTransport(Options{}), tg, newKeys(t), nil)
+	get := []byte("GET / HTTP/1.1\r\n\r\n")
+	stalled := probe(t, n.addr(), get)
+	_ = stalled.(*net.TCPConn).SetReadBuffer(4 << 10)
+	if v := n.verdict(t); v != transport.StreamUnknown {
+		t.Fatalf("the stalled stranger's verdict %d", v)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c := probe(t, n.addr(), get)
+		_ = c.SetReadDeadline(time.Now().Add(time.Second))
+		if k, _ := c.Read(make([]byte, 1)); k == 1 {
+			return // spliced: the target's bytes
+		}
+		_ = c.Close()
+		if time.Now().After(deadline) {
+			t.Fatal("a client that never reads still holds the only splice slot")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// tcpPair is a connected pair of loopback TCP connections: the one
+// accepted, then the one dialled.
+func tcpPair(t *testing.T) (accepted, dialled *net.TCPConn) {
+	t.Helper()
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	dialled, err = net.DialTCP("tcp", nil, ln.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err = ln.AcceptTCP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = accepted.Close()
+		_ = dialled.Close()
+	})
+	return accepted, dialled
+}
+
+// A target reset before the splice of a pair decided elsewhere could send
+// it a byte resets the client, as the site's own reset would reach it.
+func TestATargetResetBeforeAJoinedSpliceResetsTheClient(t *testing.T) {
+	clientEnd, client := tcpPair(t)
+	target, site := tcpPair(t)
+	_ = site.SetLinger(0)
+	_ = site.Close()
+	_ = target.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := target.Read(make([]byte, 1)); !isReset(err) {
+		t.Fatalf("the target's reset: %v", err)
+	}
+	_ = target.SetReadDeadline(time.Time{})
+	spliceJoined(clientEnd, target, time.Minute, time.Minute, []byte("GET / HTTP/1.1\r\n\r\n"), nil)
+	_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := client.Read(make([]byte, 1)); !isReset(err) {
+		t.Errorf("the client's read: %v, want a reset", err)
+	}
+}
+
+// An idle stranger holds a slot among the connections being decided for
+// helloTimeout at most, then stays spliced to the target, which ends it
+// as the site would: it can't keep members' hellos from being decided
+// until the target gives up on it.
+func TestAnIdleStrangerFreesItsMirrorSlotAtTheHelloTimeout(t *testing.T) {
+	setHelloTimeout(t, 300*time.Millisecond)
+	setGateBounds(t, 1, maxSplices)
+	tr := newTransport(Options{})
+	k := newKeys(t)
+	id, verifier := shortIDs()
+	tg := newIdleTarget(t, time.Minute, nil)
+	l := listenTo(t, tr, tg, k, peerLink(verifier))
+	idle := probe(t, l.Addr().String(), nil)
+	if tg.connWith(nil) == nil {
+		t.Fatal("the idle stranger's target was never dialled")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := dial(t, tr, l.Addr().String(), k, id); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("an idle stranger still holds the only slot for hellos being decided")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = idle.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if _, err := idle.Read(make([]byte, 1)); !isTimeout(err) {
+		t.Errorf("the idle stranger was closed (%v), not left to the target", err)
+	}
 }
 
 // badRequest is a target answering a connection whose handshake failed
@@ -155,11 +398,11 @@ func TestAnAnswerAfterTheClientsFINFlowsOnPastTheLinger(t *testing.T) {
 	}
 }
 
-// Before the hello is decided, the target closing without a word closes
-// the client whole, as REALITY's server does: a prober writing after the
-// FIN is reset. The reset shows on the next write: Linux reads EOF after
-// it, since the FIN came first.
-func TestBeforeTheHelloTheTargetsCloseClosesTheClientWhole(t *testing.T) {
+// Before the hello is decided, a target that closes whole without a word
+// (no lingering close) resets a prober writing after its FIN at the write
+// the site's own reset would: the first write goes on to the target,
+// whose reset resets the client at once, so the second fails.
+func TestBeforeTheHelloATargetsWholeCloseResetsTheClient(t *testing.T) {
 	tg := newIdleTarget(t, 300*time.Millisecond, nil)
 	l := listenTo(t, newTransport(Options{}), tg, newKeys(t))
 	c := probe(t, l.Addr().String(), []byte{recordTypeHandshake, 3, 1, 0x02})
@@ -174,7 +417,7 @@ func TestBeforeTheHelloTheTargetsCloseClosesTheClientWhole(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Error("two writes past the FIN went through: the listener's end of the client is still open")
+	t.Error("two writes past the FIN went through: the site's reset reached the client late or not at all")
 }
 
 // Before the hello is decided, the client's FIN closes the target whole,
@@ -624,12 +867,12 @@ func TestARefusedEntryDropsItsShortID(t *testing.T) {
 func TestTheListenersClockRefusesAStaleSealBeforeREALITY(t *testing.T) {
 	k := newKeys(t)
 	id, _ := shortIDs()
-	ahead := newTransport(Options{Now: func() time.Time { return time.Now().Add(2 * time.Minute) }})
+	ahead := startedLongAgo(newTransport(Options{Now: func() time.Time { return time.Now().Add(2 * time.Minute) }}))
 	l := listenFor(t, ahead, k, 60, peerLink(id))
 	if _, err := dial(t, newTransport(Options{}), l.Addr().String(), k, id); !errors.Is(err, ErrNotAuthenticated) {
 		t.Errorf("dial sealed now through a 1-minute window 2 minutes ahead: %v, want %v", err, ErrNotAuthenticated)
 	}
-	ok := newTransport(Options{Now: func() time.Time { return time.Now().Add(30 * time.Second) }})
+	ok := startedLongAgo(newTransport(Options{Now: func() time.Time { return time.Now().Add(30 * time.Second) }}))
 	l = listenFor(t, ok, k, 60, peerLink(id))
 	if _, err := dial(t, newTransport(Options{}), l.Addr().String(), k, id); err != nil {
 		t.Errorf("dial sealed now through a 1-minute window 30 s ahead: %v", err)
