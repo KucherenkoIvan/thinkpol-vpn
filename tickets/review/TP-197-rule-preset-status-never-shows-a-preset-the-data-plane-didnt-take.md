@@ -71,3 +71,4 @@ Review round 1 (go-paranoid, go-style), accepted by the orchestrator. The design
 - 2026-11-15 out of scope: proto/thinkpol/localapi/v1/localapi.proto's SetRulePreset comment lists its refusals without rule_preset_not_enforced (proto left alone to keep the merge with TP-167 small; it needs make proto); ReloadRules (new lists) failing in its layout is only logged, not retried, as before this branch (the preset stays the same, so status is not wrong about it).
 - 2026-11-15 couldn't verify: nothing device-only; platform-independent agent code, covered by unit tests and the lab.
 - 2026-11-15 has-errors → in-progress (round 1 findings R1.1–R1.8 picked up)
+- 2026-11-15 in-progress → review
