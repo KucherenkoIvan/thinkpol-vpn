@@ -208,14 +208,16 @@
 // or a reboot, with nothing kept anywhere else. The rewrite is atomic (a
 // new file, synced, renamed over it); only a file that can't be renamed
 // over (a bind mount, as /etc/resolv.conf often is in containers: EBUSY,
-// EXDEV) is rewritten in place. Restore puts the original back, as a
-// file or the symlink it was; a resolv.conf another program wrote since
-// is left alone.
+// EXDEV) is rewritten in place, and is empty between the open's
+// truncation and the write (RESIDUAL-RISKS.md RR63). Restore puts the
+// original back, as a file or the symlink it was; a resolv.conf another
+// program wrote since is left alone.
 //
-// The file is watched (inotify on its directory, and polled every 2 s as
-// a backstop) and taken back if another program rewrites it, at once or
-// once the write settles (below); what that program wrote becomes the
-// new original, and the resolvers it names the domestic upstream.
+// The file is watched (inotify on its directory, set up before the
+// take-over, and polled every 2 s as a backstop) and taken back if
+// another program rewrites it, at once or once the write settles
+// (below); what that program wrote becomes the new original, and the
+// resolvers it names the domestic upstream.
 // resolved's stubs (127.0.0.53, 127.0.0.54) are never used as a direct
 // upstream: a file naming only them falls back to resolved's uplink
 // file, and if that yields nothing the previous upstreams are kept (and the log says to set `-dns-upstream`). Behind
@@ -252,9 +254,16 @@
 // over a half-written one, and the writer's later lines would land in
 // the managed file, outside its original. Where it can't be told which
 // way a file was written (no file at all; the poll, which has no event;
-// a bind mount, where every write is in place, the node's own too), the
-// write settles. Problem reports [ErrUnprotected] by one rule, with no
-// model of how the other program writes, once the watch has seen the
+// a bind mount, where every write is in place, the node's own too; a
+// change made after the take-over's write and before the file is read
+// once the watch has started, whose event can't be told from the
+// take-over's own: inotify merges another program's rename into the
+// path with the take-over's when they are queued back to back, so the
+// file is read once the watch has started, and anything but the node's
+// own write is a change, a rename in the moment between the start and
+// that read included), the write settles.
+// Problem reports [ErrUnprotected] by one rule, with no model of how
+// the other program writes, once the watch has seen the
 // write: at once on a change event, within the 2 s poll otherwise (a
 // change no event reports; we suspect that is every write in place on a
 // bind mount, whose events go to the source file's own directory, not
@@ -297,6 +306,10 @@
 // progress from a finished one; the lines a writer appends after it are
 // caught by the backstop, but a writer that writes through one open
 // file loses what it writes after the take-over (RESIDUAL-RISKS.md RR5).
+// Another program's write between the take-over's read and its write
+// (a file renamed in, or a write in place) is overwritten by it: what
+// that program wrote is lost, the original is the file read before it,
+// and nothing reports it until the program writes the file again (RR5).
 //
 // An empty /etc/resolv.conf can be a valid configuration (the resolver
 // then asks the local host), so one that stays empty through the settle
