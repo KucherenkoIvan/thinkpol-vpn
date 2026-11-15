@@ -1,292 +1,296 @@
 # thinkpol-vpn — Chains and hop groups design
 
-Chains with hop groups and failover (M3: PRD R5–R7, N9, C4's JA3/JA4 and throttling): how a chain gets into the map, how a device finds out a path is broken past its first hop, how it picks between paths, why an entry switch keeps open connections, and how the lab proves it. The entry point is [DESIGN.md](../../DESIGN.md); `RRn` are rows of [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md).
+Chains with hop groups and failover (M3: PRD R5–R7, N9, C4's JA3/JA4 and throttling): what a chain is in the map, what the builder refuses, how a device learns that a path past its first hop is broken, how it picks a path, why an entry switch keeps open connections, and how the lab proves it. The entry point is [DESIGN.md](../../DESIGN.md); `RRn` are rows of [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md), numbered as after TP-217 (so `reality`'s minimal padding is RR65).
 
-What is already decided stays decided, and this file builds on it: destination routing, hop groups as first hops and next hops, and the ingress and egress settings ([overlay](overlay.md#data-plane-every-node-one-binary)); `chain:<name>` and "chains in use at the same time end at different exits" ([routing](routing.md#routing-rules-and-dns)); traffic shape belongs to the transport ([transports](transports.md)); the path layer's frames, liveness, leader and follower, and `Failover` ([`path`](../../internal/dataplane/path/doc.go), TP-006); control writes and `MaxControlHold` (TP-027); exit health graded by WireGuard's handshake (TP-195, TP-212, RR48).
+This file builds on what is decided: destination routing, hop groups and ingress/egress ([overlay](overlay.md#data-plane-every-node-one-binary)); `chain:<name>` and "chains in use at the same time end at different exits" ([routing](routing.md#routing-rules-and-dns)); traffic shape belongs to the transport ([transports](transports.md)); the path layer's frames, liveness, leader and follower and `Failover` ([`path`](../../internal/dataplane/path/doc.go), TP-006); control writes and `MaxControlHold` (TP-027); exit health by WireGuard's handshake (TP-195, TP-212, RR48). The section [Moves to `path/doc.go` at M3-4](#moves-to-internaldataplanepathdocgo-at-m3-4) is mechanism, kept here only until that ticket moves it; the M3 plan goes once its tickets are filed.
 
-Why a file of its own: M3 adds a mechanism (end-to-end probes), a decision on every one of TP-031's open policies, and a lab plan. Folded into overlay.md and routing.md it would more than double both, and the probes belong to neither: they are about paths, not destinations or rules. Overlay keeps the model ("hop groups make failover a path-layer decision"); this file holds how. The last section, the M3 plan, goes once its tickets are filed: what stays true moves into this file's other sections and the package docs.
+**Constraint.** Nothing in M3 changes the kill switch, the firewall, DNS takeover, the route table or the service. One existing path is touched: `overlay_mtu` lowers a node's TUN MTU, and an MTU below 1280 sets `IPv6Off`, which drops the overlay's IPv6 routes (`routetable.go:212`). The builder therefore refuses an `overlay_mtu` below 576, and below 1280 while the space carries IPv6.
 
-## The model in one paragraph
+## The model
 
-A chain is a named way out: an exit, reached through one or more hops, each hop a node or a **hop group**. A group is not an object any node sees: at the start of a chain it becomes the device's candidate first hops to the exit (`netmap.Peer.Paths`), in the middle a relay's next hops (`netmap.Route.NextHops`), in both cases in priority order with a **policy** next to them. The device leads: it probes each candidate path end to end, picks one by the policy, and sends WireGuard's packets for the exit through it; the exit follows the path the device's authenticated traffic arrives by. WireGuard's session is with the exit, so a switch of entries changes nothing WireGuard, the exit's NAT or the open connection can see but a short gap and a few reordered packets.
+A chain is a named way out: one exit, reached through hops. In M3 a chain is either **a group straight to its exit** (`[ru-1 | ru-2] → nl-1`: the device's candidate first hops) or **a line of single relays** (`A → B → exit`). A group is not an object any node sees: it compiles into a device peer's candidate first hops (`netmap.Peer.Paths`) with a policy. The device leads: it picks a first hop by the policy from what each member **vouches** about its link to the exit, sends WireGuard's packets for the exit through it, and the exit follows the first hop the device's authenticated packets arrive by. WireGuard's session is with the exit, so an entry switch is only a gap to it, the exit's NAT and the connection.
+
+**Why a group only directly before the exit.** A relay behind a group would pick its hop back toward the device by its own `Failover` over the group's members (`node.go:528-545`, no following), so after the device leaves a blackholed member the relay keeps replying into it. Relays answering a device through the neighbor its last packet came from (relay-follow) fixes that; it is later work (M3-L1, RR72), not M3.
 
 ## Chains in the map and the builder
 
-**The map carries no new object for groups.** A device's section already has what it needs: the chain (`Chain{Name, Exit}`), the exit as a peer, and the exit's candidate first hops. A group name, its members' roles and the rest of the chain stay in the spec and the controller (S1, DESIGN rule 5: a node knows only what it needs). New fields, all ignorable by older readers without widening anything (see [Rollout](#rollout-and-older-nodes)):
+**The map carries no group object.** New fields, each one an older reader may ignore without widening anything ([Rollout](#rollout-and-older-nodes)):
 
 | Field | Where | Meaning |
 |---|---|---|
-| `policy` | `Peer` (first hops), `Route` (next hops) | `failover` (0, the default), `lowest_latency`, `spread`. An unknown value reads as `failover` |
-| `follow` | `Peer` | This node follows the peer: set by the builder on an exit's (any server's) section for a device peer. Unset: the node-id rule of TP-006 |
-| `probe` | `Peer` | Probe the paths to this peer end to end. Set for chain exits in use whose node answers probes |
-| `delay_bound` | `Path` | The most the transports along this path may hold a packet, both ways, in milliseconds: the sum of every link's `Shaping.MaxDelay()` at both its ends (the probing ends' control holds come on top, in the probe timeout) |
-| `overlay_mtu` | `Section` | The largest TUN MTU every path from this node to its peers carries (below) |
+| `policy` | `Peer` | `failover` (0, default), `lowest_latency`, `spread`; unknown reads as `failover`. No `Route` policy in M3: groups are never a relay's next hops |
+| `follow` | `Peer` | `unset` (0: TP-006's id rule), `lead`, `follow`. The builder sets `lead` on a device's exit peer and `follow` on the exit's device peer, so a device leads its exits whatever the ids |
+| `vouch` | `Peer` | Ask each first hop to vouch for its link to this peer. Set for a chain's exit when the exit and the members are `chains`-capable |
+| `group` | `Peer` | The group's name, display only (status, events); checked by `CheckChainName` |
+| `delay_bound` | `Path` | The most the transports along device → member → exit may hold a packet, both ways, ms: the sum of each link's `Shaping.MaxDelay()` at both ends |
+| `overlay_mtu` | `Section` | The largest TUN MTU every path from this node to its peers carries |
 
-**Validation** (`netmap.Build`, and devmap's checker with positions):
+**How the builder knows a node's version.** The map holds none (only `min_reader` and its own version), so the spec gets the smallest field that says it: devmap's node entry takes `capabilities: [chains]`, meaning the node answers vouch probes, honours `follow` and reads `overlay_mtu`. Absent means pre-M3 (open question 7). The controller later fills the same from capabilities nodes report (TP-183). With it:
 
-- N9 per member: every member of a chain's first hop allows ingress (`AllowIngress`) and the exit allows egress; middle members need neither (TP-014: a worker's dials to its section's endpoints leave by the uplink whatever its egress). The cross-section check sits next to `hiddenFromDevices` (`internal/netmap/envelope.go`), devmap's next to the ingress check in `checker.paths`.
-- **The exit is one node.** A group in the exit position would move WireGuard's session and the exit's NAT, so every connection would break on a switch (R7). The builder refuses it; exit failover is a separate question (open question 4).
-- A group has 1 to 8 members (a `Choice` stays small, and the links between two groups grow as their product), each a server, none twice in one chain; a chain has at most `DefaultHopLimit − 2` relays, so the hop limit never ends a valid chain.
-- Consecutive hops are adjacent: the builder emits a link between every member of one hop and every member of the next (entries × exit). `PathConfigFrom` drops a first or next hop it isn't adjacent to, so a missing link would silently shrink a group.
-- **Routes are symmetric.** Every relay a chain crosses routes to the exit (next hops: the next group's members, or the exit) and back to each device the chain carries (next hops: the previous group's members, or the device itself). This is TP-006's precondition for a strict reverse-path check and, here, for probe replies (they go back the way the probe came). The check stays loose in M3; making it strict is a follow-up once every map is built this way.
-- Names: Build already holds chain names to `CheckChainName` (`[a-z0-9-]`, up to 32, `internal/netmap/rule.go`); the reader (`rulesWellFormed`) checks only that a name is set and unique. M3 makes the reader apply `CheckChainName` too, as TP-022's review asked, so a map built by anything else can't put other bytes into the status. Group names use the same rule in the spec and never reach a node. Two chains ending at the same exit are refused already (routing.md).
-- Loops: the existing "paths crossing the same relays in opposite directions" refusal covers chains, since a chain is expanded into paths before it.
+- an exit without `chains` can't follow, so the device gets **one** first hop toward it: the group's first member, and inspect warns `group ru-entries narrowed to ru-1: nl-1 can't follow`;
+- a member without `chains` can't vouch, so it is dropped from a group of two or more (warned);
+- `vouch` and `follow` are emitted only toward `chains` nodes.
 
-**One WireGuard device per egress** is built (`exitDevice`, `layout` in `internal/dataplane/routing.go`): each exit a used chain ends at gets a device of its own, allowed the internet. M3 adds nothing there but the proof TP-030 asks for: one rule through `ru-nl` and another straight to a second exit, at the same time, each on its own device. The status names an egress by its chain, not by the device's internal name.
+**Validation** (`netmap.Build` and devmap's checker, with positions):
 
-**MTU.** Today each node's TUN MTU is the minimum over its own links' budgets (`path.MessageBudget`) less WireGuard's 32 bytes. A device's links are only the first leg: an entry → exit link with a smaller budget (another transport, other shaping) drops the larger messages (`ErrMessageSize` at the relay), and since the relay can't speak ICMP for an inner TCP flow, the connection stalls on its large segments: a path-MTU black hole that appears only after a switch to that entry. So the builder computes, per node, the minimum budget over every link on every path from it to each of its peers, all group members included, and writes it into the section (`overlay_mtu`); the engine uses the smaller of that and its own links' minimum. Then **every candidate path of a peer carries the same MTU, and a switch never changes it**. An older reader ignores the field and keeps today's per-node value (the mixed-version row, RR68).
+- **Shape.** A chain's `via` is either one group or single servers; a group followed by anything but the exit is refused: `group ru-entries: in M3 a group may only be the hop before the exit`. The exit is one node (open question 4). A group has 1 to 8 members, each a server, none twice in a chain; a chain has at most `DefaultHopLimit − 2` relays.
+- **N9 per member**: every member allows ingress and the exit allows egress (next to `hiddenFromDevices`, `internal/netmap/envelope.go:225`; devmap's in `checker.paths`, `spec.go:872`).
+- **Adjacency**: a link between every member and the exit, and between consecutive relays (`PathConfigFrom` would silently drop a non-adjacent first hop).
+- **Symmetric routes**: each member and relay routes to the exit and back to each device the chain carries (a next hop equal to the destination delivers). The reverse-path check stays loose in M3.
+- **Bound**: the builder computes each chain's failover bound ([formula](#the-bound)) with its `delay_bound`, warns above 12 s and refuses above 15 s.
+- **MTU**: refuses an `overlay_mtu` below 576, or below 1280 while the space has IPv6 (see the constraint above).
+- **Names**: Build already holds chain names to `CheckChainName` (`rule.go:300`); M3 makes the reader (`rulesWellFormed`, `rule.go:331`) apply it to chain and group names too, as TP-022's review asked.
+- **Loops** are refused only by devmap (`plan.go:413`), on paths after expansion; `netmap.Build` has no loop check, and a group adds no relay, so M3 adds none.
 
-**devmap** gets a `groups:` key and a `via:` field on chains, and keeps `paths:` for everything else:
+**MTU.** A device's TUN MTU today comes from its own links only. A member → exit link with a smaller budget drops larger messages at the member (`ErrPacketTooLong`/`ErrPacketSize`, `link.go:389`) and nothing tells the inner TCP flow: a black hole after a switch. So the builder computes, per node, the minimum budget over every link of every path to its peers, all members included, as `overlay_mtu`; the engine uses the smaller of that and its own. **Every candidate path of a peer carries the same MTU.**
+
+**devmap**:
 
 ```yaml
+nodes:
+  - name: ru-1
+    capabilities: [chains]
 groups:
   - name: ru-entries
     policy: failover          # failover | lowest-latency | spread
-    members: [ru-1, ru-2]     # priority order: what failover follows
+    members: [ru-1, ru-2]     # priority order
 chains:
   - name: ru-nl
-    via: [ru-entries]         # hops in order: groups or single servers
-    exit: nl-1                # one server with egress: true
+    via: [ru-entries]         # one group, or single servers in order
+    exit: nl-1
 ```
 
-`via` is new and optional: a chain without it keeps today's meaning (the exit reached by whatever `paths:` lead to it). Every device of the space gets each chain's paths, `[device, member, …, exit]` per member, as it gets the rules today.
+`via` is optional; without it a chain keeps today's meaning. **One WireGuard device per egress** exists (`routing.go`); M3 proves two chains to two exits at once.
 
-## End-to-end probes
+## How a path is proven: vouches, not end-to-end probes
 
-Link liveness proves only the first hop. A path is proven end to end by a probe that goes the whole way to the exit and a reply that comes back the same way.
+Every grouped path is device → member → exit, and the member already proves its link to the exit every 2 s (TP-006). So instead of the first draft's end-to-end probes, **the member vouches**: the device's link probe names the exit, and the reply says whether the member's link to it is up, how long ago proven, and its unheld round trip.
 
-### Format: a message in a packet frame, not a frame kind
-
-The probe travels as an ordinary **packet frame** (kind 1, with destination, source and hop limit) whose message is not WireGuard's:
-
-```
-packet frame:  kind=1 | hop limit [1] | destination [8] | source [8] | message
-probe:         0x50 | 0 0 0 | token [8] | flags [1] | zero [19]      (32 bytes)
-probe reply:   0x51 | 0 0 0 | token [8] | flags [1] | zero [19]      (32 bytes)
-flags:         bit 0 unheld (sent with WritePacket; answer the same way)
-```
-
-TP-006 left room for "a new frame kind"; a new **message type** inside the packet frame is the better use of it:
-
-- **Relays need no upgrade.** A relay forwards packet frames by destination without reading the message, so probes cross pre-M3 relays as they are. New frame kinds would be dropped by every older relay (unknown kinds are dropped), and every path through one would read as dead.
-- **Older destinations drop it.** A pre-M3 exit's path layer hands the message to WireGuard, and wireguard-go drops a message of unknown type. Nothing answers, and the builder doesn't ask (`probe` unset) for a peer whose node can't answer.
-- **It never counts as WireGuard's.** `wgType` reads 0 for these types, so a probe or reply refreshes neither `HeardVia` nor following, and WireGuard never sees one: the destination's path layer answers probes before `deliver`, and the prober's takes replies before the Bind's queue.
-- **32 bytes is a WireGuard keepalive's size**, so inside the transport a probe falls in the same size class as a keepalive and needs no shaping of its own.
-
-**Answering.** A node answers a probe addressed to itself when its source is one of its peers and it came from an adjacent node of its space: a reply with destination and source swapped, sent **on the link it arrived by** (not by the peer's selector), so the reply retraces the probe's last hop and the relays' symmetric routes take it the rest of the way. Replies are limited per source (20 a second, a token bucket; the rest dropped and counted), so an adjacent node can't use a node as a reflector. The answer is the path layer's alone: no WireGuard key, no new crypto (DESIGN rule 4).
-
-**Matching.** The prober keeps the last 8 outstanding tokens per path (peer, first hop), random as link probes' are. A reply counts once, only if it matches, and only for the first hop it came back through; one that comes back by another hop is counted (`path.probe_reply_other_hop`) and proves nothing.
-
-### What proves a path, and when to probe
-
-A path's proof is either:
-
-- a matching probe reply, or
-- WireGuard-authenticated traffic from the peer arriving through that first hop (the `Followed` evidence, which WireGuard adopts only from a packet it authenticated) while this node has been sending through it. Data already flowing both ways is the cheapest proof there is, and probing over it only adds a rhythm.
-
-A reply that comes back through the first-hop link also proves **that link** both ways, so on a link where an end-to-end probe runs, it replaces the link probe: one probe stream per link, never two.
-
-Rates (all `path.Options`, jittered uniformly by the stated fraction; defaults to be tuned in the lab):
-
-| Path | Probes | Numbers |
+| | End-to-end probes (first draft) | Vouches (chosen) |
 |---|---|---|
-| Active, sending | Only when the last proof is older than `PathProbe` | `PathProbe` 2 s ± 25 % |
-| Active, idle (nothing sent for 30 s) | As a warm backup | |
-| Warm backup | Background | `WarmProbe` 20 s ± 50 %; at most 15 s for `udp`, whose NAT mappings expire first |
-| Every candidate, on suspicion | One burst, at once | when the active path misses its first proof |
-| `lowest-latency` | One unheld probe per path per `WarmProbe`, active path included | |
+| New traffic | a stream per device and member, across the border, timed to the device | none: rides each link's probe; the border carries the server pair's probes only |
+| Idle device, two vantages | linked to its exit within the hour | nothing device-timed crosses |
+| Proves | the exit's path layer answers through the member | the member ↔ exit link is up both ways |
+| Reflection, forged probes | reply limits, tokens, matching | link-local, nothing to reflect |
+| Trust, upgrades | member can answer for the exit; exit upgraded | the member's word; members and exit upgraded |
+| Single-relay lines | probed past them | first relay's next link only (RR48) |
 
-**Suspicion** is what keeps the backups slow and the bound fast: when the active path misses its first proof, every other candidate is probed at once, so by the time the active path is declared dead its backups' state is a second old, not twenty.
+The trust is the same either way (a member could answer probes itself), and a member that carries traffic can drop it anyway (RR49). What vouches lose is proof past a relay's next link, which M3 doesn't need: lines of single relays have no choice to make. Open question 6 lets the owner reverse this.
 
-**Dead.** An active path without proof for `PathDead` while this node sends through it is dead. `PathDead` = max(7 s, 3 × the probe timeout); the probe timeout = `2 × MaxControlHold` + the path's `delay_bound` + 2 × its smoothed probe round trip, at least 1 s. A first-hop link down (TP-006's `DeadAfter`, 6 s) makes every path through it dead at once. A warm backup is up while its last proof is within 3 × `WarmProbe`.
+**Proof is never WireGuard traffic.** Inbound data doesn't count: its freshness is set before WireGuard authenticates (`bind.go:285`), and it proves only one direction. A vouch reply is a link frame inside the transport's seal: only the adjacent node can forge one, and that node is the member being trusted.
 
-**Warm links change cadence.** TP-006 probes every link every 2 s; M3 probes a link at `PathProbe` only while it carries a current path that sends, and at `WarmProbe` otherwise, with `DeadAfter` scaled to three intervals of whichever cadence applies. TP-027 asked for exactly this: no probes on links that carried data recently, jittered intervals, warm backups probed less often. Servers' links to each other follow the same rule, so an idle entry → exit link isn't a 2-second metronome on the border segment either.
+**Up, suspect, down.** A path is:
 
-### Shaping and `MaxControlHold`
+- **up**: its first-hop link is up and the member's latest vouch says up, received within the link's `DeadAfter`;
+- **suspect**: the current path missed one vouch reply; the warm backup is probed at once;
+- **down**: the member vouches down, or the device's link to it is down, or a burst probe went unanswered within the probe timeout (a backup is never "up" on old proof);
+- **unproven**: linked, no reply yet. `Failover`'s "first linked" fallback takes unproven paths, never down ones.
 
-Probes and replies leave their **originating end** through `transport.WriteControl`, so a shaping transport may hold each up to `MaxControlHold` (500 ms) to ride with data or a cover unit, or send it as the cover unit; relays forward them as the packets they are, unheld. Hence the timeout above: two holds, plus whatever the path's shaping adds (`delay_bound`), plus the round trip. An unheld probe (`lowest-latency`) goes out with `WritePacket` and is answered the same way; its round trip is a latency sample only on paths whose `delay_bound` is zero beyond the control holds (no batching or jitter anywhere on it). The path layer still never pads.
+**Clocks.** A change of cadence (idle → sending, backup → current) restarts both the link's `DeadAfter` clock and the vouch's from the change, with a probe sent at once, so an old warm proof never makes a promoted path dead on arrival.
 
-### What probes reveal, and how they hide
+**Switch at once, and tell the exit.** On detecting the current path down, the device's path layer re-runs the selector from its timer, not on the next `Send`, and asks WireGuard to send one keepalive to the peer: `Device.LookupPeer(key).SendKeepalive()` (pinned wireguard-go, `device/device.go:341`, `device/send.go:81`). It queues an empty data packet, or starts a handshake when no keypair is current (`send.go:345`); the exit adopts the new endpoint only after authenticating either (`receive.go:515`, `:374`) and follows. `SendKeepalivesToPeersWithCurrentKeypair` (`device.go:406`) exists too but sends to every peer; the per-peer call is the right one. So the exit follows even when the device is idle or only downloading.
 
-Inside the transport's seal a probe is a 32-byte message: the transport's padding decides what a capture sees (`reality`'s 512-byte floor, RR58; `udp`'s buckets when set). What padding can't hide is **rhythm**, so the design keeps the rhythm thin:
-
-- **On an active path with traffic, no probes at all**: data both ways is the proof. The only probes there are during one-way flows and the seconds after a break.
-- **Warm backups and idle paths: one small exchange every 10–30 s per link**, jittered by half, and none where a link probe would have gone anyway: a net cut against today's 2-second link probes on every link.
-- **Request and reply are the same size**, like most keepalives in TLS-wrapped protocols; under `reality` both are a floor-sized record.
-- **The lab judges it**: the WireGuard-rhythm module runs against the chain rows with probes on, and must pass ([The lab](#the-lab)).
-
-What stays visible, proposed as residual rows: a device holds a warm, mostly idle disguised connection to **every** member of its entry group, which a censor can read as one client with several long-lived sessions to hosting addresses (RR63); and a censor with a vantage on both the device's segment and the entry → exit segment can match a probe on one to the forwarded probe on the other a few milliseconds later, linking an entry to its exit even while no member traffic flows (RR64). User traffic is as correlatable as probes; probes only make the link visible when it would otherwise be quiet.
-
-## Path scoring and the policies
-
-The `Selector` stays the plug-in point (`Peer.Selector` for first hops, `Route.Selector` for next hops). M3 widens what a `Candidate` says and adds one field to `Choice`:
-
-- `Candidate.Up` now means **the path is up**: its first-hop link is up and, for a probed peer, its end-to-end proof is fresh (active: within `PathDead`; backup: within 3 × `WarmProbe`). `UpFor` counts from when both became true. `Suspect` is new: the active path missed a proof. `RTT` is the path's minimum unheld round trip over the last two minutes, zero when it has none; the link's probe RTT stays in `LinkStatus`.
-- `Choice.Source`: the packet's source for a relay's next-hop choice, this node for a Bind's. `spread` needs it.
-
-A peer without `probe` gets link liveness only, as today: `Up` is the first-hop link's.
-
-### `failover` (must)
-
-TP-006's `Failover`, with its hysteresis kept and the open policy decided:
-
-- **Stay while up.** The current path stays while it is up, also while suspect.
-- **Switch on dead.** When it is dead, take the first candidate in priority order that is up; else the first with a link at all (unproven); else none (`ErrNoPath`).
-- **Return to primary: yes, after the hold-down.** An earlier candidate takes over once it has been up for `HoldDown` (20 s), as `TestAFailedOverPairReturnsAfterTheHoldDown` pins: priority order is the operator's statement of which entry they prefer (cheaper, closer, less shared), and staying on a backup forever would ignore it. The follower comes along by following.
-- **Flap damping.** A candidate that went down twice within 5 minutes needs twice the hold-down to take over again, doubling per further down in the window, up to 5 minutes. A link that flaps on jitter so never pulls traffic back and forth.
-- **A dialed link does not return to its first endpoint** (TP-006's other open question): the endpoints of one node are alternatives for the same hop, and returning would mean a fresh disguised handshake to the same node for no gain. Endpoint priority stays dial-time only.
-
-**Who leads.** TP-006 made the lower node id lead. On a chain that is wrong half the time: the exit can't see the device's side of an entry, so if it leads it keeps sending through an entry the device has left, whose link to the device is dead: replies vanish until the exit's own link to that entry dies, which it may never do. So **the device leads its exits**: the builder sets `follow` on the exit's section for each device peer, and the exit follows the first hop the device's latest authenticated packet came through (it already does so for any follower). Between two devices or two servers the id rule stays.
-
-**The bound.** From a break to traffic on a working path, provided a warm candidate is up:
-
-| Break | Detected by | Time to the switch |
-|---|---|---|
-| The entry dies or is blackholed | first-hop link (`DeadAfter`), or the path's proof | ≤ about 7.5 s (`PathDead` plus a probe interval's jitter) |
-| A link past the first hop breaks (entry → exit) | the path's proof | ≤ about 9.5 s (`PathDead` + `PathProbe` × 1.25) |
-| The exit's reply path (exit → entry) | the path's proof, at the device | same as above; then the exit follows on the device's first packet through the new entry |
-
-Both are inside the 15 s TP-031 asks for, with room for TCP: after a 10 s gap its next retransmission (RTO doubling from 200 ms: at about 0.2, 0.6, 1.4, 3, 6.2, 12.6 s) lands on the new path. The bound assumes a backup that is up; if every candidate is down, nothing moves and health says so.
-
-### `lowest-latency` (should)
-
-- **Source: unheld end-to-end probes**, one per path per `WarmProbe`, active path included. Probe RTTs through `WriteControl` are upper bounds and never used (TP-027); neither is WireGuard's handshake round trip, which only the active path ever has. The sample is the minimum over the last two minutes: minimum filters queueing and the occasional hold.
-- **Where it can't measure, it says so.** On a path whose `delay_bound` is above the control holds (some link batches or jitters), a difference smaller than that bound is noise; the selector compares only differences beyond it, and if none can be judged it behaves as `failover` and the status says `latency_unmeasurable`.
-- **Hysteresis**: a candidate takes over only if its RTT has been below the current path's by at least max(25 %, 20 ms) for 60 s and it has been up for `HoldDown`; at most one latency-driven switch per 5 minutes. A dead path is left at once, as with `failover`.
-
-### `spread` (should)
-
-- **Each device sticks to one member, devices are spread over the members**: rendezvous hashing, `SipHash(space, source ‖ member)`, the highest score among members that are up wins. Members coming or going move only the devices whose top choice they were (1/n of them), and no member needs to know about the others.
-- **Hysteresis without per-source state**: a member is eligible only once it has been up for `HoldDown`, or while it is the source's current choice and up. A flapping member loses its devices on the first down and gets them back only after a steady hold-down.
-- **No measurement** beyond liveness: `spread` is about volume per entry address, not speed (against volume-based throttling, overlay.md).
-- **In the middle of a chain** a relay picks per packet source: `Choice.Source` is the packet's source, and the rule above needs nothing kept per (source, destination), because the hash is stateless and the hysteresis is per member. That is what TP-006 left open ("`Choice` doesn't carry it yet"): one field, no table. `Node.Route` then reports the last next hop used for the destination.
-
-**Middle relays don't probe.** A relay in the middle fails over on its own links only, as today. In `ru-entries → nl-exit` there is no middle; for longer chains, a next hop whose link is up but which can't reach the exit is left only when the device's probes fail through every first hop that depends on it, and the device can't steer the relay. That stays in RR48, narrowed.
-
-## Entry switches keep the exit's session
-
-**Why open connections survive** (R7):
-
-- WireGuard's endpoint for the exit is the exit's node id, never an address; the path layer picks the first hop underneath. WireGuard sees no roam, keeps its keys, counters and timers, and needs no new handshake.
-- The exit's NAT (the space's SNAT and the root's masquerade, TP-014) keys on the device's overlay address and port, which don't change: the internet sees the same exit address and port before and after.
-- Packets still in flight through the old entry arrive late or not at all; WireGuard's replay window takes the late ones, and TCP retransmits the lost ones.
-- The MTU doesn't change: every candidate path carries the section's `overlay_mtu` ([above](#chains-in-the-map-and-the-builder)).
-- The exit follows: its replies move to the new entry with the first authenticated packet that arrives through it.
-- Every member's endpoints are already the device's links: the route table routes them around the tunnel and the kill switch lets them through, warm or active, as it does every link of the section today. **M3 changes nothing in the kill switch, the firewall, DNS takeover, the route table or the service.**
-
-**What could break it**:
-
-| Cause | Effect | Answer |
-|---|---|---|
-| A member's path carries less than the TUN's MTU | large segments dropped after the switch: a stalled connection | `overlay_mtu`; the builder refuses a member that would push it under 1280 while the overlay carries IPv6 |
-| The exit leads (older exit, or a map without `follow`) | replies keep going to the old entry | `follow`; RR68 for mixed versions |
-| A rekey falls in the gap | the initiation is lost, WireGuard retries after 5 s through the new path | nothing to do: within the bound |
-| The break lasts longer than the bound (no backup up) | TCP backs off; long gaps end connections at the application | health `exit_unreachable`; nothing a switch can fix |
-| The device's own NAT rebinds the backup's mapping | the backup's link dies; its next probe finds out | `WarmProbe` below `udp`'s NAT timeouts; TP-084 for rebinding in general |
-| WireGuard's roaming | none: endpoints are ids, and `DisableSomeRoamingForBrokenMobileSemantics` stays off (it would lose cookie replies) | |
-| The exit itself dies | every connection through it ends | not a switch of entries; no exit groups in M3 (open question 4) |
-
-## Interplay with exit health
-
-Three signals, each deciding one thing, none counted twice:
+**Health signals**, each deciding one thing:
 
 | Signal | Decides | Reported as |
 |---|---|---|
-| First-hop link liveness (TP-006) | the link, and every path through it | `neighbor_down`, `no_link_up` (as today) |
-| End-to-end proof (this file) | which path carries the peer's traffic | `path_down` (new): a path to an exit in use is dead while its first-hop link is up; `exit_unreachable` (new): every path to an exit in use is dead |
-| WireGuard's handshake (TP-195, TP-212) | nothing about paths: whether the exit's WireGuard answers | `exit_no_handshake`, only while some path to the exit is up |
+| First-hop link liveness | the link and every path through it | `neighbor_down`; `no_link_up` when no link is up |
+| The member's vouch | which path carries the peer's traffic | `path_down` (warning): the link is up, the member vouches down; `exit_unreachable` (error): every path to an exit in use is down while some link is up (else it is `no_link_up` only) |
+| WireGuard's handshake | whether the exit's WireGuard answers | `exit_no_handshake`, only while a path to the exit is up |
 
-- **A path is dead** when its first-hop link is down or its end-to-end proof is stale, never because of the handshake. A handshake that fails while probes pass means the exit's WireGuard (its key, its agent) is broken, and another entry wouldn't help.
-- **No double counting.** A path whose first-hop link is down is `neighbor_down` only, not also `path_down`. While every path is dead, `exit_no_handshake` is withheld for that exit: the cause is `exit_unreachable`, and the unanswered initiations are its symptom.
-- **The 15 s handshake count restarts when the peer's current path changes**, not only when the first hop's active link does: initiations sent through the old path don't count against the new one. That is RR48's own proposed fix ("from when the peer's first hop became the current one"); with probes deciding the path, the link-change restart TP-212 kept stays only for unprobed peers. The flag is no longer raised by links that fail alternately, because the path doesn't change while one of them stays up.
-- **RR48 narrows** to what probes don't cover: device-to-device peers, peers without `probe` (older nodes), and a middle relay's next hop that is up but leads nowhere. Its exit-health part stays as written for those.
+- A path is dead by link or vouch, never by the handshake: that failing while vouches pass means the exit's WireGuard is broken.
+- **No double counting**: a path with its link down is `neighbor_down` only; while every path is dead, `exit_no_handshake` is withheld for that exit.
+- **The 15 s handshake count restarts when the peer's current path changes** (RR48's own proposed fix); TP-212's link-change restart stays for peers without `vouch`.
+- **RR48 narrows** to device-to-device peers, peers without `vouch`, and lines of single relays past the first relay's next link.
+
+## Policies
+
+`Selector`s stay pure: the path layer keeps the history and passes it in new `Candidate` and `Choice` fields; `Up` and `RTT` keep today's meaning (the link's). The fields are listed in [the mechanism section](#candidate-and-choice).
+
+- **`failover` (must).** Stay while up, also while suspect; on down take the first up candidate in priority order, else the first unproven one. **Return to primary: yes**, once it has been up for the hold-down: priority is the operator's statement of preference. **Flap damping**: a candidate that went down twice within 5 minutes needs twice the hold-down, doubling to 5 minutes. **A dialed link does not return to its first endpoint** (TP-006's open question): endpoints are alternatives for one hop, and returning costs a fresh disguised handshake.
+- **`lowest-latency` (should).** Path RTT = the device's unheld round trip to the member plus the member's vouched unheld round trip to the exit, each a minimum over two minutes. Where `delay_bound` exceeds the control holds, differences below it are noise: it behaves as `failover` and says `latency_unmeasurable`. A lasting difference is required (60 s, max(25 %, 20 ms)), at most one latency switch per 5 minutes. **A member that lies about its leg** could capture the group: the device cross-checks the member's claim against WireGuard's handshake round trip while that member is current (initiation to response, which a member can only lengthen), and twice off by more than max(50 %, 50 ms) disregards its claims for an hour (`latency_disputed`). A member that fast-paths handshakes beats the check: RR68.
+- **`spread` (should), on the device only.** Rendezvous hashing, `SipHash(space, device ‖ member)`, highest score among eligible members; eligible = up for the hold-down, or current and up; **if none is eligible, the highest-scored up member** (a restart never ends in `ErrNoPath`). Older nodes read `spread` as `failover`, so their devices sit on the first member (RR71). No relay runs `spread` in M3, so `Choice.Source` is this node.
+- **Who leads.** `follow` decides it, not ids: a leading exit can't see the device's side and keeps replying into an entry the device left. Between two devices or two servers `follow` stays unset and the id rule applies.
+- **Warmth.** **One warm backup** (next in priority, or next score under `spread`), the rest **cold**: dialed only once the warm one is down. A cold switch adds a disguised handshake (and a dial timeout if blocked), so the bound holds only while the warm backup is up. Cold endpoints stay in the section: route table and kill switch as today.
+- **Against steering**, timings are jittered: probe intervals ± 25 % (warm ± 50 %), the hold-down drawn per up-edge from 20–30 s, the suspicion probe sent after a random 0–500 ms. This blurs the timing; it doesn't hide it (RR73).
+
+## The bound
+
+From a break to the first packet on a working path, for a device that is sending, with the warm backup up:
+
+```
+T  = 2·MaxControlHold + delay_bound + 2·RTTmax          probe timeout, ≥ 1 s
+B1 = D + T/2                                            the device's first hop dies or is blackholed
+B2 = Dsrv + P·(1 + j) + T + T/2                         the member ↔ exit link breaks, either direction
+```
+
+`D` is the device link's `DeadAfter` (3 × `P`), `Dsrv` the member's server link's (6 s, server links keep TP-006's 2 s cadence because vouches rest on them), `P` = `PathProbe` 2 s, `j` = 0.25, `T/2` the keepalive's trip; the builder assumes `RTTmax` = 500 ms. With `delay_bound` = 0: T = 2 s, **B1 = 7 s, B2 = 11.5 s**; B2 passes 15 s at `delay_bound` ≈ 2.3 s, which the builder refuses. An idle device probes its current path at warm cadence: it notices a break within 3 × `WarmProbe` × 1.5 + T, and an inbound push waits that long (RR69).
+
+**The gate is the switch, not the stream.** The lab gates B (kill to `first_hop_since`) at 15 s. TCP resumes at its next retransmission after the switch (RTO from 200 ms: about 0.2, 0.6, 1.4, 3, 6.2, 12.6, 25.4 s), so the stream's gap is reported, and gated only on no reset or EOF.
+
+## Entry switches keep the exit's session
+
+WireGuard's endpoint for the exit is its node id, so there is no roam and no new handshake; the exit's NAT keys on the device's overlay address and port, which don't change; late packets fall to WireGuard's replay window, lost ones to TCP; every candidate carries `overlay_mtu`; the exit follows on the keepalive.
+
+| Cause | Effect | Answer |
+|---|---|---|
+| A member's path carries less than the TUN MTU | large segments dropped: a stall | `overlay_mtu`, refused below 576 / 1280 |
+| The exit leads (older exit) | replies keep going to the old entry | `follow`; the builder gives such an exit one first hop |
+| No backup up | TCP backs off; long gaps end connections at the application | `exit_unreachable` |
+| The device's NAT rebinds the backup's mapping | the backup's link dies; its next probe finds out | `WarmProbe` ≤ 15 s on `udp`; TP-084 |
+| `DisableSomeRoamingForBrokenMobileSemantics` | it gates `SetEndpointFromPacket` (`peer.go:282`): the exit would stop following (cookie replies go to the packet's endpoint regardless, `send.go:190`) | stays off |
+| The exit dies | every connection through it ends | RR70; no exit groups in M3 |
 
 ## Status and the local API
 
-The status already has a peer's `first_hop` and one `Egress` per WireGuard device (`localapi.proto`). M3 adds, all wire-compatible:
+- **Peer**: `first_hop_since`, `chains`, `group`, `policy`, and `paths`: per candidate `first_hop`, `state` (`up`, `suspect`, `down`, `link_down`, `unproven`, `cold`), `proven_ago`, `rtt` (zero when not measured), `switches_to`.
+- **Egress**: `chain`. **Events**: `entry_switched` (peer, group, from, to, why: `link_down`, `path_down`, `burst_unanswered`, `returned`, `latency`, `spread`), once per edge; the health problems above.
+- Relays log next-hop switches until workers report status (TP-022). No entry holds an address.
 
-- **Peer**: `first_hop_since` (from `Bind.Current`), `chains` (the chains ending at this peer, by name), `policy`, and `paths`: per candidate, `first_hop`, `state` (`up`, `suspect`, `down`, `link_down`, `unprobed`), `proven_ago`, `rtt` (unheld minimum, zero when not measured) and `switches_to` (how often traffic moved to it since the node started).
-- **Egress**: `chain`, the chain's name, next to the device.
-- **Events**: one typed event per switch (`entry_switched`, with peer, from, to and why: `link_down`, `path_down`, `returned`, `latency`, `spread`), once per edge, never per retry; health's new problems as above.
-- **Next hops** (`Node.Route`) are a server's, and a server's per-space status lives in its worker (TP-022's "Later"): until the worker reports status, relays log their next-hop switches and the lab reads the logs. No status entry holds an address.
-- **Names**: chain names pass `CheckChainName` at Build and, from M3, at Open; `localapi.Client` keeps sanitizing every string it receives (TP-022), so nothing a map says can act on a terminal even if a reader were wrong.
+## Detectability, honestly
+
+- **Device segment**: link probes to the current member and the warm backup, as every link has today; the vouch rides inside, same size class (a 512-byte floor record under `reality`, RR65). Nothing holds or folds them: no adapter implements `ControlWriter` (`transport.go:105`), and `reality` refuses batching, jitter and cover (`reality/transport.go:110`).
+- **Border segment**: the server pair's own probes and users' traffic. While a device is idle nothing timed to it crosses, but WireGuard's packets after traffic and the switch keepalive.
+- **Both**: a sending device's traffic links it to its exit, as today; an idle one is not linked; the member ↔ exit pairing always shows (RR67).
+- **The WireGuard-rhythm module doesn't measure this**: it wants unanswered records at a steady interval (`modules_wgrhythm.go:26-33, 58-63`). M3-10's two-vantage correlation module does; it reports at M3, not gating.
 
 ## The lab
 
-**Topology `Chains()`** (`lab/topology.go`): the `Upstream` lab with servers split by country, every segment crossing the router where the censor sits:
+**Topology `Chains()`** (`lab/topology.go`): `devices`, `ru`, `nl` and `world` networks, every segment crossing the router where the censor sits; the censor's address sets name `ru` domestic, `nl` and `world` foreign. `lab/maps/chain.yaml`: `ru-entries` = [ru-1, ru-2] with `failover` to nl-1; chain `de` straight to de-1; one rule each.
 
-```
- device-a ─┐                    ┌─ ru ─── ru-1, ru-2   (ingress)
- device-b ─┴─ devices ─ router ─┼─ nl ─── nl-1, de-1   (egress)
-                                └─ world ─ internet target, camouflage site
-```
+**Failover** (`lab/failover_test.go`), each a subtest, each gating the switch at 15 s and the stream on no reset or EOF, same exit address and port at the target, gap reported:
 
-Networks `devices`, `ru`, `nl` and `world`; documentation names only, addresses picked by Docker. The censor's address sets name `ru` as domestic, `nl` and `world` as foreign. `lab/maps/chain.yaml`: group `ru-entries` = [ru-1, ru-2] with `failover`, chain `ru-nl` via it to nl-1, chain `de` straight to de-1, rules sending one internet prefix through each.
+1. **Blackhole** the active entry, both families (the gate case). 2. **Process death** of its agent. 3. **Past the first hop**: drop entry ↔ nl-1 both ways, then one way only.
+4. **Download**: the device only ACKs. 5. **Idle push**: the device idle 2 minutes, the target pushes after the blackhole; the push arrives within the idle bound plus one retransmission.
+6. **Jitter** (netem on ru-1, 60 ± 40 ms, 2 % loss, 5 min): no switch with `failover`, at most one with `lowest-latency`. **Flap** (down 3 s, up 10 s): leaves on the first down, stays away for the damped hold-down.
 
-**Killing the active entry**, three ways, each its own subtest:
+**Censor modules**: TP-032's `tls-fingerprint` (JA4 allow-list) and `throttle` (foreign flows policed after 16 KiB) in M3-2; the two-vantage `correlation` module in M3-10. Chain rows (`reality chain (ru → nl)`) join the matrix, judged on the device's segment (open question 2).
 
-1. **Blackhole** (the gate case): the router drops everything to and from the active entry's addresses, both families. Silent, like an address the censor just blocked: nothing resets, only liveness can tell.
-2. **Process death**: SIGKILL the active entry's agent. Links die with resets; the faster case.
-3. **Past the first hop**: the router drops only the active entry ↔ nl-1 segment. The device's links stay up; only end-to-end probes find it.
+## Residual risks M3 adds (proposed)
 
-The **open connection**: the internet target runs a stream echo; device-a sends a numbered 1 KB message every 50 ms through `ru-nl` and reads the echoes. Pass: no reset or EOF, every message echoed in order, the largest gap ≤ 15 s, and the target saw the same source address and port before and after (same exit, same NAT). The same run reads `first_hop` and `first_hop_since` from the local API before and after, and the exit's follow from nl-1's log.
-
-**Jitter, no flapping**: netem on ru-1's interface (delay 60 ms ± 40 ms, 2 % loss, some reordering) for 5 minutes under the stream: zero switches with `failover`, at most one with `lowest-latency`. A second case flaps ru-1 (down 3 s, up 10 s, repeated): traffic leaves it on the first down and stays away for the damped hold-down. netem is TP-162's impairment API; M3 needs only that part (open question 3).
-
-**Censor modules (TP-032)**, each a switchable module of `lab/censor` with its matrix column:
-
-- **`tls-fingerprint` (allow-list)**: computes the client hello's JA3 and JA4 (the clienthello parser exists) and drops TLS connections whose JA4 isn't on its list of common browser fingerprints. Go's default `crypto/tls` client is blocked; the uTLS Chrome hello `reality` sends passes. Non-TLS flows are other modules' business.
-- **`throttle` (volume)**: a flow to a foreign address (by the address sets) is policed after N kilobytes, slowed to a rate or frozen (`Throttle` verdict, rate 0), both directions. Domestic flows untouched. Default N = 16 KiB, the figure reported for TLS to foreign hosting, a setting.
-- **Server hello** (TP-026's JA3S/JA4S) feeds the matrix's comparison as it does.
-
-The matrix keeps its device-a → server-1 rows (server-1 counts as foreign there, so the throttle bites the direct case) and adds **chain rows**: `reality chain (ru → nl)`, where the device's segment is domestic. Its cells are judged on the device's segment by default; the entry → exit segment is the open question 2. The WireGuard-rhythm column must pass on the chain rows with probes on: that is probes' detectability, measured.
-
-## Residual risks M3 adds (proposed rows)
+They land in RESIDUAL-RISKS.md with the tickets that create them.
 
 | # | Residual | When | What leaks, to whom | Breaks | Why accepted |
 |---|---|---|---|---|---|
-| RR63 | Warm backups show the group | A device whose chain's first hop is a group | The censor on the device's path sees one client holding a mostly idle disguised connection to every member, each carrying one small record pair every 10–30 s | C6 | Failover within 15 s needs a backup that is already linked; cold backups (dial on suspicion) trade the bound for less to see, and are a later setting |
-| RR64 | Probes link an entry to its exit | A censor with vantage on both the device's segment and the entry → exit segment | Probe and reply timing on one segment matches the forwarded ones on the other, so the entry's exit is known even while no member traffic flows | C6 | Member traffic is as correlatable; probes only add it in the quiet; jitter and suppression keep them sparse |
-| RR65 | A relay can fake a path's liveness | A malicious or compromised entry or relay of the space | It forwards probes and drops data: the device stays on a path that carries nothing, until `exit_no_handshake` (if it also drops handshakes) | R6 | Probes are the path layer's, unauthenticated end to end (no new crypto); a node that drops traffic denies service anyway (RR49) |
-| RR66 | The gap of a switch | Every failover | Up to the detection bound (about 7–10 s) of lost traffic; real-time traffic (calls) drops for that long, TCP recovers | R7 | Detecting faster means probing more, which RR63 and RR64 pay for |
-| RR67 | An exit's loss | A chain's exit goes down | Every connection through it ends; the chain is down until the exit is back | R7 | No exit groups in M3: another exit is another WireGuard session and NAT (open question 4) |
-| RR68 | Mixed versions on a chain | A pre-M3 exit or relay with M3 devices | No `probe` for such an exit: link-only failover (RR48); an exit that ignores `follow` leads when its id is lower and may keep replying through an entry the device left; a reader ignoring `overlay_mtu` keeps its own links' MTU | R6, R7 | Nothing is deployed beyond the owner's nodes; the controller's capability rollout (TP-027's rule) emits these fields only to nodes that report them |
+| RR66 | The warm backup shows the group | A device whose chain starts with a group | The censor on the device's segment sees two long-lived disguised sessions to hosting addresses, the backup's mostly idle; cold members appear at a switch | C6 | 15 s needs one linked backup; the rest stay cold |
+| RR67 | Two vantages link device and exit while it sends | A censor watching both the device's segment and the border | Traffic timing links a sending device to its exit, as without chains; the member ↔ exit pairing shows from its probe stream at all times; nothing device-timed crosses while idle | C6 | A chain hides the exit from the device's segment, not from a censor on both; M3-10 measures it |
+| RR68 | An entry's vouch is its word | A malicious or compromised member | It can vouch up while dropping data; claim the lowest latency and capture a `lowest-latency` group (the handshake check catches only a naive liar); keep the exit's follow fresh with WireGuard-shaped junk until the device's authenticated packets move it (`bind.go:285`) | R6 | A member that carries traffic can drop it anyway (RR49); no new crypto (DESIGN rule 4) |
+| RR69 | The gap of a switch | Every failover | A sending device loses up to B (7–11.5 s at defaults), TCP resuming at its next retransmission (≤ about 25 s); an idle one notices within the warm bound, so pushes wait that long | R7 | Faster means probing more, which RR66 and RR67 pay for |
+| RR70 | An exit's loss | A chain's exit goes down | Every connection through it ends until it is back | R7 | No exit groups in M3 (open question 4) |
+| RR71 | Mixed versions | A node without `chains` on a chain | Such an exit narrows its group to one first hop; such a member leaves its group; an older device gets link-only failover, reads `spread` as `failover`, and with the higher id never returns to its primary (both ends follow); a reader ignoring `overlay_mtu` keeps its own MTU | R6, R7 | The builder narrows rather than risk an outage |
+| RR72 | No group before a relay | Chains through relays, until relay-follow (M3-L1) | Such a chain has one entry: blocking it ends the chain with no failover | R6 | The alternative replies into dead entries; relay-follow lifts it |
+| RR73 | The censor steers failover | A censor that can block addresses briefly | Two short blocks in 5 minutes pin devices to the backup for the damped hold-down, repeatably; blocking all members but one piles `spread` devices onto it; jittered switch and return timings still mark a failover group and its warm backup | C6, R6 | Traffic still flows through an entry the operator listed |
 
-And RR48 narrowed as [above](#interplay-with-exit-health).
+**RR48** narrows as above. **RR49** widens (paranoid 14): an entry also learns, from the vouch probes its devices send, which exits their chains reach.
 
 ## Rollout and older nodes
 
-- Every new map field is one an older reader may ignore without widening anything: a policy reads as `failover`, a missing `follow` as the id rule, a missing `probe` as link liveness, a missing `overlay_mtu` as the node's own links. So `min_reader` stays (TP-027's rule: raise it only for fields older readers must not ignore). What ignoring costs is RR68.
-- Probes need nothing of relays and are dropped by older destinations; the builder sets `probe` only for nodes that answer (devmap: every node, since a devmap space runs one version; the controller: by reported capability, M4).
+- Ignored fields read as today (`failover`, the id rule, link liveness, own MTU), so `min_reader` stays. Older nodes drop vouch probes as malformed; devices send them only to `chains` members.
+- Upgrades aren't atomic; narrowing by `capabilities` keeps a half-upgraded space working (RR71).
+
+## Moves to internal/dataplane/path/doc.go at M3-4
+
+Mechanism, here until M3-4a/b move it; `path/doc.go` isn't edited now.
+
+### Frames
+
+Vouch probes are link frames, like TP-006's probes, and stay on one link:
+
+```
+vouch probe:  kind=4 | flags [1] | token [8] | destination [8] | zero [14]                                (32 bytes)
+vouch reply:  kind=5 | flags [1] | token [8] | destination [8] | up [1] | proven ago, ms [2] | rtt, ms [2] | zero [9]
+flags:        bit 0 unheld (sent with WritePacket; answered the same way)
+```
+
+- A reply is to the token; it proves the link like a link probe reply, so on a link where vouch probes run they replace link probes: one stream per link.
+- A node answers for a destination it has a route to, on the arrival link only, at most 20 replies a second per link (per source and arrival link, since the asker is the link's neighbor); the rest dropped and counted. `up` is its link liveness to the destination; `rtt` its minimum unheld round trip, zero when unmeasured. Server links send one unheld probe per `WarmProbe` for that.
+- 32 bytes both ways, a keepalive's size class. `frame.go`'s comment ("WireGuard message") gains the kinds.
+
+### Rates
+
+| Link | Probes | Default |
+|---|---|---|
+| Device → current member, sending (a WireGuard packet out within 30 s) | vouch probe | `PathProbe` 2 s ± 25 %, `DeadAfter` 3 × |
+| Device → current member, idle; warm backup | vouch probe | `WarmProbe` 20 s ± 50 % (≤ 15 s on `udp`), `DeadAfter` 3 × |
+| Device → cold member | none, no link | dialed on demand |
+| On suspicion | one vouch probe to the warm backup after 0–500 ms; unanswered within `T` marks it down and dials the next cold member | |
+| Server ↔ server | link probes, as TP-006, jittered ± 25 % | 2 s, `DeadAfter` 6 s |
+
+### Candidate and Choice
+
+`Candidate` gains `PathUp`, `PathUpFor`, `Suspect`, `Refuted` (down by evidence: a down vouch or an unanswered burst), `PathRTT` (the two-minute minimum, device leg plus vouched leg), `PathRTTWorst` (the largest sample in 60 s), `Downs5m`, `HoldJitter` (drawn per up-edge). `Choice` gains `Source` (this node), `CurrentSince`, `LastSwitchAgo` and `LastSwitchWhy`. The path layer fills them; `Up`, `UpFor` and `RTT` stay the link's. M3-4b owns the fields; M3-6 only reads them.
+
+### Policy mechanics
+
+- `failover` hold-down: `HoldDown × (1 + HoldJitter)` × 2^(downs in 5 min − 1), at most 5 min. Return needs `PathUpFor` beyond it.
+- `lowest-latency`: switch when `cand.PathRTTWorst` is below `current.PathRTT` by max(25 %, 20 ms), the candidate has been up for the hold-down, and not (`LastSwitchWhy` = latency and `LastSwitchAgo` < 5 min). Down paths are left at once.
+- `spread`: score = `SipHash(space key, Source ‖ member)`; eligibility as above.
+- Switch at once: a state change of the current path (link down, vouch down, burst unanswered) runs the selector under the peer's lock from the timer, sets `current` and calls the Bind's switch hook, which the engine wires to `LookupPeer(key).SendKeepalive()`.
 
 ## M3 plan (until the tickets are filed)
 
 ### Tickets
 
-Placeholder ids; sizes S/M/L as the board uses them. The first four are lab- or unit-provable and independent of each other. Files are listed so parallel work doesn't collide with the Windows design (branch `tp-047-windows-design`) or with TP-133 (`localapi.proto`, `internal/agent/localapi`, `api-overview.md`) and TP-197 (`internal/agent/status.go`, `node.go`, `internal/dataplane/engine.go`, `routing.go`) still landing.
+Sizes S/M/L as on the board. Files are listed so parallel work doesn't collide with the Windows design (`tp-047-windows-design`), TP-133 (`localapi.proto`, `internal/agent/localapi`, `api-overview.md`) or TP-197 (`internal/agent/status.go`, `node.go`, `internal/dataplane/engine.go`, `routing.go`).
 
-| Id | Title | Size | Depends on | Files | Acceptance |
-|---|---|---|---|---|---|
-| M3-1 | Lab: the chain topology, link impairment and kill helpers | M | — | `lab/topology.go`, new `lab/impair.go`, `lab/kill.go`, `lab/README.md` | `Chains()` validates and comes up; netem impairment on one interface seen there only and gone at teardown; blackhole and kill helpers proven on a plain link |
-| M3-2 | Censor: TLS fingerprint allow-list and volume throttle (TP-032) | M | — | new `lab/censor/modules_tlsfingerprint.go`, `modules_throttle.go`, `lab/censor/doc.go`, `lab/results_test.go`, `lab/RESULTS.md`, `docs/design/lab.md` | TP-032's three boxes; both columns in the matrix |
-| M3-3 | Map: groups, chains `via`, policy, follow, probe, delay bound, overlay MTU, symmetric routes (TP-030's map part) | L | — | `proto/thinkpol/netmap/v1/netmap.proto`, `proto/gen/…/netmap`, `internal/netmap/{section,envelope,rule}.go`, `internal/devmap/{spec,plan,describe}.go`, `reference.yaml`, testdata, new `lab/maps/chain.yaml` | Build refuses an exit group, an ingress-off first-hop member, a member without links to the next hop; routes symmetric for every chain; `overlay_mtu` the minimum over all members' paths; inspect shows it all; goldens; the reader refuses a chain name `CheckChainName` refuses |
-| M3-4 | Path: end-to-end probes and path liveness | L | — (fields set directly in tests; M3-3 for the map) | `internal/dataplane/path/{frame,bind,link,node}.go`, new `probe.go`, `path/doc.go` | A break past the first hop is left within the bound on the fake clock; probes cross a relay built without probe support; an old destination drops them; replies rate-limited; no link probe where a path probe ran; warm cadence; leader by `follow` |
-| M3-5 | Engine: chains end to end, several exits at once (TP-030's rest) | M | M3-3, M3-1, TP-197 merged | `internal/dataplane/{paths,routing,engine}.go`, new `lab/chain_test.go` | TP-030's boxes: `ru → nl` and straight to `de` at once, each on its own device; a middle relay sees only transport ciphertext (capture); the engine uses `overlay_mtu` |
-| M3-6 | Path: the policies (`failover` final, `lowest-latency`, `spread`) | M | M3-4 | `internal/dataplane/path/select.go`, `select_test.go`, `failover_test.go`, `path/doc.go` "Hop groups" | Return after a damped hold-down; no switch under simulated jitter; `lowest-latency` switches once on a lasting difference and never on a held one; `spread` balances 1000 sources within 10 % and moves only 1/n when a member goes |
-| M3-7 | Status, events and health for paths | M | M3-4, TP-133 and TP-197 merged | `proto/thinkpol/localapi/v1/localapi.proto` + gen, `internal/agent/{status,events}.go`, `internal/agent/localapi`, `cmd/thinkpol/status.go`, `docs/design/api-overview.md`, `RESIDUAL-RISKS.md` (RR48 and the new rows) | Current entry, since when, chain names, path states in `status -json`; `path_down`, `exit_unreachable` and the withheld `exit_no_handshake` on the fake clock; the handshake count restarts on a path change |
-| M3-8 | Lab: failover (TP-031's acceptance) | M | M3-1, M3-5, M3-6 | new `lab/failover_test.go` | The three kills each move traffic within 15 s with the stream intact and the same exit address and port; no flapping under netem jitter; flap damping seen |
-| M3-9 | M3 acceptance (TP-033) | S | M3-2, M3-7, M3-8, TP-029 | `lab/results_test.go` (chain rows), `lab/RESULTS.md`, `docs/design/milestones.md` | `ru-entries → nl-exit` under every censor module; the gate kill under the censor; WireGuard-rhythm passes with probes on; matrix regenerated |
+| Id | Title | Size | Depends on | Files |
+|---|---|---|---|---|
+| M3-1 | Lab: chain topology, impairment, kill helpers | M | — | `lab/topology.go`, `lab/kill.go`, `lab/README.md`; `lab/impair.go` is TP-162's API under 3a |
+| M3-2 | Censor: TLS fingerprint allow-list and volume throttle (TP-032) | M | — | new `lab/censor/modules_tlsfingerprint.go`, `modules_throttle.go`; `lab/censor/doc.go`, `lab/results_test.go`, `lab/RESULTS.md`, `docs/design/lab.md` |
+| M3-3a | Map: the new proto fields; the reader applies `CheckChainName` | S | — | `proto/thinkpol/netmap/v1/netmap.proto`, `proto/gen/…/netmap`, `internal/netmap/{section,rule}.go` |
+| M3-3b | Builder: groups, `via`, `capabilities`, narrowing, shape and N9 checks, symmetric routes, bound check | M | M3-3a | `internal/netmap/envelope.go`, `internal/devmap/{spec,plan,describe}.go`, `reference.yaml`, testdata, `lab/maps/chain.yaml` |
+| M3-3c | Builder and engine: `overlay_mtu` | S | M3-3a | new `internal/netmap/mtu.go`, `internal/dataplane/overlay.go`, tests |
+| M3-4a | Path: vouch frames, answering, limits | M | — | `path/{frame,node}.go`, new `path/vouch.go`, `path/doc.go` (frames) |
+| M3-4b | Path: path state, `Candidate`/`Choice` fields, suspicion, three-state `follow`, switch at once and the hook | M | M3-4a | `path/{bind,select,node}.go`, new `path/pathstate.go`, `path/doc.go` |
+| M3-4c | Path: link cadence (active/warm/cold, jitter, clock restart, unheld server samples), own lab check | S | M3-4b | `path/link.go`, `path/node.go` (dialing), `lab/cadence_test.go` |
+| M3-5 | Engine: chains end to end, two exits at once, the keepalive hook | M | M3-1, M3-3b, M3-4b, TP-197 | `internal/dataplane/{paths,routing,engine}.go`, new `lab/chain_test.go` |
+| M3-6 | Path: the policies, and the policy → `Selector` wiring | M | M3-3a, M3-4b; merges after M3-5 (`paths.go`) | `path/select.go`, `select_test.go`, `failover_test.go`, `internal/dataplane/paths.go`, `path/doc.go` "Hop groups" |
+| M3-7 | Status, events, health for paths; the handshake count restarts on a path change | M | M3-4b, M3-5, TP-133, TP-197 | `localapi.proto` + gen, `internal/agent/{status,events}.go`, `internal/agent/localapi`, `cmd/thinkpol/status.go`, `internal/dataplane/engine.go` (`FirstInitiationSinceLinkUp`), `docs/design/api-overview.md`, `RESIDUAL-RISKS.md` |
+| M3-8 | Lab: failover (TP-031's acceptance) | M | M3-1, M3-5, M3-6, M3-7, TP-133, TP-197 | new `lab/failover_test.go` |
+| M3-9 | M3 acceptance (TP-033) | S | M3-2, M3-8, M3-10, TP-029 | `lab/results_test.go`, `lab/RESULTS.md`, `docs/design/milestones.md` |
+| M3-10 | Censor: two-vantage correlation module, reported not gated | M | M3-1; merges after M3-2 | new `lab/censor/modules_correlation.go`, `lab/censor/doc.go`, `lab/results_test.go`, `lab/RESULTS.md`, `docs/design/lab.md` |
+| M3-L1 | Later: relay-follow (a relay answers a device through the neighbor its last packet came from), then lifting "group only before the exit", and vouches past a relay | M | M3-4b | `path/node.go`, `path/select.go`, `internal/devmap/spec.go` |
 
-**Order.** Start M3-1, M3-2, M3-3 and M3-4 at once: they touch disjoint files (M3-1 and M3-2 meet only in `lab/README.md`, one paragraph each; M3-3 and M3-4 meet only in `internal/dataplane/paths.go`, which M3-4 leaves to M3-5). Then M3-5 and M3-6 in parallel (engine files vs `path/select.go`; M3-6 waits for M3-4's `path/doc.go`). M3-7 after M3-4 and after TP-133 and TP-197 merge. M3-8, then M3-9. None touches `internal/dataplane/{firewall,routetable,netcfg,dns}`, `internal/agent/service` or the kill switch; the Windows design shares only `DESIGN.md`'s index (one line each).
+**Acceptance** (beyond the sections above): M3-4b on the fake clock moves traffic within B2 when a member vouches down, and a promotion isn't dead on arrival; M3-4c: idle → sending neither flaps nor redials; M3-5: a middle relay sees only transport ciphertext; M3-6: `spread` balances 1000 devices within 10 % and moves 1/n when a member goes.
 
-Existing tickets map onto these: TP-030 → M3-3 and M3-5; TP-031 → M3-4, M3-6, M3-7, M3-8; TP-032 → M3-2; TP-033 → M3-9.
+**Order.** M3-1, M3-2, M3-3a and M3-4a at once. Then M3-3b, M3-3c, M3-4b and M3-10. Then M3-4c and M3-5; then M3-6 and M3-7; then M3-8 and M3-9. None touches `internal/dataplane/{firewall,routetable,netcfg,dns}`, `internal/agent/service` or the kill switch. TP-030 → M3-3a/b/c, M3-5; TP-031 → M3-4a/b/c, M3-6, M3-7, M3-8; TP-032 → M3-2, M3-10; TP-033 → M3-9.
 
 ### Open questions for the owner
 
-Answer as "1a 2b …". Only what the docs and tickets don't decide.
+Answer as "1a 2b …". None was settled outright by the review decisions; 1 is narrowed, 6 and 7 are new.
 
-1. **How warm are backups?** (a) Background probes every 10–30 s, plus a burst on suspicion (recommended: meets 15 s whenever a backup is up; RR63 as written). (b) Every 2–3 s, as links are probed today: the bound holds even for a backup that died since its last probe, at about ten times the idle rhythm per backup. (c) Cold: backups linked only on suspicion: least to see, but each switch adds a disguised handshake (plus a dial timeout for an entry that is blocked), likely past 15 s.
-2. **Which segment does M3's "under the lab censor" gate?** (a) The device's segment (device ↔ entries) gates; the entry → exit segment runs the same modules and is reported, not gated (recommended: the chain exists to move the foreign crossing off the member's line; datacenter-to-datacenter crossings are filtered differently, and the lab can't model how). (b) Both segments gate.
-3. **Netem for M3: take TP-162's impairment API forward?** (a) Yes: M3-1 does TP-162's first two boxes and TP-162 keeps the added-delay measurement and gate (recommended). (b) No: M3-1 adds a minimal `tc netem` helper of its own, and TP-162 later replaces it.
-4. **Exit groups.** (a) Not in M3: the builder refuses a group at the exit, the loss of an exit ends its connections (RR67), recorded as after the MVP (recommended: R7 promises entries only, and an exit switch can never keep a session). (b) Allowed with `failover` in M3, documented as "connections end on an exit switch".
-5. **Probing device-to-device peers.** (a) Not in M3: probes run for chain exits in use; device-to-device peers keep link-only failover (RR48) (recommended: a device peer may be offline by design, and probing it shows a rhythm between members' devices). (b) Probe them too while traffic flows.
+1. **How warm is the backup?** (a) One warm backup probed every 10–30 s, a probe on suspicion, the rest cold (recommended by all three reviewers; Fable's "one warm, the rest cold" is now part of it). (b) The warm backup every 2–3 s: the bound holds even for a backup that died since its last probe, at about ten times the idle rhythm. (c) All cold: least to see, each switch adds a disguised handshake, likely past 15 s.
+2. **Which segment does "under the lab censor" gate?** (a) The device's segment gates; the border runs the same modules and is reported, with M3-10's correlation (recommended, all three). (b) Both gate.
+3. **Netem: take TP-162's impairment API forward?** (a) Yes, M3-1 does its first two boxes (recommended, all three). (b) A minimal helper TP-162 replaces later.
+4. **Exit groups.** (a) Not in M3: refused, RR70 (recommended, all three). (b) Allowed with `failover`, connections end on an exit switch.
+5. **Device-to-device peers.** (a) Link-only failover as today, no vouches (recommended, all three). (b) Relays vouch for device peers too.
+6. **How is a path proven?** (a) Members vouch for their link to the exit in link-probe replies (recommended: no new stream across the border, nothing timed to an idle device; members need `chains`). (b) End-to-end probes, as in the first draft: proof through the exit's path layer, no member upgrade, but a per-device stream across the border.
+7. **devmap's default for `capabilities`.** (a) Absent means pre-M3, so groups narrow until each node is marked (recommended: safe while upgrades are partial). (b) Absent means current, as the first draft assumed one version per devmap space.
+
+## Review round 1
+
+Reviews of 34c62d9: go-paranoid (P), Fable 5.2 (F, numbered within its sections), pocket-torvalds (T).
+
+| Finding | Handling |
+|---|---|
+| P1, F1a.1, T1: a relay behind a group picks its return hop itself | Changed design: groups only before the exit; relay-follow is M3-L1, RR72 |
+| P2, F1a.2: no switch without a `Send`; idle or downloading devices strand the exit | Changed design: switch from the timer, `SendKeepalive`; lab cases 4, 5 |
+| P3: `follow` unset on the device | Changed design: three states, both ends set |
+| P4: old exit plus group | Changed design: `capabilities`, the builder narrows (question 7) |
+| P5, P6, F1a.3: a dead backup counts as up; promotion and idle → busy count as failure | Fixed: unanswered burst = down; clocks restart with a probe |
+| P7, T3: breaks past the first hop read `neighbor_down` | Fixed: the vouch reply proves the link and reports the path |
+| P8: forged probes drain a per-source bucket | Fixed: vouches are link-local, limited per (source, arrival link) |
+| P9, T6, F1a.4: bound vs `delay_bound`; switch vs TCP gap | Fixed: formula, builder warns at 12 s and refuses at 15 s, switch gated apart |
+| P10, P15: `spread` at relays | Changed design: device only, restart fallback; older nodes in RR71 |
+| P11, F1b.1, F1b.2: detectability not measured; nothing holds probes | Fixed: claim removed, facts corrected, M3-10, honest section |
+| F1b.3: weigh vouching | Changed design: vouches chosen (table), question 6 |
+| F1c.1: censor steering | Jitter, one warm backup, staggered suspicion probe; the rest RR73 |
+| F1c.2: a member captures `lowest-latency` | Handshake cross-check; the rest RR68 |
+| F1c.3: one-way break | Fixed: link liveness both ways; lab case 3 one-way |
+| F2, seven facts | Corrected: return path (removed); `ControlWriter` unused (`transport.go:105`, `reality/transport.go:110`); roaming flag (`peer.go:282`, `send.go:190`); `Followed` follower-only and pre-auth (`bind.go:398`, `:285`), no longer proof; relay drops on `ErrPacketTooLong`/`ErrPacketSize` (`link.go:389`), `ErrMessageSize` is the sender's (`bind.go:323`); loops devmap only (`plan.go:413`); RR58 → RR65 |
+| F3, T7: tickets | Fixed: dependencies as asked, M3-3 and M3-4 split in three (cadence alone), M3-L1 and M3-10 added, M3-1 follows Q3 |
+| F4: open questions | Reviewers' answers recorded; 6, 7 new |
+| T2, T1's label, T5 | `frame.go` comment in M3-4a; `group` adopted; pure selectors, plus `Refuted`, `PathRTTWorst`, `HoldJitter` |
+| T8: size and shape | Fixed: mechanism section marked, overlay linked. Rejected: landing RR rows now (decision 14 keeps them proposed) |
+| T minor: `Node.Route` under `spread` | Moot |
+| P12, P13, P14, P16, P17 | `exit_unreachable` only with a link up, levels set; WireGuard traffic never proof (rest RR68); RR49 widened; MTU caveat and refusals; RR66–RR73 |

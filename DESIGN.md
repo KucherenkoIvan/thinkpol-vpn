@@ -23,7 +23,7 @@ Each area's design is a file of its own under `docs/design/`; this file is the e
 | [Transports](docs/design/transports.md) | the transport port and traffic shape |
 | [Server agent](docs/design/server-agent.md) | the supervisor, one worker per space, egress |
 | [Routing](docs/design/routing.md) | routing rules, the route table, DNS, lists |
-| [Chains](docs/design/chains.md) | chains and hop groups (M3): the map and the builder, end-to-end probes, path policies, entry switches that keep the exit, path health, the lab plan |
+| [Chains](docs/design/chains.md) | chains and hop groups (M3): the map and the builder, members vouching for paths, path policies and the failover bound, entry switches that keep the exit, path health, the lab plan |
 | [Desktop client](docs/design/desktop-client.md) | the client and the local API |
 | [Control plane](docs/design/control-plane.md) | the controller, the signed map, joining, kernel usage |
 | [Censor lab](docs/design/lab.md) | the lab and its censor modules |
