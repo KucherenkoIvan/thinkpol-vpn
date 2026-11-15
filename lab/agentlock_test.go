@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -65,7 +64,7 @@ func TestASecondAgentChangesNothing(t *testing.T) {
 // through the tunnel.
 func secondAgentChangesNothing(t *testing.T, n *lab.Node, exit netip.Addr, extra func() string) {
 	t.Helper()
-	first := n.Start(t, "thinkpol", "up")
+	first := startUp(t, n)
 	waitLog(t, first, "the system resolves through the node")
 	mustResolve(t, n, "www.tunnel.test", false, foreignA)
 	ping(t, n, exit)
@@ -98,7 +97,7 @@ func secondAgentChangesNothing(t *testing.T, n *lab.Node, exit netip.Addr, extra
 
 	before := state()
 	from := marker("31998")
-	for _, args := range [][]string{{"thinkpol", "up"}, {"thinkpol", "up", "-connect=false"}, {"thinkpol", "rollback"}} {
+	for _, args := range [][]string{upCommand(n, nil), upCommand(n, nil, "-connect=false"), {"thinkpol", "rollback"}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		res, err := n.Exec(ctx, args...)
 		cancel()
@@ -125,8 +124,10 @@ func secondAgentChangesNothing(t *testing.T, n *lab.Node, exit netip.Addr, extra
 		t.Errorf("the host after the second agent:\n%s\nbefore:\n%s", after, before)
 	}
 
-	if st := n.MustExec(t, "thinkpol", "status"); !regexp.MustCompile(`(?m)^state:\s+connected$`).MatchString(st) {
-		t.Errorf("the first agent's status:\n%s", st)
+	if st, err := readStatus(n, execTimeout); err != nil {
+		t.Error(err)
+	} else if err := st.check(connection("connected")); err != nil {
+		t.Errorf("the first agent: %v", err)
 	}
 	mustResolve(t, n, "www2.tunnel.test", false, foreignA)
 	ping(t, n, exit)

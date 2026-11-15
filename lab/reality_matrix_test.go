@@ -52,9 +52,9 @@ func setupReality(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	envelope, version := space.build(t)
 	space.install(t, dev, "device-a", envelope)
 	space.install(t, server, "server-1", envelope)
-	upSrv := server.Start(t, upFor("server-1")...)
-	if err := waitOutput(upSrv, applied(version), 60*time.Second); err != nil {
-		return probeTarget{}, fmt.Errorf("server-1: %w", err)
+	startUp(t, server)
+	if _, err := statusWithin(server, 60*time.Second, nil, mapApplied(version)); err != nil {
+		return probeTarget{}, err
 	}
 	realityLabs.Store(l, &realityDevice{})
 	t.Cleanup(func() { realityLabs.Delete(l) })
@@ -70,8 +70,9 @@ func realityUp(t *testing.T, l *lab.Lab) error {
 	}
 	d := v.(*realityDevice)
 	d.once.Do(func() {
-		up := l.Node(lab.DeviceA).Start(t, "thinkpol", "up")
-		d.err = waitOutput(up, `link up`, 60*time.Second)
+		dev := l.Node(lab.DeviceA)
+		startUp(t, dev)
+		_, d.err = statusWithin(dev, 60*time.Second, nil, linkUp)
 	})
 	return d.err
 }

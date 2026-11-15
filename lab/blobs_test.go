@@ -82,10 +82,10 @@ func TestBlobDistribution(t *testing.T) {
 	server1.WriteFile(t, blobFile, list)
 	server1.MustExec(t, "chmod", "600", blobFile)
 
-	up1 := server1.Start(t, "thinkpol", "up", "-mode", "server")
-	up2 := server2.Start(t, "thinkpol", "up", "-mode", "server")
-	waitLog(t, up1, `worker space=\S+ .*`+applied(version[1]))
-	waitLog(t, up2, `worker space=\S+ .*`+applied(version[1]))
+	up1 := startUp(t, server1)
+	up2 := startUp(t, server2)
+	waitLog(t, up1, workerApplied(version[1]))
+	waitLog(t, up2, workerApplied(version[1]))
 
 	// server-2's overlay address answers on the blob port with a tampered
 	// list, once: a server that has been tampered with. In its worker's
@@ -106,7 +106,7 @@ EOF`)
 		return err
 	})
 
-	upA := devA.Start(t, "thinkpol", "up")
+	upA := startUp(t, devA)
 	waitLog(t, upA, `msg="blob rejected: the peer sent something else; trying another peer" .*blob=\S+ kind=geoip name=ru peer=`+server2ID)
 	waitLog(t, upA, `msg="blob fetched" .*blob=\S+ kind=geoip name=ru size=\d+ peer=`+server1ID)
 	<-tampering.Done()
@@ -128,7 +128,7 @@ EOF`)
 		t.Fatalf("device-a: %v\n%s", err, upA.Output())
 	}
 	devA.MustExec(t, "sh", "-ec", `printf 'Z' | dd of=`+blobFile+` bs=1 seek=8 conv=notrunc status=none`)
-	upA = devA.Start(t, "thinkpol", "up")
+	upA = startUp(t, devA)
 	waitLog(t, upA, `msg="stored blob rejected: it doesn't match the map; fetching it again" .*blob=\S+ kind=geoip name=ru`)
 	waitLog(t, upA, `msg="blob fetched" .*blob=\S+ kind=geoip name=ru`)
 	lab.Eventually(t, 30*time.Second, func() error {

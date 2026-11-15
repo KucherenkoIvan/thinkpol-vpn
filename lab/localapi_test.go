@@ -88,12 +88,12 @@ func TestLocalAPI(t *testing.T) {
 	devA.MustExec(t, "install", "-d", "-m", "2777", "/run/thinkpol-api")
 	devB.MustExec(t, "install", "-d", "-m", "755", "-o", malloryUID, "/run/foreign-api")
 	up := map[string]*lab.Process{
-		"server-1": server.Start(t, "thinkpol", "up", "-mode", "server"),
-		"device-a": devA.Start(t, "thinkpol", "up", "-connect=false"),
-		"device-b": devB.Start(t, "env", "THINKPOL_API_SOCKET=/run/foreign-api/api.sock", "thinkpol", "up"),
+		"server-1": startUp(t, server),
+		"device-a": startUp(t, devA, "-connect=false"),
+		"device-b": devB.Start(t, upCommand(devB, []string{"THINKPOL_API_SOCKET=/run/foreign-api/api.sock"})...),
 	}
-	waitLog(t, up["server-1"], `worker space=\S+ .*msg="map applied"`)
-	waitLog(t, up["device-a"], "mode=device")
+	waitLog(t, up["server-1"], workerApplied(""))
+	waitStatus(t, devA, inMode("device"))
 	s4, s6 := space.overlay(1)
 	b4, _ := space.overlay(3)
 
@@ -286,9 +286,9 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 	}
 
 	exit := startServerExit(t, server, inetIP, v1, netip.PrefixFrom(inetIP, 24).Masked())
-	devBUp := devB.Start(t, "thinkpol", "up")
-	up := devA.Start(t, "thinkpol", "up", "-connect=false")
-	waitLog(t, up, "mode=device")
+	devBUp := startUp(t, devB)
+	up := startUp(t, devA, "-connect=false")
+	waitStatus(t, devA, inMode("device"))
 
 	wantConnected := func(connected bool) error {
 		rules4, rules6, err := policyRules(devA, pollTimeout)
