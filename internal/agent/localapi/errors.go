@@ -56,8 +56,15 @@ var (
 	// ErrNotRunning: the service answers, but its node isn't running.
 	ErrNotRunning        = Error{code: "not_running"}
 	ErrPresetUnavailable = Error{code: "rule_preset_unavailable"}
-	ErrUnknownPreset     = Error{code: "unknown_rule_preset"}
-	ErrDNSUnprotected    = Error{code: "dns_not_protected"}
+	// ErrPresetNotEnforced: the preset is stored, but laying it out failed
+	// before the router took it; the router keeps the preset it had until
+	// a retry lays it out.
+	ErrPresetNotEnforced = Error{code: "rule_preset_not_enforced"}
+	// ErrPresetIncomplete: the preset is stored and the router enforces
+	// it, but laying out the rest of it failed; retried.
+	ErrPresetIncomplete = Error{code: "rule_preset_incomplete"}
+	ErrUnknownPreset    = Error{code: "unknown_rule_preset"}
+	ErrDNSUnprotected   = Error{code: "dns_not_protected"}
 	// ErrStartFailed is a data plane that failed to start on Connect, sent
 	// with its step as the detail (`start_failed:<step>`); the failure
 	// itself stays in the service's log.
@@ -93,6 +100,8 @@ var refusals = []struct {
 	{ErrServerMode, codes.FailedPrecondition, "this node is a server: it serves its spaces whenever it runs", false},
 	{ErrNotRunning, codes.Unavailable, "the node is not running", false},
 	{ErrPresetUnavailable, codes.FailedPrecondition, "this space can't build that preset (no chain, or no domestic list): it is kept, and enforced failing closed", false},
+	{ErrPresetNotEnforced, codes.FailedPrecondition, "the preset is stored, but laying it out failed before the router took it: the router keeps the preset it had until a retry succeeds (see the status)", false},
+	{ErrPresetIncomplete, codes.FailedPrecondition, "the preset is stored and in place, but laying out the rest of it (an exit's device or the OS routing table) failed: retrying (see the status)", false},
 	{ErrUnknownPreset, codes.InvalidArgument, "no such rule preset: space, everything or all-but-domestic", false},
 	{ErrDNSUnprotected, codes.FailedPrecondition, "connected, but DNS is not protected: the system may resolve names outside the tunnel; the tunnel stays up", false},
 	{ErrStartFailed, codes.FailedPrecondition, "starting the data plane failed at step %q", true},

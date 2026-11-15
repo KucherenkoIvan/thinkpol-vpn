@@ -139,7 +139,11 @@ func TestEveryCommandExitsBySysexits(t *testing.T) {
 		{path: []string{"kill-switch"}, values: []string{"off"}, partials: []partial{notEnforced(agent.KillSwitchRemoveFailed, removeFailed)}},
 		{path: []string{"allow-lan"}, values: []string{"off"}, partials: []partial{serverMode, notEnforced(agent.KillSwitchApplyFailed, applyFailed)}},
 		{path: []string{"connect-on-boot"}, values: []string{"on"}, partials: []partial{serverMode}},
-		{path: []string{"rules", "preset"}, values: []string{"everything"}, partials: []partial{{err: agent.ErrPresetUnavailable, code: "rule_preset_unavailable"}}},
+		{path: []string{"rules", "preset"}, values: []string{"everything"}, partials: []partial{
+			{err: agent.ErrPresetUnavailable, code: "rule_preset_unavailable"},
+			{err: fmt.Errorf("%w: laying out failed", agent.ErrPresetNotEnforced), code: "rule_preset_not_enforced"},
+			{err: fmt.Errorf("%w: laying out failed", agent.ErrPresetIncomplete), code: "rule_preset_incomplete"},
+		}},
 	} {
 		line := func(flags ...string) []string { return slices.Concat(c.path, flags, c.values) }
 		name := strings.Join(line(), " ")

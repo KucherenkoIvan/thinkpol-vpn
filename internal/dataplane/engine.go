@@ -103,6 +103,11 @@ type EngineConfig struct {
 	// serve after every Apply and rule change (see dnsConfig). Called
 	// with the engine locked: it must not call back into the engine.
 	DNS Resolver
+	// TableFault, if set, is asked before the router takes each table,
+	// with the engine locked: an error fails that table there, as a
+	// router refusing it would. Tests only (a layout that fails where
+	// the router keeps its table); nil otherwise.
+	TableFault func() error
 }
 
 // Engine is one space's data plane on a node (docs/design/overlay.md "Data plane"): the
@@ -463,6 +468,11 @@ func (e *Engine) Inbound(transportName string) transport.Peers {
 // holds no network addresses but the overlay's, and nothing quoted from
 // the map: what was skipped and what failed come from fixed vocabularies.
 type Status struct {
+	// ReadAt is when the status was read, before any of it: what is in it
+	// is as of then or later. A reader grading ages in it (an initiation
+	// pending past a deadline) measures them to ReadAt, never to a later
+	// clock reading, which would add the time in between.
+	ReadAt time.Time
 	// MTU is the overlay's MTU; 0 before the first Apply that got that far.
 	MTU int
 	// IPv6 says whether the overlay carries IPv6, and IPv6Off why not.
@@ -509,10 +519,13 @@ type PeerStatus struct {
 	// HandshakePendingSince is when the first initiation to the peer
 	// still unanswered was sent (wg.PeerStatus.HandshakePendingSince).
 	HandshakePendingSince time.Time
-	// LastInitiation is when the last initiation to the peer was sent
-	// (wg.PeerStatus.LastInitiation).
-	LastInitiation   time.Time
-	RxBytes, TxBytes uint64
+	// FirstInitiationSinceLinkUp is when the first initiation to the peer
+	// still unanswered and sent since its first hop's link came up went
+	// out (wg.Device.FirstInitiationSince): zero while the first hop is
+	// down, and while nothing was sent since it came up, whatever was
+	// pending before.
+	FirstInitiationSinceLinkUp time.Time
+	RxBytes, TxBytes           uint64
 }
 
 // ExitHandshakeDeadline is how long a handshake initiation to an exit may
@@ -544,6 +557,7 @@ func (e *Engine) StatusAndLastApply() (Status, ApplyTrace, bool) {
 
 func (e *Engine) statusLocked() Status {
 	s := Status{
+		ReadAt:         time.Now(),
 		MTU:            e.mtu,
 		IPv6:           e.mtu > 0 && e.ipv6Off == nil,
 		Neighbors:      e.node.Neighbors(),
@@ -557,6 +571,12 @@ func (e *Engine) statusLocked() Status {
 		RouteTable:     e.routes.status(),
 
 		InterfaceReapplies: e.ifcReapplies,
+	}
+	linkUp := make(map[path.NodeID]time.Time, len(s.Neighbors))
+	for _, n := range s.Neighbors {
+		if n.Up {
+			linkUp[n.Node] = n.UpSince
+		}
 	}
 	s.Rules.Skipped = slices.Clone(s.Rules.Skipped)
 	if e.ipv6Off != nil {
@@ -573,10 +593,13 @@ func (e *Engine) statusLocked() Status {
 			r := reported[p.Key]
 			ps := PeerStatus{
 				ID: p.ID, Device: name, Addresses: slices.Clone(p.Addresses), Exit: name == exitDevice(p.ID),
-				LastHandshake: r.LastHandshake, HandshakePendingSince: r.HandshakePendingSince, LastInitiation: r.LastInitiation, RxBytes: r.RxBytes, TxBytes: r.TxBytes,
+				LastHandshake: r.LastHandshake, HandshakePendingSince: r.HandshakePendingSince, RxBytes: r.RxBytes, TxBytes: r.TxBytes,
 			}
 			if hop, _, ok := d.wg.Bind().Current(path.NodeID(p.ID)); ok {
 				ps.FirstHop = netmap.NodeID(hop)
+				if up, ok := linkUp[hop]; ok {
+					ps.FirstInitiationSinceLinkUp = d.wg.FirstInitiationSince(p.Key, up)
+				}
 			}
 			s.Peers = append(s.Peers, ps)
 		}
