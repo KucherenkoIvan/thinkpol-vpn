@@ -111,4 +111,4 @@ From the orchestrator's review, not decided:
 - A network-level minimum the admin can require (e.g. the kill switch on) that a member can't turn off.
 - The initial settings an invite carries.
 - Settings per OS user versus per device on a shared computer.
-- Windows paths and ACLs for both files (M5).
+- Windows paths and ACLs for both files (M5). Proposed in [windows.md](windows.md): the binary and `wintun.dll` in `%ProgramFiles%\thinkpol\` (SYSTEM and Administrators write, checked like `BinaryPath`'s directory); state (`node.json`, `device.json`, keys, `map.bin`, `blobs\`, `crash-trace`) in `%ProgramData%\thinkpol\` and runtime records in its `run\`, both with a protected DACL for SYSTEM and Administrators only; the boot session in the volatile key `HKLM\SOFTWARE\thinkpol\Boot`; the local API at `\\.\pipe\ProtectedPrefix\Administrators\thinkpol\api`.
