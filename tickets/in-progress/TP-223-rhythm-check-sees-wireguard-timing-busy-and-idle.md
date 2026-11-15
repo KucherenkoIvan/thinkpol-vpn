@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: []
 refs: [RR65]
-owner: ""
-branch: ""
+owner: "agent-tp-223"
+branch: "tp-223-rhythm-by-timing"
 ---
 
 ## Goal
@@ -38,3 +38,4 @@ M2's gate promises `reality` shows no WireGuard rhythm: no 2-minute rekey pair a
 
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate review)
+- 2026-11-16 backlog → in-progress, owner: agent-tp-223
