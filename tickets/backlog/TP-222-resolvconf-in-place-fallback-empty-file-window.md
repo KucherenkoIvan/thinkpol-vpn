@@ -1,5 +1,5 @@
 ---
-id: TP-219
+id: TP-222
 title: "The empty-file window on resolv.conf's in-place fallback"
 milestone: M3
 area: dataplane/dns
@@ -35,3 +35,4 @@ Where /etc/resolv.conf can't be renamed over (a bind mount, as in containers), a
 
 ## Log
 - 2026-11-15 created in backlog (from TP-217 review R1.2)
+- 2026-11-15 renumbered TP-219 → TP-222 (TP-219 was also filed on rewrite, from TP-211)
