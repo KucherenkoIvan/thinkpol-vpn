@@ -363,7 +363,7 @@ var errRestored = errors.New("dns: resolv.conf was restored")
 // no telling another program's write in progress from a finished one
 // (RESIDUAL-RISKS.md RR5).
 func setResolvConfTimed(path, uplink string, c SystemConfig, timing resolvConfTiming) (*resolvConf, error) {
-	r := &resolvConf{path: path, uplink: uplink, timing: timing, cfg: c, untold: startsUntold(c), rewrite: rewriteResolvConf,
+	r := &resolvConf{path: path, uplink: uplink, timing: timing, cfg: c, untold: startsUntold(c), rewrite: newRewrite,
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), stopped: make(chan struct{})}
 	// Watched from before the take-over's read: another program's change
 	// right after the take-over is seen at once, not at the poll.
@@ -381,7 +381,7 @@ func setResolvConfTimed(path, uplink string, c SystemConfig, timing resolvConfTi
 		own = 1
 	}
 	r.mu.Unlock()
-	if err != nil {
+	if err != nil && !errors.Is(err, errChangedSinceRead) {
 		closeWatch()
 		return nil, err
 	}
@@ -410,6 +410,11 @@ func (r *resolvConf) isWritten(f resolvConfFile, ferr error) bool {
 // watch is set up and started.
 var watchResolvConf = watchFile
 
+// newRewrite is a new resolvConf's rewrite: rewriteResolvConf; a variable
+// so a test can write the file between the take-over's read and its
+// rewrite.
+var newRewrite = rewriteResolvConf
+
 // apply writes the managed resolv.conf over f, what a read of it found
 // (ferr its error), keeping f as the original unless it is the node's
 // own (left by a crash). Lines appended to the node's own file are
@@ -421,7 +426,11 @@ var watchResolvConf = watchFile
 // memory. It returns what to tell the caller, run after unlocking, or
 // nil. r.mu is held.
 func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error) {
-	defer func() { r.err = err }()
+	defer func() {
+		if !errors.Is(err, errChangedSinceRead) {
+			r.err = err
+		}
+	}()
 	if ferr != nil {
 		return nil, ferr
 	}
@@ -449,14 +458,24 @@ func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error
 		}
 	}
 	content := render(r.cfg, m.original, symlink)
+	werr := r.rewrite(r.path, f, content)
+	if errors.Is(werr, errChangedSinceRead) {
+		// f is stale: nothing is written or told. At the take-over it is
+		// still what later changes are told against, as the caller told
+		// what it read before.
+		if !r.seen {
+			r.original, r.seen = m.original, true
+		}
+		return nil, werr
+	}
 	tell = r.recordOriginal(m.original, read)
 	r.originalLink = symlink
-	if err := r.rewrite(r.path, f, content); err != nil {
+	if werr != nil {
 		var partial partialWriteError
-		if errors.As(err, &partial) {
+		if errors.As(werr, &partial) {
 			r.failedWrite = content
 		}
-		return tell, err
+		return tell, werr
 	}
 	r.written, r.failedWrite = content, nil
 	if bytes.Equal(content, f.content) {
@@ -576,15 +595,39 @@ func (r *resolvConf) recordOriginal(original []byte, read bool) (tell func()) {
 
 // rewriteResolvConf puts content at path unless f, what is there, holds
 // it already: in place of a regular file, else (no file, a symlink) as a
-// new file replacing what is there.
+// new file replacing what is there. It writes only over f: when the
+// path holds anything else by the time content is ready to go in
+// (another program wrote it since f was read), it writes nothing and
+// returns errChangedSinceRead.
 func rewriteResolvConf(path string, f resolvConfFile, content []byte) error {
 	if string(content) == string(f.content) {
 		return nil
 	}
+	still := func() error { return stillAt(path, f) }
 	if f.info != nil && f.info.Mode().IsRegular() {
-		return writeFile(path, content)
+		return writeFile(path, content, still)
 	}
-	return replace(path, func(tmp string) error { return writeNew(tmp, content) })
+	return replace(path, func(tmp string) error { return writeNew(tmp, content) }, still)
+}
+
+// errChangedSinceRead is a rewrite that wrote nothing because another
+// program wrote the file after the read it was rendered from.
+var errChangedSinceRead = errors.New("dns: resolv.conf changed since it was read")
+
+// stillAt says the path still holds f, as read: errChangedSinceRead if
+// anything else is there.
+func stillAt(path string, f resolvConfFile) error {
+	now, err := readResolvConfFile(path)
+	if err != nil {
+		return err
+	}
+	same := (now.info == nil) == (f.info == nil) &&
+		(now.info == nil || os.SameFile(now.info, f.info)) &&
+		now.symlink == f.symlink && now.read == f.read && bytes.Equal(now.content, f.content)
+	if !same {
+		return errChangedSinceRead
+	}
+	return nil
 }
 
 // watch takes the file back whenever another program writes it: a file
@@ -628,10 +671,21 @@ func (r *resolvConf) watch(first func(), changed bool, changes <-chan bool, clos
 			r.mu.Unlock()
 			continue
 		}
+		foreign := r.foreign
 		r.foreign = nil
 		quiet.Stop()
 		prev := r.err
 		tell, err := r.apply(f, ferr)
+		if errors.Is(err, errChangedSinceRead) {
+			// Another program wrote the file after the read: a write that
+			// may still be going on, judged at the next wake (its close's
+			// change event, or the poll), not retried at once.
+			if r.foreign = foreign; r.foreign == nil {
+				r.beginForeign(stateOf(f, ferr))
+			}
+			r.mu.Unlock()
+			continue
+		}
 		log := r.cfg.Log
 		r.mu.Unlock()
 		if err != nil && log != nil && (prev == nil || prev.Error() != err.Error()) {
@@ -755,7 +809,7 @@ func (r *resolvConf) classify(f resolvConfFile, ferr error, renamed bool) fileKi
 	switch {
 	case ferr != nil:
 		return wholeWrite
-	case f.read && bytes.Equal(f.content, r.written), r.ownPartial(f):
+	case f.read && r.written != nil && bytes.Equal(f.content, r.written), r.ownPartial(f):
 		return ownFile
 	case renamed && f.info != nil && r.writtenInfo != nil && !os.SameFile(f.info, r.writtenInfo):
 		return wholeWrite
@@ -809,22 +863,33 @@ func (r *resolvConf) Update(c SystemConfig) error {
 	r.cfg = c
 	f, ferr := readResolvConfFile(r.path)
 	if r.foreign == nil && r.classify(f, ferr, false) == inPlaceWrite {
-		r.beginForeign(stateOf(f, ferr))
-		select {
-		case r.wake <- struct{}{}:
-		default:
-		}
+		r.leaveToWatch(f, ferr)
 	}
 	if r.foreign != nil {
 		r.mu.Unlock()
 		return nil
 	}
 	tell, err := r.apply(f, ferr)
+	if errors.Is(err, errChangedSinceRead) {
+		r.leaveToWatch(f, ferr)
+		err = nil
+	}
 	r.mu.Unlock()
 	if tell != nil {
 		tell()
 	}
 	return err
+}
+
+// leaveToWatch begins settling another program's write found as f, and
+// wakes the watch to time it: the watch applies the configuration once
+// the write settles. r.mu is held.
+func (r *resolvConf) leaveToWatch(f resolvConfFile, ferr error) {
+	r.beginForeign(stateOf(f, ferr))
+	select {
+	case r.wake <- struct{}{}:
+	default:
+	}
 }
 
 // deferred says r holds a configuration it hasn't written yet: Update
@@ -907,17 +972,18 @@ func restoreResolvConf(path string) error {
 // putBackOriginal puts original at path, or the symlink it was.
 func putBackOriginal(path string, original []byte, symlink string) error {
 	if symlink != "" {
-		return replace(path, func(tmp string) error { return os.Symlink(symlink, tmp) })
+		return replace(path, func(tmp string) error { return os.Symlink(symlink, tmp) }, nil)
 	}
-	return writeFile(path, original)
+	return writeFile(path, original, nil)
 }
 
 // writeFile replaces a file's content atomically: a new file, synced, then
 // renamed over it. A file that can't be renamed over (a bind mount, as
 // /etc/resolv.conf often is in containers: EBUSY, EXDEV) is rewritten in
-// place and synced.
-func writeFile(path string, content []byte) error {
-	err := replace(path, func(tmp string) error { return writeNew(tmp, content) })
+// place and synced. still is replace's: asked before the rename, so
+// before the in-place write too, a failed rename apart.
+func writeFile(path string, content []byte, still func() error) error {
+	err := replace(path, func(tmp string) error { return writeNew(tmp, content) }, still)
 	if errors.Is(err, syscall.EBUSY) || errors.Is(err, syscall.EXDEV) {
 		return writeInPlace(path, content)
 	}
@@ -969,14 +1035,24 @@ func (e partialWriteError) Error() string { return e.err.Error() }
 func (e partialWriteError) Unwrap() error { return e.err }
 
 // replace puts what create makes at a temporary name next to path in its
-// place, atomically, and syncs the directory.
-func replace(path string, create func(tmp string) error) error {
+// place, atomically, and syncs the directory. still, unless nil, is asked
+// once the new file is made, right before the rename: its error leaves
+// the path alone. Asked any earlier, it would leave the new file's sync
+// (milliseconds on a disk, longer under load) between its answer and the
+// rename.
+func replace(path string, create func(tmp string) error, still func() error) error {
 	dir := filepath.Dir(path)
 	tmp := filepath.Join(dir, "."+filepath.Base(path)+".thinkpol")
 	_ = os.Remove(tmp)
 	if err := create(tmp); err != nil {
 		_ = os.Remove(tmp)
 		return err
+	}
+	if still != nil {
+		if err := still(); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)

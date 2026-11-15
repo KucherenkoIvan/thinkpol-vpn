@@ -90,7 +90,7 @@ func readString(t *testing.T, path string) string {
 // files nothing watches may write directly.
 func writeFileAtomic(t *testing.T, path, content string) {
 	t.Helper()
-	err := replace(path, func(tmp string) error { return writeNew(tmp, []byte(content)) })
+	err := replace(path, func(tmp string) error { return writeNew(tmp, []byte(content)) }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
