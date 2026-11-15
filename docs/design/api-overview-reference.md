@@ -325,7 +325,7 @@ The health problem vocabulary (`internal/agent/status.go`): `disconnected`, `rem
 
 #### `connect` and `disconnect`
 
-Bring a device's data plane up or down. The service keeps running and keeps following the map. Both print the status once the change is done. The only flag is `-socket`.
+Bring a device's data plane up or down. The service keeps running and keeps following the map. Both print the status once the change is done, the kill switch included: its line shows it as the new connection leaves it (the crash posture's hold comes with a connect and goes with a disconnect). The only flag is `-socket`.
 
 ```
 $ thinkpol connect
@@ -375,7 +375,7 @@ $ thinkpol spaces
 
 #### `rules preset`
 
-Switches a device's routing rules to a preset: `space` (the space's own rules), `everything`, or `all-but-domestic`. The service stores the choice in `rules.local`. Synopsis: `thinkpol rules preset [-socket path] <space|everything|all-but-domestic>`. It prints the status. There is no form that shows the current preset: `status` shows it.
+Switches a device's routing rules to a preset: `space` (the space's own rules), `everything`, or `all-but-domestic`. The service stores the choice in `rules.local`. Synopsis: `thinkpol rules preset [-socket path] <space|everything|all-but-domestic>`. It prints the status once the data plane and the kill switch follow the preset: the kill switch's line shows whether the new preset's crash posture holds it. There is no form that shows the current preset: `status` shows it.
 
 ```
 $ thinkpol rules preset space

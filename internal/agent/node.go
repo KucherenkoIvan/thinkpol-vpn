@@ -255,13 +255,15 @@ func knownDevice(dir string) bool {
 func (n *Node) Status() Status { return n.report.status() }
 
 // Connect brings a device's data plane up on its latest map and returns
-// once it is up, or why it failed to start (a *StartError); a device
+// once it is up and its kill switch follows (Status shows both), or why
+// it failed to start (a *StartError); a device
 // removed from its space comes up once a map includes it again.
 // ErrServerMode on a server.
 func (n *Node) Connect(ctx context.Context) error { return n.request(ctx, true) }
 
 // Disconnect takes a device's data plane down, leaving nothing of it on
-// the host, and returns once it is down. The device goes on following its
+// the host, and returns once it is down and its kill switch follows
+// (Status shows both). The device goes on following its
 // space's maps. ErrServerMode on a server. The choice is recorded for the
 // boot (ConnectRecord) before the node hears of it, so a node that can't
 // act on it, busy with a first start that fails and returns while the
@@ -290,8 +292,8 @@ func (n *Node) Disconnect(ctx context.Context) error {
 // SetRulePreset switches a device's rules to preset ("space",
 // "everything", "all-but-domestic"), keeping its own rules. The goroutine
 // that runs the node takes the choice: it stores it in DeviceFile (only
-// the service writes it), has the data plane follow it, then Status shows
-// it, before SetRulePreset returns. A caller whose ctx ends before the
+// the service writes it), has the data plane and the kill switch follow
+// it, then Status shows it, before SetRulePreset returns. A caller whose ctx ends before the
 // node took the request (waiting for another SetRulePreset, too) changed
 // nothing and gets the ctx's error; once taken, it gets the outcome. With
 // no data plane running (a node that waits for a section, or stopped) the
@@ -743,10 +745,11 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			publish()
 			close(done)
 		case req := <-n.rulesRequests:
-			// The kill switch follows the preset after the reply, as
-			// the runner's does at the top of its loop.
-			req.done <- n.takeIdle(req)
+			// The kill switch follows the preset before the reply, as
+			// the runner's does (takeRules).
+			err := n.takeIdle(req)
 			keepKillSwitch(ctx, !n.conn.disconnected())
+			req.done <- err
 		case req := <-n.requests:
 			// Kept for when the node runs its section.
 			n.remember(req.connect)
