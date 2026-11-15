@@ -745,11 +745,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			publish()
 			close(done)
 		case req := <-n.rulesRequests:
-			// The kill switch follows the preset before the reply, as
-			// the runner's does (takeRules).
-			err := n.takeIdle(req)
-			keepKillSwitch(ctx, !n.conn.disconnected())
-			req.done <- err
+			n.takeWaitingRules(ctx, req, f.mismatch)
 		case req := <-n.requests:
 			// Kept for when the node runs its section.
 			n.remember(req.connect)
@@ -804,6 +800,15 @@ func (n *Node) takeWaitingMap(ctx context.Context, f *mapFollower, env []byte) (
 		n.keepRemovedKillSwitch(ctx, f.mismatch, !n.conn.disconnected())
 	}
 	return taken, back
+}
+
+// takeWaitingRules is takeIdle for awaitSection: the kill switch follows
+// the preset before the reply, as the runner's does (takeRules), so the
+// status the reply leaves has both.
+func (n *Node) takeWaitingRules(ctx context.Context, req rulesRequest, mismatch bool) {
+	err := n.takeIdle(req)
+	n.keepRemovedKillSwitch(ctx, mismatch, !n.conn.disconnected())
+	req.done <- err
 }
 
 // keepRemovedKillSwitch keeps a device's kill switch while it waits for a
