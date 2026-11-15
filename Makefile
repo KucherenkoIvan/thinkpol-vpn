@@ -29,7 +29,7 @@ BUF_BREAKING_AGAINST ?= rewrite
 # cgo is off unless a target turns it on (test-race).
 export CGO_ENABLED := 0
 
-.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-perf lab-gotest lab-down lab-seccomp
+.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-perf lab-gotest lab-down lab-seccomp lab-seccomp-check
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -59,6 +59,7 @@ lint: $(TOOLS_STAMP) ## gofmt, then go vet + golangci-lint per OS (lab tests inc
 	GOOS=android GOARCH=arm64 go build $$pkgs
 	@$(MAKE) --no-print-directory nocgo
 	@$(MAKE) --no-print-directory proto-check
+	@$(MAKE) --no-print-directory lab-seccomp-check
 	@$(MAKE) --no-print-directory vulncheck
 
 # govulncheck fetches the Go vulnerability database (vuln.go.dev) on every
@@ -159,6 +160,14 @@ lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1, its lab-ta
 
 lab-seccomp: ## regenerate lab/seccomp.json from the moby/profiles/seccomp lab/seccompgen pins (needs the network once)
 	cd lab/seccompgen && go run . -o ../seccomp.json
+
+# A hand edit of lab/seccomp.json (a syscall added to an allow rule) passes
+# every test that reads it; only regenerating it shows the drift.
+lab-seccomp-check: ## fail if lab/seccomp.json isn't what make lab-seccomp generates (needs the network once, as vulncheck does)
+	@tmp=$$(mktemp) || exit 1; \
+	trap 'rm -f "$$tmp"' EXIT; \
+	( cd lab/seccompgen && go run . -o "$$tmp" ) >/dev/null || exit 1; \
+	cmp -s "$$tmp" lab/seccomp.json || { echo "lab/seccomp.json differs from what make lab-seccomp generates: run make lab-seccomp, don't edit the file"; exit 1; }
 
 lab-down: ## remove every lab this checkout started
 	$(LABCTL) down

@@ -146,10 +146,18 @@ func TestSeccompProfileAllowsPivotRootOnlyWithSysAdmin(t *testing.T) {
 	// syscalls that matter most to the lab's isolation, each rule without
 	// its names; an errno rule allows nothing and isn't listed.
 	dockerAllows := map[string][]string{
-		"mount":      {sysAdminOnly},
-		"unshare":    {sysAdminOnly},
-		"setns":      {sysAdminOnly},
-		"bpf":        {sysAdminOnly, `{"action":"SCMP_ACT_ALLOW","includes":{"caps":["CAP_BPF"]}}`},
+		"mount":   {sysAdminOnly},
+		"unshare": {sysAdminOnly},
+		"setns":   {sysAdminOnly},
+		"bpf":     {sysAdminOnly, `{"action":"SCMP_ACT_ALLOW","includes":{"caps":["CAP_BPF"]}}`},
+		// Without CAP_SYS_ADMIN, clone only with none of the namespace
+		// flags (2114060288 = 0x7E020000: CLONE_NEWNS, NEWCGROUP, NEWUTS,
+		// NEWIPC, NEWUSER, NEWPID and NEWNET masked to zero).
+		"clone": {
+			sysAdminOnly,
+			`{"action":"SCMP_ACT_ALLOW","args":[{"index":0,"value":2114060288,"op":"SCMP_CMP_MASKED_EQ"}],"excludes":{"caps":["CAP_SYS_ADMIN"],"arches":["s390","s390x"]}}`,
+			`{"action":"SCMP_ACT_ALLOW","args":[{"index":1,"value":2114060288,"op":"SCMP_CMP_MASKED_EQ"}],"comment":"s390 parameter ordering for clone is different","excludes":{"caps":["CAP_SYS_ADMIN"]},"includes":{"arches":["s390","s390x"]}}`,
+		},
 		"clone3":     {sysAdminOnly},
 		"keyctl":     nil,
 		"ptrace":     {`{"action":"SCMP_ACT_ALLOW","includes":{"minKernel":"4.8"}}`, `{"action":"SCMP_ACT_ALLOW","includes":{"caps":["CAP_SYS_PTRACE"]}}`},

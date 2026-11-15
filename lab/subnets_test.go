@@ -177,10 +177,11 @@ func TestSubnetPoolRefusesTheDeadEndNameserver(t *testing.T) {
 	}
 }
 
-// Code that could run in the lab (everything but macOS and Windows files)
-// may not use the dead-end nameserver's address, or a prefix of /8 or
-// longer (what a lab network or a test's address could be) that contains
-// it: a node that reached it would turn the dead end into a resolver.
+// Files that could reach the lab (Go code, YAML, testdata, scripts; not
+// macOS or Windows files) may not use the dead-end nameserver's address,
+// or a prefix of /8 or longer (what a lab network or a test's address
+// could be) that contains it: a node that reached it would turn the dead
+// end into a resolver.
 // Shorter prefixes are routes such as 0.0.0.0/0, not addresses.
 func TestOnlyTheNodesUseTheDeadEndNameserver(t *testing.T) {
 	root, err := Root()
@@ -201,7 +202,7 @@ func TestOnlyTheNodesUseTheDeadEndNameserver(t *testing.T) {
 			return nil
 		}
 		name := d.Name()
-		if !strings.HasSuffix(name, ".go") || strings.Contains(name, "_darwin") || strings.Contains(name, "_windows") || strings.Contains(name, "_ios") {
+		if !scannedForTheDeadEnd(path) || strings.Contains(name, "_darwin") || strings.Contains(name, "_windows") || strings.Contains(name, "_ios") {
 			return nil
 		}
 		data, err := os.ReadFile(path)
@@ -225,6 +226,20 @@ func TestOnlyTheNodesUseTheDeadEndNameserver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// scannedForTheDeadEnd reports whether path is a file whose addresses can
+// reach a lab node: Go code, the maps and other YAML, testdata, scripts
+// and the images' files. Docs, which name the address, are left out.
+func scannedForTheDeadEnd(path string) bool {
+	if slices.Contains(strings.Split(filepath.ToSlash(path), "/"), "testdata") {
+		return true
+	}
+	switch filepath.Ext(path) {
+	case ".go", ".yaml", ".yml", ".json", ".sh", ".py", ".conf":
+		return true
+	}
+	return strings.HasPrefix(filepath.Base(path), "Dockerfile")
 }
 
 func usesAddr(literal string, a netip.Addr) bool {
