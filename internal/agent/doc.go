@@ -303,9 +303,30 @@
 // decides.
 //
 // A rule preset chosen through the local API ([Node.SetRulePreset]) is
-// stored in [DeviceFile], then handed to the engine
-// ([dataplane.Engine.SetRules]) at once; every start takes it as
-// [dataplane.EngineConfig.Rules].
+// taken by the goroutine that runs the data plane: it stores the preset
+// in [DeviceFile], hands it to the engine ([dataplane.Engine.SetRules])
+// at once, and only then has Status show it. With no data plane running
+// (the node waits for a section, or stopped) it is stored and shown, and
+// the next start takes it (a stopped node says [ErrNotRunning], as a kill
+// switch toggle does): every start takes the stored preset as
+// [dataplane.EngineConfig.Rules]. A request the node never took (its
+// caller gave up first) changes nothing, and a store that fails leaves
+// the old preset everywhere. Status says the preset is enforced
+// (RulesEnforced) only while the engine's router enforces that preset
+// ([dataplane.RuleStatus.Preset]); while the data plane switches, it
+// shows the new preset as soon as the router enforces it, as the OS
+// routing table catches up. When laying it out fails, the engine keeps
+// the preset all the same, and the failure is told by where it left the
+// router. Failing before the router took it, the router keeps the preset
+// it had: the stored one is shown as not enforced yet
+// ([ProblemPresetNotEnforced]) and the caller gets
+// [ErrPresetNotEnforced]. Failing after (an exit's device, or the OS
+// routing table, once the router's table changed), the router enforces
+// the new preset with the rest missing: it is shown enforced and
+// incomplete ([ProblemPresetIncomplete]; a chain's exit without its
+// device drops that chain's traffic) and the caller gets
+// [ErrPresetIncomplete]. Either way the data plane retries with its next
+// Apply, which lays out the preset the engine kept.
 //
 // The device file ([DeviceFile], device.json in the state directory) is
 // the member's toggles ([DeviceSettings]), as strict as the node file, 0600:
