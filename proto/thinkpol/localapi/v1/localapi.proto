@@ -167,9 +167,20 @@ message Diagnostics {
   // CLI's JSON carries the CLI's own (the localapi package doc's "JSON").
   uint32 schema_version = 1;
   google.protobuf.Timestamp taken_at = 2;
-  // The agent's OS ("linux", "darwin") and version.
+  // The agent's OS ("linux", "darwin") and version; in a snapshot taken
+  // without the agent, the CLI's.
   string os = 3;
   string agent_version = 4;
+  // Who took it: "running", the agent; "not_running" (nothing accepted
+  // the local API's connection) or "not_answering" (no snapshot came in
+  // time), root's diag reading the host itself with the agent's readers;
+  // "restarted_during_read", root's diag too, with an agent answering
+  // once the host was read.
+  // Without the agent, status is null, status_unreadable says why, and
+  // tun and last_apply are unreadable for the same reason; the host parts
+  // and last_run are read from the host as the agent reads them.
+  string agent = 16;
+  string status_unreadable = 17;
   // The caller got the host parts (routes, policy_rules, guard,
   // kill_switch, dns):
   // root and the service's user do; the group's snapshot has them

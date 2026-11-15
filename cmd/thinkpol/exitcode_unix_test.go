@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
@@ -83,6 +85,9 @@ type apiCommandLine struct {
 	path, values []string
 	partials     []partial
 	rootOnly     bool
+	// readsTheHostWhenDown: with the service down, root's reads the host
+	// itself (diag, TP-133), and anyone else's is refused for it.
+	readsTheHostWhenDown bool
 }
 
 // Every command exits by sysexits (docs/design/api-overview.md,
@@ -129,7 +134,7 @@ func TestEveryCommandExitsBySysexits(t *testing.T) {
 		{path: []string{"status"}},
 		{path: []string{"spaces"}},
 		{path: []string{"logs"}, rootOnly: true},
-		{path: []string{"diag"}},
+		{path: []string{"diag"}, readsTheHostWhenDown: true},
 		{path: []string{"kill-switch"}},
 		{path: []string{"allow-lan"}},
 		{path: []string{"connect-on-boot"}},
@@ -147,10 +152,17 @@ func TestEveryCommandExitsBySysexits(t *testing.T) {
 	} {
 		line := func(flags ...string) []string { return slices.Concat(c.path, flags, c.values) }
 		name := strings.Join(line(), " ")
+		serviceDown := exitRow{name: name + ": service down", args: line("-socket", down), code: exitUnavailable, stderr: `\[service_down\]`}
+		switch {
+		case c.readsTheHostWhenDown && root:
+			serviceDown = exitRow{name: name + ": service down, root reads the host", args: line("-socket", down), code: exitOK, stdout: `"agent": "not_running"`}
+		case c.readsTheHostWhenDown:
+			serviceDown = exitRow{name: name + ": service down, not root", args: line("-socket", down), code: exitNoPerm, stderr: "as root"}
+		}
 		rows = append(rows,
 			exitRow{name: name + ": success", args: line("-socket", ok), code: exitOK},
 			exitRow{name: name + ": bad arguments", args: line("-socket", ok, "-bogus"), code: exitUsage, stderr: "flag provided but not defined"},
-			exitRow{name: name + ": service down", args: line("-socket", down), code: exitUnavailable, stderr: `\[service_down\]`},
+			serviceDown,
 		)
 		// Root may always call: no group is asked, nothing refused.
 		if !root {
@@ -331,5 +343,104 @@ func TestAFailedChangeKeepsTheStatusWriteError(t *testing.T) {
 	}
 	if code := exitCode(err); code != exitFailure {
 		t.Errorf("exit %d, want %d", code, exitFailure)
+	}
+}
+
+// diag without an agent answering exits by what it got (TP-133), run as
+// the command runs: the host's snapshot with no agent running is all
+// there is to take, 0; with one that holds the socket and doesn't answer,
+// the snapshot is still written, but short of the agent's, 69
+// (EX_UNAVAILABLE, the service unavailable); with an agent answering once
+// the host was read, the snapshot is written and is no dead run's, 69; a
+// caller who may not read the host, 77 either way and no snapshot
+// (EX_NOPERM: root gets the snapshot, which is the way out). A snapshot
+// that can't be written is 1, whatever the agent did: it didn't get out.
+func TestDiagWithoutAnAgentExitsBySysexits(t *testing.T) {
+	keepUpGlobals(t)
+	wait, reader := diagWait, diagReadHost
+	t.Cleanup(func() { diagWait, diagReadHost = wait, reader })
+	diagWait = 200 * time.Millisecond
+	hostRead := func(_ context.Context, p agent.AgentPresence) (agent.Diagnostics, error) {
+		return agent.Diagnostics{Agent: p, StatusUnreadable: "test"}, nil
+	}
+	refused := func(context.Context, agent.AgentPresence) (agent.Diagnostics, error) {
+		return agent.Diagnostics{}, agent.ErrDiagNeedsRoot
+	}
+	// Not t.TempDir: a unix socket's path is short (104 bytes on macOS).
+	dir, err := os.MkdirTemp("", "tpdg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	hangs, down, later := filepath.Join(dir, "api.sock"), filepath.Join(dir, "none.sock"), filepath.Join(dir, "later.sock")
+	l, err := net.Listen("unix", hangs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan struct{})
+	t.Cleanup(func() { _ = l.Close(); <-accepted })
+	go func() {
+		defer close(accepted)
+		var held []net.Conn
+		defer func() {
+			for _, c := range held {
+				_ = c.Close()
+			}
+		}()
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			held = append(held, c)
+		}
+	}()
+	// An agent comes up at later while the host is read.
+	agentUp := serveAPI(t, &exitNode{st: connectedDevice(t).st}, localapi.Policy{ServiceUID: uint32(os.Geteuid())})
+	restarts := func(ctx context.Context, p agent.AgentPresence) (agent.Diagnostics, error) {
+		if err := os.Rename(agentUp, later); err != nil {
+			return agent.Diagnostics{}, err
+		}
+		return hostRead(ctx, p)
+	}
+	notAFile := filepath.Join(dir, "a-directory")
+	if err := os.Mkdir(notAFile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i, row := range []struct {
+		name   string
+		socket string
+		read   localapi.HostReader
+		out    string // -o's file; "" a new one
+		code   int
+		agent  string // "": no snapshot
+		stderr string
+	}{
+		{"not running", down, hostRead, "", exitOK, "not_running", `^$`},
+		{"not answering", hangs, hostRead, "", exitUnavailable, "not_answering", `waiting up to 0 s for it(.|\n)*\[service_not_answering\]`},
+		{"restarted during the read", later, restarts, "", exitUnavailable, "restarted_during_read", `\[service_restarted_during_read\]`},
+		{"not running, not root", down, refused, "", exitNoPerm, "", "as root"},
+		{"not answering, not root", hangs, refused, "", exitNoPerm, "", "as root"},
+		{"not running, the snapshot not written", down, hostRead, notAFile, exitFailure, "", "not a regular file"},
+		{"not answering, the snapshot not written", hangs, hostRead, notAFile, exitFailure, "", "not a regular file.*the thinkpol service is not answering"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			diagReadHost = row.read
+			out := row.out
+			if out == "" {
+				out = filepath.Join(dir, fmt.Sprintf("diag-%d.json", i))
+			}
+			code, stdout, stderr := runCLI(t, "diag", "-socket", row.socket, "-o", out)
+			if code != row.code || stdout != "" || !regexp.MustCompile(row.stderr).MatchString(stderr) {
+				t.Fatalf("exit %d, want %d\nstdout:\n%s\nstderr:\n%s", code, row.code, stdout, stderr)
+			}
+			snapshot, err := os.ReadFile(out)
+			switch {
+			case row.agent == "" && row.out == "" && !errors.Is(err, os.ErrNotExist):
+				t.Errorf("a snapshot was written: %q, %v", snapshot, err)
+			case row.agent != "" && (err != nil || !strings.Contains(string(snapshot), `"agent": "`+row.agent+`"`)):
+				t.Errorf("snapshot %q, %v; want agent %q", snapshot, err, row.agent)
+			}
+		})
 	}
 }

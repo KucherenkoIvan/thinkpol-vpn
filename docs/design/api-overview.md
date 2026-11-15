@@ -43,8 +43,8 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 | [Local API](api-overview-reference.md#local-api) (reference file) | the socket, the two gates, every call with its access and its shapes, refusals |
 | [Configuration](#configuration) | every key, its default and where it is documented; input files; lab variables |
 | [On-disk state](#on-disk-state) | every file the node, the service and the dev tools write or read |
-| [Built since the snapshot](#built-since-the-snapshot) | what TP-140, TP-166, TP-111, TP-048, TP-141, TP-195 and TP-167 added |
-| [Planned, not built](#planned-not-built) | what TP-183 and TP-133 propose |
+| [Built since the snapshot](#built-since-the-snapshot) | what TP-140, TP-166, TP-111, TP-048, TP-141, TP-195, TP-167 and TP-133 added |
+| [Planned, not built](#planned-not-built) | what TP-183 proposes |
 | [Consistency findings](#consistency-findings) | F1–F21 with suggested verdicts |
 | [Verdicts (owner, 2026-11-07)](#verdicts-owner-2026-11-07) | the decided conventions: configuration levels, status versus diag, exit codes, naming |
 
@@ -251,22 +251,32 @@ Every command exits by BSD `sysexits.h` ([verdict](#exit-codes-f4)). One table m
 
 | Exit | When | What maps to it |
 |---|---|---|
-| 0 | the requested state was reached | success; `-h`, `help` |
+| 0 | the requested state was reached | success; `-h`, `help`; root's `diag` with no agent running, the host read without it (the snapshot is all there is to take) |
 | 1 | not reached, or reached in part; a change made through the local API prints the status as it is now, then the error | `dns_not_protected` (connected, the tunnel stays up), `kill_switch_not_enforced` (a kill switch or allow-LAN toggle kept while the kill switch isn't as meant: `apply_failed`, `remove_failed`, `unsupported`, `not_applied`; the node retries), `rule_preset_unavailable` (kept, enforced failing closed), `rule_preset_not_enforced` (kept, the router keeps the preset it had; retried), `rule_preset_incomplete` (kept and in place, the rest of its layout retried), `server_mode`, `start_failed`, `membership_check_failed` (asking the OS for the caller's group failed: retrying won't help until it is fixed), and anything not named below, a missing output directory included |
 | 64 | bad arguments | no command, an unknown command or group, a bad flag (where Go's `flag` exits 2), wrong arguments, a removed form (`service connect-on-boot`, `service install -connect-on-boot`), `unknown_rule_preset` |
 | 66 | a named input is missing | `ENOENT` on an input the command line names or defaults (`inputError`): `up`'s state directory, its map, key or trust file, a spec, a key directory, a lists source, the map `dev map rotate` replaces, `dev map inspect`'s map and keys |
-| 69 | the service isn't running | `service_down` (nothing listens at the socket), `not_running` (the service answers, its node doesn't run; a kill switch toggle or a rule preset is kept for its next start) |
+| 69 | the service isn't running | `service_down` (nothing listens at the socket), `not_running` (the service answers, its node doesn't run; a kill switch toggle or a rule preset is kept for its next start); root's `diag` with the host read but short of the agent's snapshot: `service_not_answering` (something holds the socket and gives no snapshot within a minute), `service_restarted_during_read` (an agent answers once the host was read) |
 | 75 | busy, try again | another agent holds the host (`up`, `rollback`: while the installed service runs, retrying doesn't clear it); `membership_unknown` (the OS didn't say in time whether the caller is in the group) |
-| 77 | permission denied | `permission_denied`, `root_only`; `rollback` and `service install`, `service uninstall` not run as root (`agent.NeedsRootError`); a named input the caller may not read (`up`'s state directory as a member). An `EACCES` deep in a command is 1 |
+| 77 | permission denied | `permission_denied`, `root_only`; `rollback` and `service install`, `service uninstall` not run as root, and `diag` with no agent answering not run as root, which reads the host itself (`agent.NeedsRootError`, `agent.ErrDiagNeedsRoot`); a named input the caller may not read (`up`'s state directory as a member). An `EACCES` deep in a command is 1 |
 | 78 | bad configuration | a node file, environment or flag value `up` can't run with (`agent.ConfigError`) |
 
 | Surface | Behaviour |
 |---|---|
-| stderr | `thinkpol <cmd>: <message>`; a local API refusal (or the client's `service_down`, `start_failed`, `kill_switch_not_enforced`) ends with its code: `thinkpol connect: connected, but DNS is not protected: … the tunnel stays up [dns_not_protected]` |
+| stderr | `thinkpol <cmd>: <message>`; a local API refusal (or the client's own `service_down`, `service_not_answering`, `service_restarted_during_read`, and `start_failed`, `kill_switch_not_enforced`) ends with its code: `thinkpol connect: connected, but DNS is not protected: … the tunnel stays up [dns_not_protected]` |
 | a change not reached | `connect`, `disconnect`, `rules preset`, and a setting given a value: on exit 1 the current status goes to stdout (if the service answers within 5 s), the error to stderr. Other failures print nothing to stdout |
 | `kill-switch [on\|off]`, `connect-on-boot [on\|off]` (and `allow-lan`) | `<setting> [value]`: no value prints the setting alone (`kill-switch: off, allow-LAN off`), a value sets it and prints the status. TP-048 and TP-166 built them so; no other forms exist |
 
 Answered (implementer, open to the owner): `server_mode` is 1, not 78 (a server isn't misconfigured; the call means nothing there). Decided in review (round 1): `membership_unknown` is 75 only for a lookup that timed out, any other failure is `membership_check_failed`, 1; a missing output directory is 1 (sysexits' 73 isn't in the table); a toggle kept while the kill switch isn't enforced is 1, for every client, since the server refuses it. `rules preset` on a stopped node exits 69, as a kill switch toggle does (the preset is stored for the next start).
+
+### TP-133: `diag` without a running agent
+
+When no agent answers, root's `diag` reads the host itself with the agent's own read-only readers and writes the same snapshot ([localapi's package doc](../../internal/agent/localapi/doc.go), "Without the agent"). The open questions, answered: the fallback is automatic (the crash it is for leaves no agent to ask for a flag's sake, and the snapshot says which it was); `agent` is `running`, `not_running`, `not_answering` or `restarted_during_read`, a new field with `status_unreadable`, schema still 2; exit 0 when no agent runs (the snapshot is all there is to take), 69 when one holds the socket and doesn't answer, a stopped one included, or one answers once the host was read (the snapshot is written, short of the agent's or no dead run's), 77 for anyone but root, 1 when the snapshot can't be written. Its fields: `agent` and `status_unreadable`, beside the reference's [`Diagnostics`](api-overview-reference.md#diagnostics).
+
+```
+$ thinkpol diag; echo $?      # as alice, no agent
+thinkpol diag: no agent answered, and reading the host without it is root's: its parts name public addresses: run it as root (sudo)
+77
+```
 
 ## Planned, not built
 
@@ -293,21 +303,6 @@ Open naming questions:
 - the problem code (F5);
 - the file name and location (F1);
 - where accepted capabilities are kept.
-
-### TP-133: `diag` without a running agent (planned, not built)
-
-| Surface | Proposal |
-|---|---|
-| behaviour | when the local API doesn't answer, root's `diag` reads the host itself and writes the same snapshot |
-| output | `agent: "not running"`, with `status`, `tun` and `last_apply` unreadable for that reason. **`Diagnostics` has no `agent` field today**: this adds one, a string, with schema still 1 |
-| non-root | an error, not a partial snapshot (exit 1, F4) |
-| side effects | none: no lock, no directory made |
-
-Open questions:
-
-- whether the fallback is automatic or needs a flag (e.g. `-offline`): automatic hides an API that is down for another reason;
-- the `agent` field's values;
-- the exit code when it falls back (F4).
 
 ## Consistency findings
 

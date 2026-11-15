@@ -126,7 +126,10 @@
 // (a signal's cancellation is no error, [CleanStop]), and nothing from a
 // kill. Status says the last run crashed (Status.LastRunCrashed), or that
 // its trace wasn't read (Status.LastRunUnreadable), and Diagnostics has
-// the trace, or why, root's only. A server keeps no trace: right after
+// the trace, or why, root's only. With no agent to answer, root's diag
+// reads the file itself ([DiagnoseHost]) as it is: the head as a start
+// reads it, never fixed, cut or emptied, and not at all when it isn't a
+// regular file with a single link. A server keeps no trace: right after
 // reading the file, before anything else that can fail, `up` detaches
 // stderr from it (emptied, removed, stderr to the null device) unless the
 // node is known to be a device: its node file says "device" (whatever

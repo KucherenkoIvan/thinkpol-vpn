@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -13,6 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/KucherenkoIvan/go-kernel/grpckit"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -29,28 +33,34 @@ import (
 func (s *server) Diagnose(ctx context.Context, _ *localapiv1.DiagnoseRequest) (*localapiv1.DiagnoseResponse, error) {
 	c, ok := callerFrom(ctx)
 	d := s.node.Diagnose(ctx, ok && s.policy.isAdmin(c))
+	d.Agent = agent.AgentRunning
 	return &localapiv1.DiagnoseResponse{Diagnostics: diagnosticsProto(d, time.Now(), s.version)}, nil
 }
 
 // diagnosticsProto is d on the wire, taken at now by an agent of version.
 func diagnosticsProto(d agent.Diagnostics, now time.Time, version string) *localapiv1.Diagnostics {
-	return &localapiv1.Diagnostics{
-		SchemaVersion:  SchemaVersion,
-		TakenAt:        timestamppb.New(now),
-		Os:             runtime.GOOS,
-		AgentVersion:   version,
-		HostParts:      d.HostParts,
-		Status:         statusProto(d.Status),
-		Tun:            interfaceProto(d.TUN),
-		LastApply:      applyProto(d.LastApply),
-		Routes:         routesProto(d.Routes),
-		PolicyRules:    rulesProto(d.Routes),
-		Guard:          guardProto(d.Guard),
-		KillSwitch:     killSwitchProto(d.KillSwitch),
-		Dns:            dnsProto(d.DNS),
-		ServiceDropIns: &localapiv1.DiagDropIns{Unreadable: d.DropIns.Unreadable, Paths: d.DropIns.Paths},
-		LastRun:        &localapiv1.DiagLastRun{Unreadable: d.LastRun.Unreadable, Lines: traceLines(d.LastRun.Trace), Truncated: d.LastRun.Truncated},
+	out := &localapiv1.Diagnostics{
+		SchemaVersion:    SchemaVersion,
+		TakenAt:          timestamppb.New(now),
+		Os:               runtime.GOOS,
+		AgentVersion:     version,
+		Agent:            string(d.Agent),
+		StatusUnreadable: d.StatusUnreadable,
+		HostParts:        d.HostParts,
+		Tun:              interfaceProto(d.TUN),
+		LastApply:        applyProto(d.LastApply),
+		Routes:           routesProto(d.Routes),
+		PolicyRules:      rulesProto(d.Routes),
+		Guard:            guardProto(d.Guard),
+		KillSwitch:       killSwitchProto(d.KillSwitch),
+		Dns:              dnsProto(d.DNS),
+		ServiceDropIns:   &localapiv1.DiagDropIns{Unreadable: d.DropIns.Unreadable, Paths: d.DropIns.Paths},
+		LastRun:          &localapiv1.DiagLastRun{Unreadable: d.LastRun.Unreadable, Lines: traceLines(d.LastRun.Trace), Truncated: d.LastRun.Truncated},
 	}
+	if d.StatusUnreadable == "" {
+		out.Status = statusProto(d.Status)
+	}
+	return out
 }
 
 // traceLines is a trace's lines, without the newline that ends the last.
@@ -292,6 +302,160 @@ func (c *Client) Diagnose(ctx context.Context) (*localapiv1.Diagnostics, error) 
 		return nil, c.explain(err)
 	}
 	return sanitized(resp).GetDiagnostics(), nil
+}
+
+// DiagnoseWait bounds how long `thinkpol diag` waits for an agent that
+// holds the socket before it reads the host itself (DiagnoseOrReadHost).
+// It is not sized to outlast the agent's own reads (a slow pf is up to
+// 12 pfctl calls at 15 s each): it is how long a person at the prompt
+// waits on an agent that may be hung or stopped, after which the host's
+// snapshot is the evidence kept.
+const DiagnoseWait = time.Minute
+
+// HostReader takes the snapshot of the host without the agent
+// (agent.DiagnoseHost with the agent's readers), saying which it was of
+// not running and not answering.
+type HostReader func(ctx context.Context, presence agent.AgentPresence) (agent.Diagnostics, error)
+
+// DiagnoseOrReadHost is `thinkpol diag`'s snapshot (TP-133): the
+// agent's at socket; or, when nothing accepts the connection
+// (ErrServiceDown: no socket, or a dead agent's), readHost's, read from
+// the host itself, with no error; or, when something accepts it but no
+// snapshot comes within wait (or the connection can't be made in time),
+// readHost's too, returned with an ErrServiceNotAnswering: the evidence
+// is kept, and the agent that didn't answer is still a failure. While it
+// waits on an agent that holds the socket, it says so on waiting, once,
+// after a short grace. When an agent answers at socket once the host has
+// been read (launchd or systemd restarted it during the read, or the
+// silent one came back), the snapshot says agent restarted_during_read
+// and comes with an ErrServiceRestarted: the agent may have put the host
+// back while it was read, so the snapshot is no dead run's. version is
+// the reader's own, the snapshot's agent_version. readHost's error
+// (root's alone: agent.ErrDiagNeedsRoot) comes with no snapshot. Any
+// other failure, a refusal or the caller's ctx ending, is as Diagnose
+// gives it.
+func DiagnoseOrReadHost(ctx context.Context, socket string, wait time.Duration, readHost HostReader, version string, waiting io.Writer) (*localapiv1.Diagnostics, error) {
+	presence := agent.AgentNotRunning
+	var notAnswering error
+	c, err := Dial(socket)
+	switch {
+	case err == nil:
+		d, err := c.diagnoseWithin(ctx, wait, waiting)
+		_ = c.Close()
+		var silent silentAgent
+		if err == nil || ctx.Err() != nil || !errors.As(err, &silent) {
+			return d, err
+		}
+		presence = agent.AgentNotAnswering
+		notAnswering = &clientError{fmt.Sprintf("%s (%s, within %s): the host was read without it", refusalMsg(ErrServiceNotAnswering, ""), silent.why(socket), wait), ErrServiceNotAnswering}
+	case errors.Is(err, ErrServiceDown):
+	case dialTimedOut(err):
+		presence = agent.AgentNotAnswering
+		notAnswering = &clientError{fmt.Sprintf("%s (%v): the host was read without it", refusalMsg(ErrServiceNotAnswering, ""), err), ErrServiceNotAnswering}
+	default:
+		return nil, err
+	}
+	hd, err := readHost(ctx, presence)
+	if err != nil {
+		return nil, errors.Join(notAnswering, err)
+	}
+	if answersNow(ctx, socket, min(wait, recheckWait)) {
+		hd.Agent = agent.AgentRestartedDuringRead
+		notAnswering = &clientError{fmt.Sprintf("%s (an agent answers at %s now, the host read as %s): the snapshot may hold what it put back", refusalMsg(ErrServiceRestarted, ""), socket, presence), ErrServiceRestarted}
+	}
+	return sanitized(diagnosticsProto(hd, time.Now(), version)), notAnswering
+}
+
+// recheckWait bounds the call that asks, once the host is read, whether
+// an agent answers now: a status, which a started agent gives at once.
+const recheckWait = 3 * time.Second
+
+// waitingGrace is how long diag waits on an agent that holds the socket
+// before saying it is waiting: an answering agent's snapshot usually
+// comes first, and then nothing is said.
+const waitingGrace = 2 * time.Second
+
+// answersNow reports whether an agent at socket answers a status call
+// within limit: with the status, or with any refusal (a running
+// service's not_running among them). A socket nothing accepts, or one
+// that accepts and stays silent (a stopped agent's), does not answer.
+func answersNow(ctx context.Context, socket string, limit time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	c, err := Dial(socket)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = c.Close() }()
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	_, err = c.api.GetStatus(ctx, &localapiv1.GetStatusRequest{})
+	return !isSilent(err)
+}
+
+// isSilent: a call that got no answer at all, no reply in time or the
+// connection failing with nothing said; a refusal is an answer.
+func isSilent(err error) bool {
+	var remote *grpckit.RemoteDomainError
+	code := status.Code(err)
+	return err != nil && !errors.As(err, &remote) && (code == codes.DeadlineExceeded || code == codes.Unavailable)
+}
+
+// diagnoseWithin is Diagnose bounded by wait. A call that got no answer
+// at all fails with a silentAgent: no snapshot in time, or the
+// connection failing with nothing said (no gRPC handshake within its own
+// connect timeout, or the agent dying mid-call). A refusal, the service's
+// own not_running among them, is explained as Diagnose explains it. Past
+// min(waitingGrace, wait/2) with no answer, it writes one line to waiting
+// (nil: none) saying how long it waits.
+func (c *Client) diagnoseWithin(ctx context.Context, wait time.Duration, waiting io.Writer) (*localapiv1.Diagnostics, error) {
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	if waiting != nil {
+		said := make(chan struct{})
+		say := time.AfterFunc(min(waitingGrace, wait/2), func() {
+			defer close(said)
+			_, _ = fmt.Fprintf(waiting, "the agent at %s holds the socket but hasn't answered: waiting up to %.0f s for it, then the host is read without it\n", c.path, wait.Seconds())
+		})
+		// The line is written before diag goes on to write to the same
+		// stream.
+		defer func() {
+			if !say.Stop() {
+				<-said
+			}
+		}()
+	}
+	resp, err := c.api.Diagnose(ctx, &localapiv1.DiagnoseRequest{})
+	if isSilent(err) {
+		return nil, silentAgent{status.Code(err)}
+	}
+	if err != nil {
+		return nil, c.explain(err)
+	}
+	return sanitized(resp).GetDiagnostics(), nil
+}
+
+// silentAgent is a Diagnose call that got no answer (diagnoseWithin).
+type silentAgent struct{ code codes.Code }
+
+func (s silentAgent) Error() string { return s.code.String() }
+
+func (s silentAgent) why(socket string) string {
+	if s.code == codes.DeadlineExceeded {
+		return "no snapshot from " + socket
+	}
+	return "the connection to " + socket + " failed with no answer"
+}
+
+// dialTimedOut: Dial found a socket that something holds but couldn't
+// connect in time, or (Linux) its backlog full, EAGAIN, which
+// syscall.Errno counts as a timeout: a listener not accepting. macOS
+// refuses a full backlog (ECONNREFUSED), which can't be told from a dead
+// agent's socket: that is not running.
+func dialTimedOut(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // WriteDiagnostics writes d as `thinkpol diag` prints it, the snapshot's

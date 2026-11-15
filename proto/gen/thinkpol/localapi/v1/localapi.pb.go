@@ -1158,9 +1158,20 @@ type Diagnostics struct {
 	// CLI's JSON carries the CLI's own (the localapi package doc's "JSON").
 	SchemaVersion uint32                 `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
 	TakenAt       *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=taken_at,json=takenAt,proto3" json:"taken_at,omitempty"`
-	// The agent's OS ("linux", "darwin") and version.
+	// The agent's OS ("linux", "darwin") and version; in a snapshot taken
+	// without the agent, the CLI's.
 	Os           string `protobuf:"bytes,3,opt,name=os,proto3" json:"os,omitempty"`
 	AgentVersion string `protobuf:"bytes,4,opt,name=agent_version,json=agentVersion,proto3" json:"agent_version,omitempty"`
+	// Who took it: "running", the agent; "not_running" (nothing accepted
+	// the local API's connection) or "not_answering" (no snapshot came in
+	// time), root's diag reading the host itself with the agent's readers;
+	// "restarted_during_read", root's diag too, with an agent answering
+	// once the host was read.
+	// Without the agent, status is null, status_unreadable says why, and
+	// tun and last_apply are unreadable for the same reason; the host parts
+	// and last_run are read from the host as the agent reads them.
+	Agent            string `protobuf:"bytes,16,opt,name=agent,proto3" json:"agent,omitempty"`
+	StatusUnreadable string `protobuf:"bytes,17,opt,name=status_unreadable,json=statusUnreadable,proto3" json:"status_unreadable,omitempty"`
 	// The caller got the host parts (routes, policy_rules, guard,
 	// kill_switch, dns):
 	// root and the service's user do; the group's snapshot has them
@@ -1255,6 +1266,20 @@ func (x *Diagnostics) GetOs() string {
 func (x *Diagnostics) GetAgentVersion() string {
 	if x != nil {
 		return x.AgentVersion
+	}
+	return ""
+}
+
+func (x *Diagnostics) GetAgent() string {
+	if x != nil {
+		return x.Agent
+	}
+	return ""
+}
+
+func (x *Diagnostics) GetStatusUnreadable() string {
+	if x != nil {
+		return x.StatusUnreadable
 	}
 	return ""
 }
@@ -4657,12 +4682,14 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\x06missed\x18\x02 \x01(\x04R\x06missed\"\x11\n" +
 	"\x0fDiagnoseRequest\"W\n" +
 	"\x10DiagnoseResponse\x12C\n" +
-	"\vdiagnostics\x18\x01 \x01(\v2!.thinkpol.localapi.v1.DiagnosticsR\vdiagnostics\"\xa4\x06\n" +
+	"\vdiagnostics\x18\x01 \x01(\v2!.thinkpol.localapi.v1.DiagnosticsR\vdiagnostics\"\xe7\x06\n" +
 	"\vDiagnostics\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x125\n" +
 	"\btaken_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\atakenAt\x12\x0e\n" +
 	"\x02os\x18\x03 \x01(\tR\x02os\x12#\n" +
-	"\ragent_version\x18\x04 \x01(\tR\fagentVersion\x12\x1d\n" +
+	"\ragent_version\x18\x04 \x01(\tR\fagentVersion\x12\x14\n" +
+	"\x05agent\x18\x10 \x01(\tR\x05agent\x12+\n" +
+	"\x11status_unreadable\x18\x11 \x01(\tR\x10statusUnreadable\x12\x1d\n" +
 	"\n" +
 	"host_parts\x18\x05 \x01(\bR\thostParts\x124\n" +
 	"\x06status\x18\x06 \x01(\v2\x1c.thinkpol.localapi.v1.StatusR\x06status\x125\n" +
