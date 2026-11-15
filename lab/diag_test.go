@@ -630,7 +630,8 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 	// waits on it, says so, then reads the host itself and exits 69.
 	t.Run("a SIGSTOPped agent: root's diag waits, then reads the host", func(t *testing.T) {
 		dev.MustExec(t, "pkill", "-STOP", "-f", "thinkpol up")
-		if st := dev.MustExec(t, "sh", "-ec", `ps -o stat= -p "$(pgrep -f 'thinkpol up')"`); !strings.HasPrefix(st, "T") {
+		// The bracket keeps pgrep from matching this sh.
+		if st := dev.MustExec(t, "sh", "-ec", `ps -o stat= -p "$(pgrep -d, -f '[t]hinkpol up')"`); !strings.HasPrefix(st, "T") {
 			t.Fatalf("the agent's state after SIGSTOP: %q", st)
 		}
 		start := time.Now()
