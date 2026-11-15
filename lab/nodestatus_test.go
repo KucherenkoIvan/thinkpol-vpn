@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
 
@@ -84,18 +85,14 @@ type neighborStatus struct {
 	Up     bool   `json:"up"`
 }
 
-// statusSchemaVersion is the `status -json` schema the lab reads
-// (localapi.SchemaVersion).
-const statusSchemaVersion = 2
-
 // parseStatus reads `thinkpol status -json`'s output.
 func parseStatus(out string) (nodeStatus, error) {
 	var st nodeStatus
 	if err := json.Unmarshal([]byte(out), &st); err != nil {
 		return nodeStatus{}, fmt.Errorf("status -json: %w\n%s", err, out)
 	}
-	if st.SchemaVersion != statusSchemaVersion {
-		return nodeStatus{}, fmt.Errorf("status -json: schema version %d, the lab reads %d", st.SchemaVersion, statusSchemaVersion)
+	if st.SchemaVersion != localapi.SchemaVersion {
+		return nodeStatus{}, fmt.Errorf("status -json: schema version %d, the lab reads %d", st.SchemaVersion, localapi.SchemaVersion)
 	}
 	st.raw = out
 	return st, nil
