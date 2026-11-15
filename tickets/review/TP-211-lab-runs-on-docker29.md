@@ -56,11 +56,11 @@ Round 1 (go-paranoid, go-style, pocket-torvalds), accepted by the orchestrator. 
 - [x] R1.8 Nits: harness_test.go's comment that repeats the test name and a failure message without the wanted value; smoke_test.go "has no onward route"; Scope item 1 says Docker 27 allows pivot_root, which the Notes refute.
 
 Round 2: no defect; nits, then merge.
-- [ ] R2.1 Nothing checks lab/seccomp.json against its generator, so a hand edit adding a syscall to the unconditional allow rule passes every test. Add `make lab-seccomp-check` (generate to a temp file, then cmp) and run it from `make lint`, which already needs the network for vulncheck. Mutation: hand-edit the JSON, lint fails.
-- [ ] R2.2 lab/harness_test.go: pin `clone` (with namespace flags in its args filter) in dockerAllows, like the other namespace syscalls.
-- [ ] R2.3 lab/service_test.go: at the server call site of signalAgent, require at least one worker before the signal; device call sites have none. Otherwise a renamed worker would pass silently.
-- [ ] R2.4 lab/subnets_test.go: extend the DeadEndNameserver scan beyond .go files, to the lab's YAML, testdata and scripts.
-- [ ] R2.5 Timeout headroom: the final lab/ phase took 2932 s (82% of the 60 m cap). Record it in lab/README.md's timeout sentence and in the ticket's Notes. Don't change the cap.
+- [x] R2.1 Nothing checks lab/seccomp.json against its generator, so a hand edit adding a syscall to the unconditional allow rule passes every test. Add `make lab-seccomp-check` (generate to a temp file, then cmp) and run it from `make lint`, which already needs the network for vulncheck. Mutation: hand-edit the JSON, lint fails.
+- [x] R2.2 lab/harness_test.go: pin `clone` (with namespace flags in its args filter) in dockerAllows, like the other namespace syscalls.
+- [x] R2.3 lab/service_test.go: at the server call site of signalAgent, require at least one worker before the signal; device call sites have none. Otherwise a renamed worker would pass silently.
+- [x] R2.4 lab/subnets_test.go: extend the DeadEndNameserver scan beyond .go files, to the lab's YAML, testdata and scripts.
+- [x] R2.5 Timeout headroom: the final lab/ phase took 2932 s (82% of the 60 m cap). Record it in lab/README.md's timeout sentence and in the ticket's Notes. Don't change the cap.
 
 ## Log
 - 2026-11-14 created (orchestrator's measurements on a Linux Docker 29 host)
@@ -89,3 +89,5 @@ Round 2: no defect; nits, then merge.
 - 2026-11-15 couldn't verify: a fully green Linux full lab on the final head (the dns settle flake above); out of scope, for the orchestrator: the resolvconf settle tests' timing under load (as TP-217), TestIdleStreamsDontStarveRouting's time.Sleep(quiet) before dialing the member
 - 2026-11-15 in-progress → review
 - 2026-11-15 review round 2: merge, nits R2.1–R2.5
+- 2026-11-15 R2.1 make lab-seccomp-check (lab/seccompgen into a temp file, cmp) runs from make lint; lab/README.md says so. Mutation: keyctl hand-added to the unconditional allow rule of lab/seccomp.json, the check (as lint runs it) fails; restored, it passes. R2.2 TestSeccompProfileAllowsPivotRootOnlyWithSysAdmin pins clone's three rules (CAP_SYS_ADMIN; without it, the namespace flags 0x7E020000 masked to zero, per arch). Mutation: the args filter dropped from clone's rule, it fails. R2.3 signalAgent takes minWorkers: 1 at the server's call site, 0 at the devices'. Mutation: agentWorkers' pattern renamed, TestServiceUninstallAfterAServerCrash fails "before SIGKILL, server-1 runs workers [], want at least 1". R2.4 the dead-end scan also reads .yaml/.yml, .json, .sh, .py, .conf, Dockerfiles and anything under testdata/. Mutations: 198.18.0.53 appended to lab/maps/dns.yaml, and a supervisor testdata file holding it, the test fails naming each. R2.5 lab/README.md's timeout sentence and Notes record 2932 s (82% of the 60m cap); cap unchanged
+- 2026-11-15 at 3083e24 on the Linux Docker 29 host, no umask or GOTOOLCHAIN override (its umask 0002, Go 1.27.4): make lint green, make test green; on Docker Desktop 27.3.1, make lab-gotest PKG=./lab with the six touched tests (the seccomp and dead-end tests, TestServiceUninstallAfterAServerCrash, TestServiceUnderSystemd, TestKillSwitchUnderSystemd, TestRollbackPutsTheHostBackAfterACrashAndTheRestartStaysDown) green. No new full lab: test-only nits
