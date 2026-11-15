@@ -154,7 +154,7 @@ Answer as "1a 2b …".
 **Added in round 3** (numbered on, so answers stay "17a 18a"):
 
 17. **Your machine: can it forward?** a) no; b) mobile hotspot or ICS; c) a second NIC routing for others; d) don't know. If a, the forwarding checks stay unproven and RR91 says so, as RR82 does.
-18. **Forwarded clients and the LAN** (kill switch in place, allow-LAN on). a) no LAN address but the entries (RR91); b) the LAN but the uplinks' resolvers by address (a client's DNS to another LAN resolver, a Pi-hole, then passes the down shape; the router's web page is unreachable). *Rec: a:* it is the closed side, and F can't refuse DNS by port.
+18. **Forwarded clients and the LAN** (kill switch in place). a) F uses `Direct` minus `lists.Local`: no LAN address but the entries, connected or not (stricter than Linux; RR91); b) F uses `Direct` whole, as Linux: connected, the local set off the tunnel, any port; down and crash not. *Rec: a:* closed, and F can't refuse DNS by port.
 
 ### Review round 1
 
@@ -243,6 +243,10 @@ Grok 4.7's delta check of round 3 (`970633d`, 2026-11-16). It accepted the same-
 | Grok 2 | Weight 12's unicast and broadcast ANDed | **Fixed**: the two address-type values are consecutive conditions, so they OR |
 
 The note grew by under 1 KB (repetition cut in the change order, crash posture and pipe sections).
+
+### Review round 5
+
+Grok r4 1: connected, `Direct` holds `lists.Local`, so F let clients onto the LAN. **Changed design**: F uses `Direct` minus `lists.Local` (18a); 18b is Linux's.
 
 ## Log
 - 2026-10-10 created in backlog
