@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -153,4 +157,95 @@ func TestNetworkNotFound(t *testing.T) {
 			t.Errorf("networkNotFound(%q) = %v", c.stderr, got)
 		}
 	}
+}
+
+func TestSubnetPoolRefusesTheDeadEndNameserver(t *testing.T) {
+	deadEnd := netip.MustParseAddr(DeadEndNameserver)
+	for _, bits := range []int{24, 16, 8} {
+		pool := netip.PrefixFrom(deadEnd, bits).Masked()
+		t.Setenv(SubnetPoolEnv, pool.String())
+		if p, err := subnetPool(); err == nil {
+			t.Errorf("%s=%s: got pool %v, want it refused: it contains %s", SubnetPoolEnv, pool, p, deadEnd)
+		}
+	}
+	next := deadEnd.As4()
+	next[2], next[3] = next[2]+1, 0
+	beside := netip.PrefixFrom(netip.AddrFrom4(next), 24)
+	t.Setenv(SubnetPoolEnv, beside.String())
+	if _, err := subnetPool(); err != nil {
+		t.Errorf("%s=%s, beside the dead-end nameserver: %v", SubnetPoolEnv, beside, err)
+	}
+}
+
+// Files that could reach the lab (Go code, YAML, testdata, scripts; not
+// macOS or Windows files) may not use the dead-end nameserver's address,
+// or a prefix of /8 or longer (what a lab network or a test's address
+// could be) that contains it: a node that reached it would turn the dead
+// end into a resolver.
+// Shorter prefixes are routes such as 0.0.0.0/0, not addresses.
+func TestOnlyTheNodesUseTheDeadEndNameserver(t *testing.T) {
+	root, err := Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadEnd := netip.MustParseAddr(DeadEndNameserver)
+	literal := regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(/\d{1,2})?\b`)
+	definition := filepath.Join(root, "lab", "compose.go")
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if name := d.Name(); path != root && (strings.HasPrefix(name, ".") || path == binRoot(root)) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if !scannedForTheDeadEnd(path) || strings.Contains(name, "_darwin") || strings.Contains(name, "_windows") || strings.Contains(name, "_ios") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if path == definition {
+				if l := strings.TrimSpace(line); strings.HasPrefix(l, "//") || strings.HasPrefix(l, "const DeadEndNameserver ") {
+					continue
+				}
+			}
+			for _, lit := range literal.FindAllString(line, -1) {
+				if rel, _ := filepath.Rel(root, path); usesAddr(lit, deadEnd) {
+					t.Errorf("%s:%d: %s reaches the dead-end nameserver %s", rel, i+1, lit, deadEnd)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// scannedForTheDeadEnd reports whether path is a file whose addresses can
+// reach a lab node: Go code, the maps and other YAML, testdata, scripts
+// and the images' files. Docs, which name the address, are left out.
+func scannedForTheDeadEnd(path string) bool {
+	if slices.Contains(strings.Split(filepath.ToSlash(path), "/"), "testdata") {
+		return true
+	}
+	switch filepath.Ext(path) {
+	case ".go", ".yaml", ".yml", ".json", ".sh", ".py", ".conf":
+		return true
+	}
+	return strings.HasPrefix(filepath.Base(path), "Dockerfile")
+}
+
+func usesAddr(literal string, a netip.Addr) bool {
+	if p, err := netip.ParsePrefix(literal); err == nil {
+		return p.Bits() >= 8 && p.Contains(a)
+	}
+	addr, err := netip.ParseAddr(literal)
+	return err == nil && addr == a
 }

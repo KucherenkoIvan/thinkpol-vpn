@@ -74,6 +74,10 @@ func newFakeHost(t *testing.T) *fakeHost {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A host's / is 0755 whatever the test's umask.
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	return &fakeHost{t: t, root: root, groups: map[string][]string{}, failNext: map[string]int{}}
 }
 
