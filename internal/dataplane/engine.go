@@ -103,6 +103,11 @@ type EngineConfig struct {
 	// serve after every Apply and rule change (see dnsConfig). Called
 	// with the engine locked: it must not call back into the engine.
 	DNS Resolver
+	// TableFault, if set, is asked before the router takes each table,
+	// with the engine locked: an error fails that table there, as a
+	// router refusing it would. Tests only (a layout that fails where
+	// the router keeps its table); nil otherwise.
+	TableFault func() error
 }
 
 // Engine is one space's data plane on a node (docs/design/overlay.md "Data plane"): the

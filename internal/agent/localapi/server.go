@@ -206,6 +206,10 @@ func nodeError(err error) error {
 		return ErrNotRunning
 	case errors.Is(err, agent.ErrUnknownPreset):
 		return ErrUnknownPreset
+	case errors.Is(err, agent.ErrPresetNotEnforced):
+		return ErrPresetNotEnforced
+	case errors.Is(err, agent.ErrPresetIncomplete):
+		return ErrPresetIncomplete
 	case errors.Is(err, agent.ErrPresetUnavailable):
 		return ErrPresetUnavailable
 	case errors.Is(err, agent.ErrDNSUnprotected):
