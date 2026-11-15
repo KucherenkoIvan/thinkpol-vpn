@@ -7,13 +7,15 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 )
 
 // A file macOS refuses to unlink (EPERM, here its owner's immutable flag)
 // is reported with that error, not with the retry's as a directory
 // (ENOTDIR), and stays.
 func TestRemoveEntrySaysWhyAFileStays(t *testing.T) {
-	path := tempDir(t)
+	path := trusteddirtest.TempDir(t)
 	d, err := Open(path)
 	if err != nil {
 		t.Fatal(err)

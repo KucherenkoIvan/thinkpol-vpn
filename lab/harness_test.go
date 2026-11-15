@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -85,6 +87,9 @@ func TestRenderCompose(t *testing.T) {
 		if net.DriverOpts["com.docker.network.bridge.enable_ip_masquerade"] != "false" {
 			t.Errorf("network %s masquerades", name)
 		}
+		if net.DriverOpts["com.docker.network.bridge.gateway_mode_ipv4"] != "routed" || net.DriverOpts["com.docker.network.bridge.gateway_mode_ipv6"] != "routed" {
+			t.Errorf("network %s: gateway modes are not routed: %v", name, net.DriverOpts)
+		}
 		want := 2
 		if name == "v4" {
 			want = 1
@@ -96,6 +101,9 @@ func TestRenderCompose(t *testing.T) {
 	for name, svc := range f.Services {
 		if svc.Labels[LabelLab] != "1" || svc.Privileged || svc.Platform != "linux/arm64" {
 			t.Errorf("service %s: labels %v, privileged %v, platform %q", name, svc.Labels, svc.Privileged, svc.Platform)
+		}
+		if !slices.Contains(svc.SecurityOpt, "seccomp=/checkout/lab/seccomp.json") || !slices.Equal(svc.DNS, []string{DeadEndNameserver}) {
+			t.Errorf("service %s: security options %v, nameservers %v; want seccomp=/checkout/lab/seccomp.json among them, nameservers [%s]", name, svc.SecurityOpt, svc.DNS, DeadEndNameserver)
 		}
 	}
 	router := f.Services[Router]
@@ -110,6 +118,89 @@ func TestRenderCompose(t *testing.T) {
 	}
 	if _, ok := f.Services[DeviceA].Networks[NetServers]; ok {
 		t.Error("device-a is on the servers network")
+	}
+}
+
+func TestSeccompProfileAllowsPivotRootOnlyWithSysAdmin(t *testing.T) {
+	root, err := Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, seccompProfilePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var profile struct {
+		DefaultAction string                       `json:"defaultAction"`
+		Syscalls      []map[string]json.RawMessage `json:"syscalls"`
+	}
+	if err := json.Unmarshal(data, &profile); err != nil {
+		t.Fatal(err)
+	}
+	// The profile must still be Docker's default: deny unless a rule allows.
+	if profile.DefaultAction != "SCMP_ACT_ERRNO" {
+		t.Fatalf("default action %s, want SCMP_ACT_ERRNO", profile.DefaultAction)
+	}
+	const sysAdminOnly = `{"action":"SCMP_ACT_ALLOW","includes":{"caps":["CAP_SYS_ADMIN"]}}`
+	// What Docker's default (moby/profiles seccomp v0.2.4) allows of the
+	// syscalls that matter most to the lab's isolation, each rule without
+	// its names; an errno rule allows nothing and isn't listed.
+	dockerAllows := map[string][]string{
+		"mount":   {sysAdminOnly},
+		"unshare": {sysAdminOnly},
+		"setns":   {sysAdminOnly},
+		"bpf":     {sysAdminOnly, `{"action":"SCMP_ACT_ALLOW","includes":{"caps":["CAP_BPF"]}}`},
+		// Without CAP_SYS_ADMIN, clone only with none of the namespace
+		// flags (2114060288 = 0x7E020000: CLONE_NEWNS, NEWCGROUP, NEWUTS,
+		// NEWIPC, NEWUSER, NEWPID and NEWNET masked to zero).
+		"clone": {
+			sysAdminOnly,
+			`{"action":"SCMP_ACT_ALLOW","args":[{"index":0,"value":2114060288,"op":"SCMP_CMP_MASKED_EQ"}],"excludes":{"caps":["CAP_SYS_ADMIN"],"arches":["s390","s390x"]}}`,
+			`{"action":"SCMP_ACT_ALLOW","args":[{"index":1,"value":2114060288,"op":"SCMP_CMP_MASKED_EQ"}],"comment":"s390 parameter ordering for clone is different","excludes":{"caps":["CAP_SYS_ADMIN"]},"includes":{"arches":["s390","s390x"]}}`,
+		},
+		"clone3":     {sysAdminOnly},
+		"keyctl":     nil,
+		"ptrace":     {`{"action":"SCMP_ACT_ALLOW","includes":{"minKernel":"4.8"}}`, `{"action":"SCMP_ACT_ALLOW","includes":{"caps":["CAP_SYS_PTRACE"]}}`},
+		"pivot_root": {sysAdminOnly},
+	}
+	allows := map[string][]string{}
+	pivotRules := 0
+	for _, r := range profile.Syscalls {
+		var names []string
+		if err := json.Unmarshal(r["names"], &names); err != nil {
+			t.Fatal(err)
+		}
+		delete(r, "names")
+		cond, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(names, "pivot_root") {
+			pivotRules++
+			if !slices.Equal(names, []string{"pivot_root"}) {
+				t.Errorf("the pivot_root rule also names %v", names)
+			}
+		}
+		var action string
+		if err := json.Unmarshal(r["action"], &action); err != nil {
+			t.Fatal(err)
+		}
+		if action == "SCMP_ACT_ERRNO" {
+			continue
+		}
+		for _, n := range names {
+			if _, ok := dockerAllows[n]; ok {
+				allows[n] = append(allows[n], string(cond))
+			}
+		}
+	}
+	if pivotRules != 1 {
+		t.Errorf("%d rules name pivot_root, want 1", pivotRules)
+	}
+	for name, want := range dockerAllows {
+		if got := allows[name]; !slices.Equal(got, want) {
+			t.Errorf("%s allowed by %q, want %q", name, got, want)
+		}
 	}
 }
 

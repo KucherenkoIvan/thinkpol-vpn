@@ -35,6 +35,9 @@ func subnetPool() (netip.Prefix, error) {
 	if err != nil || !p.Addr().Is4() || p.Bits() < 8 || p.Bits() > 24 || p != p.Masked() {
 		return netip.Prefix{}, fmt.Errorf("lab: %s=%q: want an IPv4 prefix between /8 and /24", SubnetPoolEnv, s)
 	}
+	if p.Contains(netip.MustParseAddr(DeadEndNameserver)) {
+		return netip.Prefix{}, fmt.Errorf("lab: %s=%q contains the nodes' dead-end nameserver %s, which no lab network may reach", SubnetPoolEnv, s, DeadEndNameserver)
+	}
 	return p, nil
 }
 

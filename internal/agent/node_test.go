@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
@@ -65,7 +66,7 @@ func TestServiceModeIsTheNodesMode(t *testing.T) {
 			t.Errorf("%s: known to be a device %v", name, !device)
 		}
 	}
-	empty := filepath.Join(tempDir(t), "state")
+	empty := filepath.Join(trusteddirtest.TempDir(t), "state")
 	if err := os.Mkdir(empty, 0o700); err != nil {
 		t.Fatal(err)
 	}

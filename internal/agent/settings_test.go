@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/KucherenkoIvan/go-kernel/config"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/rules"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 )
 
 // unsetTHINKPOL hides the developer's exported THINKPOL_ variables from
@@ -34,7 +36,7 @@ func unsetTHINKPOL(t *testing.T) {
 // (nil: none) as name.
 func settingsDir(t *testing.T, name string, file []byte) string {
 	t.Helper()
-	dir := filepath.Join(tempDir(t), "state")
+	dir := filepath.Join(trusteddirtest.TempDir(t), "state")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +62,7 @@ func TestTheNodeFileIsStrictJSON(t *testing.T) {
 			"kill_switch": true, "allow_lan": true, "fail_closed_after_crash": false}`, ""},
 		{"empty file", "", "empty: write {}"},
 		{"blank file", " \n\t\n", "empty: write {}"},
-		{"invalid JSON", `{"mode": }`, "invalid JSON at byte 9"},
+		{"invalid JSON", `{"mode": }`, "invalid JSON"},
 		{"a trailing comma", `{"mode": "device",}`, "invalid JSON"},
 		{"cut short", `{"mode": "device"`, "invalid JSON"},
 		{"not an object", `["mode"]`, "want a JSON object"},
@@ -104,6 +106,13 @@ func TestTheNodeFileIsStrictJSON(t *testing.T) {
 		if !errors.As(err, new(*ConfigError)) {
 			t.Errorf("%s: %v is no ConfigError", tc.name, err)
 		}
+	}
+
+	// The byte is encoding/json's, which Go releases count differently: any
+	// number will do, a number it must be.
+	_, err := ReadNodeFile(settingsDir(t, NodeFile, []byte(`{"mode": }`)))
+	if want := regexp.MustCompile(`invalid JSON at byte \d+: `); err == nil || !want.MatchString(err.Error()) {
+		t.Errorf("invalid JSON: got %v, want it to match %s", err, want)
 	}
 }
 

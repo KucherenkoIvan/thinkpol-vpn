@@ -20,6 +20,7 @@ import (
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/devmap"
 )
 
@@ -190,9 +191,9 @@ func TestEveryCommandExitsBySysexits(t *testing.T) {
 	rows = append(rows, exitRow{name: "rules preset: no such preset", args: []string{"rules", "preset", "-socket", socket(agent.ErrUnknownPreset, nil), "sometimes"}, code: exitUsage, stderr: `\[unknown_rule_preset\]`})
 
 	state, keys := m0State(t, "device-a")
-	dir := tempDir(t)
+	dir := trusteddirtest.TempDir(t)
 	spec, mapFile, missing := "../../lab/maps/m0.yaml", filepath.Join(dir, "map.bin"), filepath.Join(dir, "missing.csv")
-	noMap := tempDir(t)
+	noMap := trusteddirtest.TempDir(t)
 	for _, name := range []string{agent.NodeKeyFile, agent.TrustFile} {
 		if err := os.WriteFile(filepath.Join(noMap, name), readTestFile(t, filepath.Join(state, name)), 0o600); err != nil {
 			t.Fatal(err)
@@ -201,7 +202,7 @@ func TestEveryCommandExitsBySysexits(t *testing.T) {
 	// Key directories that lack one file each: a file directly in a named
 	// directory is a named input, whichever it is.
 	without := func(file string) string {
-		d := tempDir(t)
+		d := trusteddirtest.TempDir(t)
 		entries, err := os.ReadDir(keys)
 		if err != nil {
 			t.Fatal(err)
