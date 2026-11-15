@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-217]
 refs: []
-owner: ""
-branch: ""
+owner: agent-tp-220
+branch: tp-220-flaky-resolvconf-settle-tests
 ---
 
 ## Goal
@@ -33,3 +33,4 @@ branch: ""
 
 ## Log
 - 2026-11-15 created in backlog (from TP-211's and TP-197's lab runs)
+- 2026-11-16 backlog → in-progress, owner: agent-tp-220
