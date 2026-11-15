@@ -26,7 +26,7 @@ The device data plane runs on Windows.
 
 ## Notes
 
-Moved here from [docs/design/windows.md](../../docs/design/windows.md) in its review round 2 (2026-11-15): the proposed split, the device sessions, A0's checklist and plan B, the owner questions, and both review rounds. Proposed, not filed: the tickets are filed, and this split leaves here, when the owner answers the questions. Round 1 called the proposed residual rows RR66–RR76; since round 2 they are RR80–RR90 (M3's design proposes rows from RR66), and the final numbers are set when the tickets are filed.
+Moved here from [docs/design/windows.md](../../docs/design/windows.md) in its review round 2 (2026-11-15): the proposed split, the device sessions, A0's checklist and plan B, the owner questions, and the review rounds. Proposed, not filed: the tickets are filed, and this split leaves here, when the owner answers the questions. Round 1 called the proposed residual rows RR66–RR76; since round 2 they are RR80–RR90, and round 3 adds RR91 (M3's design proposes rows from RR66), and the final numbers are set when the tickets are filed.
 
 ### Proposed split
 
@@ -71,17 +71,21 @@ WFP:
 - a key re-added in the transaction that deleted it;
 - two transactions on one session (`FWP_E_TXN_IN_PROGRESS`, or joined);
 - a static replace by key during a "connected" flow drops nothing (and whether flows are re-authorised);
+- **live flows after their permit goes**: open a direct TCP flow, a UDP/53 flow and (DoH set on the uplink) `Dnscache`'s DoH connection first, then delete or close their permit, and separately add a block over them; record whether packets still pass;
+- **same-key OR**: one filter with two consecutive remote-address conditions; a packet to each address passes (and a third address doesn't);
 - the kill switch's Close leaves the guard whole;
-- 10k-condition filters and the chunked fallback.
+- 1k and 10k-condition filters and the chunked fallback;
+- **forwarding**, if question 17 isn't a: with allow-LAN and the kill switch in the down shape, a forwarded UDP/53 packet to a LAN address is dropped, a LAN client's packet to an internet address is dropped, a forwarded flow to a direct destination and its replies pass; whether F sees addresses before or after ICS's or WinNAT's translation.
 
 BFE and SCM:
 - `net stop bfe` with a throwaway `sc.exe` service depending on BFE: BFE's state when the dependent gets its stop (expected RUNNING), what's removed, whether recovery restarts the dependent and starts BFE, how long BFE's RPC lags its RUNNING;
+- the throwaway service, with `actions= restart/5000`, dies four times: whether a fifth start happens (the last action repeats);
 - Fast Startup: which of the service, the static objects, the volatile key, the adapter and the routes survive "Shut down".
 
-Pipe: a member's `CreateNamedPipe` on the name fails, a non-admin can't create under the prefix, and the owner check works.
+Pipe: a member's `CreateNamedPipe` on the name fails, a non-admin can't create under the prefix; the client connects **twice** and the second connection's handle shows the DACL and owner SYSTEM; impersonation at Identification reads the caller, and an anonymous dial is no one.
 
 DNS:
-- the DNS block under `pktmon`; the `Dnscache` block with DoH set on the uplink, on 443 and on another port;
+- the DNS block under `pktmon`; the `Dnscache` block with DoH set on the uplink, on 443 and on 5355 to a unicast address (both refused), with mDNS to 224.0.0.251 passing;
 - `tasklist /svc /fi "services eq dnscache"`: `Dnscache` alone in its process; the process token holds `NT SERVICE\Dnscache` (and which other service SIDs).
 
 May stay unproven on this device, and their rows say so:
@@ -98,13 +102,18 @@ Nothing to probe: the preshutdown timeout (`sc.exe` sets it; nothing depends on 
 | dynamic filter in a static sublayer | everything static, narrowed by the start-time cleanup as on macOS (direct stays until the restart, RR18); going down deletes by key and exits non-zero on a failure |
 | closing a dynamic session deletes its objects | going down deletes by key; a failure exits non-zero (BFE ends a dead process's session) |
 | re-adding a key in the deleting transaction | static filters alternate slots too |
-| a static replace keeps flows | static filters alternate slots, so a flow is never unmatched |
+| a static replace keeps a flow we meant to keep | static filters alternate slots, so a flow is never unmatched |
+| a live flow stops when its permit goes or a block arrives | the blocks move to a per-packet layer (`OUTBOUND_TRANSPORT`, `INBOUND_TRANSPORT`) or the agent aborts the flows; the crash-posture sentence and RR18's Windows wording wait on it |
+| consecutive same-key conditions OR | one address range per filter, same weight and action; F's "from the set toward the LAN" becomes a filter per pair; A1 times them (question 14) |
+| SCM repeats the last failure action | the action list grows, RR90 says restarts stop after it, and the tray starts the service (question 15) |
+| every pipe instance carries the DACL | our own listener passes the descriptor to every instance |
+| forwarding meets F as designed | RR91 and RR82 say "leaks" for forwarded clients; a follow-up for the F layers |
 | BFE RUNNING when a dependent gets its stop | nothing: every non-intended stop exits non-zero anyway |
 | SCM restarts the dependent after `net stop bfe` | the tray starts the service (question 15); without the tray, until a reboot (RR81) |
 | Fast Startup keeps the static objects | yes: "Shut down" is no way out (runbook); no: it is, and the wording says so |
 | the protected prefix refuses non-admins | the non-fatal Listen and the owner-SID check carry it; a squatting row comes back |
 | the service SID matches `Dnscache` alone | no `Dnscache` block anywhere; `Problem` reports it (RR89) |
-| 10k conditions in one filter | chunked filters |
+| 10k conditions in one filter | chunked filters (only if the OR row holds) |
 | an unsigned binary runs | question 13 b or c before anything else |
 | kernel ND meets ALE | the ND permit (weight 7) is harmless; RR84 narrows |
 | WSL2 or Docker leaks | RR82 says "leaks" instead of "unproven"; a follow-up for the F layers |
@@ -127,12 +136,17 @@ Answer as "1a 2b …".
 8. **Versions for M5.** a) Windows 11 only; b) 11, plus 10 22H2 built but labelled unsupported. *Rec: b* (both reviewers).
 9. **Device sessions.** a) four (A0, A1, B, C); b) three (A1 folded into B). *Rec: a.* A0 is about an hour and settles what everything rests on.
 10. **Boot window.** a) static objects, gone at a full restart (RR66); b) persistent down-shape filters while the toggle is on. *Rec: a* for M5 (RR80), with A0's Fast Startup result in its wording; take b up with RR59 as one cross-OS ticket.
-11. **WFP library.** a) `github.com/tailscale/wf` at a pinned commit; b) wireguard-windows' syscall layer plus the few calls it lacks; c) our own thin binding on `x/sys/windows`. *Rec: a* only if W2a's spike passes the whole checklist, else b (Fable expects b).
+11. **WFP library.** a) `github.com/tailscale/wf` at a pinned commit; b) wireguard-windows' syscall layer plus the few calls it lacks; c) our own thin binding on `x/sys/windows`. *Rec: a* only if W2a's spike passes the whole checklist, else b (Fable and Grok expect b).
 12. **`wintun.dll`.** a) fetched by pinned hash, embedded behind the build tag, verified and rewritten at start; b) committed; c) the user downloads it; d) shipped beside the binary by TP-051's package. *Rec: a,* d if TP-051's package makes it free.
 13. **Signing for M5.** a) unsigned, with SmartScreen steps in the runbook; b) an OV certificate now; c) apply to SignPath now. *Rec: a* if question 4 is a, and c now for its lead time; details are TP-051's.
 14. **If 10k direct routes are slow.** a) accept: tunnelled meanwhile; b) cap and tunnel the smallest prefixes, said in health; c) no "all but domestic" on Windows. *Rec:* decide after A1 (which times filter conditions too); default a, then b.
-15. **The tray and a stopped service.** a) the group gets start, query-status and interrogate: the tray starts a service it should see running, and infers a restart loop from SCM's status (process-ID changes); b) query only (the loop is still inferred). *Rec: a.* Starting only restores protection, and it is the BFE-stop fallback.
-16. **The DNS divergence.** a) accept: no LAN or direct-set resolver while connected on Windows (RR88), stated in security.md; b) a later ticket: allow-LAN may name LAN resolvers to permit, refused when one is also an uplink's resolver; c) match the other OSes (lets lookups reach the router: rejected). *Rec: a* for M5, b if a member asks.
+15. **The tray and a stopped service.** a) the group gets start, query-status and interrogate: the tray starts a service it should see running (not a looping one), and infers a restart loop from SCM's status (process-ID changes); b) query only (the loop is still inferred). *Rec: a.* Starting only restores protection, and it is the BFE-stop fallback.
+16. **The DNS divergence.** a) accept: no LAN or direct-set resolver while connected on Windows (RR88), stated in security.md; b) a later ticket: allow-LAN may name LAN resolvers to permit, refused when one is also an uplink's resolver; c) match the other OSes (lets lookups reach the router: rejected). *Rec: a* for M5, b if a member asks. Grok: a only once the F path is in the tables, as it now is (RR91).
+
+**Added in round 3** (numbered on, so answers stay "17a 18a"):
+
+17. **Your machine: can it forward?** a) no; b) mobile hotspot or ICS; c) a second NIC routing for others; d) don't know. If a, the forwarding checks stay unproven and RR91 says so, as RR82 does.
+18. **Forwarded clients and the LAN** (kill switch in place, allow-LAN on). a) none reach the LAN (RR91); b) the LAN but the uplinks' resolvers by address (a client's DNS to another LAN resolver, a Pi-hole, then passes the down shape; the router's web page is unreachable). *Rec: a:* it is the closed side, and F can't refuse DNS by port.
 
 ### Review round 1
 
@@ -190,6 +204,26 @@ go-paranoid's review of the note at `7cd5106` (2026-11-15), with the orchestrato
 | S3 | A squatted pipe plus a fatal Listen is a restart loop | **Changed design**: a failed Listen retries with backoff, the data plane runs, health says `local_api_unavailable` |
 | A0 | Missing checks; "connected" without a TUN; unprovable checks; no plan B | **Fixed**: four checks added (key re-add, BFE state at a dependent's stop, two transactions, `Dnscache` sharing) plus the dynamic close; "connected" defined; ND and WSL2 may stay unproven; plan-B table; the adapter's fate moved to A1 |
 | RR | M3's design also proposes rows from RR66 | **Fixed**: Windows' rows renumbered RR80–RR90 |
+
+### Review round 3
+
+Grok 4.7's cross-family review of the note at `b235fbf` (2026-11-16), with the orchestrator's decisions; primary sources checked for findings 1, 2, 6 and 7. How each was handled.
+
+| # | Finding | Handling |
+|---|---|---|
+| Grok 1 | A filter ANDs its conditions, so OR-ed address conditions match nothing | **Rejected with source**: `FWPM_FILTER0`'s `filterCondition` says "All must be true for the action to be performed... **Note** In Windows 7 and Windows Server 2008 R2, consecutive conditions with the same fieldKey will be evaluated using the OR operator" ([source 41](../../docs/design/windows.md#appendix-sources)); wireguard-windows repeats `IP_REMOTE_ADDRESS` and `IP_PROTOCOL` "for logical OR" (source 42). The note now says the conditions are consecutive and cites both; **device check**: A0's two-address filter; plan B has the per-range fallback |
+| Grok 2 | Forwarded DNS to the LAN passes; `Direct` not on F; F drops, security.md says refused | **Changed design**: IPFORWARD has no protocol or port conditions (source 43), so the DNS block can't sit on F as `forwardRules`' `noDNS` does. F never permits the LAN: TUN, entries and `Direct` by destination, and back from entries and `Direct` toward the LAN. F drops, stated in the note and security.md; **residual risk** RR91; **device check**: A0's forwarding checks; questions 17 and 18 |
+| Grok 3 | ALE doesn't end live flows; "direct goes at once" stated as fact | **Changed design / device check**: the crash posture claims new flows only; A0 opens flows first, then removes their permit or adds a block (direct TCP, UDP/53, `Dnscache` DoH); plan-B row for flows that keep passing; alternate slots only for a replace that drops a flow we meant to keep; RR18's wording waits |
+| Grok 4 | A failed step 2 or 3 leaves the union, not the state before | **Fixed**: the union stated as a leak until the next apply (within 10 s), health showing the extra slot |
+| Grok 5 | `Dnscache`'s 5353/5355 exception is any destination | **Fixed**: `Dnscache` refused every unicast and broadcast destination, any port (destination address type, available at `ALE_AUTH_CONNECT`); multicast stays; A0 tries DoH on 5355 |
+| Grok 6 | go-winio sets the DACL on the first instance only | **Device check**: verified at go-winio v0.6.2 `pipe.go:344-371`, `:380-386`, `:416-417`, `:272-273`; the comment there assumes instances share the pipe's descriptor. A0 checks DACL and owner on a second connection, and impersonation; plan B: our own listener. A failed impersonation is no one |
+| Grok 7 | One restart action runs out; the shortcut doesn't stop a hang | **Partly rejected with source**: `SERVICE_FAILURE_ACTIONS`: "If N is greater than cActions, the service controller repeats the last action in the array" (source 44), so one `restart/5000` has no limit; RR90 says so. **Fixed**: the shortcut disables, kills, then rolls back. **Device check**: A0's throwaway service dies four times; plan-B row if no fifth start |
+| Grok 8 | `linksMarked` explained backwards | **Fixed**: the entry stays in `NoDNS`; the app-ID permit lets the agent through; security.md's crash sentence points to the Windows paragraph |
+| Grok 9 | The binding reuses a same-name adapter | **Fixed**: reused (`tun_windows.go:66-67`); netcfg flushes it; nothing claims it is gone until A1 |
+| Grok 10 | Two restart-loop definitions | **Fixed**: three starts within ten minutes, for agent and tray; the tray doesn't start a looping service |
+| Grok Q | Owner-question views | Added where they differ (11, 16); the missing forwarding question is 17, and 18 decides forwarded LAN access |
+
+The note grew from 40.5 KB to about 44 KB, the forwarding and live-flow mechanism mostly in the section that moves to `firewall/doc.go`.
 
 ## Log
 - 2026-10-10 created in backlog

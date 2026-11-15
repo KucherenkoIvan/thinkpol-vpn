@@ -1,6 +1,6 @@
 # thinkpol-vpn — Windows design
 
-How a device meets the macOS and Linux contract on Windows (M5: TP-047, the data plane; TP-076, the kill switch). A design for review, revised after review rounds 1 and 2; nothing here is built. The entry point is [DESIGN.md](../../DESIGN.md); `RRn` are rows of [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md), and RR80–RR90 are rows [proposed below](#proposed-residual-risks); `[n]` are [sources](#appendix-sources). The proposed tickets, the device sessions, A0's checklist and plan B, the owner questions ("question n") and both review rounds are in [TP-047's Notes](../../tickets/backlog/TP-047-windows-dataplane.md#notes).
+How a device meets the macOS and Linux contract on Windows (M5: TP-047, the data plane; TP-076, the kill switch). A design for review after three rounds; nothing here is built. Entry point: [DESIGN.md](../../DESIGN.md); `RRn` are [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md) rows, RR80–RR91 [proposed below](#proposed-residual-risks); `[n]` are [sources](#appendix-sources). The ticket split, device sessions, A0's checklist, plan B, owner questions ("question n") and review rounds are in [TP-047's Notes](../../tickets/backlog/TP-047-windows-dataplane.md#notes).
 
 The behaviour to match is decided: [security](security.md#kill-switch) (the kill switch, the crash posture, rollback), [routing](routing.md) (the route table, DNS), the [desktop client](desktop-client.md#the-local-api) (the local API's gates and codes), [configuration](configuration.md), TP-167's [exit codes](api-overview.md#tp-167-exit-codes-and-the-setting-shape). Where Windows can't match it, this note says so and proposes a residual row.
 
@@ -23,7 +23,7 @@ Windows code goes in `_windows.go` files of the package that owns each seam, whe
 | Local API | `Listen` (`listen_other.go:12`), `callerOf`, `Caller`, `Policy` (`auth.go:68,85`), `Dial` | a named pipe; the OS-blind `Principal` seam ([below](#local-api-over-a-named-pipe)) |
 | Diag | `agent.Inspector`; TP-133 | online readers for WFP, routes, DNS, the service; offline ones are a follow-up |
 
-`linksMarked` (`agent/killswitch.go:104`) becomes true on Windows: the agent's app-ID permit plays the mark's part, so an entry on the LAN serving on 53 or 853 is never put in `NoDNS` and can't become a hole for other processes.
+`linksMarked` (`agent/killswitch.go:104`) becomes true on Windows: an entry on the LAN serving on 53 or 853 stays in `NoDNS`, and the agent's app-ID permit, like the mark, lets the agent through. False (macOS) takes the entry out of `NoDNS`, opening it to every process's DNS.
 
 ## TUN
 
@@ -31,7 +31,7 @@ Windows code goes in `_windows.go` files of the package that owns each seam, whe
 
 **`wintun.dll`** is embedded only under `//go:build windows && wintun_embed` (a stub returns `ErrNoWintun` otherwise, so `make lint` and clean checkouts never need it); `make build-windows` fetches Wintun 0.14.1 by pinned SHA-256 and sets the tag. At start the agent rewrites the on-disk DLL if its hash differs; the directory is admin-only [1][24].
 
-**Leftovers.** The binding has only Create, Open, Close and Uninstall, and Close removes only an adapter this process created [2]. Wintun removes orphans when an adapter is next created [2], so a crash's adapter (if one survives, A1) goes at the restart's create; `ClearHost` reports one it finds rather than claiming to remove it.
+**Leftovers.** The binding has only Create, Open, Close and Uninstall, and Close removes only an adapter this process created [2]. A crash's adapter, if one survives, is **reused** by the restart's create (`tun/tun_windows.go:66-67` in the pinned wireguard-go), so netcfg flushes its addresses, routes and DNS values itself; until A1 records its fate, nothing claims it is gone. `ClearHost` reports one it finds.
 
 **Lost.** WireGuard-NT (owns its UDP socket, so transports can't sit under it); tap-windows6; a driver of our own.
 
@@ -54,16 +54,16 @@ Windows code goes in `_windows.go` files of the package that owns each seam, whe
 **Decision.**
 1. Windows is pointed at the node's resolver **on the TUN interface** (its servers are the resolver's overlay addresses, lowest interface metric); the DNS client's cache is flushed on connect and on each map or rule change.
 2. **The guard wins.** Off the TUN, UDP and TCP 53 and 853 are refused for every process but the agent whenever thinkpol's firewall is in place (the guard's static set while connected and after a crash, the kill switch's while it is on), allow-LAN or not, as OpenVPN's `block-outside-dns` and wireguard-windows do [7][8]. Smart multi-homed name resolution sends each query to every interface's servers, and its policy switch isn't always honoured [9], so the block is required.
-3. **The OS resolver is confined to the TUN.** Windows 11's DNS client can send DoH to an uplink's resolver [12], past the 53/853 block, and a DoH template may name any port. So both owners refuse the **DNS Client service (`Dnscache`)** every remote port off the TUN but 5353 and 5355 (mDNS and LLMNR, which stay the LAN's: RR7), matched **by its service SID**: `FWPM_CONDITION_ALE_USER_ID` takes a security descriptor checked against the socket's token [31], a service SID is a group in its service's token, and Windows' service-hardening rules filter services this way [32]. A query made while impersonating carries the caller's token instead [31] (RR89).
+3. **The OS resolver is confined to the TUN.** Windows 11's DNS client can send DoH to an uplink's resolver [12], past the 53/853 block, and a DoH template may name any port. So both owners refuse the **DNS Client service (`Dnscache`)** every unicast and broadcast destination off the TUN, any port (destination address type [43]); only multicast, where mDNS and LLMNR go, stays the LAN's (RR7), so a DoH template on 5353 or 5355 is refused too. It is matched **by its service SID**: `FWPM_CONDITION_ALE_USER_ID` takes a security descriptor checked against the socket's token [31], a service SID is a group in its service's token, and Windows' service-hardening rules filter services this way [32]. A query made while impersonating carries the caller's token instead [31] (RR89).
 4. **Only while `Dnscache` runs alone.** Below about 3.5 GB of memory Windows shares svchost processes between services [40], and a service SID then matches the whole process: the block could cut the DHCP client. So each apply checks that no other service shares `Dnscache`'s process ID (`EnumServicesStatusEx`); if one does, the block isn't placed and `Problem` says so (RR89). A0 checks `tasklist /svc` and the token.
 
-**The divergence** (question 16). With allow-LAN, Linux and macOS let DNS to the LAN out while connected (security.md). Windows doesn't: the uplink's resolver is usually the router, the guard can't tell it from another LAN resolver, and smart multi-homed resolution would send it every query. Also Windows-only: a resolver among the direct destinations (a domestic one, one an app hard-codes) is refused, as the DNS block outranks `Direct` (RR88); and a stop or crash with the toggle off leaves the guard's static set, so no names resolve until the agent runs again or rollback (RR90). The kill switch's rules don't change: its static set refuses DNS everywhere (`NoDNS` and `Upstreams` are covered by the agent's app-ID permit).
+**The divergence** (question 16; [security.md](security.md#kill-switch) states it). With allow-LAN, Linux and macOS let DNS to the LAN out while connected; Windows can't tell the router's resolver from another LAN one, and multi-homed resolution would send it every query. So on Windows only, LAN and direct-set resolvers are refused (RR88), and a stop or crash with the toggle off leaves no names (RR90). The kill switch's static set refuses DNS everywhere (`NoDNS` and `Upstreams` covered by the agent's permit).
 
 **Upstreams.** `SystemUpstreams` reads, through `GetAdaptersAddresses`, the DNS servers of the interfaces holding a default route, the TUN excluded. Direct queries leave from the agent, which the app-ID permit lets through.
 
 **Lost.**
-- *NRPT `.` rule* (Tailscale's split DNS [10]): any Group Policy NRPT rule makes Windows ignore local ones [10][11], it is registry state that outlives a crash, and it doesn't stop multi-homed queries.
-- *Disabling multi-homed resolution*: incomplete [9] and machine-wide. *Rewriting the uplinks' DNS*: other software's state, restored after a crash.
+- *NRPT `.` rule* (Tailscale's [10]): any Group Policy NRPT rule makes Windows ignore local ones [10][11]; registry state outliving a crash; multi-homed queries go on.
+- *Disabling multi-homed resolution*: incomplete [9], machine-wide. *Rewriting the uplinks' DNS*: others' state, restored after a crash.
 
 **`RestoreDNS`** removes the TUN's DNS registry values if the adapter is gone; the setting is otherwise the adapter's. LLMNR, mDNS and NetBIOS stay the LAN's (RR7); NetBIOS over TCP/IP is off on the TUN. Apps' own DoH is RR3.
 
@@ -89,43 +89,43 @@ The kill switch's static set is the down shape whatever the shape asked for, bec
 2. **Change the static filters by key**: delete and add the changed ones in one transaction (static). If A0 shows a key can't be re-added in the transaction that deleted it, static filters alternate slots too.
 3. **Delete** the old slot's dynamic permits (dynamic transaction 2).
 
-Within a sublayer our highest-weight match decides; across sublayers a packet passes when no sublayer blocks it. The states are old static + both slots, then new static + both slots, then the new shape; a failed step leaves the state before it (a transaction aborts whole).
-- **Leaks:** none: every state lets out at most what the old or the new shape does (a block added in step 2 outranks an old permit).
+Within a sublayer our highest-weight match decides; across sublayers a packet passes when no sublayer blocks it. The states are old static + both slots, then new static + both slots, then the new shape. A failed step doesn't undo the ones before it (the process and its dynamic session live on).
+- **Leaks:** the union of the old and new `Direct`, wider than either, while both slots are in: between steps 1 and 3, and after a failed step 2 or 3 until the next apply (within 10 s) deletes the unwanted slot; health shows the extra slot meanwhile. A crash drops both with the session.
 - **Blocks:** none: every state lets out what the shape in force allows (the old until step 2 commits, the new after), since the new permits are in first.
 
 A failure is reported and the next tick retries; Apply compares the owner's provider with the wanted set by key and writes only differences. Putting an owner in place first adds its provider and an empty sublayer, so step 1 has one to reference.
 
-**Going down** (a tunnel drop or a disconnect) **closes the dynamic session** (`FwpmEngineClose0`): BFE deletes all of it as the session ends [17], both owners' TUN permits, `Direct` and the guard's direct IPv6 permits at once, where deletes by key could half-fail and leave the old `Direct` open to every process. Then the static sets change by key: on a disconnect the guard goes, and the kill switch too unless the toggle or the crash posture holds it. The next connect opens a new dynamic session.
-- **Leaks:** only between the drop and the close, as on every OS. A close that errs still drops the handle; if enumeration then finds a dynamic filter of ours, the agent exits non-zero and BFE ends the session as after a crash, under a second later. A0 proves both deletions.
+**Going down** (a tunnel drop or a disconnect) **closes the dynamic session** (`FwpmEngineClose0`): BFE deletes all of it at once [17] (TUN permits, `Direct`, the guard's direct IPv6), where deletes by key could half-fail and leave the old `Direct` open. Then the static sets change by key: on a disconnect the guard goes, and the kill switch too unless the toggle or the crash posture holds it. The next connect opens a new dynamic session.
+- **Leaks:** between the drop and the close, as on every OS (live flows: [crash posture](#crash-posture-boot-session-recovery)). A close that errs still drops the handle; if enumeration then finds a dynamic filter of ours, the agent exits non-zero and BFE ends the session as after a crash, under a second later. A0 proves both deletions.
 - **Blocks:** between the close and the static change, the down shape plus the guard's static set (global IPv6 and the overlay refused), also after a failed static change until the next tick; under the "space" preset with the toggle off, a tunnel drop keeps the guard without its direct IPv6 permits until the reconnect.
 
 Removing an owner while up deletes its static set in one transaction, then its dynamic permits by key, then its sublayer and provider: each state is wider than the last, and the target has no such owner.
 
 **Watches.** Each owner subscribes (`FwpmFilterSubscribeChanges0`) to its own provider's filters only; a notification triggers a re-apply under the lock, a compare that writes only differences. Neither owner writes the other's objects, so the watches can't undo each other, and an owner's own writes end in a compare that finds nothing.
 
-**Engine errors** are exactly a dead handle (`ERROR_INVALID_HANDLE`), `RPC_S_SERVER_UNAVAILABLE` and `FWP_E_SESSION_ABORTED`: what a BFE stop or crash produces, having removed every object, both sessions and the subscriptions [17][33]. On one the adapter drops both sessions, reopens with backoff, re-subscribes, and at once re-applies each owner's last wanted set itself, not waiting for the keeper, whose skip (`killswitch.go:236`) would leave nothing enforced for up to 5 s. Any other error (`FWP_E_TIMEOUT` behind another product's long transaction, a conflict) fails that change alone and the sessions stay, so a slow neighbour never drops a connected member's TUN permits. While BFE is down nothing is enforced (RR81).
+**Engine errors** are exactly a dead handle (`ERROR_INVALID_HANDLE`), `RPC_S_SERVER_UNAVAILABLE` and `FWP_E_SESSION_ABORTED`: what a BFE stop or crash produces, with every object, session and subscription gone [17][33]. On one the adapter drops both sessions, reopens with backoff, re-subscribes, and re-applies each owner's last wanted set at once, not waiting for the keeper (its skip, `killswitch.go:236`, would leave 5 s unenforced). Any other error (`FWP_E_TIMEOUT` behind another product's transaction, a conflict) fails that change alone, so a slow neighbour never drops a connected member's TUN permits. While BFE is down nothing is enforced (RR81).
 
-**Lost.** *Dynamic only*, as wireguard-windows [8]: the kill switch would vanish on a crash. *Persistent*, as Mullvad's blocking state [15]: closes the boot window (RR80) but survives a broken install across reboots (question 10). *Boot-time filters*: only until BFE starts, and only useful with persistent filters [18].
+**Lost.** *Dynamic only* (wireguard-windows [8]): the kill switch vanishes on a crash. *Persistent* (Mullvad [15]): closes the boot window (RR80) but outlives a broken install (question 10). *Boot-time filters*: until BFE starts, useful only with persistent ones [18].
 
 ## Service
 
 **Decision.** A service `thinkpol`, LocalSystem, made through `sc.exe` behind the `Runner` (`sc create`, `config`, `failure`, `failureflag`, `sidtype`, `sdset`) [20][34]. `Render` produces the canonical `sc qc`, `sc qfailure` and `sc qfailureflag` text, which install compares with what `sc.exe` reports: a hand-edited service is `ErrDefinitionChanged`, as for systemd.
 - ImagePath `"%ProgramFiles%\thinkpol\thinkpol.exe" up -service`; start **automatic, not delayed** (delayed widens the boot window); dependencies `BFE`, `Nsi`, `Tcpip`; service SID unrestricted.
-- **Restart:** "restart after 5 s", reset after a day, with `failureflag 1`, so an error exit restarts too. Recovery runs only when the process ends without reporting STOPPED, or reports it with a non-zero code under that flag [20].
+- **Restart:** `actions= restart/5000`, reset after a day, `failureflag 1` (an error exit restarts too). The last action repeats [44], so there is no start limit, as security.md wants; A0's throwaway service dies four times. Recovery runs only when the process ends without reporting STOPPED, or reports it with a non-zero code under that flag [20].
 - **Start:** the agent reports RUNNING once it holds the host lock, **before** the node starts: a slow connect is then not a start timeout (about 30 s), which SCM doesn't treat as a failure. Its first engine open backs off until BFE answers: BFE reports RUNNING before its RPC interface does, and a start that failed on it would count toward `restart_loop`.
-- **Stops restart.** Every stop but a shutdown exits with a non-zero service code unless install, uninstall or update marked it intended (a marker in `run\`, stamped with the boot session), so any `sc.exe stop`, `net stop` or `Stop-Service` is followed by a restart 5 s later; to keep it stopped, disable it first ([recovery](#recovery-runbook-wording)). The reason is BFE: it won't stop while dependents run, so `net stop bfe` stops thinkpol first while BFE is still RUNNING, and the agent can't tell that stop from another. The restart starts BFE again (a dependency). A0 proves the order with a throwaway service, C the restart; failing that, the tray starts the service (question 15).
+- **Stops restart.** Every stop but a shutdown exits with a non-zero service code unless install, uninstall or update marked it intended (a marker in `run\`, stamped with the boot session), so any stop is followed by a restart 5 s later; to keep it stopped, disable it first ([recovery](#recovery-runbook-wording)). The reason is BFE: `net stop bfe` stops its dependents first, thinkpol among them, while BFE still runs, and the agent can't tell that stop from another; the restart starts BFE again. A0 proves the order with a throwaway service, C the restart; failing that, the tray starts the service (question 15).
 - **Shutdown.** Stop and preshutdown are accepted, at Windows' default 10 s preshutdown timeout [35]; a stop cut short aborts any WFP transaction in flight, leaving the static set whole.
 - **A stop leaves the down shape** ("a stop is not a disconnect"). The tray: [desktop-client.md](desktop-client.md#the-local-api); Windows adds that the service's DACL grants the access group start, query-status and interrogate (question 15).
 
-**Fast Startup.** Windows' default "Shut down" hibernates the kernel session; "Restart" and `shutdown /s` don't [21]. A Fast Startup power-on is expected to keep the service process, BFE's static objects, the volatile boot key, the adapter and the routes: to the agent it is no boot, and connect-on-boot doesn't run. A0 proves which survive before any wording relies on it.
+**Fast Startup.** Windows' default "Shut down" hibernates the kernel session; "Restart" and `shutdown /s` don't [21]. A Fast Startup power-on is expected to keep the service process, the static objects, the boot key, the adapter and the routes (no boot to the agent, no connect-on-boot); A0 proves which survive.
 
 **Lost.** A scheduled task (no restart or stop semantics); NSSM, WinSW (a third-party SYSTEM binary in front of ours); `svc/mgr` (API calls, no definition to compare).
 
 ## Crash posture, boot session, recovery
 
-**After a crash** static objects stay and dynamic ones go: the kill switch's down shape (toggle on or crash posture) plus the guard's static set, as rule 7 wants. So direct destinations go at once (RR18), DNS off the TUN, IPv6 beyond link scope and the overlay are refused. SCM restarts the agent in about 5 s; its start-time cleanup narrows to the down shape, clears recorded routes, then connects if the boot's record says so.
+**After a crash** static objects stay and dynamic ones go: the kill switch's down shape (toggle on or crash posture) plus the guard's static set, as rule 7 wants. So **new** flows to direct destinations, DNS off the TUN, IPv6 beyond link scope and the overlay are refused at once. Live flows may not be: ALE authorizes a flow when it starts, and deleting its permit is neither nftables' next-packet check nor macOS's state kill. Until A0 shows a live direct TCP flow, a UDP/53 flow and `Dnscache`'s DoH connection stop when their permit goes (or a block arrives), only new flows are claimed (RR18); if they don't, plan B moves the blocks to a per-packet layer or aborts the flows. SCM restarts the agent in about 5 s; its start-time cleanup narrows to the down shape, clears recorded routes, then connects if the boot's record says so.
 
-**Restart loops.** Each start in the boot is counted in the connect record; five within ten minutes puts `restart_loop` in health. An agent dying in its first second never serves it, so while the pipe is absent the tray reads SCM's status (query-status) and calls three process-ID changes within ten minutes a restart loop, showing the one-step recovery. Nothing more goes to disk (S2).
+**Restart loops** are **three starts within ten minutes**, for agent and tray alike. The agent counts starts in the boot's connect record and puts `restart_loop` in health. An agent dying in its first second never serves it, so while the pipe is absent the tray counts process-ID changes in SCM's status (query-status), shows the one-step recovery, and doesn't start a looping service (question 15). Nothing more goes to disk (S2).
 
 **Boot session.** `%ProgramData%\thinkpol\run` survives restarts, so records carry a boot session: a random nonce in the volatile key `HKLM\SOFTWARE\thinkpol\Boot`, gone at the next real boot. `REG_OPTION_VOLATILE` doesn't change an existing key [36], so the agent takes a new nonce only on `REG_CREATED_NEW_KEY`, and checks an existing key with a non-volatile probe subkey, which a volatile parent refuses (`ERROR_CHILD_MUST_BE_VOLATILE`) [36]; a non-volatile key is deleted and made anew, and health reports it.
 
@@ -139,7 +139,7 @@ Removing an owner while up deletes its static set in one transaction, then its d
 
 ### Recovery (runbook wording)
 
-- **One step, for any member** (the agent dies at each start, toggle on or off): Start → **thinkpol: restore network**, then accept the administrator prompt. Install (TP-W7) makes the shortcut; it runs `thinkpol.exe rollback -kill-switch-off -wait` elevated. The network is back, the service keeps restarting harmlessly and the tray shows the loop, until someone fixes or reinstalls it and turns the kill switch on again.
+- **One step, for any member** (the agent dies at each start, toggle on or off): Start → **thinkpol: restore network**, then accept the administrator prompt. Install (TP-W7) makes the shortcut; elevated, it runs the by-hand steps below: disable, kill (a hung start holds the host lock past `-wait`'s 15 s), then `rollback -kill-switch-off -wait`. The network is back and the service stays disabled until someone fixes it, re-enables it and turns the kill switch on.
 - **By hand**, in an elevated Command Prompt (always `sc.exe`: in PowerShell `sc` is `Set-Content`). Disable restarts, kill the agent if one is running (between restarts there is none), clear what's left:
   ```bat
   sc.exe config thinkpol start= disabled
@@ -153,15 +153,17 @@ Removing an owner while up deletes its static set in one transaction, then its d
 
 The gates, codes and tray behaviour are [desktop-client.md](desktop-client.md#the-local-api)'s; Windows-specific:
 
-**Pipe.** `\\.\pipe\ProtectedPrefix\Administrators\thinkpol\api`, the `-api-socket` default. The session manager's `ProtectedPrefix\Administrators` lets only administrators and SYSTEM create pipes beneath it, so no standard user can squat the name while the service is down; Tailscale's daemon pipe lives there [23][37]. go-winio [22] serves it: it always rejects remote clients, creates the first instance exclusively, and exposes the handle (`Fd()`), so no own listener is needed.
+**Pipe.** `\\.\pipe\ProtectedPrefix\Administrators\thinkpol\api`, the `-api-socket` default. The session manager's `ProtectedPrefix\Administrators` lets only administrators and SYSTEM create pipes beneath it, so no standard user can squat the name while the service is down; Tailscale's daemon pipe lives there [23][37]. go-winio [22] serves it: it always rejects remote clients, creates the first instance exclusively, and exposes the handle (`Fd()`).
+
+**Every instance carries the DACL.** go-winio v0.6.2 passes the descriptor only for the first handle (`pipe.go:344-371`), opened with `SYNCHRONIZE` alone so no client gets it (`:380-386`); client instances get nil (`:416-417`), on the comment that it "is only needed for the first pipe", true only if all instances share the pipe's one descriptor. A0 connects twice and checks the DACL and owner SYSTEM on the second connection; if either differs, our own listener passes the descriptor to every instance.
 
 **A failed Listen isn't fatal** (a name taken in the restart gap, under the prefix only by an administrator): the data plane keeps running, Listen retries with backoff, and health reports `local_api_unavailable` (log and diag; the tray sees `service_down`). A fatal Listen would make a squatted name a restart loop.
 
-**DACL** (protected; `O:SY`): SYSTEM and Administrators full; the access group `FILE_READ_DATA`, `FILE_WRITE_DATA`, `FILE_READ_ATTRIBUTES`, `READ_CONTROL`, `SYNCHRONIZE`, and nothing else. Never generic write: it includes `FILE_APPEND_DATA`, which on a pipe is `FILE_CREATE_PIPE_INSTANCE`, and would let a member open a server instance beside the service [38]. Clients dial with exactly those rights (go-winio's `DialPipeAccess`) at `SecurityIdentification`, since the default dial is anonymous [22][23].
+**DACL** (protected; `O:SY`): SYSTEM and Administrators full; the access group `FILE_READ_DATA`, `FILE_WRITE_DATA`, `FILE_READ_ATTRIBUTES`, `READ_CONTROL`, `SYNCHRONIZE`, and nothing else. Never generic write: it includes `FILE_APPEND_DATA`, which on a pipe is `FILE_CREATE_PIPE_INSTANCE`, and would let a member open a server instance beside the service [38]. Clients dial with exactly those rights at `SecurityIdentification` (`DialPipeAccessImpLevel`), since `DialPipeAccess` is anonymous (`pipe.go:272-273`) [22][23].
 
 **The client checks the server on every connection**: `GetSecurityInfo` on its handle must show the owner SID SYSTEM. Opening the server process's token (`OpenProcessToken`) is denied to standard users for a SYSTEM process, so it can't be the check.
 
-**The caller, per connection.** The server impersonates at Identification level (on a locked OS thread), reads the token's user, enabled groups and elevation, and reverts: the analogue of `SO_PEERCRED`.
+**The caller, per connection.** The server impersonates at Identification level (on a locked OS thread), reads the token's user, enabled groups and elevation, and reverts: the analogue of `SO_PEERCRED`. A failed impersonation (an anonymous dial) is no one, never `Root`.
 
 **Seam.** `auth.go` becomes OS-blind:
 - `type Principal string`: `uid:0`, `gid:20`, or a SID string;
@@ -188,17 +190,17 @@ These sections say how; each moves to its package's `doc.go` in the ticket named
 
 ### Moves to `firewall/doc.go` at TP-W2b and TP-W2c
 
-Layers: C = `ALE_AUTH_CONNECT`, R = `ALE_AUTH_RECV_ACCEPT`, F = `IPFORWARD` (ICS, the mobile hotspot, a NAT switch's forwarding if WinNAT uses it: A0), each V4 and V6 unless marked. R matters because replies to accepted inbound connections never meet C. F is per packet, so there a block drops rather than refuses. `FWP_UINT8` weights; the highest match in a sublayer decides.
+Layers: C = `ALE_AUTH_CONNECT`, R = `ALE_AUTH_RECV_ACCEPT`, F = `IPFORWARD` (ICS, the mobile hotspot, a NAT switch's forwarding if WinNAT uses it: A0), each V4 and V6 unless marked. R matters because replies to accepted inbound connections never meet C. F is per packet and has no protocol or port conditions [43], so there a block drops rather than refuses, and F can't tell DNS from other traffic. `FWP_UINT8` weights; the highest match in a sublayer decides.
 
 | W | Kill switch | Layers | Session |
 |---|---|---|---|
 | 15 | permit loopback | C R | static |
 | 14 | permit the agent: app ID of the installed `thinkpol.exe` **and** user LocalSystem | C R | static |
 | 13 | permit the TUN (interface = its LUID) | C R F | dynamic |
-| 12 | **block** `Dnscache` (service-SID descriptor), every remote port but 5353 and 5355; only while it runs alone | C | static |
+| 12 | **block** `Dnscache` (service-SID descriptor) to unicast and broadcast destinations, any port; only while it runs alone | C | static |
 | 11 | **block** DNS (UDP, TCP 53, 853) to anywhere | C | static |
-| 10 | permit `Allow` (entries; the LAN with allow-LAN) | C R; F for the LAN | static |
-| 9 | permit `Direct` | C R | dynamic |
+| 10 | permit `Allow` (entries; the LAN with allow-LAN); on F the entries only: to them, and from them toward the LAN | C R F | static |
+| 9 | permit `Direct`; on F to it, and from it toward the LAN | C R F | dynamic |
 | 8 | permit DHCPv4: local 68 → remote 67, and inbound from 67 to local 68; DHCPv6: 546 → 547 at `ff02::1:2`, and inbound from 547 to local 546 | C R | static |
 | 7 | permit ND 135/136 to and from **anywhere**; RS 133 to `ff02::2`; RA 134 and redirect 137 from `fe80::/10`; MLD 130–132, 143 to multicast | C6 R6 | static |
 | 0 | **block** all | C R F | static |
@@ -210,12 +212,13 @@ Layers: C = `ALE_AUTH_CONNECT`, R = `ALE_AUTH_RECV_ACCEPT`, F = `IPFORWARD` (ICS
 | 12 | **block** `Dnscache` (as above) | C | static |
 | 11 | **block** DNS (53, 853) | C | static |
 | 10 | **block** the overlay's networks (its IPv4 range and ULA) | C R F | static |
-| 9 | permit `Exempt.Direct`'s IPv6 part | C6 R6 F6 | dynamic |
+| 9 | permit `Exempt.Direct`'s IPv6 part; on F6 to it, and from it toward the LAN | C6 R6 F6 | dynamic |
 | 8 | permit link-scoped: ND as above, DHCPv6 as above, `fe80::/10`, `ff02::/16` | C6 R6 | static |
 | 0 | **block** IPv6 | C6 R6 F6 | static |
 
 - `Mark`, `NoDNS` and `Upstreams` (kill switch) and `Mark` and `Upstreams` (guard) are ignored: the agent's permit covers them. The app ID is the installed path, which updates keep and only Administrators can write.
-- **Address sets** are one filter with OR-ed remote-address conditions. If 10,000 conditions don't fit one filter (A0 times it), the set is chunked into filters of at most N conditions at the same weight and action; order among them doesn't matter.
+- **Forwarding (F).** Linux refuses forwarded DNS to the LAN before its allow lookup (`forwardRules`); F has no ports, so **F never permits the LAN**: forwarded packets pass to the TUN, the entries and `Direct`, and back from the entries and `Direct` only toward the LAN, where a forwarded client is (F has no flow direction; "from the set" alone would let a LAN client out direct). The rest is dropped: a hotspot or ICS client's DNS to the router, and with allow-LAN its other LAN traffic (RR91, question 18). The guard can't refuse forwarded DNS either. Whether forwarding meets F, before or after ICS's or WinNAT's translation, is A0's on a device that forwards (question 17); else the F path is unproven (RR82, RR91).
+- **Address sets** are one filter with consecutive remote-address conditions: conditions AND, but "consecutive conditions with the same fieldKey will be evaluated using the OR operator" [41] (noted since Windows 7), as wireguard-windows relies on [42]; A0 sends a packet to each of a two-address filter's addresses. If 10,000 don't fit one filter (A0 times it), the set is chunked into filters of at most N at the same weight and action. F's "from the set toward the LAN" is one filter: sources ORed, destinations ORed, the two ANDed.
 - ND and MLD can't be limited by hop limit at ALE (RR84); kernel-generated ND may never meet ALE, which A0 shows on native IPv6.
 - Interface-bound sockets (RR21) meet the same filters: ALE runs whatever routing chose.
 - `diag` lists other providers' `0xFFFF` sublayers and hard permits at our layers (RR81).
@@ -248,11 +251,12 @@ Proposed, not yet in RESIDUAL-RISKS.md. Numbered from RR80 to stay clear of the 
 | RR87 | DHCP to anywhere (Windows) | kill switch in place | UDP 68 → 67 and DHCPv6 546 → 547, and their replies, from any process that binds those ports | D4, R2 | RR60's reasoning; ALE can't tell the DHCP client's svchost from another | TP-W2b |
 | RR88 | No LAN or direct-set resolver (Windows) | connected (and in the down shape), a resolver on the LAN with allow-LAN (a Pi-hole, a local container) or among the direct destinations (a domestic one, one an app hard-codes) | nothing: lookups to it are refused; names it alone serves fail, and apps that hard-code it fail on Windows only | R4 | the DNS block outranks `Allow` and `Direct`; the guard can't tell a LAN resolver from the router's (question 16) | TP-W2c |
 | RR89 | The OS resolver's DoH | an uplink with DoH set in Settings, while `Dnscache` shares its svchost (low-memory machines) or queries while impersonating | the OS resolver's lookups to that resolver, encrypted, past the guard | R4 | confined by service SID where it runs alone (A0); `Problem` reports it otherwise; apps' DoH is RR3 | TP-W4 |
-| RR90 | A restart loop (Windows) | the agent dies at every start | toggle on: no network but the entries; toggle off: IPv4 by address only, no names (the guard's static DNS block) | — | fails closed; one step out (restore network: rollback `-kill-switch-off`); the tray infers the loop from SCM | TP-W5, TP-W7 |
+| RR90 | A restart loop (Windows) | the agent dies at every start; SCM restarts it every 5 s without limit (its last action repeats [44]) | toggle on: no network but the entries; toggle off: IPv4 by address only, no names (the guard's static DNS block) | — | fails closed; one step out (restore network: disable, kill, rollback `-kill-switch-off`), after which the service stays disabled until re-enabled; the tray infers the loop from SCM | TP-W5, TP-W7 |
+| RR91 | Forwarded traffic (Windows) | the kill switch in place while the device forwards (hotspot, ICS, WinNAT) | nothing: forwarded packets are dropped, not refused, and never reach the LAN, allow-LAN or not | — | F has no ports, so "the LAN but DNS" can't be said; no LAN is the closed side (question 18); unproven without forwarding (question 17) | TP-W2b |
 
 The earlier draft's squatted-pipe row is gone: only administrators can create a pipe under the protected prefix, and a failed Listen isn't fatal.
 
-Existing rows: RR17's Windows half closes; RR44 drops Windows; RR18 gains "Windows: direct goes at once; names refused until restart or rollback"; RR62 gains "Windows: DNS to the LAN, and `Dnscache` on any port, is refused in both shapes (RR88)"; RR58 (the kill-switch repair window, the RR58 TP-217 keeps) gains Windows' window of about a second; RR59 points to RR80; RR3, RR7, RR15, RR21–RR23, RR43 and RR51 gain Windows wording.
+Existing rows: RR17's Windows half closes; RR44 drops Windows; RR18 gains "Windows: new direct flows refused at once (live ones per A0); names refused until restart or rollback"; RR62 gains "Windows: DNS to the LAN, and `Dnscache` to any unicast address, is refused in both shapes (RR88); forwarded clients reach no LAN (RR91)"; RR58 (the kill-switch repair window, the RR58 TP-217 keeps) gains Windows' window of about a second; RR59 points to RR80; RR3, RR7, RR15, RR21–RR23, RR43 and RR51 gain Windows wording.
 
 ## Appendix: sources
 
@@ -298,3 +302,7 @@ Checked 2026-11-15.
 38. Microsoft, named pipe security and access rights: <https://learn.microsoft.com/windows/win32/ipc/named-pipe-security-and-access-rights>
 39. Microsoft, Smart App Control: <https://support.microsoft.com/en-us/topic/what-is-smart-app-control-285ea03d-fa88-4d56-882e-6698afdb7003>
 40. Microsoft, service host grouping: <https://learn.microsoft.com/en-us/windows/application-management/svchost-service-refactoring>
+41. Microsoft, `FWPM_FILTER0`: <https://learn.microsoft.com/en-us/windows/win32/api/fwpmtypes/ns-fwpmtypes-fwpm_filter0>
+42. wireguard-windows `rules.go:479,999` at `704675c33561`: <https://github.com/WireGuard/wireguard-windows/blob/704675c33561/tunnel/firewall/rules.go>
+43. Microsoft, conditions at each layer: <https://learn.microsoft.com/en-us/windows/win32/fwp/filtering-conditions-available-at-each-filtering-layer>
+44. Microsoft, `SERVICE_FAILURE_ACTIONS`: <https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_failure_actionsw>
