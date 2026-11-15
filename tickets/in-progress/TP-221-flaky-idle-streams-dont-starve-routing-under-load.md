@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-201]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-221"
+branch: "tp-221-flaky-idle-streams-test"
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ branch: ""
 
 ## Log
 - 2026-11-15 created in backlog (from TP-211's and TP-197's lab runs)
+- 2026-11-16 backlog → in-progress, owner: agent-tp-221
