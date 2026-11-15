@@ -206,7 +206,7 @@
 // through the tunnel, a ping); a full record is unchanged. A map that
 // pads to buckets or at random gets what it asks for instead; it can't
 // ask for no padding at all. What the floor still shows (the rekeys'
-// timing, and the floor itself) is RESIDUAL-RISKS.md RR58.
+// timing, and the floor itself) is RESIDUAL-RISKS.md RR65.
 //
 // # Settings
 //
@@ -265,5 +265,5 @@
 // never dials). A hello the worker's table doesn't list (its map changed
 // in between) is spliced to the target, the held-back byte sent then.
 // Every worker given the listener's handoff settings holds its private
-// key, which REALITY's server needs (RESIDUAL-RISKS.md RR57).
+// key, which REALITY's server needs (RESIDUAL-RISKS.md RR64).
 package reality
