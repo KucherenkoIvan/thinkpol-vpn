@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
@@ -588,16 +589,18 @@ func TestForgedICMPErrorsAreRefused(t *testing.T) {
 			// flow, matched as its original direction's tuple. Only
 			// while it does are the forged errors related to it, so
 			// only then do the drops test the binding.
+			// Read over netlink, as the supervisor flushes it: kernels
+			// built without CONFIG_NF_CONNTRACK_PROCFS have no
+			// /proc/net/nf_conntrack.
 			rootFlowTracked := func() bool {
-				out, err := os.ReadFile("/proc/thread-self/net/nf_conntrack")
+				flows, err := netlink.ConntrackTableList(netlink.ConntrackTable, netlink.FAMILY_V4)
 				if err != nil {
-					t.Fatalf("conntrack entries: %v: the kernel needs CONFIG_NF_CONNTRACK_PROCFS", err)
+					t.Fatalf("conntrack entries: %v", err)
 				}
-				// The trailing space keeps 4000 from matching 40001.
-				tuple := fmt.Sprintf("src=%s dst=%s sport=%d dport=%d ", upRoot4, internet4, rootPort, probePort)
-				return slices.ContainsFunc(strings.Split(string(out), "\n"), func(l string) bool {
-					f := strings.Fields(l)
-					return len(f) > 2 && f[2] == "udp" && strings.Contains(l, tuple)
+				return slices.ContainsFunc(flows, func(f *netlink.ConntrackFlow) bool {
+					o := f.Forward
+					return o.Protocol == syscall.IPPROTO_UDP && o.SrcIP.Equal(upRoot4.AsSlice()) && o.DstIP.Equal(internet4.AsSlice()) &&
+						o.SrcPort == rootPort && o.DstPort == probePort
 				})
 			}
 			if !bound {

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 )
 
 func TestTheBootSessionIsTheKernelsBootID(t *testing.T) {
@@ -21,7 +23,7 @@ func TestTheBootSessionIsTheKernelsBootID(t *testing.T) {
 }
 
 func TestABootIDIsOneField(t *testing.T) {
-	dir := tempDir(t)
+	dir := trusteddirtest.TempDir(t)
 	for _, bad := range []string{"", "\n", "two fields\n"} {
 		path := filepath.Join(dir, "boot_id")
 		if err := os.WriteFile(path, []byte(bad), 0o600); err != nil {
