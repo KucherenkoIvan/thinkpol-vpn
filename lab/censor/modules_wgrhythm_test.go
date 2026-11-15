@@ -877,7 +877,7 @@ func TestWGRhythmSteadyStreams(t *testing.T) {
 		cases := map[string][]wireRecord{fmt.Sprintf("equal sizes, %d/s", rate): steadyStream(rate, 360*s, equal)}
 		for seed := range uint64(5) {
 			rng := rand.New(rand.NewPCG(seed, 188))
-			band := func() int { return wgBandMin + rng.IntN(wgBandMax-wgBandMin+1) }
+			band := func() int { return smallSize(rng) }
 			cases[fmt.Sprintf("random sizes, %d/s, seed %d", rate, seed)] = steadyStream(rate, 360*s, func() (int, int) { return band(), band() })
 		}
 		for name, recs := range cases {
@@ -923,11 +923,16 @@ func TestWGRhythmCrossedKeepalives(t *testing.T) {
 	}
 }
 
+// smallSize is a random record size a WireGuard handshake message could
+// take with any overhead up to 256 bytes: the sizes a rekey would hide
+// among.
+func smallSize(rng *rand.Rand) int { return wgResponse + rng.IntN(wgInitiation+256-wgResponse+1) }
+
 // randomInBand is 6 minutes of 50 records a second each way of random
-// sizes in the handshake band: nearly every pair of sizes exchanged.
+// small sizes: nearly every pair of sizes exchanged.
 func randomInBand() []wireRecord {
 	rng := rand.New(rand.NewPCG(7, 188))
-	band := func() int { return wgBandMin + rng.IntN(wgBandMax-wgBandMin+1) }
+	band := func() int { return smallSize(rng) }
 	return steadyStream(50, 360*time.Second, func() (int, int) { return band(), band() })
 }
 

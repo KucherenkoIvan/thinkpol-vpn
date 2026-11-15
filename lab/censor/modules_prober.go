@@ -72,8 +72,11 @@ func init() {
 // of one address are probed one at a time, so another service of the
 // entry's that connects to the site isn't counted for this one's probes;
 // a connection to the site an entry's real clients cause during a probe
-// still is. With upstreamTell "report" the tell is reported in the
-// verdict and doesn't flag the server.
+// still is. Addresses the hosts setting names as one host count as one
+// address for both: an entry probed over IPv6 that dials an IPv4-only site
+// from its IPv4 address shows the tell, as it does to a censor that knows
+// both addresses are one machine. With upstreamTell "report" the tell is
+// reported in the verdict and doesn't flag the server.
 type prober struct {
 	refName string
 	refs    []netip.AddrPort
@@ -91,9 +94,12 @@ type prober struct {
 
 	mu      sync.Mutex
 	servers map[netip.AddrPort]*probedServer
-	// probing serializes the probing of the servers of one address, so
-	// one's upstream connections are never counted for another's probes.
+	// probing serializes the probing of the servers of one host, so one's
+	// upstream connections are never counted for another's probes.
 	probing map[netip.Addr]*sync.Mutex
+	// hostOf maps each address the hosts setting lists to its host's first
+	// address; any other address is a host of its own.
+	hostOf map[netip.Addr]netip.Addr
 	// upstream holds the recent connections to a reference address the
 	// censor saw, for the upstream tell.
 	upstream []upstreamConn
@@ -130,30 +136,46 @@ const upstreamKeep = time.Minute
 //	{"reference": {"name": "camouflage.example.net",
 //	               "addresses": ["198.51.100.10:443", "[2001:db8::10]:443"]},
 //	 "destinations": ["192.0.2.0/24"], "suspects": ["fully-encrypted"],
-//	 "timeout": "2s", "upstreamTell": "flag"}
+//	 "timeout": "2s", "upstreamTell": "flag",
+//	 "hosts": [["192.0.2.9", "2001:db8::9"]]}
 //
 // with blockSettings' verdict (drop by default), rate and burst. The
 // reference is required; destinations are optional; suspects default to
 // fully-encrypted; timeout is how long a probe waits for the server to
 // answer or close (2 s by default); upstreamTell is "flag" (the default:
 // the tell alone flags a server) or "report" (the verdict says so, and
-// only the probes' answers flag it).
+// only the probes' answers flag it); hosts lists the addresses that are one
+// machine, each address in one host at most.
 func newProber(settings json.RawMessage) (Passive, error) {
 	var s struct {
 		Reference struct {
 			Name      string   `json:"name"`
 			Addresses []string `json:"addresses"`
 		} `json:"reference"`
-		Destinations []string `json:"destinations"`
-		Suspects     []string `json:"suspects"`
-		Timeout      string   `json:"timeout"`
-		UpstreamTell string   `json:"upstreamTell"`
+		Destinations []string   `json:"destinations"`
+		Suspects     []string   `json:"suspects"`
+		Timeout      string     `json:"timeout"`
+		UpstreamTell string     `json:"upstreamTell"`
+		Hosts        [][]string `json:"hosts"`
 		blockSettings
 	}
 	if err := unmarshalSettings(settings, &s); err != nil {
 		return nil, err
 	}
-	m := &prober{refName: s.Reference.Name, suspects: s.Suspects, servers: map[netip.AddrPort]*probedServer{}, probing: map[netip.Addr]*sync.Mutex{}, grace: upstreamGrace}
+	m := &prober{refName: s.Reference.Name, suspects: s.Suspects, servers: map[netip.AddrPort]*probedServer{},
+		probing: map[netip.Addr]*sync.Mutex{}, hostOf: map[netip.Addr]netip.Addr{}, grace: upstreamGrace}
+	for _, host := range s.Hosts {
+		for _, a := range host {
+			addr, err := netip.ParseAddr(a)
+			if err != nil {
+				return nil, fmt.Errorf("host address %q: %w", a, err)
+			}
+			if _, dup := m.hostOf[addr]; dup {
+				return nil, fmt.Errorf("host address %s: listed twice", addr)
+			}
+			m.hostOf[addr] = netip.MustParseAddr(host[0])
+		}
+	}
 	for _, a := range s.Reference.Addresses {
 		ap, err := netip.ParseAddrPort(a)
 		if err != nil {
@@ -284,13 +306,21 @@ func (m *prober) isReference(a netip.AddrPort) bool {
 	return false
 }
 
-// sawUpstream reports a connection from src to the reference starting
-// within [from, to].
+// host is the host addr is an address of, by its first address.
+func (m *prober) host(addr netip.Addr) netip.Addr {
+	if h, ok := m.hostOf[addr]; ok {
+		return h
+	}
+	return addr
+}
+
+// sawUpstream reports a connection from src's host to the reference
+// starting within [from, to].
 func (m *prober) sawUpstream(src netip.Addr, from, to time.Time) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, u := range m.upstream {
-		if u.src == src && !u.at.Before(from) && !u.at.After(to) {
+		if m.host(u.src) == m.host(src) && !u.at.Before(from) && !u.at.After(to) {
 			return true
 		}
 	}
@@ -323,10 +353,10 @@ func (m *prober) suspect(ctx context.Context, f FlowSnapshot, flag FlagFunc) {
 	}
 	s = &probedServer{waiting: []FlowKey{f.Key}}
 	m.servers[server] = s
-	host, ok := m.probing[server.Addr()]
+	host, ok := m.probing[m.host(server.Addr())]
 	if !ok {
 		host = &sync.Mutex{}
-		m.probing[server.Addr()] = host
+		m.probing[m.host(server.Addr())] = host
 	}
 	m.mu.Unlock()
 	go func() {
@@ -440,7 +470,11 @@ func notCompared(name string, err error, kept int) string {
 // upstream of total probes: a line for the report, or a difference when
 // the tell flags.
 func (m *prober) upstreamTell(server netip.Addr, upstream, total int) (report, diff string) {
-	tell := fmt.Sprintf("upstream tell: a connection from %s to the reference during every probe (%d of %d)", server, upstream, total)
+	from := server.String()
+	if _, ok := m.hostOf[server]; ok {
+		from += " or another address of its host"
+	}
+	tell := fmt.Sprintf("upstream tell: a connection from %s to the reference during every probe (%d of %d)", from, upstream, total)
 	switch {
 	case total < 2 || upstream < total:
 		return fmt.Sprintf("connections to the reference during %d of %d probes", upstream, total), ""

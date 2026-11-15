@@ -333,6 +333,34 @@ func TestProberReportsUpstreamTell(t *testing.T) {
 	}
 }
 
+// TestProberUpstreamTellAcrossHostAddresses: an entry that dials the
+// reference from another of its addresses (an IPv4-only site, probed over
+// IPv6) shows the tell only when the hosts setting names both addresses as
+// one host; otherwise its connections say nothing about the probed one.
+func TestProberUpstreamTellAcrossHostAddresses(t *testing.T) {
+	ref := webServer(t, webTLS(t, siteName))
+	uplink := netip.MustParseAddr("192.0.2.77")
+	for _, c := range []struct {
+		hosts, want string
+	}{
+		{`, "hosts": [["127.0.0.1", "192.0.2.77"]]`, "upstream tell: a connection from 127.0.0.1 or another address of its host to the reference during every probe (7 of 7), reported, not flagged"},
+		{`, "hosts": [["192.0.2.77", "127.0.0.1"]]`, "(7 of 7), reported"},
+		{"", "connections to the reference during 0 of 7 probes"},
+		{`, "hosts": [["127.0.0.1", "192.0.2.78"]]`, "connections to the reference during 0 of 7 probes"},
+	} {
+		p := newTestProber(t, ref, `, "upstreamTell": "report"`+c.hosts)
+		flows, flags := runProber(t, p)
+		entry := listen(t, relay(ref, func() {
+			flows <- FlowSnapshot{Key: FlowKey{Proto: ProtoTCP, Src: uplink, Dst: ref.Addr(), SrcPort: 50000, DstPort: ref.Port()}, Started: time.Now()}
+		}))
+		s := suspectTo(entry, 40026, helloFor(t, siteName))
+		flows <- s
+		if f := waitFlag(t, flags, s.Key); f.verdict != Accept || !strings.Contains(f.why, c.want) {
+			t.Errorf("hosts %q: %+v, want a verdict saying %q", c.hosts, f, c.want)
+		}
+	}
+}
+
 // TestProberTagsListedDestinations: with destinations, the passive half
 // tags a client's TCP flow to one once it has sent data, and nothing
 // else.
@@ -480,6 +508,8 @@ func TestProberSettings(t *testing.T) {
 		"bad timeout":       `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "timeout": "-1s"}`,
 		"bad verdict":       `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "verdict": "poison"}`,
 		"bad upstream tell": `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "upstreamTell": "ignore"}`,
+		"bad host address":  `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "hosts": [["192.0.2.9", "x"]]}`,
+		"host listed twice": `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "hosts": [["192.0.2.9"], ["192.0.2.9", "2001:db8::9"]]}`,
 	} {
 		if _, err := newProber(json.RawMessage(settings)); err == nil {
 			t.Errorf("%s: accepted", name)
