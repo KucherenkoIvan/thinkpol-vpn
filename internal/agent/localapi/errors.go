@@ -73,14 +73,20 @@ var (
 	// connection without answering diag in time (DiagnoseOrReadHost):
 	// what the client finds, never sent by the server.
 	ErrServiceNotAnswering = Error{code: "service_not_answering"}
+	// ErrServiceRestarted is an agent answering once diag has read the
+	// host without one (DiagnoseOrReadHost): what the client finds, never
+	// sent by the server.
+	ErrServiceRestarted = Error{code: "service_restarted_during_read"}
 )
 
 // refusals are every refusal: its gRPC code, which the server sends it
 // with, and what a client tells a person of it, a detail filling the %s
 // of a refusal sent with one (detailed). A detailed refusal's code varies,
 // so it goes as grpckit's default, FailedPrecondition, the code its row
-// says; service_down's and service_not_answering's are never sent. A refusal's wording lives here
-// only; the client's dial-time refusal reuses ErrPermissionDenied's.
+// says; the client's own (service_down, service_not_answering,
+// service_restarted_during_read) are never sent. A refusal's wording
+// lives here only; the client's dial-time refusal reuses
+// ErrPermissionDenied's.
 // Both permission refusals ([IsPermission]) begin with "permission
 // denied", and service_down's with "the thinkpol service" (the lab checks
 // it), which stay; the rest of any message may change.
@@ -103,10 +109,12 @@ var refusals = []struct {
 	{ErrKillSwitchNotEnforced, codes.FailedPrecondition, "the setting is kept, but the kill switch is not enforced: %s", true},
 	{ErrServiceDown, codes.Unavailable, "the thinkpol service is not running", false},
 	{ErrServiceNotAnswering, codes.Unavailable, "the thinkpol service is not answering", false},
+	{ErrServiceRestarted, codes.Unavailable, "the thinkpol service came up while diag read the host", false},
 }
 
 // Refusals are every refusal a client may find in an error (errors.Is):
-// those the server sends, and the client's own [ErrServiceDown].
+// those the server sends, and the client's own ([ErrServiceDown],
+// [ErrServiceNotAnswering], [ErrServiceRestarted]).
 func Refusals() []Error {
 	out := make([]Error, 0, len(refusals))
 	for _, r := range refusals {

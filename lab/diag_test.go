@@ -624,7 +624,39 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 		}
 	})
 
-	// Last: it kills the agent (TP-133).
+	// Next to last: it stops the agent (TP-133). A stopped agent keeps
+	// its socket, which the kernel still connects, and nothing of it runs,
+	// as after a crash with the service manager held off: root's diag
+	// waits on it, says so, then reads the host itself and exits 69.
+	t.Run("a SIGSTOPped agent: root's diag waits, then reads the host", func(t *testing.T) {
+		dev.MustExec(t, "pkill", "-STOP", "-f", "thinkpol up")
+		if st := dev.MustExec(t, "sh", "-ec", `ps -o stat= -p "$(pgrep -f 'thinkpol up')"`); !strings.HasPrefix(st, "T") {
+			t.Fatalf("the agent's state after SIGSTOP: %q", st)
+		}
+		start := time.Now()
+		res, err := execResult(dev, execTimeout, as("", "", "diag", "-o", "/tmp/diag-stopped.json")...)
+		if err == nil || res.ExitCode != 69 || res.Stdout != "" ||
+			!strings.Contains(res.Stderr, "waiting up to 60 s") || !strings.Contains(res.Stderr, "[service_not_answering]") {
+			t.Fatalf("diag beside a stopped agent: exit %d, %v\n%s%s", res.ExitCode, err, res.Stdout, res.Stderr)
+		}
+		t.Logf("took %s: %s", time.Since(start).Round(time.Second), strings.TrimSpace(res.Stderr))
+		out := dev.MustExec(t, "cat", "/tmp/diag-stopped.json")
+		var d diagSnapshot
+		if err := json.Unmarshal([]byte(out), &d); err != nil {
+			t.Fatalf("diag's JSON: %v\n%s", err, out)
+		}
+		const why = "the agent didn't answer: only it knows this"
+		if d.Agent != "not_answering" || d.Status != nil || d.StatusUnreadable != why || d.Tun.Unreadable != why || !d.HostParts ||
+			d.Routes.Unreadable != "" || d.Guard.Unreadable != "" || d.Guard.Present == nil || !*d.Guard.Present {
+			t.Fatalf("beside a stopped agent:\n%s", out)
+		}
+		if routes, host := d.routeLines(), hostRoutes(t, dev); len(routes) == 0 || !slices.Equal(routes, host) {
+			t.Errorf("routes:\n%s\nip:\n%s", strings.Join(routes, "\n"), strings.Join(host, "\n"))
+		}
+	})
+
+	// Last: it kills the agent (TP-133), stopped or not: a stopped
+	// process takes SIGKILL.
 	t.Run("after a SIGKILL root's diag reads what the agent left", func(t *testing.T) {
 		dev.MustExec(t, "pkill", "-KILL", "-f", "thinkpol up")
 		select {

@@ -304,10 +304,12 @@ func (c *Client) Diagnose(ctx context.Context) (*localapiv1.Diagnostics, error) 
 	return sanitized(resp).GetDiagnostics(), nil
 }
 
-// DiagnoseWait bounds how long `thinkpol diag` waits for the agent's
-// snapshot before it reads the host itself (DiagnoseOrReadHost): long
-// enough for an agent reading a slow pf (each pfctl call has 15 s), short
-// enough that a hung one still leaves evidence.
+// DiagnoseWait bounds how long `thinkpol diag` waits for an agent that
+// holds the socket before it reads the host itself (DiagnoseOrReadHost).
+// It is not sized to outlast the agent's own reads (a slow pf is up to
+// 12 pfctl calls at 15 s each): it is how long a person at the prompt
+// waits on an agent that may be hung or stopped, after which the host's
+// snapshot is the evidence kept.
 const DiagnoseWait = time.Minute
 
 // HostReader takes the snapshot of the host without the agent
@@ -321,18 +323,24 @@ type HostReader func(ctx context.Context, presence agent.AgentPresence) (agent.D
 // the host itself, with no error; or, when something accepts it but no
 // snapshot comes within wait (or the connection can't be made in time),
 // readHost's too, returned with an ErrServiceNotAnswering: the evidence
-// is kept, and the agent that didn't answer is still a failure. version
-// is the reader's own, the snapshot's agent_version. readHost's error
+// is kept, and the agent that didn't answer is still a failure. While it
+// waits on an agent that holds the socket, it says so on waiting, once,
+// after a short grace. When an agent answers at socket once the host has
+// been read (launchd or systemd restarted it during the read, or the
+// silent one came back), the snapshot says agent restarted_during_read
+// and comes with an ErrServiceRestarted: the agent may have put the host
+// back while it was read, so the snapshot is no dead run's. version is
+// the reader's own, the snapshot's agent_version. readHost's error
 // (root's alone: agent.ErrDiagNeedsRoot) comes with no snapshot. Any
 // other failure, a refusal or the caller's ctx ending, is as Diagnose
 // gives it.
-func DiagnoseOrReadHost(ctx context.Context, socket string, wait time.Duration, readHost HostReader, version string) (*localapiv1.Diagnostics, error) {
+func DiagnoseOrReadHost(ctx context.Context, socket string, wait time.Duration, readHost HostReader, version string, waiting io.Writer) (*localapiv1.Diagnostics, error) {
 	presence := agent.AgentNotRunning
 	var notAnswering error
 	c, err := Dial(socket)
 	switch {
 	case err == nil:
-		d, err := c.diagnoseWithin(ctx, wait)
+		d, err := c.diagnoseWithin(ctx, wait, waiting)
 		_ = c.Close()
 		var silent silentAgent
 		if err == nil || ctx.Err() != nil || !errors.As(err, &silent) {
@@ -351,21 +359,76 @@ func DiagnoseOrReadHost(ctx context.Context, socket string, wait time.Duration, 
 	if err != nil {
 		return nil, errors.Join(notAnswering, err)
 	}
+	if answersNow(ctx, socket, min(wait, recheckWait)) {
+		hd.Agent = agent.AgentRestartedDuringRead
+		notAnswering = &clientError{fmt.Sprintf("%s (an agent answers at %s now, the host read as %s): the snapshot may hold what it put back", refusalMsg(ErrServiceRestarted, ""), socket, presence), ErrServiceRestarted}
+	}
 	return sanitized(diagnosticsProto(hd, time.Now(), version)), notAnswering
+}
+
+// recheckWait bounds the call that asks, once the host is read, whether
+// an agent answers now: a status, which a started agent gives at once.
+const recheckWait = 3 * time.Second
+
+// waitingGrace is how long diag waits on an agent that holds the socket
+// before saying it is waiting: an answering agent's snapshot usually
+// comes first, and then nothing is said.
+const waitingGrace = 2 * time.Second
+
+// answersNow reports whether an agent at socket answers a status call
+// within limit: with the status, or with any refusal (a running
+// service's not_running among them). A socket nothing accepts, or one
+// that accepts and stays silent (a stopped agent's), does not answer.
+func answersNow(ctx context.Context, socket string, limit time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	c, err := Dial(socket)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = c.Close() }()
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	_, err = c.api.GetStatus(ctx, &localapiv1.GetStatusRequest{})
+	return !isSilent(err)
+}
+
+// isSilent: a call that got no answer at all, no reply in time or the
+// connection failing with nothing said; a refusal is an answer.
+func isSilent(err error) bool {
+	var remote *grpckit.RemoteDomainError
+	code := status.Code(err)
+	return err != nil && !errors.As(err, &remote) && (code == codes.DeadlineExceeded || code == codes.Unavailable)
 }
 
 // diagnoseWithin is Diagnose bounded by wait. A call that got no answer
 // at all fails with a silentAgent: no snapshot in time, or the
 // connection failing with nothing said (no gRPC handshake within its own
 // connect timeout, or the agent dying mid-call). A refusal, the service's
-// own not_running among them, is explained as Diagnose explains it.
-func (c *Client) diagnoseWithin(ctx context.Context, wait time.Duration) (*localapiv1.Diagnostics, error) {
+// own not_running among them, is explained as Diagnose explains it. Past
+// min(waitingGrace, wait/2) with no answer, it writes one line to waiting
+// (nil: none) saying how long it waits.
+func (c *Client) diagnoseWithin(ctx context.Context, wait time.Duration, waiting io.Writer) (*localapiv1.Diagnostics, error) {
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
+	if waiting != nil {
+		said := make(chan struct{})
+		say := time.AfterFunc(min(waitingGrace, wait/2), func() {
+			defer close(said)
+			_, _ = fmt.Fprintf(waiting, "the agent at %s holds the socket but hasn't answered: waiting up to %.0f s for it, then the host is read without it\n", c.path, wait.Seconds())
+		})
+		// The line is written before diag goes on to write to the same
+		// stream.
+		defer func() {
+			if !say.Stop() {
+				<-said
+			}
+		}()
+	}
 	resp, err := c.api.Diagnose(ctx, &localapiv1.DiagnoseRequest{})
-	var remote *grpckit.RemoteDomainError
-	if code := status.Code(err); !errors.As(err, &remote) && (code == codes.DeadlineExceeded || code == codes.Unavailable) {
-		return nil, silentAgent{code}
+	if isSilent(err) {
+		return nil, silentAgent{status.Code(err)}
 	}
 	if err != nil {
 		return nil, c.explain(err)

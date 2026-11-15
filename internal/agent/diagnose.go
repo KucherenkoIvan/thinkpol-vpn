@@ -21,7 +21,8 @@ import (
 type Diagnostics struct {
 	// Agent is who took it: AgentRunning, the agent itself; AgentNotRunning
 	// or AgentNotAnswering, root's diag reading the host without it
-	// (DiagnoseHost).
+	// (DiagnoseHost); AgentRestartedDuringRead, root's diag, with an agent
+	// answering once the host was read.
 	Agent  AgentPresence
 	Status Status
 	// StatusUnreadable says why there is no Status: no agent answered.
@@ -95,6 +96,10 @@ const (
 	// came in time: root's diag read the host itself, beside an agent that
 	// may still be changing it.
 	AgentNotAnswering AgentPresence = "not_answering"
+	// AgentRestartedDuringRead: root's diag read the host itself, and an
+	// agent answered once it had (a restarted one, or the silent one back):
+	// the host may hold what that agent put back during the read.
+	AgentRestartedDuringRead AgentPresence = "restarted_during_read"
 )
 
 // Why a part only the agent knows (the status, the TUN, the last Apply)

@@ -244,17 +244,28 @@
 // [DiagnoseWait] (or the connection fails with nothing said), `agent` is
 // `not_answering`, the snapshot is written all the same, and it exits 69
 // (`service_not_answering`): the evidence is kept, the agent that didn't
-// answer is still a failure. The host parts, the drop-ins and `last_run`
-// (the crash trace file, read as it is, never fixed, cut or emptied as a
-// start does) are read with the agent's own readers, which only read: no
-// lock taken, no directory made, nothing written but the snapshot. The
-// status, the TUN and the last Apply, which only the agent knows, are
-// unreadable, saying which it was; `agent_version` and `os` are the
-// CLI's. A caller who isn't root gets [agent.ErrDiagNeedsRoot] (77) and
-// no snapshot, whichever it was. A refusal by a running agent, and the
-// caller giving up, read nothing. macOS refuses a connection to a full
-// backlog as it does to a dead agent's socket, so a hung agent there
-// with every slot taken reads as `not_running`.
+// answer is still a failure. A stopped agent (SIGSTOP) is one: the
+// kernel still completes the connection into its socket's backlog, and
+// nothing reads it; a stopped process keeps its socket, so the service
+// manager doesn't start another. While it waits on an agent that holds
+// the socket, diag says so on stderr, once, after a short grace. Once
+// the host is read, diag asks the socket for a status again: an agent
+// that answers now (the service manager restarted a killed one during
+// the read, or the silent one came back) may have put the host back
+// while it was read, so the snapshot says `restarted_during_read` and
+// diag exits 69 (`service_restarted_during_read`), never 0. The host
+// parts, the drop-ins and `last_run` (the crash trace file, read as it
+// is, never fixed, cut or emptied as a start does) are read with the
+// agent's own readers, which only read: no lock taken, no directory
+// made, nothing written but the snapshot. The status, the TUN and the
+// last Apply, which only the agent knows, are unreadable, saying which
+// it was; `agent_version` and `os` are the CLI's. A caller who isn't
+// root gets [agent.ErrDiagNeedsRoot] (77) and no snapshot, whichever it
+// was. A snapshot that can't be written exits 1 whatever the agent did.
+// A refusal by a running agent, and the caller giving up, read nothing.
+// macOS refuses a connection to a full backlog as it does to a dead
+// agent's socket, so a hung agent there with every slot taken reads as
+// `not_running`.
 //
 // The snapshot holds no key, token or session id: what it carries comes
 // from the status, which holds none, and from reading the host, which

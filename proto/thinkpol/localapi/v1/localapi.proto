@@ -173,7 +173,9 @@ message Diagnostics {
   string agent_version = 4;
   // Who took it: "running", the agent; "not_running" (nothing accepted
   // the local API's connection) or "not_answering" (no snapshot came in
-  // time), root's diag reading the host itself with the agent's readers.
+  // time), root's diag reading the host itself with the agent's readers;
+  // "restarted_during_read", root's diag too, with an agent answering
+  // once the host was read.
   // Without the agent, status is null, status_unreadable says why, and
   // tun and last_apply are unreadable for the same reason; the host parts
   // and last_run are read from the host as the agent reads them.

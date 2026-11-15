@@ -341,13 +341,20 @@ func TestAFailedChangeKeepsTheStatusWriteError(t *testing.T) {
 	}
 }
 
-// diag without an agent answering exits by what it got (TP-133): the
-// host's snapshot with no agent running is all there is to take, 0; with
-// one that holds the socket and doesn't answer, the snapshot is kept but
-// short of the agent's, 69 (EX_UNAVAILABLE, the service unavailable);
-// a caller who may not read the host, 77 either way (EX_NOPERM: root
-// gets the snapshot, which is the way out).
+// diag without an agent answering exits by what it got (TP-133), run as
+// the command runs: the host's snapshot with no agent running is all
+// there is to take, 0; with one that holds the socket and doesn't answer,
+// the snapshot is still written, but short of the agent's, 69
+// (EX_UNAVAILABLE, the service unavailable); with an agent answering once
+// the host was read, the snapshot is written and is no dead run's, 69; a
+// caller who may not read the host, 77 either way and no snapshot
+// (EX_NOPERM: root gets the snapshot, which is the way out). A snapshot
+// that can't be written is 1, whatever the agent did: it didn't get out.
 func TestDiagWithoutAnAgentExitsBySysexits(t *testing.T) {
+	keepUpGlobals(t)
+	wait, reader := diagWait, diagReadHost
+	t.Cleanup(func() { diagWait, diagReadHost = wait, reader })
+	diagWait = 200 * time.Millisecond
 	hostRead := func(_ context.Context, p agent.AgentPresence) (agent.Diagnostics, error) {
 		return agent.Diagnostics{Agent: p, StatusUnreadable: "test"}, nil
 	}
@@ -360,13 +367,15 @@ func TestDiagWithoutAnAgentExitsBySysexits(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	hangs, down := filepath.Join(dir, "api.sock"), filepath.Join(dir, "none.sock")
+	hangs, down, later := filepath.Join(dir, "api.sock"), filepath.Join(dir, "none.sock"), filepath.Join(dir, "later.sock")
 	l, err := net.Listen("unix", hangs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = l.Close() })
+	accepted := make(chan struct{})
+	t.Cleanup(func() { _ = l.Close(); <-accepted })
 	go func() {
+		defer close(accepted)
 		var held []net.Conn
 		defer func() {
 			for _, c := range held {
@@ -381,21 +390,52 @@ func TestDiagWithoutAnAgentExitsBySysexits(t *testing.T) {
 			held = append(held, c)
 		}
 	}()
-	for _, row := range []struct {
+	// An agent comes up at later while the host is read.
+	agentUp := serveAPI(t, &exitNode{st: connectedDevice(t).st}, localapi.Policy{ServiceUID: uint32(os.Geteuid())})
+	restarts := func(ctx context.Context, p agent.AgentPresence) (agent.Diagnostics, error) {
+		if err := os.Rename(agentUp, later); err != nil {
+			return agent.Diagnostics{}, err
+		}
+		return hostRead(ctx, p)
+	}
+	notAFile := filepath.Join(dir, "a-directory")
+	if err := os.Mkdir(notAFile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i, row := range []struct {
 		name   string
 		socket string
 		read   localapi.HostReader
+		out    string // -o's file; "" a new one
 		code   int
-		agent  string
+		agent  string // "": no snapshot
+		stderr string
 	}{
-		{"not running", down, hostRead, exitOK, "not_running"},
-		{"not answering", hangs, hostRead, exitUnavailable, "not_answering"},
-		{"not running, not root", down, refused, exitNoPerm, ""},
-		{"not answering, not root", hangs, refused, exitNoPerm, ""},
+		{"not running", down, hostRead, "", exitOK, "not_running", `^$`},
+		{"not answering", hangs, hostRead, "", exitUnavailable, "not_answering", `waiting up to 0 s for it(.|\n)*\[service_not_answering\]`},
+		{"restarted during the read", later, restarts, "", exitUnavailable, "restarted_during_read", `\[service_restarted_during_read\]`},
+		{"not running, not root", down, refused, "", exitNoPerm, "", "as root"},
+		{"not answering, not root", hangs, refused, "", exitNoPerm, "", "as root"},
+		{"not running, the snapshot not written", down, hostRead, notAFile, exitFailure, "", "not a regular file"},
+		{"not answering, the snapshot not written", hangs, hostRead, notAFile, exitFailure, "", "not a regular file.*the thinkpol service is not answering"},
 	} {
-		d, err := localapi.DiagnoseOrReadHost(context.Background(), row.socket, 200*time.Millisecond, row.read, "test")
-		if code := exitCode(err); code != row.code || d.GetAgent() != row.agent {
-			t.Errorf("%s: exit %d, agent %q (%v); want %d, %q", row.name, code, d.GetAgent(), err, row.code, row.agent)
-		}
+		t.Run(row.name, func(t *testing.T) {
+			diagReadHost = row.read
+			out := row.out
+			if out == "" {
+				out = filepath.Join(dir, fmt.Sprintf("diag-%d.json", i))
+			}
+			code, stdout, stderr := runCLI(t, "diag", "-socket", row.socket, "-o", out)
+			if code != row.code || stdout != "" || !regexp.MustCompile(row.stderr).MatchString(stderr) {
+				t.Fatalf("exit %d, want %d\nstdout:\n%s\nstderr:\n%s", code, row.code, stdout, stderr)
+			}
+			snapshot, err := os.ReadFile(out)
+			switch {
+			case row.agent == "" && row.out == "" && !errors.Is(err, os.ErrNotExist):
+				t.Errorf("a snapshot was written: %q, %v", snapshot, err)
+			case row.agent != "" && (err != nil || !strings.Contains(string(snapshot), `"agent": "`+row.agent+`"`)):
+				t.Errorf("snapshot %q, %v; want agent %q", snapshot, err, row.agent)
+			}
+		})
 	}
 }
