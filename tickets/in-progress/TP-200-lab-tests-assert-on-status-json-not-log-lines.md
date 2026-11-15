@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-168]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-200"
+branch: "tp-200-lab-status-json"
 ---
 
 ## Goal
@@ -35,3 +35,4 @@ Lab tests read facts from `thinkpol status -json` and start nodes through one sh
 
 ## Log
 - 2026-11-08 created in backlog
+- 2026-11-16 backlog → in-progress, owner: agent-tp-200
