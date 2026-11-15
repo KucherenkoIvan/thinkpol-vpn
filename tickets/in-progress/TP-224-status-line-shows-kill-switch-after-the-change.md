@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-224"
+branch: "tp-224-status-line-after-change"
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ branch: ""
 
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate review)
+- 2026-11-16 backlog → in-progress, owner: agent-tp-224
