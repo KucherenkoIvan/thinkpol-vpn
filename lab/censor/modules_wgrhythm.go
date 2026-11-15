@@ -440,7 +440,7 @@ func (m *wgRhythm) settle(c *wgConn, now time.Time) {
 // It returns how many times in a row the exchange has stood out, if this
 // occurrence made it stand out, else 0.
 func (m *wgRhythm) exchange(c *wgConn, sizes [2]int, stands bool, end time.Time) int {
-	window := m.rekey*wgRejectAfterTime/wgRekeyAfterTime + wgRekeySlack
+	window := m.rekey*time.Duration(wgRejectAfterTime/time.Second)/time.Duration(wgRekeyAfterTime/time.Second) + wgRekeySlack
 	if end.Sub(c.pruned) >= window {
 		for k, e := range c.exchanges {
 			if end.Sub(e.seen) > window {
