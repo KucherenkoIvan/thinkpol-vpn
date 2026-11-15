@@ -1,6 +1,6 @@
 # thinkpol-vpn — Windows design
 
-How a device meets the macOS and Linux contract on Windows (M5: TP-047, the data plane; TP-076, the kill switch). A design for review after three rounds; nothing here is built. Entry point: [DESIGN.md](../../DESIGN.md); `RRn` are [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md) rows, RR80–RR91 [proposed below](#proposed-residual-risks); `[n]` are [sources](#appendix-sources). The ticket split, device sessions, A0's checklist, plan B, owner questions ("question n") and review rounds are in [TP-047's Notes](../../tickets/backlog/TP-047-windows-dataplane.md#notes).
+How a device meets the macOS and Linux contract on Windows (M5: TP-047, the data plane; TP-076, the kill switch). A design for review after four rounds; nothing here is built. Entry point: [DESIGN.md](../../DESIGN.md); `RRn` are [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md) rows, RR80–RR91 [proposed below](#proposed-residual-risks); `[n]` are [sources](#appendix-sources). The ticket split, device sessions, A0's checklist, plan B, owner questions ("question n") and review rounds are in [TP-047's Notes](../../tickets/backlog/TP-047-windows-dataplane.md#notes).
 
 The behaviour to match is decided: [security](security.md#kill-switch) (the kill switch, the crash posture, rollback), [routing](routing.md) (the route table, DNS), the [desktop client](desktop-client.md#the-local-api) (the local API's gates and codes), [configuration](configuration.md), TP-167's [exit codes](api-overview.md#tp-167-exit-codes-and-the-setting-shape). Where Windows can't match it, this note says so and proposes a residual row.
 
@@ -23,7 +23,7 @@ Windows code goes in `_windows.go` files of the package that owns each seam, whe
 | Local API | `Listen` (`listen_other.go:12`), `callerOf`, `Caller`, `Policy` (`auth.go:68,85`), `Dial` | a named pipe; the OS-blind `Principal` seam ([below](#local-api-over-a-named-pipe)) |
 | Diag | `agent.Inspector`; TP-133 | online readers for WFP, routes, DNS, the service; offline ones are a follow-up |
 
-`linksMarked` (`agent/killswitch.go:104`) becomes true on Windows: an entry on the LAN serving on 53 or 853 stays in `NoDNS`, and the agent's app-ID permit, like the mark, lets the agent through. False (macOS) takes the entry out of `NoDNS`, opening it to every process's DNS.
+`linksMarked` (`agent/killswitch.go:104`) becomes true on Windows: an entry on the LAN serving on 53 or 853 stays in `NoDNS`, and the agent's app-ID permit, like the mark, lets the agent through.
 
 ## TUN
 
@@ -89,7 +89,7 @@ The kill switch's static set is the down shape whatever the shape asked for, bec
 2. **Change the static filters by key**: delete and add the changed ones in one transaction (static). If A0 shows a key can't be re-added in the transaction that deleted it, static filters alternate slots too.
 3. **Delete** the old slot's dynamic permits (dynamic transaction 2).
 
-Within a sublayer our highest-weight match decides; across sublayers a packet passes when no sublayer blocks it. The states are old static + both slots, then new static + both slots, then the new shape. A failed step doesn't undo the ones before it (the process and its dynamic session live on).
+The states are old static + both slots, then new static + both slots, then the new shape. A failed step doesn't undo the ones before it (the process and its dynamic session live on).
 - **Leaks:** the union of the old and new `Direct`, wider than either, while both slots are in: between steps 1 and 3, and after a failed step 2 or 3 until the next apply (within 10 s) deletes the unwanted slot; health shows the extra slot meanwhile. A crash drops both with the session.
 - **Blocks:** none: every state lets out what the shape in force allows (the old until step 2 commits, the new after), since the new permits are in first.
 
@@ -117,13 +117,13 @@ Removing an owner while up deletes its static set in one transaction, then its d
 - **Shutdown.** Stop and preshutdown are accepted, at Windows' default 10 s preshutdown timeout [35]; a stop cut short aborts any WFP transaction in flight, leaving the static set whole.
 - **A stop leaves the down shape** ("a stop is not a disconnect"). The tray: [desktop-client.md](desktop-client.md#the-local-api); Windows adds that the service's DACL grants the access group start, query-status and interrogate (question 15).
 
-**Fast Startup.** Windows' default "Shut down" hibernates the kernel session; "Restart" and `shutdown /s` don't [21]. A Fast Startup power-on is expected to keep the service process, the static objects, the boot key, the adapter and the routes (no boot to the agent, no connect-on-boot); A0 proves which survive.
+**Fast Startup.** Windows' default "Shut down" hibernates the kernel session; "Restart" and `shutdown /s` don't [21]. A Fast Startup power-on is expected to keep the process, static objects, boot key, adapter and routes (no connect-on-boot); A0 proves which survive.
 
 **Lost.** A scheduled task (no restart or stop semantics); NSSM, WinSW (a third-party SYSTEM binary in front of ours); `svc/mgr` (API calls, no definition to compare).
 
 ## Crash posture, boot session, recovery
 
-**After a crash** static objects stay and dynamic ones go: the kill switch's down shape (toggle on or crash posture) plus the guard's static set, as rule 7 wants. So **new** flows to direct destinations, DNS off the TUN, IPv6 beyond link scope and the overlay are refused at once. Live flows may not be: ALE authorizes a flow when it starts, and deleting its permit is neither nftables' next-packet check nor macOS's state kill. Until A0 shows a live direct TCP flow, a UDP/53 flow and `Dnscache`'s DoH connection stop when their permit goes (or a block arrives), only new flows are claimed (RR18); if they don't, plan B moves the blocks to a per-packet layer or aborts the flows. SCM restarts the agent in about 5 s; its start-time cleanup narrows to the down shape, clears recorded routes, then connects if the boot's record says so.
+**After a crash** static objects stay and dynamic ones go: the kill switch's down shape (toggle on or crash posture) plus the guard's static set, as rule 7 wants. So **new** flows to direct destinations, DNS off the TUN, IPv6 beyond link scope and the overlay are refused at once. Live flows may not be: ALE authorizes a flow once, at its start. Until A0 shows live flows stop when their permit goes or a block arrives, only new flows are claimed (RR18; plan B otherwise). SCM restarts the agent in about 5 s; its start-time cleanup narrows to the down shape, clears recorded routes, then connects if the boot's record says so.
 
 **Restart loops** are **three starts within ten minutes**, for agent and tray alike. The agent counts starts in the boot's connect record and puts `restart_loop` in health. An agent dying in its first second never serves it, so while the pipe is absent the tray counts process-ID changes in SCM's status (query-status), shows the one-step recovery, and doesn't start a looping service (question 15). Nothing more goes to disk (S2).
 
@@ -155,7 +155,7 @@ The gates, codes and tray behaviour are [desktop-client.md](desktop-client.md#th
 
 **Pipe.** `\\.\pipe\ProtectedPrefix\Administrators\thinkpol\api`, the `-api-socket` default. The session manager's `ProtectedPrefix\Administrators` lets only administrators and SYSTEM create pipes beneath it, so no standard user can squat the name while the service is down; Tailscale's daemon pipe lives there [23][37]. go-winio [22] serves it: it always rejects remote clients, creates the first instance exclusively, and exposes the handle (`Fd()`).
 
-**Every instance carries the DACL.** go-winio v0.6.2 passes the descriptor only for the first handle (`pipe.go:344-371`), opened with `SYNCHRONIZE` alone so no client gets it (`:380-386`); client instances get nil (`:416-417`), on the comment that it "is only needed for the first pipe", true only if all instances share the pipe's one descriptor. A0 connects twice and checks the DACL and owner SYSTEM on the second connection; if either differs, our own listener passes the descriptor to every instance.
+**Every instance carries the DACL.** go-winio v0.6.2 passes the descriptor only for the first handle (`pipe.go:344-371`, `:416-417`). A0 checks the DACL and owner SYSTEM on a second connection; if either differs, our own listener passes it to every instance.
 
 **A failed Listen isn't fatal** (a name taken in the restart gap, under the prefix only by an administrator): the data plane keeps running, Listen retries with backoff, and health reports `local_api_unavailable` (log and diag; the tray sees `service_down`). A fatal Listen would make a squatted name a restart loop.
 
@@ -190,17 +190,17 @@ These sections say how; each moves to its package's `doc.go` in the ticket named
 
 ### Moves to `firewall/doc.go` at TP-W2b and TP-W2c
 
-Layers: C = `ALE_AUTH_CONNECT`, R = `ALE_AUTH_RECV_ACCEPT`, F = `IPFORWARD` (ICS, the mobile hotspot, a NAT switch's forwarding if WinNAT uses it: A0), each V4 and V6 unless marked. R matters because replies to accepted inbound connections never meet C. F is per packet and has no protocol or port conditions [43], so there a block drops rather than refuses, and F can't tell DNS from other traffic. `FWP_UINT8` weights; the highest match in a sublayer decides.
+Layers: C = `ALE_AUTH_CONNECT`, R = `ALE_AUTH_RECV_ACCEPT`, F = `IPFORWARD` (ICS, the hotspot, WinNAT if it uses it: A0), each V4 and V6 unless marked. R matters because replies to accepted inbound connections never meet C. F is per packet and has no protocol or port conditions [43], so there a block drops rather than refuses. `FWP_UINT8` weights; the highest match in a sublayer decides.
 
 | W | Kill switch | Layers | Session |
 |---|---|---|---|
 | 15 | permit loopback | C R | static |
 | 14 | permit the agent: app ID of the installed `thinkpol.exe` **and** user LocalSystem | C R | static |
-| 13 | permit the TUN (interface = its LUID) | C R F | dynamic |
-| 12 | **block** `Dnscache` (service-SID descriptor) to unicast and broadcast destinations, any port; only while it runs alone | C | static |
+| 13 | permit the TUN: by its LUID; on F two filters, leaving by it and arriving from it | C R F | dynamic |
+| 12 | **block** `Dnscache` (service-SID descriptor) to unicast and broadcast destinations (the two address types consecutive, so they OR), any port; only while it runs alone | C | static |
 | 11 | **block** DNS (UDP, TCP 53, 853) to anywhere | C | static |
-| 10 | permit `Allow` (entries; the LAN with allow-LAN); on F the entries only: to them, and from them toward the LAN | C R F | static |
-| 9 | permit `Direct`; on F to it, and from it toward the LAN | C R F | dynamic |
+| 10 | permit `Allow` (entries; the LAN with allow-LAN); on F the entries only: to them, and from them to the LAN ranges | C R F | static |
+| 9 | permit `Direct`; on F to it, and from it to the LAN ranges | C R F | dynamic |
 | 8 | permit DHCPv4: local 68 → remote 67, and inbound from 67 to local 68; DHCPv6: 546 → 547 at `ff02::1:2`, and inbound from 547 to local 546 | C R | static |
 | 7 | permit ND 135/136 to and from **anywhere**; RS 133 to `ff02::2`; RA 134 and redirect 137 from `fe80::/10`; MLD 130–132, 143 to multicast | C6 R6 | static |
 | 0 | **block** all | C R F | static |
@@ -208,17 +208,29 @@ Layers: C = `ALE_AUTH_CONNECT`, R = `ALE_AUTH_RECV_ACCEPT`, F = `IPFORWARD` (ICS
 | W | Guard | Layers | Session |
 |---|---|---|---|
 | 15, 14 | permit loopback; permit the agent (as above) | C R | static |
-| 13 | permit the TUN | C R F | dynamic |
+| 13 | permit the TUN (as above) | C R F | dynamic |
 | 12 | **block** `Dnscache` (as above) | C | static |
 | 11 | **block** DNS (53, 853) | C | static |
 | 10 | **block** the overlay's networks (its IPv4 range and ULA) | C R F | static |
-| 9 | permit `Exempt.Direct`'s IPv6 part; on F6 to it, and from it toward the LAN | C6 R6 F6 | dynamic |
+| 9 | permit `Exempt.Direct`'s IPv6 part; on F6 to it, and from it to the LAN ranges | C6 R6 F6 | dynamic |
 | 8 | permit link-scoped: ND as above, DHCPv6 as above, `fe80::/10`, `ff02::/16` | C6 R6 | static |
 | 0 | **block** IPv6 | C6 R6 F6 | static |
 
 - `Mark`, `NoDNS` and `Upstreams` (kill switch) and `Mark` and `Upstreams` (guard) are ignored: the agent's permit covers them. The app ID is the installed path, which updates keep and only Administrators can write.
-- **Forwarding (F).** Linux refuses forwarded DNS to the LAN before its allow lookup (`forwardRules`); F has no ports, so **F never permits the LAN**: forwarded packets pass to the TUN, the entries and `Direct`, and back from the entries and `Direct` only toward the LAN, where a forwarded client is (F has no flow direction; "from the set" alone would let a LAN client out direct). The rest is dropped: a hotspot or ICS client's DNS to the router, and with allow-LAN its other LAN traffic (RR91, question 18). The guard can't refuse forwarded DNS either. Whether forwarding meets F, before or after ICS's or WinNAT's translation, is A0's on a device that forwards (question 17); else the F path is unproven (RR82, RR91).
-- **Address sets** are one filter with consecutive remote-address conditions: conditions AND, but "consecutive conditions with the same fieldKey will be evaluated using the OR operator" [41] (noted since Windows 7), as wireguard-windows relies on [42]; A0 sends a packet to each of a two-address filter's addresses. If 10,000 don't fit one filter (A0 times it), the set is chunked into filters of at most N at the same weight and action. F's "from the set toward the LAN" is one filter: sources ORed, destinations ORed, the two ANDed.
+- **Forwarding (F)** mirrors `forwardRules` (`killswitch_linux.go:590-612` at `0743eef`), in order:
+
+  | Linux | F | Can't be said, and what changes |
+  |---|---|---|
+  | `oifname` TUN, `iifname` TUN (:594) | 13, two filters: egress `IP_FORWARD_INTERFACE` = its LUID; arrival `SOURCE_INTERFACE_INDEX` = its index [43][45] | nothing (one filter would AND them) |
+  | a bridge to itself (:596-598) | none | a Hyper-V switch is layer 2, never routed by the host (RR82) |
+  | `noDNS` (:599) | none | no ports on F: down, DNS to an entry on the LAN passes (RR91); `NoDNS` is empty while connected (`agent/killswitch.go:152-155`) |
+  | `Allow`, `Direct` by destination (:600) | 10 the entries; 9 `Direct` | `Allow`'s LAN is left out, its DNS unrefusable: no LAN address but the entries |
+  | by source, `ct direction reply` (:605-610) | 10, 9: from the set to the LAN ranges (`firewall.LAN`) | no direction: not replies only (below) |
+  | reject (:611) | 0 block | dropped, not refused |
+
+  So a routed client reaches the TUN and back, the entries and `Direct` (any port, DNS included, as Linux while connected), no other LAN address, allow-LAN or not. Keeping LAN entries off F while down would split the static entry permit, only to stop lookups reaching our own server; RR91 records it. A crash or the down shape drops forwarded `Direct` at once (F is per packet).
+- **Replies and NAT.** ICS and hotspot replies arrive addressed to the machine, so F can meet them only after translation, with the client's address; no Microsoft page says where ICS or WinNAT translate; A0 records it (plan B). The source filters are no reply match: without NAT (question 17c) they pass any packet from an entry or `Direct` (the domestic ranges under "all but domestic") to a LAN address, unsolicited too, carrying nothing of a client's out (RR91). The destination stays, as "from the set" alone would let out a client whose address is in it. Whether forwarding meets F at all is A0's (question 17; else RR82, RR91).
+- **Address sets** are one filter with consecutive remote-address conditions: conditions AND, but "consecutive conditions with the same fieldKey will be evaluated using the OR operator" [41] (noted since Windows 7), as wireguard-windows relies on [42]; A0 sends a packet to each of a two-address filter's addresses. If 10,000 don't fit one filter (A0 times it), the set is chunked into filters of at most N at the same weight and action. F's "from the set to the LAN ranges" is one filter: sources ORed, destinations ORed, the two ANDed.
 - ND and MLD can't be limited by hop limit at ALE (RR84); kernel-generated ND may never meet ALE, which A0 shows on native IPv6.
 - Interface-bound sockets (RR21) meet the same filters: ALE runs whatever routing chose.
 - `diag` lists other providers' `0xFFFF` sublayers and hard permits at our layers (RR81).
@@ -252,15 +264,15 @@ Proposed, not yet in RESIDUAL-RISKS.md. Numbered from RR80 to stay clear of the 
 | RR88 | No LAN or direct-set resolver (Windows) | connected (and in the down shape), a resolver on the LAN with allow-LAN (a Pi-hole, a local container) or among the direct destinations (a domestic one, one an app hard-codes) | nothing: lookups to it are refused; names it alone serves fail, and apps that hard-code it fail on Windows only | R4 | the DNS block outranks `Allow` and `Direct`; the guard can't tell a LAN resolver from the router's (question 16) | TP-W2c |
 | RR89 | The OS resolver's DoH | an uplink with DoH set in Settings, while `Dnscache` shares its svchost (low-memory machines) or queries while impersonating | the OS resolver's lookups to that resolver, encrypted, past the guard | R4 | confined by service SID where it runs alone (A0); `Problem` reports it otherwise; apps' DoH is RR3 | TP-W4 |
 | RR90 | A restart loop (Windows) | the agent dies at every start; SCM restarts it every 5 s without limit (its last action repeats [44]) | toggle on: no network but the entries; toggle off: IPv4 by address only, no names (the guard's static DNS block) | — | fails closed; one step out (restore network: disable, kill, rollback `-kill-switch-off`), after which the service stays disabled until re-enabled; the tray infers the loop from SCM | TP-W5, TP-W7 |
-| RR91 | Forwarded traffic (Windows) | the kill switch in place while the device forwards (hotspot, ICS, WinNAT) | nothing: forwarded packets are dropped, not refused, and never reach the LAN, allow-LAN or not | — | F has no ports, so "the LAN but DNS" can't be said; no LAN is the closed side (question 18); unproven without forwarding (question 17) | TP-W2b |
+| RR91 | Forwarded traffic (Windows) | the kill switch in place while the device forwards (hotspot, ICS, WinNAT) | down, a routed client's DNS to an entry on the LAN (Linux refuses it); packets from an entry or `Direct` to a LAN address, not only replies | R4 | F has no ports or direction; routed clients reach the TUN, the entries and `Direct`, no other LAN address (question 18); guard alone or switch off: IPv4 as on Linux; a crash or the down shape drops `Direct` at once (per packet); unproven without forwarding (question 17) | TP-W2b |
 
 The earlier draft's squatted-pipe row is gone: only administrators can create a pipe under the protected prefix, and a failed Listen isn't fatal.
 
-Existing rows: RR17's Windows half closes; RR44 drops Windows; RR18 gains "Windows: new direct flows refused at once (live ones per A0); names refused until restart or rollback"; RR62 gains "Windows: DNS to the LAN, and `Dnscache` to any unicast address, is refused in both shapes (RR88); forwarded clients reach no LAN (RR91)"; RR58 (the kill-switch repair window, the RR58 TP-217 keeps) gains Windows' window of about a second; RR59 points to RR80; RR3, RR7, RR15, RR21–RR23, RR43 and RR51 gain Windows wording.
+Existing rows: RR17's Windows half closes; RR44 drops Windows; RR18 gains "Windows: new direct flows refused at once (live ones per A0); names refused until restart or rollback"; RR62 gains "Windows: DNS to the LAN, and `Dnscache` to any unicast address, is refused in both shapes (RR88); forwarded clients reach no LAN address but the entries (RR91)"; RR58 (the kill-switch repair window, the RR58 TP-217 keeps) gains Windows' window of about a second; RR59 points to RR80; RR3, RR7, RR15, RR21–RR23, RR43 and RR51 gain Windows wording.
 
 ## Appendix: sources
 
-Checked 2026-11-15.
+Checked 2026-11-15 (43 and 45: 2026-11-16).
 
 1. Wintun: <https://git.zx2c4.com/wintun/about/>
 2. Wintun README: <https://git.zx2c4.com/wintun/tree/README.md>
@@ -306,3 +318,4 @@ Checked 2026-11-15.
 42. wireguard-windows `rules.go:479,999` at `704675c33561`: <https://github.com/WireGuard/wireguard-windows/blob/704675c33561/tunnel/firewall/rules.go>
 43. Microsoft, conditions at each layer: <https://learn.microsoft.com/en-us/windows/win32/fwp/filtering-conditions-available-at-each-filtering-layer>
 44. Microsoft, `SERVICE_FAILURE_ACTIONS`: <https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_failure_actionsw>
+45. Microsoft, filtering condition identifiers: <https://learn.microsoft.com/en-us/windows/win32/fwp/filtering-condition-identifiers->

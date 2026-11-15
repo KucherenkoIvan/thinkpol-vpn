@@ -75,7 +75,13 @@ WFP:
 - **same-key OR**: one filter with two consecutive remote-address conditions; a packet to each address passes (and a third address doesn't);
 - the kill switch's Close leaves the guard whole;
 - 1k and 10k-condition filters and the chunked fallback;
-- **forwarding**, if question 17 isn't a: with allow-LAN and the kill switch in the down shape, a forwarded UDP/53 packet to a LAN address is dropped, a LAN client's packet to an internet address is dropped, a forwarded flow to a direct destination and its replies pass; whether F sees addresses before or after ICS's or WinNAT's translation.
+- **forwarding**, if question 17 isn't a; kill switch in place, allow-LAN on, block-all beneath, down and "connected":
+  - **return path**: the egress and arrival filters, keyed on the uplink as the TUN stands in (B repeats it on the TUN), pass a routed client's flow and its reply; each alone passes only its half, so neither is ANDed away;
+  - a flow to an entry and to a direct destination, and their replies, pass; down, UDP/53 to an entry on the LAN passes (RR91);
+  - **no other LAN address**, the stand-in filters removed: the router (UDP/53, its web page), another LAN host and a client-side address are dropped; so is a client's packet to a non-direct internet address;
+  - **NAT**: a temporary F block on the client's address, then on the uplink's, shows which one a reply carries at F (ICS, hotspot, WinNAT);
+  - without NAT (17c): an unsolicited packet from a direct address to a routed client passes (RR91);
+  - the guard alone: forwarded IPv4 passes.
 
 BFE and SCM:
 - `net stop bfe` with a throwaway `sc.exe` service depending on BFE: BFE's state when the dependent gets its stop (expected RUNNING), what's removed, whether recovery restarts the dependent and starts BFE, how long BFE's RPC lags its RUNNING;
@@ -104,10 +110,12 @@ Nothing to probe: the preshutdown timeout (`sc.exe` sets it; nothing depends on 
 | re-adding a key in the deleting transaction | static filters alternate slots too |
 | a static replace keeps a flow we meant to keep | static filters alternate slots, so a flow is never unmatched |
 | a live flow stops when its permit goes or a block arrives | the blocks move to a per-packet layer (`OUTBOUND_TRANSPORT`, `INBOUND_TRANSPORT`) or the agent aborts the flows; the crash-posture sentence and RR18's Windows wording wait on it |
-| consecutive same-key conditions OR | one address range per filter, same weight and action; F's "from the set toward the LAN" becomes a filter per pair; A1 times them (question 14) |
+| consecutive same-key conditions OR | one address range per filter, same weight and action; F's "from the set to the LAN ranges" becomes a filter per pair; A1 times them (question 14) |
 | SCM repeats the last failure action | the action list grows, RR90 says restarts stop after it, and the tray starts the service (question 15) |
 | every pipe instance carries the DACL | our own listener passes the descriptor to every instance |
 | forwarding meets F as designed | RR91 and RR82 say "leaks" for forwarded clients; a follow-up for the F layers |
+| `SOURCE_INTERFACE_INDEX` matches traffic arriving from the TUN | `IP_LOCAL_INTERFACE`, then `IP_PHYSICAL_ARRIVAL_INTERFACE`; if none, routed clients can't use the tunnel and RR91 says so |
+| F sees the client's address on a reply | the reply filters name the address A0 saw (the uplinks', re-applied when they change) |
 | BFE RUNNING when a dependent gets its stop | nothing: every non-intended stop exits non-zero anyway |
 | SCM restarts the dependent after `net stop bfe` | the tray starts the service (question 15); without the tray, until a reboot (RR81) |
 | Fast Startup keeps the static objects | yes: "Shut down" is no way out (runbook); no: it is, and the wording says so |
@@ -146,7 +154,7 @@ Answer as "1a 2b …".
 **Added in round 3** (numbered on, so answers stay "17a 18a"):
 
 17. **Your machine: can it forward?** a) no; b) mobile hotspot or ICS; c) a second NIC routing for others; d) don't know. If a, the forwarding checks stay unproven and RR91 says so, as RR82 does.
-18. **Forwarded clients and the LAN** (kill switch in place, allow-LAN on). a) none reach the LAN (RR91); b) the LAN but the uplinks' resolvers by address (a client's DNS to another LAN resolver, a Pi-hole, then passes the down shape; the router's web page is unreachable). *Rec: a:* it is the closed side, and F can't refuse DNS by port.
+18. **Forwarded clients and the LAN** (kill switch in place, allow-LAN on). a) no LAN address but the entries (RR91); b) the LAN but the uplinks' resolvers by address (a client's DNS to another LAN resolver, a Pi-hole, then passes the down shape; the router's web page is unreachable). *Rec: a:* it is the closed side, and F can't refuse DNS by port.
 
 ### Review round 1
 
@@ -224,6 +232,17 @@ Grok 4.7's cross-family review of the note at `b235fbf` (2026-11-16), with the o
 | Grok Q | Owner-question views | Added where they differ (11, 16); the missing forwarding question is 17, and 18 decides forwarded LAN access |
 
 The note grew from 40.5 KB to about 44 KB, the forwarding and live-flow mechanism mostly in the section that moves to `firewall/doc.go`.
+
+### Review round 4
+
+Grok 4.7's delta check of round 3 (`970633d`, 2026-11-16). It accepted the same-key OR and the repeating restart; both settled.
+
+| # | Finding | Handling |
+|---|---|---|
+| Grok 1 | Tunnel replies unspecified: `IP_FORWARD_INTERFACE` is egress only, so one filter can't pass both ways; RR91, the F paragraph and security.md tell three stories; the reply filters assume F sees the client's address and aren't replies without NAT | **Changed design**: weight 13 on F is two filters, egress `IP_FORWARD_INTERFACE` and arrival `SOURCE_INTERFACE_INDEX` (sources 43, 45), as `forwardRules`' `oifname` and `iifname` (`killswitch_linux.go:594`); the note maps each Linux forward rule to F and says what can't be expressed. Down, DNS to an entry on the LAN passes (Linux refuses it): **residual risk** RR91, simpler than splitting the static entry permit. The source filters are recorded as what they are (any packet from the set to a LAN address); NAT has no Microsoft source, so **device check**: A0's return-path, NAT and no-other-LAN checks, plus two plan-B rows. RR91 and security.md now state one table |
+| Grok 2 | Weight 12's unicast and broadcast ANDed | **Fixed**: the two address-type values are consecutive conditions, so they OR |
+
+The note grew by under 1 KB (repetition cut in the change order, crash posture and pipe sections).
 
 ## Log
 - 2026-10-10 created in backlog
