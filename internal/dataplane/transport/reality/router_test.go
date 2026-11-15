@@ -313,6 +313,9 @@ func TestAHelloWithBytesAfterItIsSplicedAsAStranger(t *testing.T) {
 		t.Fatal(err)
 	}
 	stream := tp.captured()[0]
+	if hello := recordHeaderSize + (int(stream[3])<<8 | int(stream[4])); len(stream) <= hello {
+		t.Fatalf("captured %d bytes, the hello's %d: nothing after it", len(stream), hello)
+	}
 	if v := seen.verdict(t); v != transport.StreamRouted {
 		t.Fatalf("the dialer's verdict %d, want StreamRouted", v)
 	}
