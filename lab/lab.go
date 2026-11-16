@@ -33,6 +33,7 @@ type Lab struct {
 	gateways map[string][]netip.Addr // Docker's bridge addresses, by network
 	bridges  map[string]Bridge       // by network
 	release  func()                  // the host-wide lab slot
+	subnets  *reservation            // held until the lab is down or kept
 	// The last docker compose up's start and end.
 	upFrom, upTo time.Time
 }
@@ -140,6 +141,7 @@ func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool) {
 			err := bins.keep(l.Project)
 			if err == nil {
 				t.Logf("lab %s kept: docker compose -p %s exec <node> bash; make lab-down removes it", l.Project, l.Project)
+				l.releaseSubnets()
 				l.releaseSlot()
 				return
 			}
@@ -250,12 +252,11 @@ func (l *Lab) create(ctx context.Context, img image) error {
 		return err
 	}
 	for attempt := 1; ; attempt++ {
-		r, err := reserveSubnets(ctx, dir, l.Topology.Networks, pool, usedSubnets)
-		if err != nil {
+		l.releaseSubnets()
+		if l.subnets, err = reserveSubnets(ctx, dir, l.Topology.Networks, pool, usedSubnets); err != nil {
 			return err
 		}
-		err = l.composeUp(ctx, img, r, attempt)
-		r.release()
+		err := l.composeUp(ctx, img, l.subnets, attempt)
 		if err == nil {
 			return nil
 		}
@@ -293,7 +294,15 @@ func (l *Lab) Down(ctx context.Context) error {
 	if err := downProject(ctx, l.Project, l.root); err != nil {
 		return err
 	}
+	l.releaseSubnets()
 	return os.RemoveAll(l.stateDir)
+}
+
+// releaseSubnets gives up the lab's subnet reservation: its networks are
+// gone, or stay on the daemon, which every allocation reads.
+func (l *Lab) releaseSubnets() {
+	l.subnets.release()
+	l.subnets = nil
 }
 
 func (l *Lab) releaseSlot() {

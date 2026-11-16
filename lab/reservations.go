@@ -12,15 +12,17 @@ import (
 	"time"
 )
 
-// A subnet reservation covers the gap between choosing a lab's subnets and
-// Docker having its networks: the allocation lock is held only to read
-// what is used and record the choice, and the lab's containers start
-// outside it. A reservation is a file in reservationsDir, created under the
-// lock and locked by its owner's open file until the owner releases it
-// (once docker compose up has returned, when the networks either exist on
-// the daemon or never will), or dies. A file nobody locks has no owner and
-// is reclaimed under the allocation lock: by the next allocation, or by
-// labctl down.
+// A subnet reservation keeps a lab's subnets its own for as long as the lab
+// lives, so labs never need the allocation lock while they start: it is
+// held only to read the reservations and record a new one, and the lab's
+// containers start outside it. A reservation is a file in reservationsDir,
+// created under the lock and locked by its owner's open file until the
+// owner tears the lab down (or keeps it), or dies. A file nobody locks has
+// no owner and is reclaimed under the allocation lock: by the next
+// allocation, or by labctl down. What else is on the daemon (other
+// projects' networks, labs whose process has exited) is read before the
+// lock is taken; one of those taking a subnet in between is caught by
+// Docker's overlap check and retried.
 
 const reservationSuffix = ".subnets"
 
@@ -43,8 +45,8 @@ type reservation struct {
 	lockWait, lockFrom, lockTo time.Time
 }
 
-// release gives the subnets back. Whatever of them Docker has by now is
-// used on the daemon, which every allocation reads.
+// release gives the subnets back. Whatever of them Docker still has is used
+// on the daemon, which every allocation reads.
 func (r *reservation) release() {
 	if r == nil || r.file == nil {
 		return
@@ -56,8 +58,13 @@ func (r *reservation) release() {
 
 // reserveSubnets picks a subnet per network, avoiding every subnet used on
 // the daemon (used) and every live reservation, and reserves them. It holds
-// the host-wide allocation lock in lockDir only while it does.
+// the host-wide allocation lock in lockDir only to read the reservations
+// and record its own: used is read before.
 func reserveSubnets(ctx context.Context, lockDir string, networks []Network, pool netip.Prefix, used func(context.Context) ([]netip.Prefix, error)) (*reservation, error) {
+	onDaemon, err := used(ctx)
+	if err != nil {
+		return nil, err
+	}
 	r := &reservation{lockWait: time.Now()}
 	unlock, err := lockAllocation(ctx, lockDir)
 	if err != nil {
@@ -73,10 +80,6 @@ func reserveSubnets(ctx context.Context, lockDir string, networks []Network, poo
 		return nil, fmt.Errorf("lab: %w", err)
 	}
 	reserved, err := liveReservations(dir)
-	if err != nil {
-		return nil, err
-	}
-	onDaemon, err := used(ctx)
 	if err != nil {
 		return nil, err
 	}
