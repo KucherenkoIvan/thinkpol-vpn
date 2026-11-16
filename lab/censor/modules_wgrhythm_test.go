@@ -1443,10 +1443,16 @@ func TestWGRhythmRandomExchanges(t *testing.T) {
 	}{{"0.2-5ms", [2]time.Duration{200 * time.Microsecond, 5 * ms}}, {"20-80ms", [2]time.Duration{20 * ms, 80 * ms}}} {
 		for _, shape := range [][2]int{{1, 1}, {2, 3}, {3, 6}} {
 			for _, rate := range []float64{1.0 / 60, 1.0 / 10, 1, 10, 50} {
+				// Under a request a second a run is cheap: more seeds
+				// where the chains of chance come from.
+				seeds := uint64(20)
+				if rate < 1 {
+					seeds = 200
+				}
 				key := fmt.Sprintf("%s %d:%d %.3g/s", rtt.name, shape[0], shape[1], rate)
 				flagged := 0
 				var why []string
-				for seed := range uint64(20) {
+				for seed := range seeds {
 					r := newWGRun(t, `{}`, 1400)
 					if a, blocked := r.carryRandomExchanges(rand.New(rand.NewPCG(seed, 223)), rate, 360*time.Second, shape[0], shape[1], rtt.rtt); blocked {
 						flagged++
@@ -1454,9 +1460,9 @@ func TestWGRhythmRandomExchanges(t *testing.T) {
 					}
 				}
 				if want := wgRandomFlags[key]; flagged != want {
-					t.Errorf("%s: %d of 20 flagged, pinned %d: %s", key, flagged, want, strings.Join(why, "; "))
+					t.Errorf("%s: %d of %d flagged, pinned %d: %s", key, flagged, seeds, want, strings.Join(why, "; "))
 				}
-				t.Logf("%s: %d of 20 flagged %s", key, flagged, strings.Join(why, "; "))
+				t.Logf("%s: %d of %d flagged %s", key, flagged, seeds, strings.Join(why, "; "))
 			}
 		}
 	}
