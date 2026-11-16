@@ -241,36 +241,55 @@ func TestResolvConfARewriteOfTheSameContentKeepsTheSettleGoing(t *testing.T) {
 // A writer that never goes quiet (another program fighting over the
 // file) is taken back at the settle's cap, not when it stops. The writer
 // writes in place, so only the node's take-back, a rename, gives the
-// file it opens another inode: the take-back came after the open before.
-// (Reading the file for the managed one instead could miss it: the
-// writer's next open truncates the node's file before it is read.)
+// file it opens another inode. (Reading the file for the managed one
+// instead could miss it: the writer's next open truncates the node's
+// file before it is read.)
 //
-// The bound is on the time the test ran, not the time that passed: a
-// stall of the whole process (a loaded machine) holds the watch's timers
-// as well as the writer, and the take-back then comes at the end of the
-// stall, past any bound in wall time. The writer measures the stalls as
-// how late it opens the file after each sleep.
+// The bound is on when the take-back began writing, not on the rename:
+// the new file's sync before it takes as long as the disk does, hundreds
+// of milliseconds on a loaded one. And it is on the time the test ran,
+// not the time that passed: a stall of the whole process (a loaded
+// machine) holds the watch's timers as well as the writer, and the
+// take-back then begins at the end of the stall, past any bound in wall
+// time. The writer measures the stalls as how late it opens the file
+// after each sleep.
 func TestResolvConfAWriterThatNeverSettlesIsTakenBackAtTheCap(t *testing.T) {
 	timing := resolvConfTiming{check: 20 * time.Millisecond, settle: 300 * time.Millisecond, settleMax: time.Second}
 	const period = 100 * time.Millisecond
-	path, _, _ := startInPlace(t, timing)
+	path, r, _ := startInPlace(t, timing)
+	var mu sync.Mutex
+	var began time.Time // the first take-back's write
+	r.mu.Lock()
+	rewrite := r.rewrite
+	r.rewrite = func(path string, f resolvConfFile, content []byte, capped bool) error {
+		if !bytes.Equal(content, f.content) {
+			mu.Lock()
+			if began.IsZero() {
+				began = time.Now()
+			}
+			mu.Unlock()
+		}
+		return rewrite(path, f, content, capped)
+	}
+	r.mu.Unlock()
 	start := time.Now()
 	var prev fs.FileInfo
-	var prevOpened time.Time
 	due := start
-	var stalled time.Duration // up to prevOpened
+	var stalled time.Duration
 	for i := 0; time.Since(start) < 3*time.Second; i++ {
 		opened := time.Now()
-		late := max(0, opened.Sub(due))
+		stalled += max(0, opened.Sub(due))
 		fi := overwriteInPlaceStat(t, path, fmt.Sprintf("nameserver 192.0.2.%d\n", 10+i%200))
 		if prev != nil && !os.SameFile(prev, fi) {
-			if after := prevOpened.Sub(start) - stalled; after > timing.settleMax+timing.settle {
-				t.Errorf("taken back after %v running (%v stalled), want within %v", after, stalled, timing.settleMax+timing.settle)
+			mu.Lock()
+			after := began.Sub(start) - stalled
+			mu.Unlock()
+			if after > timing.settleMax+timing.settle {
+				t.Errorf("the take-back began after %v running (%v stalled), want within %v", after, stalled, timing.settleMax+timing.settle)
 			}
 			return
 		}
-		stalled += late
-		prev, prevOpened = fi, opened
+		prev = fi
 		due = time.Now().Add(period)
 		time.Sleep(period)
 	}
