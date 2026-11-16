@@ -994,10 +994,12 @@ func TestResolvConfATakeBackAtTheCapWritesOverAWriteSinceItsRead(t *testing.T) {
 // The same with a writer that renames a new file in within every
 // take-back: each one is a whole write, taken at once, whose take-back
 // finds a newer rename. Past the settle's cap the take-back writes over
-// it all the same.
+// it all the same. No poll: a poll's pass that reads before the rename's
+// event comes judges the file in place, which a pass on that event
+// doesn't.
 func TestResolvConfATakeBackAtTheCapWritesOverAFileRenamedInSinceItsRead(t *testing.T) {
 	hasChangeEvents(t)
-	path, r, _ := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: 50 * time.Millisecond, settleMax: 300 * time.Millisecond})
+	path, r, _ := startInPlace(t, resolvConfTiming{check: time.Hour, settle: 50 * time.Millisecond, settleMax: 300 * time.Millisecond})
 	var writes atomic.Int32
 	r.mu.Lock()
 	rewrite := r.rewrite
@@ -1011,6 +1013,7 @@ func TestResolvConfATakeBackAtTheCapWritesOverAFileRenamedInSinceItsRead(t *test
 			if err := os.Rename(tmp, path); err != nil {
 				return err
 			}
+			time.Sleep(10 * time.Millisecond) // the take-back's new file synced meanwhile
 		}
 		return rewrite(path, f, content, capped)
 	}
