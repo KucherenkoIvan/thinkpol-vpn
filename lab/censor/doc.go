@@ -171,7 +171,11 @@
 // wireguard-go defines them, REKEY_AFTER_TIME (120 s), REJECT_AFTER_TIME
 // (180 s), REKEY_TIMEOUT (5 s) and KEEPALIVE_TIMEOUT (10 s), and the
 // persistent keepalive interval wg(8) suggests (25 s), never what a
-// transport was measured to do. Two signals each show the rhythm:
+// transport was measured to do. Three numbers are the module's own
+// choices, no WireGuard timer: the 2 s an answer has, the 1 s an idle
+// run's intervals may differ by, and the three occurrences (rekeys, or
+// idle keepalives once the connection has carried an exchange) it needs.
+// Two signals each show the rhythm:
 //
 //   - rekey: an exchange, a record one way answered within 2 s by one the
 //     other way, that stands out: each of its two sizes new to its
@@ -189,7 +193,13 @@
 //     REJECT_AFTER_TIME - KEEPALIVE_TIMEOUT - REKEY_TIMEOUT (165 s) when it
 //     only receives, so with a 25 s keepalive the gaps run from 120 s to
 //     about 190 s, and three rekeys can take up to 7 minutes of a
-//     connection, up to about 10 minutes when batched (below).
+//     connection, up to about 10 minutes when batched (below). The 30 s
+//     of slack assume wg(8)'s persistent keepalive, which thinkpol doesn't
+//     run (internal/dataplane/wg): its rekey comes with the first packet
+//     of traffic past the deadline, within seconds under steady use, but a
+//     tunnel that carries nothing from REKEY_AFTER_TIME until the window
+//     has passed (about 90 s) rekeys too late, its chain starts over, and
+//     a tunnel used in bursts that far apart is missed by this signal.
 //   - keepalive: an idle run, records of one size each sent after
 //     REKEY_TIMEOUT with no record either way (under KEEPALIVE_TIMEOUT, so
 //     a passive keepalive follows quiet) and not answered within 2 s, at
@@ -344,13 +354,21 @@
 // probed address to a reference address starting during each probe, or
 // within half a second after it, every probe of at least two; the servers
 // of one address are probed one at a time so as not to blame one for
-// another's connections, but a connection the entry's real clients cause
-// during a probe still counts for it. An entry whose connection leaves
-// from another address than the one probed (an IPv4 uplink for an IPv6
-// probe) is matched only when the hosts setting names both addresses as
-// one host, as a censor that knows they are one machine would (the
-// matrix does, for server-1); the servers of one host are then probed one
-// at a time.
+// another's connections. A connection the entry's real clients cause
+// during a probe would still count for it, so after each probe the prober
+// pauses as long as the probe took and counts the entry's connections to
+// the reference in the pause, the baseline: when any came, the tell is
+// unattributable ("upstream tell: unattributable (N dials between
+// probes; ...)"), reported and never flagged, whatever upstreamTell says.
+// A REALITY entry dials its target for every connection of its own
+// clients too, so on an entry its clients keep connecting to the tell is
+// unattributable (in the matrix, device-a opened a short connection to
+// server-1's reality port about every 5 s while its link was up). An entry whose
+// connection leaves from another address than the one probed (an IPv4
+// uplink for an IPv6 probe) is matched only when the hosts setting names
+// both addresses as one host (an entry names at least two), as a censor
+// that knows they are one machine would (the matrix does, for server-1);
+// the servers of one host are then probed one at a time.
 //
 // server-hello compares a real connection's server hello with the site's:
 // on a TCP connection whose ClientHello names a listed site (the sites

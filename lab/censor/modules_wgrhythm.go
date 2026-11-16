@@ -18,7 +18,10 @@ func init() {
 // WireGuard's timers, as wireguard-go defines them (device/constants.go,
 // after the protocol paper's REKEY_AFTER_TIME, REJECT_AFTER_TIME,
 // REKEY_TIMEOUT and KEEPALIVE_TIMEOUT), and the persistent keepalive
-// interval wg(8) suggests. Every threshold below derives from them.
+// interval wg(8) suggests, which thinkpol doesn't set
+// (internal/dataplane/wg). The thresholds below derive from them, but for
+// wgPairWindow, wgSteadyJitter, wgRekeys and the keepalive count: those
+// are the module's choices, no WireGuard timer.
 const (
 	wgRekeyAfterTime      = 120 * time.Second
 	wgRejectAfterTime     = 180 * time.Second
@@ -29,9 +32,9 @@ const (
 
 const (
 	// wgPairWindow is how soon after one record the record the other way
-	// must end to answer it: a round trip and the peer's work, well within
-	// REKEY_TIMEOUT, after which WireGuard stops waiting for an answer to
-	// its initiation and sends another.
+	// must end to answer it: a choice, a round trip and the peer's work
+	// with room to spare, kept under REKEY_TIMEOUT, after which WireGuard
+	// stops waiting for an answer to its initiation and sends another.
 	wgPairWindow = 2 * time.Second
 	// wgQuiet is how long the connection must have carried no record, either
 	// way, before a record counts as sent while idle: REKEY_TIMEOUT, under
@@ -39,17 +42,25 @@ const (
 	// packet received) and under any persistent keepalive interval.
 	wgQuiet = wgRekeyTimeout
 	// wgSteadyJitter is how far apart two intervals of an idle run may be
-	// and still be one steady interval: WireGuard's keepalive timers have
-	// no jitter (only its handshake retries do, under a third of a second).
+	// and still be one steady interval: a choice. WireGuard's keepalive
+	// timers have no jitter (only its handshake retries do, under a third
+	// of a second); the second is room for scheduling and the transport.
 	wgSteadyJitter = time.Second
 	// wgRekeys is how many times an exchange must recur, each a rekey
-	// period after the one before, to be WireGuard's rekey.
+	// period after the one before, to be WireGuard's rekey: a choice,
+	// against chance recurrences (see the measured false positives in
+	// doc.go), which costs up to 7 minutes of a connection.
 	wgRekeys = 3
 	// wgRekeySlack widens the rekey window past REJECT_AFTER_TIME (for the
 	// default period; scaled with a shorter one): WireGuard rekeys on the
-	// first packet after its deadline, so the gap grows by up to a
-	// persistent keepalive interval, and by a retried initiation's
-	// REKEY_TIMEOUT.
+	// first packet after its deadline, so with wg(8)'s persistent
+	// keepalive the gap grows by up to that interval, and by a retried
+	// initiation's REKEY_TIMEOUT. thinkpol runs no persistent keepalive:
+	// its next packet past the deadline comes only with traffic, so a
+	// tunnel that carries nothing from REKEY_AFTER_TIME until the window
+	// has passed (about 90 s at the default period) rekeys too late, its
+	// chain starts over, and a tunnel used in bursts that far apart is
+	// missed by the rekey signal.
 	wgRekeySlack = wgPersistentKeepalive + wgRekeyTimeout
 )
 
@@ -78,8 +89,8 @@ const (
 //   - keepalive: an idle run, records of one size each sent after wgQuiet
 //     with no record either way, none answered by a record the other way
 //     within wgPairWindow, at one steady interval: at least `keepalives`
-//     (3) of them once the connection has carried an exchange, two more
-//     without. A record counts once its wgPairWindow has passed, judged on
+//     (3 by default, a choice like wgRekeys) of them once the connection
+//     has carried an exchange, two more without. A record counts once its wgPairWindow has passed, judged on
 //     the connection's next packet either way.
 //
 // Flow shape beyond that (size distributions, bursts) is not its business
@@ -93,8 +104,10 @@ type wgRhythm struct {
 	rekey      time.Duration
 	keepalives int
 	conns      map[FlowKey]*wgConn
-	// trace, when set, gets a line for every record the module judges.
-	trace io.Writer
+	// trace, when set, gets a line for every record the module judges:
+	// a synchronous write in the packet path, a few hundred bytes a
+	// record, fine at the lab's rates.
+	trace io.WriteCloser
 }
 
 // wgConn is one connection's state, both directions, keyed by the flow
@@ -229,6 +242,15 @@ func newWGRhythm(settings json.RawMessage) (Passive, error) {
 		m.trace = f
 	}
 	return m, nil
+}
+
+// closeTrace closes the trace file, if any. censord never calls it (the
+// file closes with the process); tests do.
+func (m *wgRhythm) closeTrace() error {
+	if m.trace == nil {
+		return nil
+	}
+	return m.trace.Close()
 }
 
 // WGTraceLine is one line of wireguard-rhythm's trace: a record the module

@@ -1099,9 +1099,19 @@ func TestWGRhythmHiddenAmongSteadyRecords(t *testing.T) {
 // response with how many times in a row its exchange had stood out.
 func TestWGRhythmTrace(t *testing.T) {
 	path := t.TempDir() + "/rhythm.jsonl"
-	r := newWGUDPRun(t, `{"trace": "`+path+`"}`)
+	m, err := newWGRhythm(json.RawMessage(`{"trace": "` + path + `"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rhythm := m.(*wgRhythm)
+	r := &wgRun{clock: time.Unix(1_700_000_000, 0), clientSeq: 1001, serverSeq: 5001, udp: true}
+	r.eng = NewEngine([]Passive{rhythm}, nil, &r.log)
+	r.eng.now = func() time.Time { return r.clock }
 	recs := eachInRecord(wgTimeline(false), withOverhead(wgUDPOverhead))
 	r.carry(recs)
+	if err := rhythm.closeTrace(); err != nil {
+		t.Fatal(err)
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

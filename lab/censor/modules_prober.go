@@ -70,12 +70,16 @@ func init() {
 // starting during a probe, or within upstreamGrace after it, counts for
 // that probe; every probe counted, at least two, is the tell. The servers
 // of one address are probed one at a time, so another service of the
-// entry's that connects to the site isn't counted for this one's probes;
-// a connection to the site an entry's real clients cause during a probe
-// still is. Addresses the hosts setting names as one host count as one
-// address for both: an entry probed over IPv6 that dials an IPv4-only site
-// from its IPv4 address shows the tell, as it does to a censor that knows
-// both addresses are one machine. With upstreamTell "report" the tell is
+// entry's that connects to the site isn't counted for this one's probes.
+// A connection to the site an entry's real clients cause during a probe
+// would still be, so after each probe the prober pauses as long as the
+// probe took and counts the host's connections to the site in the pause:
+// if any came while nothing probed it, the tell is unattributable,
+// reported as such and never flagged. Addresses the hosts setting names as
+// one host (at least two addresses each) count as one address for all of
+// it: an entry probed over IPv6 that dials an IPv4-only site from its IPv4
+// address shows the tell, as it does to a censor that knows both
+// addresses are one machine. With upstreamTell "report" the tell is
 // reported in the verdict and doesn't flag the server.
 type prober struct {
 	refName string
@@ -124,7 +128,8 @@ type upstreamConn struct {
 var randomProbeSizes = []int{3, 16, 49, 221, 1000}
 
 // upstreamGrace is how long after a probe ends an upstream connection
-// still counts for it, and how long the prober waits between probes.
+// still counts for it. The prober then pauses as long as the probe took,
+// grace included, before the next.
 const upstreamGrace = 500 * time.Millisecond
 
 // upstreamKeep is how long the prober remembers a connection to the
@@ -165,6 +170,9 @@ func newProber(settings json.RawMessage) (Passive, error) {
 	m := &prober{refName: s.Reference.Name, suspects: s.Suspects, servers: map[netip.AddrPort]*probedServer{},
 		probing: map[netip.Addr]*sync.Mutex{}, hostOf: map[netip.Addr]netip.Addr{}, grace: upstreamGrace}
 	for _, host := range s.Hosts {
+		if len(host) < 2 {
+			return nil, fmt.Errorf("host %q: want at least two addresses, one host's", host)
+		}
 		for _, a := range host {
 			addr, err := netip.ParseAddr(a)
 			if err != nil {
@@ -314,17 +322,18 @@ func (m *prober) host(addr netip.Addr) netip.Addr {
 	return addr
 }
 
-// sawUpstream reports a connection from src's host to the reference
+// sawUpstream counts the connections from src's host to the reference
 // starting within [from, to].
-func (m *prober) sawUpstream(src netip.Addr, from, to time.Time) bool {
+func (m *prober) sawUpstream(src netip.Addr, from, to time.Time) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	n := 0
 	for _, u := range m.upstream {
 		if m.host(u.src) == m.host(src) && !u.at.Before(from) && !u.at.After(to) {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
 }
 
 // suspect probes the flow's server, once per server: a flow of a server
@@ -405,13 +414,18 @@ func (m *prober) examine(ctx context.Context, server netip.AddrPort, first []byt
 		probes = append(probes, probe{fmt.Sprintf("random %d", len(b)), b})
 	}
 	var diffs, report []string
-	upstream := 0
+	upstream, between := 0, 0
+	// counted credits the probe that started at from with a connection to
+	// the reference, then waits as long again and counts the connections
+	// starting in that pause, which no probe caused: the baseline.
 	counted := func(from time.Time) {
-		end := time.Now()
+		end := time.Now().Add(m.grace)
 		sleep(ctx, m.grace)
-		if m.sawUpstream(server.Addr(), from, end.Add(m.grace)) {
+		if m.sawUpstream(server.Addr(), from, end) > 0 {
 			upstream++
 		}
+		sleep(ctx, end.Sub(from))
+		between += m.sawUpstream(server.Addr(), end.Add(time.Nanosecond), time.Now())
 	}
 	for _, p := range probes {
 		start := time.Now()
@@ -441,7 +455,7 @@ func (m *prober) examine(ctx context.Context, server netip.AddrPort, first []byt
 	} else {
 		report = append(report, "TLS: not compared, "+notCompared(name, err, len(first)))
 	}
-	if r, d := m.upstreamTell(server.Addr(), upstream, total); d != "" {
+	if r, d := m.upstreamTell(server.Addr(), upstream, between, total); d != "" {
 		diffs = append(diffs, d)
 	} else {
 		report = append(report, r)
@@ -467,9 +481,9 @@ func notCompared(name string, err error, kept int) string {
 }
 
 // upstreamTell judges the connections from server to the reference during
-// upstream of total probes: a line for the report, or a difference when
-// the tell flags.
-func (m *prober) upstreamTell(server netip.Addr, upstream, total int) (report, diff string) {
+// upstream of total probes, with between more in the pauses between them:
+// a line for the report, or a difference when the tell flags.
+func (m *prober) upstreamTell(server netip.Addr, upstream, between, total int) (report, diff string) {
 	from := server.String()
 	if _, ok := m.hostOf[server]; ok {
 		from += " or another address of its host"
@@ -478,6 +492,10 @@ func (m *prober) upstreamTell(server netip.Addr, upstream, total int) (report, d
 	switch {
 	case total < 2 || upstream < total:
 		return fmt.Sprintf("connections to the reference during %d of %d probes", upstream, total), ""
+	case between > 0:
+		// The host connects to the reference without being probed: its
+		// connections during the probes may be its own.
+		return fmt.Sprintf("upstream tell: unattributable (%d dials between probes; a connection from %s to the reference during %d of %d probes)", between, from, upstream, total), ""
 	case m.reportTell:
 		return tell + ", reported, not flagged", ""
 	}

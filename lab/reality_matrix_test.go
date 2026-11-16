@@ -9,7 +9,9 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -100,18 +102,64 @@ func holdReality(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle
 // probe. In use: a ping every 2 s, so WireGuard rekeys about every 2
 // minutes as it does under any steady use. Idle: one ping, so WireGuard
 // has a session, then nothing from either end but what the tunnel sends
-// on its own.
+// on its own. A hold whose pings didn't cross held no tunnel, and its
+// cell would mean nothing: it fails the test.
 func holdTunnel(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), d+time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), d+time.Minute)
 	defer cancel()
 	dev := l.Node(lab.DeviceA)
-	// The verdict is the probe's: lost pings during the hold aren't.
 	if idle {
-		_, _ = dev.Exec(ctx, "ping", "-c", "1", "-W", "5", to.v4.String())
-		time.Sleep(d)
+		res, err := dev.Exec(ctx, "ping", "-c", "1", "-W", "5", to.v4.String())
+		if sent, got, perr := pingReceived(res.Stdout); perr != nil || sent != 1 || got != 1 {
+			t.Fatalf("the idle hold's ping didn't cross (%d of %d, %v): %v", got, sent, perr, err)
+		}
+		select {
+		case <-time.After(d):
+		case <-ctx.Done():
+			t.Fatalf("the idle hold was cut short: %v", ctx.Err())
+		}
 		return
 	}
-	_, _ = dev.Exec(ctx, "ping", "-q", "-i", "2", "-w", fmt.Sprint(int(d/time.Second)), to.v4.String())
+	res, err := dev.Exec(ctx, "ping", "-q", "-i", "2", "-w", fmt.Sprint(int(d/time.Second)), to.v4.String())
+	sent, got, perr := pingReceived(res.Stdout)
+	if perr != nil || sent == 0 || got*10 < sent*9 {
+		t.Fatalf("the hold's pings didn't cross: %d of %d came back, want 90%% (%v): %v", got, sent, perr, err)
+	}
+	t.Logf("the hold's pings: %d of %d came back", got, sent)
+}
+
+// pingReceived reads how many pings were sent and how many came back from
+// iputils ping's summary line.
+func pingReceived(out string) (sent, received int, err error) {
+	m := pingSummary.FindStringSubmatch(out)
+	if m == nil {
+		return 0, 0, fmt.Errorf("no ping summary in %q", out)
+	}
+	sent, _ = strconv.Atoi(m[1])
+	received, _ = strconv.Atoi(m[2])
+	return sent, received, nil
+}
+
+var pingSummary = regexp.MustCompile(`(?m)^(\d+) packets transmitted, (\d+) (?:packets )?received`)
+
+// TestPingReceived: the hold reads ping's summary, from either iputils or
+// busybox, and a missing one is an error.
+func TestPingReceived(t *testing.T) {
+	for _, c := range []struct {
+		out            string
+		sent, received int
+		ok             bool
+	}{
+		{"PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.\n\n--- 10.0.0.1 ping statistics ---\n225 packets transmitted, 224 received, 0.444444% packet loss, time 448012ms\nrtt min/avg/max/mdev = 0.1/0.2/0.3/0.1 ms\n", 225, 224, true},
+		{"--- 10.0.0.1 ping statistics ---\n1 packets transmitted, 0 received, 100% packet loss, time 0ms\n", 1, 0, true},
+		{"--- 10.0.0.1 ping statistics ---\n1 packets transmitted, 1 packets received, 0% packet loss\n", 1, 1, true},
+		{"ping: connect: Network is unreachable\n", 0, 0, false},
+	} {
+		sent, received, err := pingReceived(c.out)
+		if sent != c.sent || received != c.received || (err == nil) != c.ok {
+			t.Errorf("%q: %d of %d, %v; want %d of %d, ok %v", c.out, received, sent, err, c.received, c.sent, c.ok)
+		}
+	}
 }
 
 // blockReason is the reason of module's first drop or reset in the

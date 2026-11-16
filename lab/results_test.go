@@ -106,6 +106,9 @@ func TestCensorMatrix(t *testing.T) {
 			} else if cell.result == "pass" {
 				cell.detail = strings.TrimPrefix(fmt.Sprintf("%s; %s %v first", cell.detail, cc.heldHow(), cc.hold), "; ")
 			}
+			if b := cc.blindSpots[tr.name]; b != "" && cell.result == "pass" {
+				cell.detail += "; blind: " + b
+			}
 			if cc.trace != "" {
 				t.Logf("%s's trace of the connection %s for %v:\n%s", cc.watch, cc.heldHow(), cc.hold, c.traceSummary(t, cc.trace, tr.name+" - "+cc.name))
 			}
@@ -227,12 +230,15 @@ func checkMatrix(cases []censorCase, rows []transport) error {
 		if len(cc.verdictSays) > 0 && cc.report == "" {
 			return fmt.Errorf("censor case %q checks verdicts but names no module to report", cc.name)
 		}
-		for _, tr := range rows {
-			// udp shows WireGuard's timing untouched: a held row's pass
-			// means something only if the same hold catches udp.
-			if cc.hold > 0 && tr.name == rowUDP && (tr.hold == nil || cc.expect[rowUDP] != "fail") {
-				return fmt.Errorf("censor case %q holds tunnels, but %s, the control, isn't held and expected to fail", cc.name, rowUDP)
+		// udp shows WireGuard's timing untouched: a held row's pass means
+		// something only if the same hold catches udp.
+		if cc.hold > 0 {
+			i := slices.IndexFunc(rows, func(tr transport) bool { return tr.name == rowUDP })
+			if i < 0 || rows[i].hold == nil || cc.expect[rowUDP] != "fail" {
+				return fmt.Errorf("censor case %q holds tunnels, but %s, the control, isn't a row held and expected to fail", cc.name, rowUDP)
 			}
+		}
+		for _, tr := range rows {
 			if _, tuned := tr.moduleSettings[cc.report]; tuned && cc.report != "" && cc.verdictSays[tr.name] == "" {
 				return fmt.Errorf("%s sets %s's settings, but censor case %q doesn't say what its verdict must say (verdictSays)", tr.name, cc.report, cc.name)
 			}
@@ -261,8 +267,9 @@ func isReferenceOrControl(row string) bool {
 // TestCheckMatrix: the matrix as written passes its own checks; a TCP
 // gate row missing from the prober case's verdictSays, a TLS gate row
 // missing from the server-hello case's, a row tuning a report module
-// without a verdictSays entry, and a row tuning a module that doesn't
-// exist each fail the run.
+// without a verdictSays entry, a row tuning a module that doesn't exist,
+// and a held case without udp held and expected to fail (the control)
+// each fail the run.
 func TestCheckMatrix(t *testing.T) {
 	if err := checkMatrix(censorCases, transports); err != nil {
 		t.Fatalf("the matrix: %v", err)
@@ -307,6 +314,7 @@ func TestCheckMatrix(t *testing.T) {
 		{"control held, expected to fail", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowUDP, udp: true, hold: hold}}, false},
 		{"control expected to pass", held(nil), []transport{{name: rowUDP, udp: true, hold: hold}}, true},
 		{"control not held", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowUDP, udp: true}}, true},
+		{"no control row", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowReality, hold: hold}}, true},
 	} {
 		if err := checkMatrix(c.cases, c.rows); (err != nil) != c.wantErr {
 			t.Errorf("%s: %v, want an error %v", c.name, err, c.wantErr)
@@ -389,6 +397,10 @@ type censorCase struct {
 	idle  bool
 	watch string
 	trace string
+	// blindSpots holds the rows whose pass the case's module can't tell
+	// from a blind spot of its own, with what it is: a passing cell's
+	// detail says so, never a bare pass.
+	blindSpots map[string]string
 	// upstream runs the cell in lab.Upstream: the camouflage site behind
 	// the router.
 	upstream bool
@@ -553,12 +565,14 @@ var censorCases = []censorCase{
 	// show: three rekeys (up to 7 minutes, up to about 10 minutes when
 	// batched), or three idle keepalives. So reality, which doesn't batch,
 	// and udp, the control (WireGuard's timing untouched), hold their
-	// tunnels for 7.5 minutes first, in use (a ping every 2 s) and idle
-	// (one ping, then nothing), with the module's default settings; udp
-	// must be caught both ways for reality's pass to mean anything. The
-	// other rows aren't held, and pass.
+	// tunnels for 7.5 minutes first, in use (a ping every 2 s), with the
+	// module's default settings; udp must be caught for reality's pass to
+	// mean anything. The other rows aren't held, and pass. The idle case,
+	// rhythmCase("wireguard-rhythm (idle)", true), is out of the matrix
+	// until the owner rules on the idle keepalive promise: an idle
+	// thinkpol tunnel sends no WireGuard rhythm, so udp can't be caught
+	// there (TP-223's Notes).
 	rhythmCase("wireguard-rhythm", false),
-	rhythmCase("wireguard-rhythm (idle)", true),
 	// M2 gate checks (docs/design/milestones.md). Wu et al.'s exemptions
 	// on each connection's first data, UDP's first datagram too: thinkpol's
 	// udp sends random bytes first (exempt by chance about once in 400
@@ -580,14 +594,15 @@ var censorCases = []censorCase{
 	// answers, and shows the upstream tell. So does reality, which splices
 	// every probe to its target; its tell is reported, not flagged (owner,
 	// 2026-11-09: REALITY's design can't avoid it), and its verdict must
-	// show the tell on every probe (n of n). reality's target is one IPv4
-	// address, so a link over IPv6 dials it from server-1's IPv4 address:
-	// the prober is told server-1's two addresses are one host, as a
-	// censor that knows them would (RR31), so the tell shows over either
-	// family.
+	// judge the tell: shown on every probe (n of n), or unattributable
+	// when server-1 also dialed the site between probes (device-a's own
+	// connections make it dial). reality's target is one IPv4 address, so
+	// a link over IPv6 dials it from server-1's IPv4 address: the prober
+	// is told server-1's two addresses are one host, as a censor that
+	// knows them would (RR31), so the tell shows over either family.
 	{name: "active prober", expect: map[string]string{rowRandomTCP: "fail", rowOpenVPNTCP: "fail", rowRelayTCP: "fail"}, blocker: "prober",
 		upstream: true, settle: true, report: "prober",
-		verdictSays: map[string]string{rowHTTPS: "TLS: the server", rowRelayTCP: "upstream tell: a connection", rowReality: "upstream tell: a connection"},
+		verdictSays: map[string]string{rowHTTPS: "TLS: the server", rowRelayTCP: "upstream tell: a connection", rowReality: "upstream tell: "},
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			camouflage := lab.StartCamouflage(t, l)
 			return []censor.ModuleConfig{
@@ -615,11 +630,17 @@ var censorCases = []censorCase{
 // router.
 const rhythmTrace = "/run/censor/rhythm.jsonl"
 
+// realityRhythmBlindSpot is why reality's pass of the rhythm case is no
+// evidence of hidden timing (TP-223's Notes).
+const realityRhythmBlindSpot = "one record size both ways, never quiet: no exchange can stand out (see lab/censor/doc.go)"
+
 // rhythmCase is the wireguard-rhythm case that holds the held rows'
-// tunnels in use, or idle.
+// tunnels in use, or idle. reality's pass is the module's blind spot, not
+// hidden timing: its cell says so.
 func rhythmCase(name string, idle bool) censorCase {
 	return censorCase{name: name, hold: 450 * time.Second, idle: idle, watch: "wireguard-rhythm", trace: rhythmTrace,
 		expect: map[string]string{rowUDP: "fail"}, blocker: "wireguard-rhythm",
+		blindSpots: map[string]string{rowReality: realityRhythmBlindSpot},
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{"trace": "` + rhythmTrace + `"}`)}}
 		}}

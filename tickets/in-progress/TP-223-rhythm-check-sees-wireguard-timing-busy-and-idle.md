@@ -24,11 +24,12 @@ M2's gate promises `reality` shows no WireGuard rhythm: no 2-minute rekey pair a
 - Changing any transport's shaping or timing (product code). If `reality` fails the honest check, this ticket stops at the measurement; the fix needs a design note the owner approves first (it would revisit RR65).
 
 ## Acceptance
-- [x] The detector flags the rekey pair by timing at any record size; thresholds cited from WireGuard's timers in lab/censor/doc.go.
-- [ ] Control: plain WireGuard (`udp`) is caught on a busy tunnel and on an idle one.
-- [x] A new idle-tunnel case in the matrix exercises the keepalive claim.
-- [x] `reality`'s result on both cases measured at this branch's head and recorded in Notes, pass or fail.
-- [x] The reality × prober cell fails unless every failed probe over IPv4 shows a dial to the camouflage target (count equals probes); IPv6's 0 of n is fixed or explained with its cause in the cell.
+- [x] The detector flags the rekey pair by timing at any record size when the pair stands out: it follows a quiet gap (REKEY_TIMEOUT, 5 s, with no record either way) or brings sizes new to the rekey period. Among steady records of its own size it is blind (lab/censor/doc.go). Thresholds cited from WireGuard's timers in lab/censor/doc.go, the module's own choices (2 s answer window, 1 s steadiness, three occurrences) named as choices.
+- [x] Control: plain WireGuard (`udp`) is caught on a busy tunnel.
+- [ ] Control: `udp` is caught on an idle tunnel. Not while thinkpol sets no persistent keepalive: an idle thinkpol tunnel sends no WireGuard rhythm (Notes). Waits on the owner's ruling on the idle keepalive promise.
+- [ ] An idle-tunnel case exercises the keepalive claim. Built and measured (`rhythmCase(..., true)`, holdTunnel's idle branch; Notes), but out of the matrix until the owner rules, so `make lab-test` stays green.
+- [x] `reality`'s result on both cases measured at this branch's head and recorded in Notes, pass or fail; its busy pass is the detector's blind spot, and the cell says so (R1.1, R1.2).
+- [x] The reality × prober cell fails unless its verdict judges the tell: a dial to the camouflage target during every probe (count equals probes), or the tell reported unattributable when server-1 dialed the target between probes too (R1.4); IPv6's 0 of n is fixed (`hosts`).
 - [ ] Each new or changed check mutation-checked; `make lint`, `make test`, `make lab-test` pass.
 
 ## Notes
