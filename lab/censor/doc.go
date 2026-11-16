@@ -171,12 +171,13 @@
 // wireguard-go defines them, REKEY_AFTER_TIME (120 s), REJECT_AFTER_TIME
 // (180 s), REKEY_TIMEOUT (5 s) and KEEPALIVE_TIMEOUT (10 s), and the
 // persistent keepalive interval wg(8) suggests (25 s), never what a
-// transport was measured to do. Five numbers are the module's own
+// transport was measured to do. Six numbers are the module's own
 // choices, no WireGuard timer: the 2 s an answer has, the 1 s an idle
 // run's intervals may differ by, the three occurrences (rekeys, or idle
 // keepalives once the connection has carried an exchange) it needs, the
-// 300 ms of quiet after which it reads the record count, and the 10 ms
-// that make records one burst. Four signals each show the rhythm:
+// 300 ms of quiet after which it reads the record count, the 10 ms that
+// make records one burst, and the three records a way a burst may hold.
+// Four signals each show the rhythm:
 //
 //   - rekey: an exchange, a record one way answered within 2 s by one the
 //     other way, that stands out: each of its two sizes new to its
@@ -200,7 +201,9 @@
 //     of traffic past the deadline, within seconds under steady use, but a
 //     tunnel that carries nothing from REKEY_AFTER_TIME until the window
 //     has passed (about 90 s) rekeys too late, its chain starts over, and
-//     a tunnel used in bursts that far apart is missed by this signal.
+//     a tunnel used in bursts that far apart is missed by this signal and
+//     by the count and burst signals below, which chain rekeys in the same
+//     window.
 //   - keepalive: an idle run, records of one size each sent after
 //     REKEY_TIMEOUT with no record either way (under KEEPALIVE_TIMEOUT, so
 //     a passive keepalive follows quiet) and not answered within 2 s, at
@@ -220,8 +223,11 @@
 //     steps by one amount three times in a row, each step (from the first
 //     record after the quiet before it) REKEY_AFTER_TIME to the rekey
 //     window above after the one before, with no other change in
-//     between: under traffic even both ways (a ping, the path probes, an
-//     interactive stream) the count is flat but for the rekeys.
+//     between: under traffic of one record each way per exchange (a
+//     ping, the path probes) the count is flat but for the rekeys. Traffic
+//     that isn't one for one moves it: TCP inside the tunnel, segments
+//     against fewer, delayed acknowledgements, steps the level by its own
+//     amounts, and a rekey under it is missed by this signal.
 //   - burst: the same handshake seen whole, as a burst of records each
 //     within 10 ms of the one before, either way, with one record more one
 //     way than the other and at least one each way (a rekey under a ping:
@@ -231,10 +237,11 @@
 //     REKEY_AFTER_TIME to the rekey window after the one before; one of
 //     those counts sooner than REKEY_AFTER_TIME starts the chain over.
 //
-// Only what stands out is chained, from the latest time it stood out, so a
-// steady stream of records (thinkpol's own 2 s path probes, a ping, an
-// interactive or TURN stream), whatever its sizes and rate, and a request
-// repeated at any interval shorter than 2 minutes never show the rhythm.
+// The rekey signal chains only what stands out, from the latest time it
+// stood out, so a steady stream of records (thinkpol's own 2 s path
+// probes, a ping, an interactive or TURN stream), whatever its sizes and
+// rate, and a request repeated at any interval shorter than 2 minutes
+// never show it the rhythm.
 // Sizes must be new on their own, not only as a pair: random sizes at a few
 // records a second make nearly every pair new, and pairs then chain by
 // chance within 5 minutes. Measured, 6 minutes of two-way records of random
@@ -275,25 +282,42 @@
 // response and its confirming keepalive back to back), with nothing else
 // in the burst. With both (the reality trace's server records 20 ms later
 // and one record from the server every 30 s besides) neither fires, and
-// the tunnel is again hidden from the module. Flagged by design, as false
-// positives: anything that leaves the same imbalance every 2 to 3.5
-// minutes and nothing else in between (a poll whose response takes one
-// record more than its request, or a one-way heartbeat at that interval,
-// on an otherwise quiet connection), and an exchange of one record more
-// one way than the other within 10 ms recurring at that interval alone.
-// Measured on random two-way traffic (6 minutes, 100 seeds at each rate,
-// requests of 1 to 3 records of 40 to 1500 bytes, each answered 20 to 80
-// ms later by 1 to 6 records), before the burst signal's cap of three
-// records a way: none flagged by count or burst at one request a second;
-// at 10 a second 1 to 3 in 100 by burst; at 50 a second 4 in 100, every
-// one a burst of 6 to 9 records one way, which the cap now excludes. With
-// the cap, none at one request a second and 1 in 100 at 10 a second (one
-// record against one): a false-positive risk. TestWGRhythmRandomExchanges
-// replays such traffic at one record size (1 against 1, up to 2 against 3
-// and up to 3 against 6 records, at 1, 10 and 50 requests a second, 20
-// seeds each) and fails if any connection flags: none does, which bounds
-// the rate under 5% at each request rate (0 of 60, 95% confidence).
-// Without the cap 9 of 180 flag, all at 10 or 50 a second.
+// the tunnel is again hidden from the module.
+//
+// Neither counting rule needs a quiet connection: traffic of one record
+// each way between steps leaves the count's chain alone, and a burst of
+// one record against one restarts no burst chain. So, flagged by design,
+// as false positives: anything that leaves the same imbalance every 2 to
+// 3.5 minutes, whatever balanced traffic runs beside it (a poll whose
+// response takes one record more than its request, a one-way heartbeat),
+// and an exchange of one record more one way than the other within 10 ms
+// recurring at that interval. For instance MQTT over TLS with PINGREQ and
+// PINGRESP every 60 s and a QoS 0 publish nothing answers every 150 s
+// (pinned, TestWGRhythmFlagsMQTTKeepalive: flagged by the count at the
+// third publish), a websocket with ping and pong and a presence message
+// one way every 2 to 3.5 minutes, or a long poll whose timeout runs 120 to
+// 210 s and whose empty answer takes a record more or fewer than its
+// request. An accepted risk of the lab's detector, which judges
+// transports held in the lab, not users' traffic.
+//
+// Measured on random two-way traffic, every record one size (so no size is
+// ever new), 6 minutes a connection, requests of up to 1, 2 or 3 records
+// answered by up to 1, 3 or 6 (TestWGRhythmRandomExchanges pins every
+// count; seeded, so exact): at 1, 10 and 50 requests a second, none of 60
+// connections flagged at each rate, answers 0.2 to 5 ms later (the lab's
+// vantage) or 20 to 80 ms later, which bounds the rate under 5% (95%
+// confidence). Sparse requests flag. At one request a minute, 8 of 600 at
+// the lab's vantage (6 by the rekey signal, identical exchanges after
+// quiet chaining 2 to 3.5 minutes apart, 2 by burst) and 6 of 600 with 20
+// to 80 ms answers (all rekey); at one every 10 s, 8 of 600 at the lab's
+// vantage (all bursts of 2 records against 1 or 1 against 2) and none of
+// 600 farther off. So about 1.3% of such 6-minute connections, under 2.4%
+// (95% confidence), flag at one request every 10 s to a minute, and the
+// risk grows with a connection's length. Without the burst signal's cap of
+// three records a way, BURSTCAP. An earlier measurement, sizes of 40 to
+// 1500 bytes before the cap: at 10 and 50 requests a second, 1 to 4 in
+// 100 flagged by burst, mostly bursts of 6 to 9 records one way, which
+// the cap excludes.
 //
 // The keepalive signal has blind spots of its own: next to other steady
 // traffic (those path probes) no record comes after quiet,
@@ -516,15 +540,20 @@
 // whose result is chance by nature (WireGuard against fully-encrypted)
 // varies: any result is accepted and shown, with why, and each family that
 // didn't cross must still be the module's doing. Only a reference row may
-// vary, so a gate row (a thinkpol transport) never does. The rhythm's two
-// cases hold the reality row's tunnel and udp's for 7.5 minutes before the
-// probe, one in use (a ping every 2 s), one idle (one ping, then nothing),
-// and log a summary of the module's trace; udp, which carries WireGuard
-// with its timing untouched, is the control and must be caught in both, or
-// the run fails: a held row's pass means nothing unless the same hold
-// catches udp. reality is expected to fail the case in use, caught by its
-// record counts, and its cell says it is a known tell RR65 accepts: an
-// expected fail is a correct cell, as udp's is.
+// vary, so a gate row (a thinkpol transport) never does. The rhythm case
+// holds the reality row's tunnel and udp's for 7.5 minutes before the
+// probe, in use (a ping every 2 s), and logs a summary of the module's
+// trace; udp, which carries WireGuard with its timing untouched, is the
+// control and must be caught, or the run fails: a held row's pass means
+// nothing unless the same hold catches udp. reality is expected to fail,
+// caught by its record counts, and its cell says it is a known tell RR65
+// accepts, as long as the module blocked it for the count or the burst
+// alone (a block for any other reason is an error): an expected fail is a
+// correct cell, as udp's is. The idle case (one ping, then nothing) is out
+// of the matrix until TP-080 brings it back: an idle thinkpol tunnel shows
+// no WireGuard rhythm, so udp can't be caught there. A prober cell whose
+// upstream tell is unattributable crossed but is not judged, never a
+// pass.
 //
 // # Limits
 //

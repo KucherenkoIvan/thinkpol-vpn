@@ -20,8 +20,9 @@ func init() {
 // REKEY_TIMEOUT and KEEPALIVE_TIMEOUT), and the persistent keepalive
 // interval wg(8) suggests, which thinkpol doesn't set
 // (internal/dataplane/wg). The thresholds below derive from them, but for
-// wgPairWindow, wgSteadyJitter, wgRekeys, wgCountSettle, wgBurstGap and
-// the keepalive count: those are the module's choices, no WireGuard timer.
+// wgPairWindow, wgSteadyJitter, wgRekeys, wgCountSettle, wgBurstGap,
+// wgBurstMax and the keepalive count: those are the module's choices, no
+// WireGuard timer.
 const (
 	wgRekeyAfterTime      = 120 * time.Second
 	wgRejectAfterTime     = 180 * time.Second
@@ -76,9 +77,10 @@ const (
 	// confirming keepalive back to back too).
 	wgBurstGap = 10 * time.Millisecond
 	// wgBurstMax is the most records one way a burst may hold to be a
-	// handshake: the initiation, the confirming keepalive and the packet
-	// that triggered the rekey, against the response and that packet's
-	// answer. Bigger bursts are other traffic's (measured, doc.go).
+	// handshake: a choice, room for the initiation, the confirming
+	// keepalive and the packet that triggered the rekey, against the
+	// response and that packet's answer. Bigger bursts are taken for
+	// other traffic's (measured, doc.go).
 	wgBurstMax = 3
 )
 

@@ -102,8 +102,10 @@ func holdReality(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle
 // probe. In use: a ping every 2 s, so WireGuard rekeys about every 2
 // minutes as it does under any steady use. Idle: one ping, so WireGuard
 // has a session, then nothing from either end but what the tunnel sends
-// on its own. A hold whose pings didn't cross held no tunnel, and its
-// cell would mean nothing: it fails the test.
+// on its own; no case holds idle until TP-080 brings the idle rhythm case
+// back (results_test.go), and the branch stays for it. A hold whose pings
+// didn't cross held no tunnel, and its cell would mean nothing: it fails
+// the test.
 func holdTunnel(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool) {
 	ctx, cancel := context.WithTimeout(t.Context(), d+time.Minute)
 	defer cancel()

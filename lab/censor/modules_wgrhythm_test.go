@@ -1407,21 +1407,33 @@ func (r *wgRun) carryRandomExchanges(rng *rand.Rand, perSecond float64, d time.D
 	return flush(math.MaxInt64)
 }
 
-// wgRandomFlags pins TestWGRhythmRandomExchanges' measured flags: of 20
-// seeds, how many connections flag, by round trip, request and response
-// records, and requests a second.
-var wgRandomFlags = map[string]int{}
+// wgRandomFlags pins TestWGRhythmRandomExchanges' measured flags: how
+// many connections flag, of 200 seeds under a request a second and of 20
+// above, by round trip, request and response records, and requests a
+// second; every other count is 0. At one request a minute, identical
+// exchanges after quiet chain by chance 2 to 3.5 minutes apart (the rekey
+// signal); at the lab's vantage, so do bursts of 2 records against 1 or 1
+// against 2 (the burst signal).
+var wgRandomFlags = map[string]int{
+	"0.2-5ms 1:1 0.0167/s": 2,
+	"0.2-5ms 2:3 0.0167/s": 4,
+	"0.2-5ms 2:3 0.1/s":    4,
+	"0.2-5ms 3:6 0.0167/s": 2,
+	"0.2-5ms 3:6 0.1/s":    4,
+	"20-80ms 1:1 0.0167/s": 2,
+	"20-80ms 2:3 0.0167/s": 2,
+	"20-80ms 3:6 0.0167/s": 2,
+}
 
-// TestWGRhythmRandomExchanges pins the count and burst signals' false
-// positives on random request and response counts, every record one size
-// (so the rekey signal never reads it), 6 minutes, 20 seeds each: answers
-// 0.2 to 5 ms later (the lab's vantage, where request and answer often
-// share a 10 ms burst) and 20 to 80 ms later (a far censor), at 1/60,
-// 1/10, 1, 10 and 50 requests a second, requests of up to 1, 2 or 3
-// records answered by up to 1, 3 or 6. Every count must be the pinned
-// one (wgRandomFlags; lab/censor/doc.go states the bound they give): a
-// rule that flags more, or less, fails here. Seeded, so the counts are
-// exact. It replays about 8 million records: not under -short or -race,
+// TestWGRhythmRandomExchanges pins the detector's false positives on
+// random request and response counts, every record one size (so no size
+// is ever new), 6 minutes a connection: answers 0.2 to 5 ms later (the
+// lab's vantage, where request and answer often share a 10 ms burst) and
+// 20 to 80 ms later (a far censor), at 1/60, 1/10, 1, 10 and 50 requests
+// a second, requests of up to 1, 2 or 3 records answered by up to 1, 3 or
+// 6. Every count must be the pinned one (wgRandomFlags; lab/censor/doc.go
+// states the bound they give): a rule that flags more, or less, fails
+// here. Seeded, so the counts are exact. It replays about 8 million records: not under -short or -race,
 // nor in the lab node, which runs every package's tests and needs none
 // of this; make test runs it.
 //
