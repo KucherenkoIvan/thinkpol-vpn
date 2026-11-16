@@ -32,6 +32,7 @@ func statusJSON(t *testing.T, st *localapiv1.Status) nodeStatus {
 // a status that lacks its fact: a check that passed whatever the status
 // said would leave the lab test using it without an oracle.
 func TestStatusChecksFailWithoutTheirFact(t *testing.T) {
+	t.Parallel()
 	device := &localapiv1.Status{
 		Mode: localapiv1.Mode_MODE_DEVICE, MapVersion: 7, Connection: localapiv1.Connection_CONNECTION_CONNECTED,
 		Health: &localapiv1.Health{Level: localapiv1.HealthLevel_HEALTH_LEVEL_DOWN, Problems: []string{"no_link_up", "dns_not_protected"}},

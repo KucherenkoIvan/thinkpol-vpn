@@ -204,7 +204,7 @@ func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			var out bytes.Buffer
-			res, labErr := goTestPackage(ctx, root, goTestPackageProject(checkout, run, pkg.ImportPath), pkg, &out, cache, env, args)
+			res, labErr := goTestPackage(ctx, root, ownGoTestPackageProject(checkout, run, pkg.ImportPath), pkg, &out, cache, env, args)
 			mu.Lock()
 			defer mu.Unlock()
 			if labErr != nil {
