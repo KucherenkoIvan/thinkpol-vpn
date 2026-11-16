@@ -4,6 +4,7 @@ package lab_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -37,6 +38,14 @@ func upCommand(n *lab.Node, env []string, args ...string) []string {
 func startUp(t *testing.T, n *lab.Node, args ...string) *lab.Process {
 	t.Helper()
 	return n.Start(t, upCommand(n, nil, args...)...)
+}
+
+// startUpWithoutMode starts `thinkpol up` with args and no -mode on node n,
+// stopped when the test ends: TP-111's case, a server-* started without
+// -mode runs as a device.
+func startUpWithoutMode(t *testing.T, n *lab.Node, args ...string) *lab.Process {
+	t.Helper()
+	return n.Start(t, append([]string{"thinkpol", "up"}, args...)...)
 }
 
 // nodeStatus is the part of `thinkpol status -json` the lab reads
@@ -85,6 +94,10 @@ type neighborStatus struct {
 	Up     bool   `json:"up"`
 }
 
+// errSchemaVersion: the status is of a schema the lab doesn't read; no
+// retry changes that.
+var errSchemaVersion = errors.New("schema version")
+
 // parseStatus reads `thinkpol status -json`'s output.
 func parseStatus(out string) (nodeStatus, error) {
 	var st nodeStatus
@@ -92,7 +105,7 @@ func parseStatus(out string) (nodeStatus, error) {
 		return nodeStatus{}, fmt.Errorf("status -json: %w\n%s", err, out)
 	}
 	if st.SchemaVersion != localapi.SchemaVersion {
-		return nodeStatus{}, fmt.Errorf("status -json: schema version %d, the lab reads %d", st.SchemaVersion, localapi.SchemaVersion)
+		return nodeStatus{}, fmt.Errorf("status -json: %w %d, the lab reads %d", errSchemaVersion, st.SchemaVersion, localapi.SchemaVersion)
 	}
 	st.raw = out
 	return st, nil
@@ -135,15 +148,23 @@ func waitStatusFor(t *testing.T, n *lab.Node, timeout time.Duration, flags []str
 // the test.
 func statusWithin(n *lab.Node, timeout time.Duration, flags []string, checks ...statusCheck) (nodeStatus, error) {
 	deadline := time.Now().Add(timeout)
+	var last nodeStatus // the last status read, kept through later read errors
 	for {
 		st, err := readStatus(n, pollTimeout, flags...)
-		if err == nil {
+		switch {
+		case errors.Is(err, errSchemaVersion):
+			return nodeStatus{}, fmt.Errorf("%s: %w", n.Name, err)
+		case err == nil:
+			last = st
 			if err = st.check(checks...); err == nil {
 				return st, nil
 			}
 		}
 		if time.Now().After(deadline) {
-			return st, fmt.Errorf("%s: not within %s: %w", n.Name, timeout, err)
+			if last.raw != "" && st.raw == "" {
+				return last, fmt.Errorf("%s: not within %s: %w; the last status read:\n%s", n.Name, timeout, err, last.raw)
+			}
+			return last, fmt.Errorf("%s: not within %s: %w", n.Name, timeout, err)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -198,7 +219,10 @@ func connection(c string) statusCheck {
 
 // mapApplied: the node runs map version, applied: a server serves it, a
 // device's data plane is up on it, and nothing is being retried. A
-// server's workers apply it after; their log says when.
+// server's map version, retrying and connection say so from its start, on
+// the map it read from disk, before its first serve: it has workers only
+// after that serve, so it passes only with at least one worker, each
+// ready (sandboxed). The workers apply the map after; their log says when.
 func mapApplied(version string) statusCheck {
 	return func(st nodeStatus) error {
 		switch {
@@ -209,6 +233,14 @@ func mapApplied(version string) statusCheck {
 		case st.Removed:
 			return fmt.Errorf("removed from its space in map version %s", version)
 		case st.Mode == "server":
+			if len(st.Workers) == 0 {
+				return fmt.Errorf("map version %s, no workers yet", version)
+			}
+			for _, w := range st.Workers {
+				if !w.Ready {
+					return fmt.Errorf("map version %s, worker of space %s not ready", version, w.SpaceID)
+				}
+			}
 			return connection("serving")(st)
 		case st.DataPlane == nil:
 			return fmt.Errorf("map version %s, no data plane", version)
@@ -266,13 +298,14 @@ func uplink(iface string, v4, v6 bool) statusCheck {
 	}
 }
 
-// routeTableEnforced: a device's route table enforces its rules (its
-// counters are in the status only then).
+// routeTableEnforced: a device's route table enforces its rules. Its
+// counters are in the status when it enforces them and also when it
+// failed (route_table_not_enforced), so both are read.
 func routeTableEnforced(st nodeStatus) error {
 	if _, ok := st.counter("route_table.routes"); !ok {
 		return fmt.Errorf("the route table enforces nothing")
 	}
-	return nil
+	return noProblem("route_table_not_enforced")(st)
 }
 
 // dataPlaneUp: a device's data plane is up.
