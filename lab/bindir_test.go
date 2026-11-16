@@ -281,10 +281,10 @@ func TestDownRunRemovesItsRunsLabAndBinaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mine := testProject(checkout, "r1", filepath.Join(root, "lab"), "TestX")
-	theirs := goTestPackageProject(checkout, "r12", "example.net/x")
-	kept := testProject(checkout, "r2", filepath.Join(root, "lab"), "TestKept")
-	elsewhere := testProject(checkout, "r1", filepath.Join(root, "lab"), "TestY")
+	mine := testProject(checkout, "r1", "p1", filepath.Join(root, "lab"), "TestX")
+	theirs := goTestPackageProject(checkout, "r12", "p1", "example.net/x")
+	kept := testProject(checkout, "r2", "p1", filepath.Join(root, "lab"), "TestKept")
+	elsewhere := testProject(checkout, "r1", "p1", filepath.Join(root, "lab"), "TestY")
 	labs := []string{
 		mine + "\t" + root, theirs + "\t" + root, kept + "\t" + root, checkout + "\t" + root,
 		elsewhere + "\t" + root + "-elsewhere",

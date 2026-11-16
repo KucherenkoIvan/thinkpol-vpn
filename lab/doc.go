@@ -12,9 +12,14 @@
 // A run is the processes that share a run id (RunEnv): make lab-test gives
 // its lab tests and its labctl gotest one, and every other process that
 // starts labs makes up its own. Test and gotest labs carry it in their
-// names, so two runs from one checkout never replace each other's labs,
-// and make lab-test's clean-up (DownRun) removes its own run's labs only.
-// labctl down (DownCheckout) still removes every lab of the checkout.
+// names, with a 24-bit hash that covers the process too (processID), so
+// two runs from one checkout, or two processes of one run, practically
+// never replace each other's labs, and make lab-test's clean-up (DownRun)
+// removes its own run's labs only. A process that is killed and retried
+// under the same run id leaves its labs up beside the retry's, under other
+// names, until labctl down -run removes the run: make lab-test does that at
+// its end unless THINKPOL_LAB_KEEP is set or make itself is killed. labctl
+// down (DownCheckout) still removes every lab of the checkout.
 //
 // The binaries are per run, not per lab: each process that starts labs (a
 // lab test binary, labctl gotest) builds them into lab/bin/run-*, a

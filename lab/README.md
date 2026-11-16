@@ -36,7 +36,7 @@ device-a, device-b ── [devices] ── router ── [servers] ── server
 
 ## Writing a lab test
 
-Lab tests drive containers from the host, so they need Docker: put them in `lab/` behind the `lab` build tag. `make test` doesn't run them; `make lab-test` does. Every test gets its own lab, torn down when it ends, so tests can be `t.Parallel()`.
+Lab tests drive containers from the host, so they need Docker: put them in `lab/` behind the `lab` build tag. `make test` doesn't run them; `make lab-test` does. Every test gets its own lab, torn down when it ends, so tests can be `t.Parallel()`, and every test that starts a lab is: Go runs the tests that aren't before any that are, so one slow serial test holds up the whole package. A test that needs a setting the harness reads from the environment (`THINKPOL_LAB_PROJECT`) takes it as a parameter (`startAs`, `checkoutProject`, `downRun`) rather than `t.Setenv`, which Go refuses in a parallel test. No lab test needs the host to itself today; the performance gates, which do, are `make lab-perf`'s.
 
 ```go
 //go:build lab
@@ -48,9 +48,15 @@ func TestRelayPing(t *testing.T) {
 	l := lab.Start(t, lab.Standard())
 	dev, srv := l.Node(lab.DeviceA), l.Node(lab.Server1)
 
-	srv.WriteFile(t, "/etc/thinkpol/map.bin", mapBytes)
-	srv.Start(t, "thinkpol", "up", "--map", "/etc/thinkpol/map.bin") // stopped at the end
-	dev.MustExec(t, "ping", "-c", "1", srv.IPv6(lab.NetServers).String())
+	space := newM0Space(t, l.Node(lab.Internet), srv)
+	envelope, version := space.build(t)
+	space.install(t, srv, "server-1", envelope)
+	space.install(t, dev, "device-a", envelope)
+	startUp(t, srv) // `thinkpol up -mode server`, stopped at the end
+	startUp(t, dev)
+	waitStatus(t, dev, mapApplied(version), linkUp)
+	s4, _ := space.overlay(1)
+	dev.MustExec(t, "ping", "-c", "1", s4.String())
 }
 ```
 
@@ -58,6 +64,7 @@ func TestRelayPing(t *testing.T) {
 - **systemd:** a node with `Systemd: true` runs systemd as its PID 1 (unprivileged: its own cgroup namespace, made writable before systemd starts; `/run` a tmpfs; systemd-resolved, systemd-networkd and nginx masked), for tests of the service (`thinkpol service install`). `WaitBooted(ctx)` waits for its boot; `Restart(ctx)` is a reboot: the node seals itself again before systemd starts (its sealing script is kept in `/etc/lab/seal.sh`), and Restart checks it did (its addresses, frame filters, blackholed bridges, default routes), and `/run` is fresh, though the kernel's boot id is the Docker VM's and stays. Processes `Start` ran in it are gone after a restart.
 - **Files and disks:** tests read and write nodes' files through these helpers only. They never touch block devices or the Docker VM's disks, and never write to `/src` or `/opt/thinkpol/bin`: the `:ro` mounts don't stop root with `SYS_ADMIN` from remounting them, and they are the checkout.
 - **Waiting:** `lab.Eventually(t, timeout, func() error)` polls until nil.
+- **Starting nodes and reading what they do** (`nodestatus_test.go`): every test starts `thinkpol up` through `startUp(t, node, args...)`, or `upCommand(node, env, args...)` for a command line it runs another way; a `server-*` runs in server mode unless the args name a mode (`startUpWithoutMode` is the one exception, for TP-111's case: a server started without `-mode` runs as a device). A fact `thinkpol status -json` reports (mode, connection, the map version applied, health and its problems, the overlay's MTU, links, counters, a server's uplink) is read from it, never from a log line: `waitStatus(t, node, checks...)` with checks such as `mapApplied(version)` (on a server, also its workers ready, which exist only after its first serve), `inMode`, `connection`, `health`, `problem`, or `readStatus` for one read. A log line is asserted only where the line is what the test is about or the status doesn't report the fact (a server's worker applying a map, `workerApplied`; a blob fetched; the map's ingress and egress flags), and a check of the status's text view only where that view is what is tested.
 - **Failing tests** print the containers' logs. With `THINKPOL_LAB_KEEP=1` a failed test's lab stays up for inspection (`docker compose -p <project> exec <node> bash`, the project is in the log); `make lab-down` removes it.
 
 ### Adding a node or a network
@@ -129,12 +136,12 @@ A perf test checks `THINKPOL_LAB_PERF` itself (packages under `internal/` can't 
 
 ## Isolation and safety
 
-- **Names.** Every lab is a Compose project named `tplab-<checkout>-<hash of its path>` for `make lab-up`, plus `-t-<run>-<test>-<hash>` for a test's lab and `-gotest-<run>-<hash of the package>` for in-node tests (`go run ./lab/labctl project` prints the prefix). `<run>` is the run's id: `make lab-test` gives both its phases one (`THINKPOL_LAB_RUN`, from `labctl run-id`), and any other process that starts labs (a `go test` of `lab/`, `make lab-gotest`) makes up its own, so two runs from one checkout never share a lab's name. `THINKPOL_LAB_PROJECT` replaces the checkout part (`[a-z0-9][a-z0-9-]*`, at most 40 characters), never the `tplab-` prefix. No container names are fixed.
+- **Names.** Every lab is a Compose project named `tplab-<checkout>-<hash of its path>` for `make lab-up`, plus `-t-<run>-<test>-<hash>` for a test's lab and `-gotest-<run>-<hash>` for in-node tests (the hash covers the package and test, and the process that started the lab) (`go run ./lab/labctl project` prints the prefix). `<run>` is the run's id: `make lab-test` gives both its phases one (`THINKPOL_LAB_RUN`, from `labctl run-id`), and any other process that starts labs (a `go test` of `lab/`, `make lab-gotest`) makes up its own, so two runs from one checkout never share a lab's name. Each process also hashes an id of its own into its labs' names, so two processes of one run (a retry, or shards of the same tests) never claim the same lab either. `THINKPOL_LAB_PROJECT` replaces the checkout part (`[a-z0-9][a-z0-9-]*`, at most 40 characters), never the `tplab-` prefix. No container names are fixed.
 - **Ownership is the checkout's path, not the name.** Every lab container and network is labelled `org.thinkpol.lab=1` and `org.thinkpol.lab.root=<checkout path>`. `make lab-down` and the clean-ups find labs by those labels, and remove a project only if its name starts with `tplab-` and every container and network in it carries `org.thinkpol.lab=1` and exactly this checkout's path. Volumes are never removed (the lab has none). Starting a lab under a name this checkout already uses replaces the old lab; under a name another checkout's lab uses (two checkouts with the same `THINKPOL_LAB_PROJECT`), it fails instead, and neither checkout can remove the other's labs.
 - **Compose sees only the lab.** Tear-down runs `docker compose` from an empty directory with no `COMPOSE_*` variables, so no compose file or setting of anyone else's is ever loaded.
 - **Subnets.** Each lab network gets a /24 from `172.16.0.0/16` and a /64 from a random unique-local /48. That range is the /16 just below Docker's default address pools (which start at `172.17.0.0/16`), so labs don't use up the addresses other projects on the daemon get; if it clashes with something of yours, set `THINKPOL_LAB_SUBNET_POOL`. The choice is checked against every network on the daemon and every live reservation, and retried if Docker still reports an overlap. Only the choice is serialized host-wide, by a lock file next to the slot locks, and only for a few file operations: a lab reads the daemon's subnets first, then under the lock reads the live reservations, picks its own and records them as a reservation (a file in the lock directory's `reservations/`, which the lab's process keeps locked), and lets go; its `docker compose up` runs beside other labs' start-ups. The reservation lasts until the lab is torn down or kept (its networks then stay on the daemon, which every allocation reads). A reservation nobody holds the lock of (its process died) is reclaimed by the next allocation and by `make lab-down`. `THINKPOL_LAB_TIMELINE=<file>` makes every lab start append a line to the file: when it waited for the lock, held it, and ran `docker compose up`; runs that share the file give one timeline.
 - **A cap on labs.** At most `THINKPOL_LAB_MAX_LABS` (default 12) slots are held at once by labs from tests and in-node runs. The cap is kept with lock files in the temporary directory, so it is shared by everything that uses the same `TMPDIR` (normally all of one user's runs); runs with different `TMPDIR`s don't see each other's slots. All the labs one top-level test starts share one slot, so a test starting a second lab never waits for itself; a test whose subtests each start one lab (the censor matrix's rows, TestM0) gives each subtest its own slot instead (`lab.StartOwnSlot`). Don't mix the two in one top-level test: a parent holding a `lab.Start` slot while its subtests wait in `lab.StartOwnSlot` can wait on itself. `make lab-up`'s lab doesn't count once `labctl` has exited.
-- **Leftovers.** `make lab-test` first removes labs whose checkout no longer exists (`labctl down -stale`), then, at the end, its own run's labs (`labctl down -run <id>`) and the binary directories of this checkout's runs that have ended (unless `THINKPOL_LAB_KEEP` is set). Another run's labs from the checkout stay, running or not; `make lab-down` removes every lab of the checkout, kept ones and leftovers of killed runs included, and `labctl down -tests` every test and gotest lab of it.
+- **Leftovers.** `make lab-test` first removes labs whose checkout no longer exists (`labctl down -stale`), then, at the end, its own run's labs (`labctl down -run <id>`) and the binary directories of this checkout's runs that have ended (unless `THINKPOL_LAB_KEEP` is set). Another run's labs from the checkout stay, running or not. A process of the run that was killed and retried under the same run id leaves its labs beside the retry's (the process is hashed into their names); the final `labctl down -run` removes them too, so they stay only if `THINKPOL_LAB_KEEP` is set or `make` itself is killed; `make lab-down` removes every lab of the checkout, kept ones and leftovers of killed runs included, and `labctl down -tests` every test and gotest lab of it.
 
 Several checkouts, and several runs from one checkout, can run `make lab-test` (or `make lab-gotest`) at once, and `make lab-down` only removes its own checkout's labs.
 
@@ -143,7 +150,7 @@ Several checkouts, and several runs from one checkout, can run `make lab-test` (
 | Variable | Effect |
 |---|---|
 | `THINKPOL_LAB_PROJECT` | replaces the checkout part of project names |
-| `THINKPOL_LAB_RUN` | the run id in test and gotest labs' names (`[a-z0-9]`, at most 8 characters); `make lab-test` sets a fresh one, unset a process makes up its own. Don't export it: a process started from that environment joins the run, sharing its labs' names and its clean-up |
+| `THINKPOL_LAB_RUN` | the run id in test and gotest labs' names (`[a-z0-9]`, at most 8 characters); `make lab-test` sets a fresh one, unset a process makes up its own. Don't export it: a process started from that environment joins the run and its clean-up (its labs' names still differ by a per-process hash) |
 | `THINKPOL_LAB_KEEP` | a failed test's lab stays up; `make lab-test` skips its final clean-up |
 | `THINKPOL_LAB_MAX_LABS` | lab slots at once per `TMPDIR` (default 12; one per top-level test, one per subtest for `lab.StartOwnSlot`) |
 | `THINKPOL_LAB_SUBNET_POOL` | IPv4 range for lab networks (default `172.16.0.0/16`) |

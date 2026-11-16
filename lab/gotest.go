@@ -192,7 +192,7 @@ func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int
 			defer func() { <-sem }()
 			var out bytes.Buffer
 			fmt.Fprintf(&out, "=== lab gotest %s\n", pkg.ImportPath)
-			labErr, testErr := goTestFresh(ctx, root, goTestPackageProject(checkout, run, pkg.ImportPath), pkg, &out, env, args)
+			labErr, testErr := goTestFresh(ctx, root, ownGoTestPackageProject(checkout, run, pkg.ImportPath), pkg, &out, env, args)
 			res := GoTestResult{ImportPath: pkg.ImportPath, Failed: testErr != nil, Tests: TallyTests(out.Bytes())}
 			mu.Lock()
 			defer mu.Unlock()

@@ -99,8 +99,8 @@ func TestServiceUnderSystemd(t *testing.T) {
 	envelope, _ := space.build(t)
 	space.install(t, server, "server-1", envelope)
 	space.install(t, dev, "device-a", envelope)
-	up := server.Start(t, "thinkpol", "up", "-mode", "server")
-	waitLog(t, up, `worker space=\S+ .*msg="map applied"`)
+	up := startUp(t, server)
+	waitLog(t, up, workerApplied(""))
 	s4, _ := space.overlay(1)
 	dev.MustExec(t, "useradd", "-M", "-u", aliceUID, "alice")
 	resolvConf := dev.MustExec(t, "cat", "/etc/resolv.conf")
@@ -146,17 +146,21 @@ func TestServiceUnderSystemd(t *testing.T) {
 	asAlice := func(args ...string) []string {
 		return append([]string{"setpriv", "--reuid", "alice", "--regid", "alice", "--init-groups", "/usr/local/bin/thinkpol"}, args...)
 	}
+	aliceStatus := func() (nodeStatus, error) {
+		res, err := execResult(dev, pollTimeout, asAlice("status", "-json")...)
+		if err != nil {
+			return nodeStatus{}, fmt.Errorf("%w\n%s%s", err, res.Stdout, res.Stderr)
+		}
+		return parseStatus(res.Stdout)
+	}
 	state := func(want string) {
 		t.Helper()
 		lab.Eventually(t, 90*time.Second, func() error {
-			res, err := execResult(dev, pollTimeout, asAlice("status")...)
+			st, err := aliceStatus()
 			if err != nil {
-				return fmt.Errorf("%w\n%s%s", err, res.Stdout, res.Stderr)
+				return err
 			}
-			if !regexp.MustCompile(`state: +` + want + `\n`).MatchString(res.Stdout) {
-				return fmt.Errorf("want %s:\n%s", want, res.Stdout)
-			}
-			return nil
+			return st.check(connection(want))
 		})
 	}
 	state("disconnected")
@@ -208,18 +212,18 @@ func TestServiceUnderSystemd(t *testing.T) {
 	// The crash trace (PRD S2's device exception): a kill leaves nothing on
 	// stderr, so the restarted agent shows no crash. A Go crash (SIGQUIT:
 	// the runtime's trace, exit 2) leaves its trace in the file, root's
-	// 0600; the restarted agent shows it (alice's status the line, root's
+	// 0600; the restarted agent shows it (alice's status says so, root's
 	// diag the trace, alice's diag only that it is root's) and empties the
 	// file, where its log never goes.
 	lastRun := func(crashed bool) {
 		t.Helper()
 		lab.Eventually(t, 90*time.Second, func() error {
-			res, err := execResult(dev, pollTimeout, asAlice("status")...)
+			st, err := aliceStatus()
 			if err != nil {
-				return fmt.Errorf("%w\n%s%s", err, res.Stdout, res.Stderr)
+				return err
 			}
-			if got := strings.Contains(res.Stdout, "\nlast run:"); got != crashed {
-				return fmt.Errorf("want the last run crashed %v:\n%s", crashed, res.Stdout)
+			if st.LastRunCrashed != crashed {
+				return fmt.Errorf("want the last run crashed %v:\n%s", crashed, st.raw)
 			}
 			return nil
 		})

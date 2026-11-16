@@ -419,13 +419,13 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 	// links and resolv.conf (its stub).
 	startResolved(t, dev, internet.IPv4(lab.NetServers))
 
-	srv := server.Start(t, "thinkpol", "up", "-mode", "server", "-map-poll", "1s")
+	srv := startUp(t, server, "-map-poll", "1s")
 	// The crash posture (TP-048) would put the kill switch in place under
 	// "all but domestic", and its chain would refuse the guard's test
 	// ping before the guard's counts it: both are last at output.
-	up := dev.Start(t, "thinkpol", "up", "-map-poll", "1s", "-fail-closed-after-crash=false")
-	waitLog(t, srv, `worker space=\S+ .*`+applied(v1))
-	waitLog(t, up, applied(v1)+`.*route_table_routes=`)
+	up := startUp(t, dev, "-map-poll", "1s", "-fail-closed-after-crash=false")
+	waitLog(t, srv, workerApplied(v1))
+	waitStatus(t, dev, mapApplied(v1), routeTableEnforced)
 	waitLog(t, up, `msg="blob fetched" .*name=dm`)
 	dev.MustExec(t, "thinkpol", "rules", "preset", "all-but-domestic")
 	s4, _ := space.overlay(1)

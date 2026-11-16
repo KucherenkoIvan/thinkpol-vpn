@@ -5,7 +5,6 @@ package lab_test
 import (
 	"fmt"
 	"net/netip"
-	"regexp"
 	"testing"
 	"time"
 
@@ -28,36 +27,20 @@ func TestHealthWithNoLinkUp(t *testing.T) {
 	envelope, _ := space.build(t)
 	space.install(t, server, "server-1", envelope)
 	space.install(t, dev, "device-a", envelope)
-	srv := server.Start(t, "thinkpol", "up", "-mode", "server")
-	waitLog(t, srv, `worker space=\S+ .*msg="map applied"`)
+	srv := startUp(t, server)
+	waitLog(t, srv, workerApplied(""))
 	s4, s6 := server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)
 
-	noLinkUp := regexp.MustCompile(`(?m)^health: +down: .*no_link_up`)
-	healthOK := regexp.MustCompile(`(?m)^health: +ok$`)
-	status := func() (string, error) { return execRead(dev, pollTimeout, "thinkpol", "status") }
-	waitStatus := func(t *testing.T, re *regexp.Regexp) {
-		t.Helper()
-		lab.Eventually(t, 60*time.Second, func() error {
-			out, err := status()
-			if err != nil {
-				return err
-			}
-			if !re.MatchString(out) {
-				return fmt.Errorf("no %q in\n%s", re, out)
-			}
-			return nil
-		})
-	}
+	noLinkUp, healthOK := health("down", "no_link_up"), health("ok")
 
 	t.Run("the server drops every packet", func(t *testing.T) {
 		server.MustExec(t, "nft", "-f", "-", "--", `table inet tp140 {
 			chain input { type filter hook input priority -10; policy accept; udp dport 4500 drop; }
 		}`)
-		up := dev.Start(t, "thinkpol", "up")
-		waitLog(t, up, "mode=device")
-		waitStatus(t, noLinkUp)
+		up := startUp(t, dev)
+		waitStatus(t, dev, noLinkUp)
 		server.MustExec(t, "nft", "delete", "table", "inet", "tp140")
-		waitStatus(t, healthOK)
+		waitStatus(t, dev, healthOK)
 		if err := up.Stop(); err != nil {
 			t.Fatal(err)
 		}
@@ -66,12 +49,12 @@ func TestHealthWithNoLinkUp(t *testing.T) {
 	t.Run("every dial fails", func(t *testing.T) {
 		dev.MustExec(t, "ip", "route", "add", "unreachable", s4.String()+"/32")
 		dev.MustExec(t, "ip", "-6", "route", "add", "unreachable", s6.String()+"/128")
-		up := dev.Start(t, "thinkpol", "up")
+		up := startUp(t, dev)
 		waitLog(t, up, `msg="dial failed"`)
-		waitStatus(t, noLinkUp)
+		waitStatus(t, dev, noLinkUp)
 		dev.MustExec(t, "ip", "route", "del", "unreachable", s4.String()+"/32")
 		dev.MustExec(t, "ip", "-6", "route", "del", "unreachable", s6.String()+"/128")
-		waitStatus(t, healthOK)
+		waitStatus(t, dev, healthOK)
 		if err := up.Stop(); err != nil {
 			t.Fatal(err)
 		}
@@ -112,31 +95,26 @@ func TestHealthWithAnExitThatNeverHandshakes(t *testing.T) {
 	servers := netip.PrefixFrom(inet4, 24).Masked().String()
 	for name, n := range nodes {
 		space.install(t, n, name, envelope)
-		up[name] = n.Start(t, upFor(name, "-egress-allowed", servers)...)
+		up[name] = startUp(t, n, "-egress-allowed", servers)
 	}
-	waitLog(t, up["device-a"], applied(version))
+	waitStatus(t, devA, mapApplied(version))
 
 	// Each poll sends the exit traffic, so WireGuard keeps initiating.
-	status := func(re *regexp.Regexp) error {
+	status := func(checks ...statusCheck) error {
 		_, _ = execRead(devA, pollTimeout, "ping", "-c", "1", "-W", "1", inet4.String())
-		out, err := execRead(devA, pollTimeout, "thinkpol", "status")
+		st, err := readStatus(devA, pollTimeout)
 		if err != nil {
 			return err
 		}
-		if !re.MatchString(out) {
-			return fmt.Errorf("no %q in\n%s", re, out)
-		}
-		return nil
+		return st.check(checks...)
 	}
-	lab.Eventually(t, 90*time.Second, func() error {
-		return status(regexp.MustCompile(`(?m)^health: +down: (?:.*, )?exit_no_handshake(?:,|$)`))
-	})
-	if err := status(regexp.MustCompile(`(?m)^health: .*(?:no_link_up|neighbor_down)`)); err == nil {
-		t.Fatal("the first hop is up, but health says a neighbor is down")
+	lab.Eventually(t, 90*time.Second, func() error { return status(health("down", "exit_no_handshake")) })
+	if err := status(noProblem("no_link_up"), noProblem("neighbor_down")); err != nil {
+		t.Fatalf("the first hop is up: %v", err)
 	}
 
 	s2.MustExec(t, "nft", "delete", "table", "inet", "tp195")
-	lab.Eventually(t, 60*time.Second, func() error { return status(regexp.MustCompile(`(?m)^health: +ok$`)) })
+	lab.Eventually(t, 60*time.Second, func() error { return status(health("ok")) })
 	for _, p := range up {
 		if err := p.Stop(); err != nil {
 			t.Error(err)

@@ -31,7 +31,7 @@ func TestDownRefusesUnlabelledResources(t *testing.T) {
 	}
 
 	// A throwaway project of our own that only looks like a lab.
-	foreign := testProject(checkout, "foreign", "foreign", t.Name())
+	foreign := testProject(checkout, "foreign", processID, "foreign", t.Name())
 	file := filepath.Join(t.TempDir(), "compose.json")
 	compose, _ := json.Marshal(map[string]any{
 		"name": foreign,
@@ -85,8 +85,8 @@ func TestDownRefusesUnlabelledResources(t *testing.T) {
 // names, but neither can take down or replace the other's labs: ownership is
 // the exact checkout path in the labels, not the name.
 func TestLabsBelongToTheirCheckout(t *testing.T) {
-	t.Setenv(ProjectEnv, "shared-"+shortHash(t.Name()+os.Getenv("HOME")))
-	l := Start(t, GoTestTopology())
+	t.Parallel()
+	l := startAs(t, GoTestTopology(), "test:"+t.Name(), "shared-"+shortHash(t.Name()+os.Getenv("HOME")))
 	ctx := t.Context()
 	other := t.TempDir() // another checkout with the same override
 
@@ -108,13 +108,13 @@ func TestLabsBelongToTheirCheckout(t *testing.T) {
 // run's: another run's lab from the same checkout keeps running. The run's
 // lab has the longest name the harness gives, which Docker must accept.
 func TestDownRunRemovesOnlyItsRun(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	root, err := Root()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(ProjectEnv, longestOverride[:34]+shortHash(root))
-	checkout, err := CheckoutProject(root)
+	checkout, err := checkoutProject(root, longestOverride[:34]+shortHash(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestDownRunRemovesOnlyItsRun(t *testing.T) {
 	labs := map[string]*Lab{}
 	for run, project := range map[string]string{
 		mine:  longestTestProject(checkout, mine),
-		other: goTestPackageProject(checkout, other, "example.net/x"),
+		other: goTestPackageProject(checkout, other, processID, "example.net/x"),
 	} {
 		l, err := up(ctx, root, project, GoTestTopology(), "test:"+t.Name(), runInputs)
 		if l != nil {
@@ -135,7 +135,7 @@ func TestDownRunRemovesOnlyItsRun(t *testing.T) {
 		labs[run] = l
 	}
 
-	removed, err := DownRun(ctx, root, mine)
+	removed, err := downRun(ctx, root, checkout, mine)
 	if err != nil || len(removed) != 1 || removed[0] != labs[mine].Project {
 		t.Errorf("the run's clean-up removed %v, %v; want just %s", removed, err, labs[mine].Project)
 	}
