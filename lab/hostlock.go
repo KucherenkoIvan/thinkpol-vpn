@@ -19,8 +19,9 @@ const MaxLabsEnv = "THINKPOL_LAB_MAX_LABS"
 
 const defaultMaxLabs = 12
 
-// lockDir holds the host-wide locks: one for allocating subnets, one per
-// lab slot, one for the lab image build, and the perf lock.
+// lockDir holds the host-wide locks: one for allocating subnets (and the
+// subnet reservations, see reserveSubnets), one per lab slot, one for the
+// lab image build, and the perf lock.
 func lockDir() (string, error) {
 	dir := filepath.Join(os.TempDir(), "thinkpol-lab-locks")
 	return dir, os.MkdirAll(dir, 0o700)
@@ -175,13 +176,4 @@ func acquireSlotLock(ctx context.Context, dir string) (func(), error) {
 		paths[i] = filepath.Join(dir, fmt.Sprintf("slot-%d.lock", i))
 	}
 	return waitLock(ctx, "a free lab slot ("+MaxLabsEnv+")", paths...)
-}
-
-// lockAllocation serializes choosing subnets and creating networks, host-wide.
-func lockAllocation(ctx context.Context) (func(), error) {
-	dir, err := lockDir()
-	if err != nil {
-		return nil, err
-	}
-	return waitLock(ctx, "the subnet allocation lock", filepath.Join(dir, "subnets.lock"))
 }
