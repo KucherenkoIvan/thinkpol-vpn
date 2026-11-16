@@ -217,7 +217,7 @@ func TestEgressThroughAnExit(t *testing.T) {
 		}
 		n.MustExec(t, "sh", "-ec", "! test -e "+stateDir+"/node.json")
 		before := netState(n)
-		up[name] = startUp(t, n, "-mode", "device", "-map-poll", "1s", "-egress-allowed", servers)
+		up[name] = startUpWithoutMode(t, n, "-map-poll", "1s", "-egress-allowed", servers)
 		waitStatus(t, n, inMode("device"), problem("mode_mismatch"))
 		if out := n.MustExec(t, "ss", "-Hlntu", "sport = :4500"); out != "" {
 			t.Errorf("%s listens:\n%s", name, out)

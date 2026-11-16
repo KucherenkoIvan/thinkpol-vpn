@@ -4,6 +4,8 @@ package lab_test
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -43,7 +45,8 @@ func TestStatusChecksFailWithoutTheirFact(t *testing.T) {
 	}
 	server := &localapiv1.Status{
 		Mode: localapiv1.Mode_MODE_SERVER, MapVersion: 7, Connection: localapiv1.Connection_CONNECTION_SERVING,
-		Uplink: &localapiv1.Uplink{Interface: "eth0", Ipv4: true},
+		Uplink:  &localapiv1.Uplink{Interface: "eth0", Ipv4: true},
+		Workers: []*localapiv1.Worker{{SpaceId: "0a1b2c3d4e5f6071", Ready: true}},
 	}
 	cases := []struct {
 		name  string
@@ -62,6 +65,8 @@ func TestStatusChecksFailWithoutTheirFact(t *testing.T) {
 		{"a server's map applied", server, mapApplied("7"), []func(*localapiv1.Status){
 			func(s *localapiv1.Status) { s.MapVersion = 8 },
 			func(s *localapiv1.Status) { s.Retrying = true },
+			func(s *localapiv1.Status) { s.Workers = nil },
+			func(s *localapiv1.Status) { s.Workers[0].Ready = false },
 		}},
 		{"mode", device, inMode("device"), []func(*localapiv1.Status){
 			func(s *localapiv1.Status) { s.Mode = localapiv1.Mode_MODE_SERVER },
@@ -87,6 +92,7 @@ func TestStatusChecksFailWithoutTheirFact(t *testing.T) {
 		}},
 		{"the route table", device, routeTableEnforced, []func(*localapiv1.Status){
 			func(s *localapiv1.Status) { delete(s.DataPlane.Counters, "route_table.routes") },
+			func(s *localapiv1.Status) { s.Health.Problems = append(s.Health.Problems, "route_table_not_enforced") },
 		}},
 		{"IPv6 off", device, ipv6Off, []func(*localapiv1.Status){
 			func(s *localapiv1.Status) { s.DataPlane.Ipv6, s.DataPlane.Ipv6Off = true, "" },
@@ -122,5 +128,10 @@ func TestStatusChecksFailWithoutTheirFact(t *testing.T) {
 	}
 	if _, ok := st.counter("router.foreign_source"); ok {
 		t.Error("a counter the status doesn't have")
+	}
+
+	// A schema the lab doesn't read is terminal: statusWithin stops at once.
+	if _, err := parseStatus(fmt.Sprintf(`{"schema_version": %d}`, localapi.SchemaVersion+1)); !errors.Is(err, errSchemaVersion) {
+		t.Errorf("another schema version: %v, want errSchemaVersion", err)
 	}
 }
