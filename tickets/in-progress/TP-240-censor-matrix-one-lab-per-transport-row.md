@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: L
 depends_on: [TP-223]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-240"
+branch: "tp-240-matrix-lab-per-row"
 ---
 
 ## Goal
@@ -34,3 +34,4 @@ The censor matrix costs 9 labs, not 90. The owner wants a full lab to take at mo
 
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority; from the lab-speed audit)
+- 2026-11-16 backlog → in-progress, owner: agent-tp-240
