@@ -1189,7 +1189,8 @@ func (c *closingWorker) Close() error {
 // turns away goes to camo. With waited, a connection waits on its dialer
 // outside the routing work (RouteStream calls waiting before reading), as
 // reality's does once its mirror is up, and is sent on waited once its
-// waiting returned.
+// waiting returned. Every connection a test makes sends once on waited,
+// the member's included, so its buffer must hold that many.
 type lineTransport struct {
 	target string
 	camo   transport.Camouflage

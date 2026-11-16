@@ -38,6 +38,11 @@ branch: "tp-221-flaky-idle-streams-test"
   ```
   `Routed:1` with `StreamsOverloaded` above 0 means an idle connection was turned away, not the member: the overload happened at an accept while both slots were held by connections that had not yet waited. A deterministic stand-in for the load (the test transport sleeping 100 ms before calling `waiting`, as a routing goroutine that runs late) makes the unfixed test fail every time with the same counters (`Routed:1 StreamsOverloaded:2`).
 - **Fix (test only, shared_test.go).** The test transport reports on a channel once a connection's `waiting` has returned. The test dials each idle connection only after the previous one has reported, so its slot is known to be free. The `time.Sleep(quiet)` is gone. The test still holds four idle connections (more than the bound) while the member is routed, and still requires `StreamsOverloaded` 0. No product code changed.
+- **The load used.** The Acceptance box names a full lab or SIGSTOP freezes; the runs instead used busy loops pinned to the test's cores with the test at the lowest priority, and `make lab-gotest` beside busy loops. Here that load is equivalent: the fix makes the order deterministic (each idle connection is dialled only after the previous one waited), so no kind of load can reorder it; any load that delays the routing goroutines tests the same thing, and the pinned load was the one that reproduced the flake.
+
+## Review findings
+- [x] R1.1 shared_test.go: the comment on the test transport's `waited` channel says every connection the test makes sends once on it, the member's included, so its buffer must hold that many.
+- [x] R1.2 Notes: say what load the runs used instead of a full lab or SIGSTOP freezes, and why it is equivalent here.
 
 ## Log
 - 2026-11-15 created in backlog (from TP-211's and TP-197's lab runs)
@@ -48,3 +53,4 @@ branch: "tp-221-flaky-idle-streams-test"
 - 2026-11-16 runs on 24ac290: under the same pinned load, the fixed test passed 300 of 300 (load average 12 to 15); `make lab-gotest PKG=./internal/agent/supervisor RUN='TestIdleStreamsDontStarveRouting$' COUNT=20` beside six busy loops passed 20 of 20 (GOFLAGS=-p=2, LAB_P=1); `make lint` and `make test` green (umask 022)
 - 2026-11-16 merged origin/rewrite at b9ee06d (e931769, tickets only, no Go). Full `make lab-test` skipped: this ticket changes only a test, no lab-tested code
 - 2026-11-16 in-progress → review
+- 2026-11-16 review round 1: merge, nits R1.1–R1.2
