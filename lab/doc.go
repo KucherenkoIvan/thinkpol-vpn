@@ -33,6 +33,13 @@
 // up. UpDetached's lab (make lab-up) outlives labctl, so its binaries are
 // its own, in lab/.run/<project>/bin, and go with it.
 //
+// GoTestEach, given a GoTestCache, builds each package's test binary before
+// starting its lab and skips the lab when a pass recorded under the same key
+// still holds (lab/testcache: the binary, the image, the engine, the
+// harness, the args and env, and the files the binary read through package
+// os, which it lists in its -test.testlogfile, read back from the node
+// before the lab goes down). Only passes are recorded.
+//
 // The helpers build without tags so lint and unit tests cover them; the tests
 // that need Docker carry the lab build tag and run on the host through make
 // lab-test, or make lab-gotest for the packages it is given (labctl gotest

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
+	"github.com/KucherenkoIvan/thinkpol-vpn/lab/testcache"
 )
 
 func TestGotestVerdict(t *testing.T) {
@@ -128,4 +129,27 @@ func fakeDockerMarker(t *testing.T) string {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return called
+}
+
+func TestUseCache(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		count   int
+		perf    bool
+		noCache string
+		want    bool
+	}{
+		{"default", 0, false, "", true},
+		{"-count=1", 1, false, "", false},
+		{"-count=3", 3, false, "", false},
+		{"-perf", 0, true, "", false},
+		{"LAB_NOCACHE=1", 0, false, "1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(testcache.NoCacheEnv, tc.noCache)
+			if got := useCache(tc.count, tc.perf); got != tc.want {
+				t.Fatalf("useCache = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }
