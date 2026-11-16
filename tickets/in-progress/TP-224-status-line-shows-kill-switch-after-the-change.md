@@ -64,3 +64,6 @@ branch: "tp-224-status-line-after-change"
 - 2026-11-16 full make lab-test at 2fb1bb87 started and queued for the full-lab lock behind other branches; no exit status yet
 - 2026-11-16 handoff: R1.1–R1.6 done; left: the full make lab-test result at 2fb1bb87 (box 3), then in-progress → review
 - 2026-11-16 delta check: merge, nits R2.1–R2.2
+- 2026-11-16 at 789ecaa6: make lint passes; TestAChangeReturnsWithTheKillSwitchItLeaves passes -count=20 with busy loops beside it, and once with -race
+- 2026-11-16 full make lab-test at 2fb1bb87: exit 2; one failure, TestCensorMatrix/relay-tcp_(reference)/server-hello: the cell's docker compose up hung after starting 3 of 7 containers and was cut off after 608 s ("RESULTS.md not written"; machine loaded); every lab gotest package passed (39), internal/dataplane/dns included. Not the dns flake or the subnet-lock timeout, so box 3 stays open
+- 2026-11-16 handoff: nits done; left: judge or re-run the full lab (box 3), then review → done
