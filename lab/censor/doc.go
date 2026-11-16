@@ -232,14 +232,25 @@
 // exchanged every 2 s both ways (the path probes both ends of a thinkpol
 // link send, internal/dataplane/path), no size is ever new and the
 // connection is never quiet: neither signal can fire, whatever WireGuard
-// does inside. The keepalive signal has blind spots of its own: next to
-// other steady traffic (those path probes) no record comes after quiet,
+// does inside. That is a blind spot of this module, not hidden timing:
+// measured on reality held in use (TP-223), each rekey leaves one more
+// record from the initiator than from its peer (the trigger, the
+// initiation and its confirming keepalive, against the answer and the
+// response, within 6 ms), so a censor that counts each direction's records
+// sees the count step by one every 2 minutes, at 124, 246 and 366 s of the
+// hold and flat in between. This module doesn't count.
+//
+// The keepalive signal has blind spots of its own: next to other steady
+// traffic (those path probes) no record comes after quiet,
 // and when both peers send persistent keepalives in step each answers the
 // other's within 2 s; in both, the rekey is the only signal. And thinkpol
 // sets no persistent keepalive (internal/dataplane/wg): an idle thinkpol
 // tunnel carries no WireGuard records but one passive keepalive
 // KEEPALIVE_TIMEOUT after the last data it received, and rekeys only when
-// traffic resumes.
+// traffic resumes (measured, TP-223: held idle 7.5 minutes after one ping,
+// udp's device sent one 124-byte datagram 10 s after the reply, and
+// WireGuard nothing else; one keepalive is no run, so neither signal can
+// fire on an idle thinkpol tunnel).
 //
 // Records are kept by age, not count, so a burst of data around a rekey
 // doesn't hide it, and stale exchanges are dropped at most once a rekey

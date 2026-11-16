@@ -632,7 +632,8 @@ const rhythmTrace = "/run/censor/rhythm.jsonl"
 
 // realityRhythmBlindSpot is why reality's pass of the rhythm case is no
 // evidence of hidden timing (TP-223's Notes).
-const realityRhythmBlindSpot = "one record size both ways, never quiet: no exchange can stand out (see lab/censor/doc.go)"
+const realityRhythmBlindSpot = "one record size both ways, never quiet: no exchange can stand out (see lab/censor/doc.go); " +
+	"counting records each way shows reality's rekeys anyway, one extra record from the device every 2 minutes (TP-223)"
 
 // rhythmCase is the wireguard-rhythm case that holds the held rows'
 // tunnels in use, or idle. reality's pass is the module's blind spot, not
