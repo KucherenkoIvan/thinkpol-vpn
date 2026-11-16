@@ -46,7 +46,7 @@ func TestTopologyValidateRejects(t *testing.T) {
 func TestWithReplacesAndAddsWithoutTouchingTheOriginal(t *testing.T) {
 	std := Standard()
 	topo := std.With(
-		NodeSpec{Name: Server1, Networks: []string{NetServers}, Command: []string{"thinkpol", "up"}},
+		NodeSpec{Name: Server1, Networks: []string{NetServers}, Command: []string{"sleep", "infinity"}},
 		NodeSpec{Name: "server-3", Networks: []string{NetServers}, Gateway: Router},
 	)
 	if len(topo.Nodes) != len(std.Nodes)+1 {

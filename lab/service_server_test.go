@@ -83,7 +83,7 @@ func TestServiceUninstallAfterAServerCrash(t *testing.T) {
 	server.WriteFile(t, stateDir+"/node.json", []byte(`{"mode": "server"}`+"\n"))
 	server.MustExec(t, "chmod", "600", stateDir+"/node.json")
 	t.Logf("install:\n%s", server.MustExec(t, "/opt/thinkpol/bin/thinkpol", "service", "install"))
-	dev.Start(t, "thinkpol", "up")
+	startUp(t, dev)
 	s4, _ := space.overlay(1)
 	ping(t, dev, s4)
 

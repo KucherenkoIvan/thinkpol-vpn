@@ -55,8 +55,8 @@ func TestRollbackPutsTheHostBackAfterACrashAndTheRestartStaysDown(t *testing.T) 
 	envelope, _ := space.build(t)
 	space.install(t, server, "server-1", envelope)
 	space.install(t, dev, "device-a", envelope)
-	up := server.Start(t, "thinkpol", "up", "-mode", "server")
-	waitLog(t, up, `worker space=\S+ .*msg="map applied"`)
+	up := startUp(t, server)
+	waitLog(t, up, workerApplied(""))
 	s4, _ := space.overlay(1)
 	foreign := internet.IPv4(lab.NetServers)
 
@@ -110,16 +110,7 @@ func TestRollbackPutsTheHostBackAfterACrashAndTheRestartStaysDown(t *testing.T) 
 	}
 	state := func(want string) {
 		t.Helper()
-		lab.Eventually(t, 90*time.Second, func() error {
-			res, err := execResult(dev, pollTimeout, "thinkpol", "status")
-			if err != nil {
-				return fmt.Errorf("%w\n%s%s", err, res.Stdout, res.Stderr)
-			}
-			if !regexp.MustCompile(`state: +` + want + `\n`).MatchString(res.Stdout) {
-				return fmt.Errorf("want %s:\n%s", want, res.Stdout)
-			}
-			return nil
-		})
+		waitStatusFor(t, dev, 90*time.Second, nil, connection(want))
 	}
 	killSwitch := func() bool {
 		_, err := execResult(dev, execTimeout, "nft", "list", "table", "inet", "thinkpol-killswitch")

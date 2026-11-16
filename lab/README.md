@@ -48,9 +48,15 @@ func TestRelayPing(t *testing.T) {
 	l := lab.Start(t, lab.Standard())
 	dev, srv := l.Node(lab.DeviceA), l.Node(lab.Server1)
 
-	srv.WriteFile(t, "/etc/thinkpol/map.bin", mapBytes)
-	srv.Start(t, "thinkpol", "up", "--map", "/etc/thinkpol/map.bin") // stopped at the end
-	dev.MustExec(t, "ping", "-c", "1", srv.IPv6(lab.NetServers).String())
+	space := newM0Space(t, l.Node(lab.Internet), srv)
+	envelope, version := space.build(t)
+	space.install(t, srv, "server-1", envelope)
+	space.install(t, dev, "device-a", envelope)
+	startUp(t, srv) // `thinkpol up -mode server`, stopped at the end
+	startUp(t, dev)
+	waitStatus(t, dev, mapApplied(version), linkUp)
+	s4, _ := space.overlay(1)
+	dev.MustExec(t, "ping", "-c", "1", s4.String())
 }
 ```
 
@@ -58,6 +64,7 @@ func TestRelayPing(t *testing.T) {
 - **systemd:** a node with `Systemd: true` runs systemd as its PID 1 (unprivileged: its own cgroup namespace, made writable before systemd starts; `/run` a tmpfs; systemd-resolved, systemd-networkd and nginx masked), for tests of the service (`thinkpol service install`). `WaitBooted(ctx)` waits for its boot; `Restart(ctx)` is a reboot: the node seals itself again before systemd starts (its sealing script is kept in `/etc/lab/seal.sh`), and Restart checks it did (its addresses, frame filters, blackholed bridges, default routes), and `/run` is fresh, though the kernel's boot id is the Docker VM's and stays. Processes `Start` ran in it are gone after a restart.
 - **Files and disks:** tests read and write nodes' files through these helpers only. They never touch block devices or the Docker VM's disks, and never write to `/src` or `/opt/thinkpol/bin`: the `:ro` mounts don't stop root with `SYS_ADMIN` from remounting them, and they are the checkout.
 - **Waiting:** `lab.Eventually(t, timeout, func() error)` polls until nil.
+- **Starting nodes and reading what they do** (`nodestatus_test.go`): every test starts `thinkpol up` through `startUp(t, node, args...)`, or `upCommand(node, env, args...)` for a command line it runs another way; a `server-*` runs in server mode unless the args name a mode (`startUpWithoutMode` is the one exception, for TP-111's case: a server started without `-mode` runs as a device). A fact `thinkpol status -json` reports (mode, connection, the map version applied, health and its problems, the overlay's MTU, links, counters, a server's uplink) is read from it, never from a log line: `waitStatus(t, node, checks...)` with checks such as `mapApplied(version)` (on a server, also its workers ready, which exist only after its first serve), `inMode`, `connection`, `health`, `problem`, or `readStatus` for one read. A log line is asserted only where the line is what the test is about or the status doesn't report the fact (a server's worker applying a map, `workerApplied`; a blob fetched; the map's ingress and egress flags), and a check of the status's text view only where that view is what is tested.
 - **Failing tests** print the containers' logs. With `THINKPOL_LAB_KEEP=1` a failed test's lab stays up for inspection (`docker compose -p <project> exec <node> bash`, the project is in the log); `make lab-down` removes it.
 
 ### Adding a node or a network

@@ -11,7 +11,6 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -987,16 +986,12 @@ func setupUDP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	envelope, version := space.build(t)
 	space.install(t, dev, "device-a", envelope)
 	space.install(t, server, "server-1", envelope)
-	upDev := dev.Start(t, "thinkpol", "up")
-	upSrv := server.Start(t, "thinkpol", "up", "-mode", "server")
-	applied := applied(version)
-	if err := waitOutput(upSrv, applied, 60*time.Second); err != nil {
-		return probeTarget{}, fmt.Errorf("server-1: %w", err)
+	startUp(t, dev)
+	startUp(t, server)
+	if _, err := statusWithin(server, 60*time.Second, nil, mapApplied(version)); err != nil {
+		return probeTarget{}, err
 	}
-	if err := waitOutput(upDev, applied, 60*time.Second); err != nil {
-		return probeTarget{}, fmt.Errorf("device-a: %w", err)
-	}
-	if err := waitOutput(upDev, `link up`, 60*time.Second); err != nil {
+	if _, err := statusWithin(dev, 60*time.Second, nil, mapApplied(version), linkUp); err != nil {
 		return probeTarget{}, err
 	}
 	o4, o6 := space.overlay(1)
@@ -1120,20 +1115,6 @@ func TestBlames(t *testing.T) {
 	}
 	if blames("prober", censor.Drop, []netip.Addr{v4})(e) || blames("fully-encrypted", censor.Reset, []netip.Addr{v4})(e) {
 		t.Error("blamed another module or verdict")
-	}
-}
-
-func waitOutput(p *lab.Process, pattern string, timeout time.Duration) error {
-	re := regexp.MustCompile(pattern)
-	deadline := time.Now().Add(timeout)
-	for {
-		if re.MatchString(p.Output()) {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("no %q within %s, last output:\n%s", pattern, timeout, p.Output())
-		}
-		time.Sleep(200 * time.Millisecond)
 	}
 }
 
