@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-243"
+branch: "tp-243-node-phase-cache"
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ Unchanged packages aren't rerun in nodes. The owner wants a full lab to take at 
 
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority; from the lab-speed audit)
+- 2026-11-17 backlog → in-progress, owner: agent-tp-243
