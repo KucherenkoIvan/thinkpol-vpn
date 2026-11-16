@@ -441,11 +441,9 @@ func TestProberBaseline(t *testing.T) {
 	p.probed(host, at(10), at(12))
 	p.probed(netip.MustParseAddr("2001:db8::9"), at(20), at(21))
 	p.probed(other, at(30), at(35))
-	for _, u := range []upstreamConn{
+	p.upstream = []upstreamConn{
 		{host, at(5)}, {host, at(11)}, {netip.MustParseAddr("2001:db8::9"), at(20.5)}, {host, at(32)},
 		{netip.MustParseAddr("2001:db8::9"), at(39)}, {other, at(6)},
-	} {
-		p.upstream = append(p.upstream, u)
 	}
 	if n, d := p.baseline(host, at(40)); n != 3 || d != 37*time.Second {
 		t.Errorf("40 s watched, 3 s of the host's probes: %d dials in %s, want 3 in 37s", n, d)
