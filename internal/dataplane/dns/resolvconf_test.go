@@ -90,7 +90,7 @@ func readString(t *testing.T, path string) string {
 // files nothing watches may write directly.
 func writeFileAtomic(t *testing.T, path, content string) {
 	t.Helper()
-	err := replace(path, func(tmp string) error { return writeNew(tmp, []byte(content)) })
+	err := replace(path, func(tmp string) error { return writeNew(tmp, []byte(content)) }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -839,7 +839,8 @@ func (e taggedUnprotected) Is(target error) bool { return target == ErrUnprotect
 func applyOnce(t *testing.T, r *resolvConf) {
 	t.Helper()
 	r.mu.Lock()
-	tell, _ := r.apply(readResolvConfFile(r.path))
+	f, ferr := readResolvConfFile(r.path)
+	tell, _ := r.apply(f, ferr, false)
 	r.mu.Unlock()
 	if tell != nil {
 		tell()
