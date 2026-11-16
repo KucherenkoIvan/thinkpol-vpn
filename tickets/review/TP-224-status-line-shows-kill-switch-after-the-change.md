@@ -24,7 +24,7 @@ branch: "tp-224-status-line-after-change"
 ## Acceptance
 - [x] Both commands print the kill switch's post-change state; tests on Linux and on macOS that fail on the old output, with the in-memory kill switch on both (no real host tools; the fix is in OS-independent node code, see Notes).
 - [x] Any other command with the same pattern fixed or listed in Notes with why not.
-- [ ] Mutation-checked; `make lint`, `make test`, `make lab-test` pass.
+- [x] Mutation-checked; `make lint`, `make test`, `make lab-test` pass. (full lab at 2fb1bb87: all packages pass; one censor-matrix reference cell timed out in compose up under load, judged outside TP-224 by the orchestrator, 2026-11-16)
 
 ## Notes
 - This changes what macOS prints, so it lands before the M2 device session.
@@ -67,3 +67,5 @@ branch: "tp-224-status-line-after-change"
 - 2026-11-16 at 789ecaa6: make lint passes; TestAChangeReturnsWithTheKillSwitchItLeaves passes -count=20 with busy loops beside it, and once with -race
 - 2026-11-16 full make lab-test at 2fb1bb87: exit 2; one failure, TestCensorMatrix/relay-tcp_(reference)/server-hello: the cell's docker compose up hung after starting 3 of 7 containers and was cut off after 608 s ("RESULTS.md not written"; machine loaded); every lab gotest package passed (39), internal/dataplane/dns included. Not the dns flake or the subnet-lock timeout, so box 3 stays open
 - 2026-11-16 handoff: nits done; left: judge or re-run the full lab (box 3), then review → done
+- 2026-11-16 box 3 ticked: full lab at 2fb1bb87: all packages pass; one censor-matrix reference cell timed out in compose up under load, judged outside TP-224 by the orchestrator, 2026-11-16
+- 2026-11-16 in-progress → review
