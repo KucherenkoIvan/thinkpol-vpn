@@ -1,0 +1,44 @@
+---
+id: TP-234
+title: "Tests and lint don't depend on the host's umask or default Go"
+milestone: M2
+area: build
+stream: verification
+repo: thinkpol-vpn
+size: S
+depends_on: []
+refs: []
+owner: "agent-tp-234"
+branch: "tp-234-env-independent-tests"
+---
+
+## Goal
+On a Linux host whose account umask is 0002 (common with per-user groups), some tests fail: directories they create come out group-writable and the code correctly refuses them. On a host whose default Go is newer than the repo's pinned toolchain, `make lint`'s vulnerability check fails on the newer standard library. Agents currently work around both per command (`umask 022`, `GOTOOLCHAIN=…`). Make the repo independent of both.
+
+## Scope
+- Tests that create files or directories the code checks for permissions set the modes they need explicitly (or the shared test helper does), instead of relying on the umask.
+- The Makefile pins the toolchain go.mod names for every target (e.g. exporting GOTOOLCHAIN from go.mod's toolchain line), so `make lint` and `make test` use it whatever the host's default Go is.
+
+## Out of scope
+
+## Acceptance
+- [x] `make test` passes under `umask 0002` on Linux; the tests that failed under it are named in Notes with the fix.
+- [x] `make lint` and `make test` pass on a host whose default Go is newer than the pinned toolchain, with no GOTOOLCHAIN set by the caller.
+- [x] The product's permission checks are unchanged (tests, not the code, adapt); mutation-checked where a test changed.
+
+## Notes
+- **umask: no test fails under 0002 any more, so no test changes here.** The failures this ticket was filed for (every test using `t.TempDir()` with `internal/dataplane/trusteddir`: cmd/thinkpol, internal/agent, internal/agent/service, trusteddir; `t.TempDir()` is 0777 less the umask, so 0775 under 0002) were fixed by TP-211's `trusteddirtest.TempDir` (internal/dataplane/trusteddir/trusteddirtest/trusteddirtest.go:13, chmod 0755). At 14261c5, uncached `go test -count=1 ./...` on Linux under umask 0002 and under umask 0000 (group and world write both kept) is green: no other test relies on the umask. Plain `make test` there hid nothing either, but note it can show cached results from a run under another umask: the test cache isn't keyed on the umask.
+- **Toolchain: the real failure was a tools/toolchain mismatch.** go.mod's `toolchain go1.26.11` is only a minimum under `GOTOOLCHAIN=auto`, so on a host with Go 1.27.4 `make` ran 1.27.4. Lint passed only while bin/tools had been built by that same Go; with tools built by go1.26.11 (a run with `GOTOOLCHAIN=go1.26.11` set by the caller) and a later run without it, govulncheck fails: `file requires newer Go version go1.27 (application built with go1.26)` on x/net's http2 files. The tools stamp didn't change with the toolchain, so nothing rebuilt them.
+- **Fix:** the Makefile exports `GOTOOLCHAIN` from go.mod's toolchain line (Makefile:3-9) and puts it in the tools stamp (Makefile:21), so every target (tests, lint, tool installs, the lab's host-side `go`) runs the pinned toolchain, and changing the toolchain rebuilds the tools. `make GOTOOLCHAIN=...` on the command line still overrides it. README and tickets/ORCHESTRATION.md say so.
+- No full lab: only the Makefile's toolchain handling and docs changed (the brief's rule); one `make lab-gotest` ran to show lab targets need no override either.
+
+## Log
+- 2026-11-16 created in backlog (from the M2 gate fixes)
+- 2026-11-16 backlog → in-progress, owner: agent-tp-234
+- 2026-11-16 base origin/rewrite 5e2dc33. At 14261c5 on Linux (umask 0002, default Go 1.27.4, no GOTOOLCHAIN): `go test -count=1 ./...` green, and green again under umask 0000; make lint green at baseline only because the tools were built by the same Go
+- 2026-11-16 Makefile exports GOTOOLCHAIN from go.mod's toolchain line and keys the tools stamp on it; README and ORCHESTRATION.md updated (465f777)
+- 2026-11-16 at 465f777 on Linux (umask 0002, default Go 1.27.4, no GOTOOLCHAIN set by the caller): make lint green (tools reinstalled, govulncheck built by go1.26.11), make test green (39 packages, none cached), make's go reports go1.26.11; make lab-gotest PKG=./internal/dataplane/trusteddir/... green with no override
+- 2026-11-16 mutation: the pin dropped while keeping go1.26.11-built tools (`make vulncheck GOTOOLCHAIN=local` with the go1.26.11 stamp) fails govulncheck with "file requires newer Go version go1.27 (application built with go1.26)", the original failure; the pin restored, green
+- 2026-11-16 mutation: trusteddirtest.TempDir's chmod 0755 removed, `go test ./internal/dataplane/trusteddir/... ./internal/agent/` under umask 0002 fails (TestLock, TestMakeMakesWhatIsMissingAndChecksIt, TestRecordsAreReadOnlyInTheirBoot and more); restored. No test changed on this branch; product permission checks untouched
+- 2026-11-16 not verified: a host whose default Go is older than the pinned toolchain (the explicit GOTOOLCHAIN downloads it there too, as auto did); no full lab (Makefile toolchain handling only)
+- 2026-11-16 in-progress → review
