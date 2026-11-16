@@ -47,6 +47,8 @@ branch: "tp-224-status-line-after-change"
 - [x] R1.4 Docs: internal/agent/doc.go says connect, disconnect and the rule preset return once the kill switch followed; docs/design/api-overview-reference.md Connect/Disconnect/SetRulePreset rows say the kill switch follows, and `rules preset` stores the choice in device.json, not rules.local.
 - [x] R1.5 Rewrapped the Connect, Disconnect and SetRulePreset doc comments in internal/agent/node.go.
 - [x] R1.6 Notes line: a failed apply is retried at once at the loop's next turn, so a hung pfctl stalls the loop about twice as long per command.
+- [x] R2.1 internal/agent/killswitch_test.go "failing" step: after `failWith(nil)` a settings change (`SetAllowLAN`) re-applies the kill switch, so the step doesn't depend on the loop's own retry running after the failure was cleared (else it waits for the 10 s re-apply tick).
+- [x] R2.2 internal/agent/doc.go: rewrapped the over-long line in the kill-switch paragraph.
 
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate review)
@@ -61,3 +63,4 @@ branch: "tp-224-status-line-after-change"
 - 2026-11-16 merged origin/rewrite (TP-221, TP-227); at 2fb1bb87: make lint and make test pass
 - 2026-11-16 full make lab-test at 2fb1bb87 started and queued for the full-lab lock behind other branches; no exit status yet
 - 2026-11-16 handoff: R1.1–R1.6 done; left: the full make lab-test result at 2fb1bb87 (box 3), then in-progress → review
+- 2026-11-16 delta check: merge, nits R2.1–R2.2

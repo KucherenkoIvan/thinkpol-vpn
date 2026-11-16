@@ -341,6 +341,9 @@ func TestAChangeReturnsWithTheKillSwitchItLeaves(t *testing.T) {
 		preset(t, b.node, "everything")
 		notEnforced(t, "rules preset everything", true, KillSwitchApplyFailed)
 		host.failWith(nil)
+		if err := b.node.SetAllowLAN(ctx, false); err != nil { // the loop's own retry may have run before failWith(nil)
+			t.Fatal(err)
+		}
 		inPlace(t, host, "connected")
 		eventually(t, func() bool { return b.node.Status().KillSwitch.Enforced })
 		host.failCloseWith(errors.New("nftables says no"))
