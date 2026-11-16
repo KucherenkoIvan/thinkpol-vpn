@@ -48,3 +48,7 @@ Depends on TP-200 (it changes how lab tests start nodes, in many of the same fil
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority)
 - 2026-11-16 backlog → in-progress, owner: agent-tp-238
+- 2026-11-16 teardown tests take the project override as a parameter and run in parallel; test and gotest lab names hash in a per-process id; TestAwaitJudgments and TestStatusChecksFailWithoutTheirFact parallel (a55d0c1f). make lint and make test green on a55d0c1f
+- 2026-11-16 mutation: dropping the process id from testProject's hash, then from goTestPackageProject's, each fails TestRunProjectNames ("process p2's ... process p1's is" the same name); restored
+- 2026-11-16 baseline, make lab-gotest PKG=./lab on rewrite e1efa92a, runner loaded by two other branches' labs: killed at the 60 min cap (3600 s, exit 2), 3 tests failed at the 10 min in-node limit, 6 lab setups timed out on the subnet allocation lock; the serial prefix (TestLabsBelongToTheirCheckout 82 s, TestDownRunRemovesOnlyItsRun 88 s) ran before any parallel test. An earlier baseline on the same commit: also killed at 3600 s
+- 2026-11-16 after, same command on c7cf5d67, two runs under the same load: both killed at the 60 min cap (exit 2), 12 and 13 failures, all lab setups timing out on the subnet allocation lock or the slot cap (TP-229's known issue) or the tests they held up; the teardown tests ran in the parallel set (=== CONT from the start)
