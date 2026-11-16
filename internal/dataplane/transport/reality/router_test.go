@@ -329,6 +329,7 @@ func TestAHelloWithBytesAfterItIsSplicedAsAStranger(t *testing.T) {
 	// the dial would make the start rule refuse it (StreamStale).
 	behind := newTransport(Options{Now: func() time.Time { return time.Now().Add(-time.Minute) }})
 	fresh := startShared(t, behind, theTarget(t), k, map[transport.SpaceID][]transport.PeerLink{a: {peerLink(id)}})
+	// probe's one Write of the hello and what followed arrives in one read on loopback.
 	probe(t, fresh.addr(), stream)
 	if v := fresh.verdict(t); v != transport.StreamUnknown {
 		t.Fatalf("verdict %d, want StreamUnknown", v)
