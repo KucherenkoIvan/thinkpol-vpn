@@ -1405,10 +1405,12 @@ func (r *wgRun) carryRandomExchanges(rng *rand.Rand, perSecond float64, d time.D
 	return flush(math.MaxInt64)
 }
 
-// TestWGRhythmRandomExchanges measures the count and burst signals' false
+// TestWGRhythmRandomExchanges pins the count and burst signals' false
 // positives on random request and response counts, every record one size
 // (so the rekey signal never reads it), 6 minutes at 1, 10 and 50 requests
-// a second, 20 seeds each, and pins the flags so a change shows.
+// a second, 20 seeds each: none flags. With 0 of 60 runs at each rate, the
+// rate of flagged 6-minute connections of this traffic is under 5% (95%
+// confidence, the rule of three); a rule that flags more fails here.
 func TestWGRhythmRandomExchanges(t *testing.T) {
 	if testing.Short() {
 		t.Skip("about 4 million records")
@@ -1420,7 +1422,7 @@ func TestWGRhythmRandomExchanges(t *testing.T) {
 				r := newWGRun(t, `{}`, 1400)
 				if a, blocked := r.carryRandomExchanges(rand.New(rand.NewPCG(seed, 223)), rate, 360*time.Second, shape[0], shape[1]); blocked {
 					flagged++
-					t.Logf("up to %d against %d records, %v/s, seed %d: blocked at %s: %s", shape[0], shape[1], rate, seed, a.at, a.Reason)
+					t.Errorf("up to %d against %d records, %v/s, seed %d: blocked at %s: %s", shape[0], shape[1], rate, seed, a.at, a.Reason)
 				}
 			}
 			t.Logf("up to %d against %d records, %v/s: %d of 20 flagged", shape[0], shape[1], rate, flagged)
