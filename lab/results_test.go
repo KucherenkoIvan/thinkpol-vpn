@@ -153,6 +153,8 @@ func TestCensorMatrix(t *testing.T) {
 		}
 		if cell.result != want {
 			t.Errorf("%s against %s: %s (%s), want %s", tr.name, cc.name, cell.result, cell.detail, want)
+		} else {
+			t.Logf("%s against %s: %s (%s)", tr.name, cc.name, cell.result, cell.detail)
 		}
 		return cell
 	}
