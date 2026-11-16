@@ -46,6 +46,17 @@ M2's gate promises `reality` shows no WireGuard rhythm: no 2-minute rekey pair a
 - Open boxes, waiting on the owner: "Control ... caught ... on an idle one" can't hold while thinkpol sets no persistent keepalive (an idle thinkpol tunnel sends no WireGuard records), and `make lab-test` fails on that cell for the same reason. Options for the owner: reword the M2 promise's keepalive part (no WireGuard keepalives exist on an idle thinkpol tunnel; the path probes are thinkpol's own 2 s rhythm), or define "idle" as a tunnel whose WireGuard keepalives fire (sparse traffic, or a persistent keepalive), which changes what the idle case holds. reality's busy pass also deserves the owner's eye: it comes from one record size plus the steady path probes, not from hiding WireGuard's timing.
 - False positives of reading every size, measured (100 seeds, 6 min of two-way random sizes): sizes 92-404 none flagged at one exchange per 10 s, 1/s, 10/s or 50/s; sizes 40-1500 none at 0.1, 1 and 50 per second, 8 of 100 at 10 per second. HTTP/2 polling every 2 minutes is now flagged, like HTTP/1.1 polling (named risks in lab/censor/doc.go).
 
+## Review findings
+Round 1 (2026-11-16; WireGuard's constants confirmed against wireguard-go, oracles real):
+- [ ] R1.1 Measure first, offline on the held traces (busy and idle, udp and reality): (a) record-count imbalance per connection, d = n(A→B) − n(B→A), stepping +1 three times 120–210 s apart and flat otherwise; (b) per 2 s ping tick, one extra record each way recurring 120–210 s apart three times. Numbers in Notes whatever they show; no product change, no new rule in the detector this round.
+- [ ] R1.2 The reality rhythm cells' detail names the blind spot (and what R1.1 found), never a bare pass.
+- [ ] R1.3 checkMatrix requires the udp control row, held and expected to fail, whenever a case holds; TestCheckMatrix covers a matrix without it.
+- [ ] R1.4 prober: host dials between probes are a baseline; a nonzero baseline reports "upstream tell: unattributable (N dials between probes)"; a `hosts` entry names at least two addresses.
+- [ ] R1.5 holdTunnel checks the hold's pings crossed (busy: under 90% received fails; idle: the one ping) and the idle wait honours ctx.
+- [ ] R1.6 Doc honesty: wgPairWindow, wgSteadyJitter and the keepalive count are choices; the 30 s slack and thinkpol's missing persistent keepalive; a tunnel idle over ~90 s between rekeys breaks the chain; the idle passive-keepalive claim reconciled with the trace.
+- [ ] R1.7 The idle rhythm case leaves the matrix until the owner rules (holdTunnel's idle branch and its test stay); acceptance boxes reworded so each ticked one is true.
+- [ ] R1.8 Nits: tests close the trace file; the trace setting's comment says each line is a synchronous write in the packet path.
+
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate review)
 - 2026-11-16 backlog → in-progress, owner: agent-tp-223
@@ -55,3 +66,5 @@ M2's gate promises `reality` shows no WireGuard rhythm: no 2-minute rekey pair a
 - 2026-11-16 make lint and make test pass at c3d655b0; make lab-test at c3d655b0 fails only on udp × wireguard-rhythm (idle) (the measurement) and TP-220's dns settle flake; two boxes left open for the owner (Notes)
 - 2026-11-16 not verified: reality's rekeys themselves (invisible on the wire by design of the floor; udp's held run shows WireGuard rekeying at 120 s and 240 s under the same hold)
 - 2026-11-16 in-progress → review
+- 2026-11-16 review → in-progress — owner: agent-tp-223, round 1: review findings
+- 2026-11-16 review round 1: fix R1.1–R1.8; owner decides the idle promise
