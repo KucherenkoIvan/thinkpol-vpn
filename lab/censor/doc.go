@@ -171,11 +171,12 @@
 // wireguard-go defines them, REKEY_AFTER_TIME (120 s), REJECT_AFTER_TIME
 // (180 s), REKEY_TIMEOUT (5 s) and KEEPALIVE_TIMEOUT (10 s), and the
 // persistent keepalive interval wg(8) suggests (25 s), never what a
-// transport was measured to do. Three numbers are the module's own
+// transport was measured to do. Five numbers are the module's own
 // choices, no WireGuard timer: the 2 s an answer has, the 1 s an idle
-// run's intervals may differ by, and the three occurrences (rekeys, or
-// idle keepalives once the connection has carried an exchange) it needs.
-// Two signals each show the rhythm:
+// run's intervals may differ by, the three occurrences (rekeys, or idle
+// keepalives once the connection has carried an exchange) it needs, the
+// 300 ms of quiet after which it reads the record count, and the 10 ms
+// that make records one burst. Four signals each show the rhythm:
 //
 //   - rekey: an exchange, a record one way answered within 2 s by one the
 //     other way, that stands out: each of its two sizes new to its
@@ -210,6 +211,25 @@
 //     third: three idle keepalives and one more. A TLS connection carries
 //     an exchange from its first request on, so "five without" is for
 //     datagram flows.
+//   - count: a WireGuard handshake leaves its initiator one record ahead,
+//     the initiation and the keepalive that confirms the new session
+//     against the response (the packet that triggered the rekey is
+//     answered, or not, as any data). The module counts each direction's
+//     records and reads their difference whenever the connection has
+//     carried no record for 300 ms. The rhythm shows when the difference
+//     steps by one amount three times in a row, each step (from the first
+//     record after the quiet before it) REKEY_AFTER_TIME to the rekey
+//     window above after the one before, with no other change in
+//     between: under traffic even both ways (a ping, the path probes, an
+//     interactive stream) the count is flat but for the rekeys.
+//   - burst: the same handshake seen whole, as a burst of records each
+//     within 10 ms of the one before, either way, with one record more one
+//     way than the other and at least one each way (a rekey under a ping:
+//     the ping, the initiation and the confirming keepalive against the
+//     reply and the response, 3 against 2). It shows the rhythm when a
+//     burst of the same counts recurs three times in a row, each
+//     REKEY_AFTER_TIME to the rekey window after the one before; one of
+//     those counts sooner than REKEY_AFTER_TIME starts the chain over.
 //
 // Only what stands out is chained, from the latest time it stood out, so a
 // steady stream of records (thinkpol's own 2 s path probes, a ping, an
@@ -225,20 +245,43 @@
 // enough to stand out and a pair recurs a rekey period apart by chance: a
 // false-positive risk.
 //
-// The price: an exchange that is neither new nor after quiet never stands
-// out, so a handshake pair among records of its sizes exchanged steadily is
-// invisible while the tunnel carries them. With every small record padded
-// to one size (reality's 512-byte floor) and records of that size
-// exchanged every 2 s both ways (the path probes both ends of a thinkpol
-// link send, internal/dataplane/path), no size is ever new and the
-// connection is never quiet: neither signal can fire, whatever WireGuard
-// does inside. That is a blind spot of this module, not hidden timing:
-// measured on reality held in use (TP-223), each rekey leaves one more
-// record from the initiator than from its peer (the trigger, the
-// initiation and its confirming keepalive, against the answer and the
-// response, within 6 ms), so a censor that counts each direction's records
-// sees the count step by one every 2 minutes, at 124, 246 and 366 s of the
-// hold and flat in between. This module doesn't count.
+// The rekey signal's price: an exchange that is neither new nor after
+// quiet never stands out, so a handshake pair among records of its sizes
+// exchanged steadily is invisible to it while the tunnel carries them.
+// With every small record padded to one size (reality's 512-byte floor)
+// and records of that size exchanged every 2 s both ways (the path probes
+// both ends of a thinkpol link send, internal/dataplane/path), no size is
+// ever new and the connection is never quiet: neither the rekey nor the
+// keepalive signal can fire, whatever WireGuard does inside. The count and
+// burst signals don't read sizes at all, and padding hides sizes, not
+// counts. Measured on reality held in use (TP-223; the held connection's
+// records are this package's testdata): every record 507 bytes, yet each
+// rekey is a burst of three records from the device and two from the
+// server within 6 ms, at 120.7, 241.0 and 361.6 s of the connection, and
+// the count steps by one there and is flat in between. reality is caught
+// by the burst at the third rekey (by the count too: either alone catches
+// it), a tell RR65 accepts until cover records go both ways. A transport
+// that hides the rhythm from this module needs records that keep both
+// counts from showing a rekey: cover records in both directions at random,
+// not padding.
+//
+// The count and burst signals have blind spots and risks of their own.
+// The count needs 300 ms of quiet to read a level and the level flat
+// between rekeys: where a round trip at the censor takes longer, requests
+// in flight make the level move, and records one way that nothing answers
+// (a server push, cover records) between rekeys break its chain. The
+// burst needs a handshake's records within 10 ms of each other at the
+// censor (the lab's router; a censor beside the initiator sees the
+// response and its confirming keepalive back to back), with nothing else
+// in the burst. With both (the reality trace's server records 20 ms later
+// and one record from the server every 30 s besides) neither fires, and
+// the tunnel is again hidden from the module. Flagged by design, as false
+// positives: anything that leaves the same imbalance every 2 to 3.5
+// minutes and nothing else in between (a poll whose response takes one
+// record more than its request, or a one-way heartbeat at that interval,
+// on an otherwise quiet connection), and an exchange of one record more
+// one way than the other within 10 ms recurring at that interval alone.
+// MEASURED_RANDOM_COUNTS
 //
 // The keepalive signal has blind spots of its own: next to other steady
 // traffic (those path probes) no record comes after quiet,
@@ -458,7 +501,9 @@
 // and log a summary of the module's trace; udp, which carries WireGuard
 // with its timing untouched, is the control and must be caught in both, or
 // the run fails: a held row's pass means nothing unless the same hold
-// catches udp.
+// catches udp. reality is expected to fail the case in use, caught by its
+// record counts, and its cell says it is a known tell RR65 accepts: an
+// expected fail is a correct cell, as udp's is.
 //
 // # Limits
 //

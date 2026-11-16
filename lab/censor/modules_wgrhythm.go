@@ -20,8 +20,8 @@ func init() {
 // REKEY_TIMEOUT and KEEPALIVE_TIMEOUT), and the persistent keepalive
 // interval wg(8) suggests, which thinkpol doesn't set
 // (internal/dataplane/wg). The thresholds below derive from them, but for
-// wgPairWindow, wgSteadyJitter, wgRekeys and the keepalive count: those
-// are the module's choices, no WireGuard timer.
+// wgPairWindow, wgSteadyJitter, wgRekeys, wgCountSettle, wgBurstGap and
+// the keepalive count: those are the module's choices, no WireGuard timer.
 const (
 	wgRekeyAfterTime      = 120 * time.Second
 	wgRejectAfterTime     = 180 * time.Second
@@ -62,6 +62,24 @@ const (
 	// chain starts over, and a tunnel used in bursts that far apart is
 	// missed by the rekey signal.
 	wgRekeySlack = wgPersistentKeepalive + wgRekeyTimeout
+	// wgCountSettle is how long the connection must carry no record,
+	// either way, for its record count each way to be read as a level: a
+	// choice, longer than a round trip and a WireGuard handshake in the
+	// lab, shorter than the gaps of a ping every 2 s or of thinkpol's path
+	// probes. Where a round trip takes longer, a request in flight makes
+	// the level move and the count signal misses.
+	wgCountSettle = 300 * time.Millisecond
+	// wgBurstGap is how close a record must end to the one before, either
+	// way, to be in its burst: a choice, a few ms, room for a handshake
+	// where the censor sees it start to end within a few ms (the lab's
+	// router; a censor beside the initiator sees the response and its
+	// confirming keepalive back to back too).
+	wgBurstGap = 10 * time.Millisecond
+	// wgBurstMax is the most records one way a burst may hold to be a
+	// handshake: the initiation, the confirming keepalive and the packet
+	// that triggered the rekey, against the response and that packet's
+	// answer. Bigger bursts are other traffic's (measured, doc.go).
+	wgBurstMax = 3
 )
 
 // wgRhythm flags a connection that carries WireGuard with its rhythm
@@ -73,7 +91,7 @@ const (
 // application-data records only; over UDP each datagram is a record. Of a
 // record it reads its size, its direction and when it ended. The
 // connection shows the rhythm, and is decided with the module's verdict
-// from then on, both ways, on either signal:
+// from then on, both ways, on any of its signals:
 //
 //   - rekey: an exchange (a record one way and one the other way within
 //     wgPairWindow) that stands out, each of its two sizes new to its
@@ -93,6 +111,22 @@ const (
 //     has carried an exchange, two more without. A record counts once its
 //     wgPairWindow has passed, judged on the connection's next packet
 //     either way.
+//   - count: each WireGuard handshake leaves the initiator one record
+//     ahead (initiation and confirming keepalive against the response;
+//     what triggered it is answered or not as any data), so with traffic
+//     even both ways the difference of the record counts each way, read
+//     whenever the connection carried no record for wgCountSettle, steps
+//     by the same amount at each rekey and stays flat in between. It
+//     shows the rhythm when the difference steps by one amount wgRekeys
+//     times in a row, each step starting a rekey period to the rekey
+//     window after the one before, with no other change in between.
+//   - burst: the same handshake seen whole, as a burst (records each
+//     within wgBurstGap of the one before, either way) with one record
+//     more one way than the other, at least one each way and at most
+//     wgBurstMax, recurring
+//     with the same counts wgRekeys times in a row, each a rekey period to
+//     the rekey window after the one before; a burst of those counts
+//     sooner than a rekey period starts the chain over.
 //
 // Flow shape beyond that (size distributions, bursts) is not its business
 // (owner, 2026-11-07). A TCP stream it can't frame as TLS from its first
@@ -132,7 +166,55 @@ type wgConn struct {
 	// pending is the latest idle record while it may still be answered.
 	pending *wgRecord
 	run     wgIdleRun
-	flagged string
+	// count is the count signal's state, burst the latest burst while it
+	// may still grow, bursts the burst signal's chains by the burst's
+	// records each way, pruned like exchanges.
+	count        wgCount
+	burst        wgRecordBurst
+	bursts       map[[2]int]*wgChain
+	burstsPruned time.Time
+	flagged      string
+}
+
+// wgCount is the count signal's state: records each way, the difference
+// last read as a level, when the records since that reading began, and
+// the chain of the level's steps.
+type wgCount struct {
+	n       [2]int
+	level   int
+	leveled bool // a level has been read
+	settled bool // the level has been read since the latest record
+	since   time.Time
+	chain   wgChain
+}
+
+// wgRecordBurst is a burst of records each within wgBurstGap of the one
+// before: when it began and its records each way.
+type wgRecordBurst struct {
+	start time.Time
+	n     [2]int
+}
+
+// wgChain is a run of occurrences each a rekey period to the rekey
+// window after the one before: the latest one, how many, the latest gap,
+// and for the count signal the step they share.
+type wgChain struct {
+	at    time.Time
+	n     int
+	gap   time.Duration
+	delta int
+}
+
+// next counts an occurrence at at into the chain: one a rekey period to
+// window after the latest continues it, any other starts it over.
+func (ch *wgChain) next(at time.Time, rekey, window time.Duration) {
+	gap := at.Sub(ch.at)
+	if ch.n > 0 && gap >= rekey && gap <= window {
+		ch.n, ch.gap = ch.n+1, gap
+	} else {
+		ch.n, ch.gap = 1, 0
+	}
+	ch.at = at
 }
 
 // wgDirection frames one direction's TLS records.
@@ -255,7 +337,9 @@ func (m *wgRhythm) closeTrace() error {
 }
 
 // WGTraceLine is one line of wireguard-rhythm's trace: a record the module
-// judged, on the flow of its direction, and what it made of it.
+// judged, on the flow of its direction, and what it made of it. A line of
+// size 0 is no record: the flag the count or burst signal raised in the
+// quiet after a record, at the packet that ended the quiet.
 type WGTraceLine struct {
 	Flow string    `json:"flow"`
 	End  time.Time `json:"end"`
@@ -283,7 +367,7 @@ func (m *wgRhythm) Inspect(p *Packet, f *Flow) Decision {
 	}
 	c, dir := m.conn(f)
 	if c.flagged == "" {
-		m.settle(c, f.Last)
+		m.settle(c, f, f.Last)
 	}
 	switch {
 	case c.flagged != "":
@@ -316,7 +400,7 @@ func (m *wgRhythm) conn(f *Flow) (*wgConn, int) {
 	}
 	// Whatever state either key still has is of an older connection.
 	delete(m.conns, f.Key.Reverse())
-	c := &wgConn{exchanges: map[[2]int]*wgExchange{}}
+	c := &wgConn{exchanges: map[[2]int]*wgExchange{}, bursts: map[[2]int]*wgChain{}}
 	for i := range c.dirs {
 		c.dirs[i].recent, c.dirs[i].seen = map[int]wgRecentRecord{}, map[int]time.Time{}
 	}
@@ -381,6 +465,15 @@ func (m *wgRhythm) record(c *wgConn, dir int, f *Flow, size int, end time.Time) 
 	if c.flagged != "" {
 		return
 	}
+	if c.last.IsZero() || end.Sub(c.last) >= wgCountSettle {
+		c.count.since = end
+	}
+	c.count.n[dir]++
+	c.count.settled = false
+	if c.burst.n == [2]int{} {
+		c.burst.start = end
+	}
+	c.burst.n[dir]++
 	d := &c.dirs[dir]
 	r := wgRecord{dir, size, end}
 	if p := c.pending; p != nil && r.dir != p.dir && end.Sub(p.end) <= wgPairWindow {
@@ -435,10 +528,22 @@ func (m *wgRhythm) traced(f *Flow, size int, end time.Time, quiet, fresh bool, s
 	}
 }
 
-// settle counts the pending idle record into the idle run once its answer
-// window has passed by now, and flags the connection when the run shows
-// the rhythm.
-func (m *wgRhythm) settle(c *wgConn, now time.Time) {
+// settle closes the burst and reads the count once the connection has
+// been quiet long enough for each by now, counts the pending idle record
+// into the idle run once its answer window has passed, and flags the
+// connection when any of them shows the rhythm.
+func (m *wgRhythm) settle(c *wgConn, f *Flow, now time.Time) {
+	if !c.last.IsZero() && now.Sub(c.last) > wgBurstGap && c.burst.n != [2]int{} {
+		m.closeBurst(c)
+	}
+	if !c.last.IsZero() && now.Sub(c.last) >= wgCountSettle && !c.count.settled {
+		m.readCount(c)
+	}
+	if c.flagged != "" {
+		// The flag's own line: no record, the packet it came on.
+		m.traced(f, 0, now, false, false, 0, c.flagged)
+		return
+	}
 	p := c.pending
 	if p == nil || now.Sub(p.end) <= wgPairWindow {
 		return
@@ -463,7 +568,7 @@ func (m *wgRhythm) settle(c *wgConn, now time.Time) {
 // It returns how many times in a row the exchange has stood out, if this
 // occurrence made it stand out, else 0.
 func (m *wgRhythm) exchange(c *wgConn, sizes [2]int, stands bool, end time.Time) int {
-	window := m.rekey*time.Duration(wgRejectAfterTime/time.Second)/time.Duration(wgRekeyAfterTime/time.Second) + wgRekeySlack
+	window := m.window()
 	if end.Sub(c.pruned) >= window {
 		for k, e := range c.exchanges {
 			if end.Sub(e.seen) > window {
@@ -501,6 +606,72 @@ func (m *wgRhythm) exchange(c *wgConn, sizes [2]int, stands bool, end time.Time)
 			sizes[0], sizes[1], e.chain, e.gap.Round(time.Second))
 	}
 	return e.chain
+}
+
+// window is the latest a rekey comes after the one before:
+// REJECT_AFTER_TIME, scaled with a shorter rekey period, and wgRekeySlack.
+func (m *wgRhythm) window() time.Duration {
+	return m.rekey*time.Duration(wgRejectAfterTime/time.Second)/time.Duration(wgRekeyAfterTime/time.Second) + wgRekeySlack
+}
+
+// readCount reads the difference of the record counts each way as a
+// level, the connection having carried no record for wgCountSettle, and
+// flags the connection when it has stepped by one amount wgRekeys times
+// in a row, a rekey period apart, with no other change.
+func (m *wgRhythm) readCount(c *wgConn) {
+	k := &c.count
+	k.settled = true
+	d := k.n[0] - k.n[1]
+	if !k.leveled {
+		k.level, k.leveled = d, true
+		return
+	}
+	step := d - k.level
+	if step == 0 {
+		return
+	}
+	k.level = d
+	if step != k.chain.delta {
+		k.chain = wgChain{delta: step}
+	}
+	k.chain.next(k.since, m.rekey, m.window())
+	if k.chain.n >= wgRekeys {
+		c.flagged = fmt.Sprintf("WireGuard rekey by record count: the difference each way stepped %d times by %+d, the last %s apart, flat in between",
+			k.chain.n, step, k.chain.gap.Round(time.Second))
+	}
+}
+
+// closeBurst ends the latest burst and, if it has one record more one way
+// than the other, records both ways and no more than wgBurstMax either
+// way, chains it with the bursts of its
+// counts before it, flagging the connection when they recur wgRekeys
+// times in a row a rekey period apart.
+func (m *wgRhythm) closeBurst(c *wgConn) {
+	b := c.burst
+	c.burst = wgRecordBurst{}
+	lo, hi := min(b.n[0], b.n[1]), max(b.n[0], b.n[1])
+	if lo < 1 || hi != lo+1 || hi > wgBurstMax {
+		return
+	}
+	window := m.window()
+	if b.start.Sub(c.burstsPruned) >= window {
+		for k, ch := range c.bursts {
+			if b.start.Sub(ch.at) > window {
+				delete(c.bursts, k)
+			}
+		}
+		c.burstsPruned = b.start
+	}
+	ch := c.bursts[b.n]
+	if ch == nil {
+		ch = &wgChain{}
+		c.bursts[b.n] = ch
+	}
+	ch.next(b.start, m.rekey, window)
+	if ch.n >= wgRekeys {
+		c.flagged = fmt.Sprintf("WireGuard rekey by burst: %d records one way and %d the other within %s, %d times, the last %s apart",
+			b.n[0], b.n[1], wgBurstGap, ch.n, ch.gap.Round(time.Second))
+	}
 }
 
 // with is how long the run would be with r, an idle record, in it.

@@ -227,6 +227,12 @@ func (c *censorRun) traceSummary(t *testing.T, path, cell string) string {
 			order = append(order, tl.Flow)
 		}
 		at := tl.End.Sub(zero).Seconds()
+		if tl.Flagged != "" {
+			f.flagged = fmt.Sprintf("%.1fs: %s", at, tl.Flagged)
+		}
+		if tl.Size == 0 {
+			continue // the flag's own line, no record
+		}
 		f.n++
 		f.sizes[tl.Size]++
 		if tl.AfterQuiet {
@@ -234,9 +240,6 @@ func (c *censorRun) traceSummary(t *testing.T, path, cell string) string {
 		}
 		if tl.StoodOut > 0 {
 			f.stood = append(f.stood, fmt.Sprintf("%.1fs:%dB(x%d)", at, tl.Size, tl.StoodOut))
-		}
-		if tl.Flagged != "" {
-			f.flagged = fmt.Sprintf("%.1fs: %s", at, tl.Flagged)
 		}
 	}
 	capped := func(xs []string) string {
