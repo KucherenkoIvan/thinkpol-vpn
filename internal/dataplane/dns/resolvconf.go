@@ -380,6 +380,11 @@ func setResolvConfTimed(path, uplink string, c SystemConfig, timing resolvConfTi
 	if err == nil && !bytes.Equal(r.written, f.content) {
 		own = 1
 	}
+	if errors.Is(err, errChangedSinceRead) {
+		// Settling from here, not from the watch's first pass: the caller
+		// asks Problem and Deferred as soon as this returns.
+		r.beginForeign(stateOf(f, ferr))
+	}
 	r.mu.Unlock()
 	if err != nil && !errors.Is(err, errChangedSinceRead) {
 		closeWatch()
@@ -674,12 +679,12 @@ func (r *resolvConf) watch(first func(), changed bool, changes <-chan bool, clos
 		r.mu.Lock()
 		ev, f, ferr := readJudged(func() (resolvConfFile, error) { return readResolvConfFile(r.path) },
 			event{changed: changed, renamed: renamed, quietEnded: quietEnded}, changes)
-		if !r.decide(f, ferr, ev, quiet) {
+		take, capped := r.decide(f, ferr, ev, quiet)
+		if !take {
 			r.mu.Unlock()
 			continue
 		}
 		foreign := r.foreign
-		capped := foreign != nil && time.Since(foreign.began) >= r.timing.settleMax
 		r.foreign = nil
 		quiet.Stop()
 		prev := r.err
@@ -750,9 +755,10 @@ func withPending(ev event, changes <-chan bool) (event, bool) {
 	return ev, false
 }
 
-// decide says whether the watch takes the file back now. It starts or
-// moves the quiet timer of a write still settling. r.mu is held.
-func (r *resolvConf) decide(f resolvConfFile, ferr error, ev event, quiet *time.Timer) bool {
+// decide says whether the watch takes the file back now, and whether it
+// takes it past the settle's cap (rewriteResolvConf's capped). It starts
+// or moves the quiet timer of a write still settling. r.mu is held.
+func (r *resolvConf) decide(f resolvConfFile, ferr error, ev event, quiet *time.Timer) (take, capped bool) {
 	now := stateOf(f, ferr)
 	switch kind := r.classify(f, ferr, ev.renamed); {
 	case kind == ownFile:
@@ -762,7 +768,7 @@ func (r *resolvConf) decide(f resolvConfFile, ferr error, ev event, quiet *time.
 		// a rewrite failed partway, the change events are its own: it is
 		// retried on the poll, or one that keeps failing would retry as
 		// fast as its own events come.
-		return r.failedWrite == nil || !ev.changed
+		return r.failedWrite == nil || !ev.changed, false
 	case kind == wholeWrite:
 	case r.foreign == nil: // a write begins
 		r.beginForeign(now)
@@ -770,20 +776,21 @@ func (r *resolvConf) decide(f resolvConfFile, ferr error, ev event, quiet *time.
 		if log := r.cfg.Log; log != nil {
 			log.Debug("DNS: another program is writing resolv.conf; taking it back once the write settles", "path", r.path)
 		}
-		return false
+		return false, false
 	case time.Since(r.foreign.began) >= r.timing.settleMax: // past the cap
+		capped = true
 	case ev.changed || now != r.foreign.last: // still being written
 		r.foreign.last = now
 		quiet.Reset(r.quietFor())
-		return false
+		return false, false
 	case !ev.quietEnded: // a poll during a quiet settle
-		return false
+		return false, false
 	default: // settled
 	}
 	// Another program's write is taken back: whole, past the cap, or
 	// settled.
 	r.heldUntil = time.Now().Add(r.timing.hold)
-	return true
+	return true, capped
 }
 
 // beginForeign begins settling another program's write, found as now.
@@ -931,7 +938,9 @@ func (r *resolvConf) Problem() error {
 }
 
 // Restore puts the original back, as a file or the symlink it was. A
-// resolv.conf another program wrote since is left alone. After a rewrite
+// resolv.conf another program wrote before Restore read it is left alone;
+// one written between that read and the rename is renamed over (the path
+// isn't read again: RESIDUAL-RISKS.md RR5). After a rewrite
 // in place failed partway, what is left of the original in the file may
 // be cut short: the original held in memory is put back instead. Update
 // fails after it.

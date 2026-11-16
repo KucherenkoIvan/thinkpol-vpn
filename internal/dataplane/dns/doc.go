@@ -218,8 +218,13 @@
 // there: the cap takes a write that hasn't settled anyway, and a writer
 // that writes again within every take-back (faster than the sync, as on
 // a loaded disk) would never be taken back. Restore puts the original
-// back, as a file or the symlink it was; a resolv.conf another program
-// wrote since is left alone.
+// back, as a file or the symlink it was, over the managed file only: a
+// resolv.conf another program wrote since Restore read it is left
+// alone. It doesn't read the path again before its rename: another
+// program's write between its read and its rename (while its new file
+// is synced) is renamed over, and the original it put back, the
+// previous network's resolvers, stays after the node stops until that
+// program writes again (RESIDUAL-RISKS.md RR5).
 //
 // The file is watched (inotify on its directory, set up before the
 // take-over, and polled every 2 s as a backstop) and taken back if
@@ -324,8 +329,10 @@
 // file loses what it writes after the take-over (RESIDUAL-RISKS.md RR5).
 // Another program's write between the take-over's read and its write
 // (a file renamed in, or a write in place) is not overwritten: the
-// take-over writes nothing and tells nothing of what it read, the watch
-// settles that write and takes it back, and its servers are told against
+// take-over writes nothing and tells nothing of what it read, and the
+// settle of that write begins as the take-over returns, so Problem
+// reports [ErrUnprotected] and [Deferred] says it waits from the start;
+// the watch settles that write and takes it back, and its servers are told against
 // the take-over's read (or, when the node started untold, as its first
 // good read). Update over a file changed since its read leaves its
 // configuration to the watch the same way ([Deferred] says so).
