@@ -89,7 +89,7 @@ func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 		t.Fatal(err)
 	}
 	cwd, _ := os.Getwd()
-	project := claimProject(testProject(checkout, run, processID, cwd, t.Name()))
+	project := claimProject(ownTestProject(checkout, run, cwd, t.Name()))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	// The run's directory, for .kept; up gets the same one.

@@ -115,6 +115,11 @@ func testProject(checkout, run, proc, pkgDir, testName string) string {
 	return checkout + "-t-" + run + "-" + slug(testName, 24) + "-" + shortHash(pkgDir+"\x00"+testName+"\x00"+proc)
 }
 
+// ownTestProject is testProject for a test this process starts.
+func ownTestProject(checkout, run, pkgDir, testName string) string {
+	return testProject(checkout, run, processID, pkgDir, testName)
+}
+
 // GoTestProject is the Compose project prefix of the labs that run packages'
 // tests in a node (labctl gotest).
 func GoTestProject(checkout string) string { return checkout + "-gotest" }
@@ -123,6 +128,12 @@ func GoTestProject(checkout string) string { return checkout + "-gotest" }
 // package's tests in a node, started by the process proc of the run run.
 func goTestPackageProject(checkout, run, proc, importPath string) string {
 	return GoTestProject(checkout) + "-" + run + "-" + shortHash(importPath+"\x00"+proc)
+}
+
+// ownGoTestPackageProject is goTestPackageProject for a package this
+// process tests.
+func ownGoTestPackageProject(checkout, run, importPath string) string {
+	return goTestPackageProject(checkout, run, processID, importPath)
 }
 
 // belongsTo reports whether a Compose project was started from the checkout

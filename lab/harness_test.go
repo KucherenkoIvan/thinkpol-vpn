@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -319,6 +320,50 @@ func TestRunProjectNames(t *testing.T) {
 			t.Errorf("process p2's %q: process p1's is %q", p, mine[i])
 		}
 	}
+}
+
+const printOwnProjectsEnv = "THINKPOL_LAB_TEST_PRINT_OWN_PROJECTS"
+
+// ownProjects names a test's and a package's labs as this process would
+// start them.
+func ownProjects() string {
+	return ownTestProject("tplab-a", "r1", "/x/a/lab", "TestSmoke") + "\n" +
+		ownGoTestPackageProject("tplab-a", "r1", "example.net/x") + "\n"
+}
+
+// Two processes of one run name the same test's and package's labs apart
+// through the names start and GoTestEach use, not only when handed
+// different process ids.
+func TestProcessesOfOneRunNameTheirLabsApart(t *testing.T) {
+	if os.Getenv(printOwnProjectsEnv) != "" {
+		t.Skip("the child of this test")
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestPrintOwnProjects$")
+	cmd.Env = append(os.Environ(), printOwnProjectsEnv+"=1")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("child: %v\n%s", err, out)
+	}
+	theirs := strings.Split(string(out), "\n")
+	mine := strings.Split(ownProjects(), "\n")
+	for i, p := range mine[:2] {
+		if !startedByRun(p, "tplab-a", "r1") {
+			t.Errorf("%q is not run r1's", p)
+		}
+		if slices.Contains(theirs, p) {
+			t.Errorf("the other process also names its lab %q", p)
+		}
+		if i >= len(theirs) || !startedByRun(theirs[i], "tplab-a", "r1") {
+			t.Errorf("the other process's lab names: %q", out)
+		}
+	}
+}
+
+func TestPrintOwnProjects(t *testing.T) {
+	if os.Getenv(printOwnProjectsEnv) == "" {
+		t.Skip("the child of TestProcessesOfOneRunNameTheirLabsApart")
+	}
+	os.Stdout.WriteString(ownProjects())
 }
 
 // longestOverride, longestRunID and longestTestProject make the longest
