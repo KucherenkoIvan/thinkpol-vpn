@@ -27,7 +27,7 @@ Lab tests read facts from `thinkpol status -json` and start nodes through one sh
 - [x] No lab test greps a log line for a fact `status` reports; evidence: a grep over the lab tests that finds none.
 - [x] Lab tests start nodes through the one helper; evidence: a grep for direct `up` command lines in the lab tests that finds none outside the helper.
 - [x] The remaining log-line assertions are listed, each with a reason; evidence: the grep listing in this ticket's Log.
-- [ ] `make lint`, `make test`, `make lab-test` pass.
+- [x] `make lint`, `make test`, `make lab-test` pass (lab package via lab-gotest at 637a4d0f; no known failures hit).
 
 ## Notes
 - Source: stream review 2026-11-07 (orchestrator).
@@ -65,3 +65,7 @@ Lab tests read facts from `thinkpol status -json` and start nodes through one sh
 - 2026-11-16 mutations of the round-1 changes, each run with TestStatusChecksFailWithoutTheirFact and each caught: `mapApplied` not requiring a worker; `mapApplied` not requiring each worker ready; `routeTableEnforced` not checking `route_table_not_enforced`; `parseStatus` not wrapping `errSchemaVersion`
 - 2026-11-16 merged origin/rewrite (TP-229 not in it yet); `make lint`, `make test` pass on 10084e33. `make lab-gotest PKG=./lab` on 10084e33: TestEgressThroughAnExit, TestNoIPv6LeavesAroundTheTunnel, TestDiagShowsWhatTheHostHolds, TestIngressOffAdmitsOnlyServers, TestUpRunsTheM0Space, TestStatusChecksFailWithoutTheirFact pass; TestRouteTableSendsOnlyDirectAroundTheTunnel failed in setup (`waiting for the subnet allocation lock`), then passed on its own re-run; `TestCensorMatrix/udp/off` passes; `TestCensorMatrix/reality/off` failed in setup twice (`docker compose … up … exit -1` with its containers still starting, then `waiting for the subnet allocation lock`), no failed assertion: TP-229's setup serialization, not verified here
 - 2026-11-16 handoff: R1.1–R1.6 done; the lab box stays open for the orchestrator's lab-package check after TP-229 lands (the reality row's setup included)
+- 2026-11-17 merged origin/rewrite (TP-229 in it); `make lint`, `make test` pass on 637a4d0f
+- 2026-11-17 `make lab-gotest PKG=./lab` on 637a4d0f with RUN naming every top-level test but TestCensorMatrix (labctl gotest passes no `-skip`, and lab-gotest ignores LAB_TIMEOUT, so the run had labctl's 60m default): passes, 142 tests, 1092 s, TestBlobDistribution among them
+- 2026-11-17 `make lab-gotest PKG=./lab RUN=TestCensorMatrix/udp` on 637a4d0f passes (748 s); `RUN=TestCensorMatrix/reality` on 637a4d0f passes (676 s), its setup included
+- 2026-11-17 in-progress → review
