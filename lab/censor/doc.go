@@ -314,7 +314,8 @@
 // 600 farther off. So about 1.3% of such 6-minute connections, under 2.4%
 // (95% confidence), flag at one request every 10 s to a minute, and the
 // risk grows with a connection's length. Without the burst signal's cap of
-// three records a way, BURSTCAP. An earlier measurement, sizes of 40 to
+// three records a way, 15 more flag, by bursts of 4 to 14 records a way,
+// 14 of them at 10 and 50 requests a second. An earlier measurement, sizes of 40 to
 // 1500 bytes before the cap: at 10 and 50 requests a second, 1 to 4 in
 // 100 flagged by burst, mostly bursts of 6 to 9 records one way, which
 // the cap excludes.
