@@ -188,7 +188,7 @@ func hashInput(hostPath string, changedAfter time.Time) (string, error) {
 		}
 		h := sha256.New()
 		for _, e := range entries {
-			fmt.Fprintf(h, "%s\x00%v\x00", e.Name(), e.Type())
+			_, _ = fmt.Fprintf(h, "%s\x00%v\x00", e.Name(), e.Type())
 		}
 		return "dir:" + hex.EncodeToString(h.Sum(nil)), nil
 	case info.Mode().IsRegular():
@@ -356,7 +356,7 @@ func (s Store) Trim(maxAge, interval time.Duration) error {
 func sum(parts ...string) string {
 	h := sha256.New()
 	for _, p := range parts {
-		fmt.Fprintf(h, "%d:%s\n", len(p), p)
+		_, _ = fmt.Fprintf(h, "%d:%s\n", len(p), p)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
