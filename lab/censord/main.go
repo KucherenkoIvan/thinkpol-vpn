@@ -2,8 +2,8 @@
 // hands it every forwarded packet through an NFQUEUE, its modules decide,
 // and it writes every decision to the verdict log. A test starts it with a
 // config that picks the modules and reads the log back. With -reset it
-// clears what a stopped censor leaves in the router (censor.Reset) and
-// exits, so the next censor starts from a fresh router's state.
+// clears what a stopped censor leaves in the router (censor.ClearRouter)
+// and exits, so the next censor starts from a fresh router's state.
 package main
 
 import (
@@ -28,7 +28,7 @@ func main() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	flag.Parse()
 	if *reset {
-		if err := censor.Reset(); err != nil {
+		if err := censor.ClearRouter(); err != nil {
 			log.Fatalf("censord: %v", err)
 		}
 		return

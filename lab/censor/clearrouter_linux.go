@@ -9,13 +9,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Reset clears what a censor leaves in the router after it stops, so the
-// next censor starts from the state a fresh router has: the censor's
-// table (its queue rule), left behind by an unclean stop, and every
-// conntrack entry of the router's network namespace, IPv4 and IPv6. The
-// queue rule's ct match keeps conntrack on, so the flows a censor saw
+// ClearRouter clears what a censor leaves in the router after it stops,
+// so the next censor starts from the state a fresh router has: the
+// censor's table (its queue rule), left behind by an unclean stop, and
+// every conntrack entry of the router's network namespace, IPv4 and IPv6.
+// The queue rule's ct match keeps conntrack on, so the flows a censor saw
 // outlive it, their TCP state and timeouts with them.
-func Reset() error {
+func ClearRouter() error {
 	removeQueueRule()
 	return flushConntrack()
 }

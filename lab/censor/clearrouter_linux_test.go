@@ -11,10 +11,11 @@ import (
 	"testing"
 )
 
-// TestReset: after Reset the node has no censor table and no conntrack
-// entry, though a censor's queue rule and tracked flows were there. It
-// needs the lab: only there are nftables and conntrack ours to command.
-func TestReset(t *testing.T) {
+// TestClearRouter: after ClearRouter the node has no censor table and no
+// conntrack entry, though a censor's queue rule and tracked flows were
+// there. It needs the lab: only there are nftables and conntrack ours to
+// command.
+func TestClearRouter(t *testing.T) {
 	if os.Getenv("THINKPOL_LAB") == "" {
 		t.Skip("needs the lab")
 	}
@@ -45,7 +46,7 @@ table inet censor-test-ct {
 		t.Fatal("no conntrack entry before the reset: the test tracks nothing")
 	}
 
-	if err := Reset(); err != nil {
+	if err := ClearRouter(); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command("nft", "list", "table", "inet", table).CombinedOutput(); err == nil {
