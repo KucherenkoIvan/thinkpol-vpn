@@ -246,18 +246,18 @@ func TestProjectNames(t *testing.T) {
 	if odd, _ := CheckoutProject("/x/---"); odd != ProjectPrefix+"checkout-"+shortHash("/x/---") {
 		t.Errorf("a checkout without usable characters: %q", odd)
 	}
-	p1 := testProject(a, "r1", "/x/lab", "TestSmoke/IPv4 over UDP")
-	p2 := testProject(a, "r1", "/x/other", "TestSmoke/IPv4 over UDP")
+	p1 := testProject(a, "r1", "p1", "/x/lab", "TestSmoke/IPv4 over UDP")
+	p2 := testProject(a, "r1", "p1", "/x/other", "TestSmoke/IPv4 over UDP")
 	if p1 == p2 || !belongsTo(p1, a) || belongsTo(p1, b) || !startedByTests(p1, a) || startedByTests(a, a) {
 		t.Errorf("test projects %q, %q", p1, p2)
 	}
-	if !startedByTests(goTestPackageProject(a, "r1", "example.net/x"), a) {
+	if !startedByTests(goTestPackageProject(a, "r1", "p1", "example.net/x"), a) {
 		t.Error("labctl gotest's labs don't count as started by tests")
 	}
 	if belongsTo(a+"x", a) {
 		t.Error("a checkout whose name extends another's belongs to it")
 	}
-	for _, p := range []string{a, p1, goTestPackageProject(a, "r1", "example.net/x")} {
+	for _, p := range []string{a, p1, goTestPackageProject(a, "r1", "p1", "example.net/x")} {
 		if slug(p, 100) != p {
 			t.Errorf("%q is not a valid Compose project name", p)
 		}
@@ -280,20 +280,20 @@ func TestProjectNames(t *testing.T) {
 // and a run's labs are told apart from another run's, from lab-up's and
 // from another checkout's, even when one run id extends the other.
 func TestRunProjectNames(t *testing.T) {
-	t.Setenv(ProjectEnv, "")
-	a, _ := CheckoutProject("/x/a")
-	b, _ := CheckoutProject("/x/b")
+	t.Parallel()
+	a, _ := checkoutProject("/x/a", "")
+	b, _ := checkoutProject("/x/b", "")
 	mine := []string{
-		testProject(a, "r1", "/x/a/lab", "TestSmoke"),
-		goTestPackageProject(a, "r1", "example.net/x"),
+		testProject(a, "r1", "p1", "/x/a/lab", "TestSmoke"),
+		goTestPackageProject(a, "r1", "p1", "example.net/x"),
 	}
 	theirs := []string{
-		testProject(a, "r12", "/x/a/lab", "TestSmoke"),
-		goTestPackageProject(a, "r12", "example.net/x"),
-		testProject(a, "r2", "/x/a/lab", "TestSmoke"),
-		goTestPackageProject(a, "r2", "example.net/x"),
-		testProject(b, "r1", "/x/b/lab", "TestSmoke"),
-		goTestPackageProject(b, "r1", "example.net/x"),
+		testProject(a, "r12", "p1", "/x/a/lab", "TestSmoke"),
+		goTestPackageProject(a, "r12", "p1", "example.net/x"),
+		testProject(a, "r2", "p1", "/x/a/lab", "TestSmoke"),
+		goTestPackageProject(a, "r2", "p1", "example.net/x"),
+		testProject(b, "r1", "p1", "/x/b/lab", "TestSmoke"),
+		goTestPackageProject(b, "r1", "p1", "example.net/x"),
 		a,
 	}
 	for i, p := range mine {
@@ -309,6 +309,16 @@ func TestRunProjectNames(t *testing.T) {
 			t.Errorf("%q counts as run r1's", p)
 		}
 	}
+	// Another process of the same run (make lab-test's other phase, a retry,
+	// a shard) names the same test's and package's labs apart, still the run's.
+	for i, p := range []string{
+		testProject(a, "r1", "p2", "/x/a/lab", "TestSmoke"),
+		goTestPackageProject(a, "r1", "p2", "example.net/x"),
+	} {
+		if p == mine[i] || !startedByRun(p, a, "r1") {
+			t.Errorf("process p2's %q: process p1's is %q", p, mine[i])
+		}
+	}
 }
 
 // longestOverride, longestRunID and longestTestProject make the longest
@@ -321,14 +331,14 @@ var (
 )
 
 func longestTestProject(checkout, run string) string {
-	return testProject(checkout, run, "/x/lab", strings.Repeat("T", 100)) + "-99"
+	return testProject(checkout, run, "p1", "/x/lab", strings.Repeat("T", 100)) + "-99"
 }
 
 // The longest names are valid project names of their run. Their length
 // can't be checked here: Docker's acceptance is proven by the lab test.
 func TestLongestProjectNames(t *testing.T) {
-	t.Setenv(ProjectEnv, longestOverride)
-	checkout, err := CheckoutProject("/x")
+	t.Parallel()
+	checkout, err := checkoutProject("/x", longestOverride)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +347,7 @@ func TestLongestProjectNames(t *testing.T) {
 	}
 	for _, p := range []string{
 		longestTestProject(checkout, longestRunID),
-		goTestPackageProject(checkout, longestRunID, "example.net/x"),
+		goTestPackageProject(checkout, longestRunID, "p1", "example.net/x"),
 	} {
 		if slug(p, 200) != p || !startedByRun(p, checkout, longestRunID) {
 			t.Errorf("%q is not a valid Compose project name of the run", p)

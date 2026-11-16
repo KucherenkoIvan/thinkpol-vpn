@@ -116,6 +116,11 @@ func DownRun(ctx context.Context, root, run string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return downRun(ctx, root, checkout, run)
+}
+
+// downRun is DownRun for the checkout whose prefix is checkout.
+func downRun(ctx context.Context, root, checkout, run string) ([]string, error) {
 	removed, err := downWhere(ctx, func(project, labRoot string) bool {
 		return labRoot == root && startedByRun(project, checkout, run)
 	})

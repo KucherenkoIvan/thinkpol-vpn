@@ -12,7 +12,9 @@
 // A run is the processes that share a run id (RunEnv): make lab-test gives
 // its lab tests and its labctl gotest one, and every other process that
 // starts labs makes up its own. Test and gotest labs carry it in their
-// names, so two runs from one checkout never replace each other's labs,
+// names, with a hash that covers the process too (processID), so two runs
+// from one checkout, or two processes of one run, never replace each
+// other's labs,
 // and make lab-test's clean-up (DownRun) removes its own run's labs only.
 // labctl down (DownCheckout) still removes every lab of the checkout.
 //

@@ -63,6 +63,12 @@ func StartOwnSlot(t testing.TB, topo Topology) *Lab {
 
 func start(t testing.TB, topo Topology, slotKey string) *Lab {
 	t.Helper()
+	return startAs(t, topo, slotKey, os.Getenv(ProjectEnv))
+}
+
+// startAs is start with override in ProjectEnv's place (checkoutProject).
+func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
+	t.Helper()
 	if !mainInstalled.Load() {
 		t.Fatal("lab: this package's TestMain must call lab.Main(m), or the binaries its labs run are never removed")
 	}
@@ -70,7 +76,7 @@ func start(t testing.TB, topo Topology, slotKey string) *Lab {
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkout, err := CheckoutProject(root)
+	checkout, err := checkoutProject(root, override)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +85,7 @@ func start(t testing.TB, topo Topology, slotKey string) *Lab {
 		t.Fatal(err)
 	}
 	cwd, _ := os.Getwd()
-	project := claimProject(testProject(checkout, run, cwd, t.Name()))
+	project := claimProject(testProject(checkout, run, processID, cwd, t.Name()))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	// The run's directory, for .kept; up gets the same one.

@@ -457,6 +457,7 @@ func judgments(log, module string, between func(censor.FlowKey) bool) (flags []j
 // connections have theirs, so an IPv6 comparison that ends after the
 // probe ("not compared" seconds later) is in what the cell judges.
 func TestAwaitJudgments(t *testing.T) {
+	t.Parallel()
 	dev4, dev6 := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")
 	srv4, srv6 := netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("2001:db8::2")
 	other := netip.MustParseAddr("192.0.2.99")
