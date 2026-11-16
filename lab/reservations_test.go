@@ -38,8 +38,8 @@ func (d *fakeDaemon) create(s map[string]netSubnets) {
 }
 
 // Many labs reserving at once, each starting its networks only after the
-// allocation lock is free again, never get a subnet twice: the
-// reservations, not the daemon, keep them apart until the networks exist.
+// allocation lock is free again, never get a subnet twice while they live:
+// the reservations, not the daemon, keep them apart.
 func TestConcurrentReservationsNeverShareASubnet(t *testing.T) {
 	const labs = 30
 	dir := t.TempDir()
@@ -47,17 +47,23 @@ func TestConcurrentReservationsNeverShareASubnet(t *testing.T) {
 	nets := []Network{{Name: "a", IPv4Only: true}, {Name: "b", IPv4Only: true}}
 	daemon := &fakeDaemon{}
 	var (
-		mu  sync.Mutex
-		got = map[netip.Prefix]string{}
-		wg  sync.WaitGroup
+		mu    sync.Mutex
+		got   = map[netip.Prefix]string{}
+		wg    sync.WaitGroup
+		allUp sync.WaitGroup
 	)
+	allUp.Add(labs)
 	for i := range labs {
 		wg.Go(func() {
+			var once sync.Once
+			up := func() { once.Do(allUp.Done) }
+			defer up()
 			r, err := reserveSubnets(t.Context(), dir, nets, pool, daemon.used)
 			if err != nil {
 				t.Errorf("lab %d: %v", i, err)
 				return
 			}
+			defer r.release()
 			mu.Lock()
 			for name, s := range r.subnets {
 				if other, dup := got[s.v4]; dup {
@@ -69,7 +75,9 @@ func TestConcurrentReservationsNeverShareASubnet(t *testing.T) {
 			// docker compose up, outside the lock.
 			time.Sleep(time.Duration(mrand.IntN(20)) * time.Millisecond)
 			daemon.create(r.subnets)
-			r.release()
+			// Every lab lives until all are up.
+			up()
+			allUp.Wait()
 		})
 	}
 	wg.Wait()
