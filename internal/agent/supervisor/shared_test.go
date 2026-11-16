@@ -1186,13 +1186,15 @@ func (c *closingWorker) Close() error {
 // connection starts with its credential and a newline. With a target, an
 // authenticated connection is handed over with a connection to it, as
 // reality hands over its target, and "early" as read from it. What it
-// turns away goes to camo. With waits, a connection waits on its dialer
+// turns away goes to camo. With waited, a connection waits on its dialer
 // outside the routing work (RouteStream calls waiting before reading), as
-// reality's does once its mirror is up.
+// reality's does once its mirror is up, and is sent on waited once its
+// waiting returned. Every connection a test makes sends once on waited,
+// the member's included, so its buffer must hold that many.
 type lineTransport struct {
 	target string
 	camo   transport.Camouflage
-	waits  bool
+	waited chan struct{}
 }
 
 func (lineTransport) Name() string                                     { return "line" }
@@ -1239,8 +1241,9 @@ func (l lineListener) Camouflage() transport.Camouflage {
 }
 
 func (l lineListener) RouteStream(conn net.Conn, serves func(transport.Identity) bool, waiting func()) (transport.StreamHandoff, transport.StreamVerdict) {
-	if l.lt.waits {
+	if l.lt.waited != nil {
 		waiting()
+		l.lt.waited <- struct{}{}
 	}
 	// Byte by byte: whatever is read is consumed and must be reported.
 	var line []byte
@@ -1521,10 +1524,14 @@ func TestStreamRoutingIsBounded(t *testing.T) {
 // Connections waiting on their dialer's bytes don't hold routing slots:
 // once RouteStream says a connection waits, its slot is free, so idle
 // connections, more than the bound, don't keep a member's from being
-// routed.
+// routed. Each idle connection is dialled once the one before waits: the
+// accept loop takes a slot before the connection's routing goroutine runs,
+// so connections arriving together, more than the bound, are an overload
+// even if each would soon have freed its slot.
 func TestIdleStreamsDontStarveRouting(t *testing.T) {
 	camo := streamCamouflage{got: make(chan []byte, 8)}
-	s := newTestShared(t, nil, lineTransport{camo: camo, waits: true})
+	waited := make(chan struct{}, 8)
+	s := newTestShared(t, nil, lineTransport{camo: camo, waited: waited})
 	s.routingLimit = 2
 	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
 		t.Fatal(err)
@@ -1536,14 +1543,18 @@ func TestIdleStreamsDontStarveRouting(t *testing.T) {
 	})
 	w := newFakeWorker(s, a)
 	s.attach(a, w.sockets())
-	for range 4 { // idle, waiting on their dialers
+	for i := range 4 { // idle, waiting on their dialers
 		c, err := net.Dial("tcp", address)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = c.Close() }()
+		select {
+		case <-waited:
+		case <-time.After(wait):
+			t.Fatalf("idle connection %d never waited on its dialer; listener %+v", i+1, s.infos()[0])
+		}
 	}
-	time.Sleep(quiet) // all four accepted and routing
 	member, err := net.Dial("tcp", address)
 	if err != nil {
 		t.Fatal(err)
