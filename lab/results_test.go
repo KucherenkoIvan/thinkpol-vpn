@@ -39,9 +39,9 @@ import (
 //
 // Every cell sets its transport up afresh, and after it the row's lab is
 // reset to the state it came up in (matrixRow.reset): the cell's
-// processes, censord with them, stopped, the links, policy rules, tables
-// and files it left removed, the router's censor table and conntrack
-// cleared, the verdict log gone. A reset that didn't hold makes the cell
+// processes, censord with them, stopped, the links, addresses, routes,
+// policy rules, tables and files it left removed, the router's censor
+// table and conntrack cleared, the verdict log gone. A reset that didn't hold makes the cell
 // an error, and every later cell of its row.
 //
 // A transport's off cell (no censor) runs first and the censored cells
@@ -942,16 +942,21 @@ func TestWithRowSettings(t *testing.T) {
 	}
 }
 
+// transports is the matrix's rows, longest first: go test starts parallel
+// rows in this order as slots free up, so the rows that hold their tunnel
+// 7.5 minutes for wireguard-rhythm (reality about 865 s, udp) never wait
+// behind short ones, and the matrix takes about as long as its longest row
+// (RESULTS.md sorts the rows by name).
 var transports = []transport{
+	realityRow,
+	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP, udp: true, oneUnderlay: true, hold: holdTunnel},
 	{name: rowPlainTCP, setup: setupPlainTCP, probe: probePlainTCP, sawFlows: sawPlainTCP},
 	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPSOn(443), sawFlows: sawHTTPS, tls: true},
-	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP, udp: true, oneUnderlay: true, hold: holdTunnel},
 	{name: rowWireGuard, setup: setupWireGuard, probe: probeUDP, sawFlows: sawWireGuard, udp: true},
 	{name: rowOpenVPNUDP, setup: openVPN{"udp"}.setup, probe: openVPN{"udp"}.probe, sawFlows: openVPN{"udp"}.sawFlows, udp: true},
 	{name: rowOpenVPNTCP, setup: openVPN{"tcp"}.setup, probe: openVPN{"tcp"}.probe, sawFlows: openVPN{"tcp"}.sawFlows},
 	{name: rowRandomTCP, setup: setupRandom, probe: probeRandom, sawFlows: sawRandom},
 	{name: rowRelayTCP, setup: setupRelay, probe: probeHTTPSOn(relayRowPort), sawFlows: sawRelay, tls: true},
-	realityRow,
 }
 
 // probeWindow is how long a probe retries a family that should cross; one

@@ -24,12 +24,19 @@ import (
 
 // nodeStateScript prints what a cell may leave behind in a node, one
 // "<kind> <what>" line each: its processes (but the script's own), links,
-// policy rules, nftables tables, NFQUEUE queues bound, and the entries of
-// the directories transports and censord write to. /run/lab is the lab's
-// own (the seal marker, Process pid files).
+// addresses, routes in every table, policy rules, nftables tables, NFQUEUE
+// queues bound, and the entries of the directories transports and censord
+// write to. /run/lab is the lab's own (the seal marker, Process pid
+// files). Left out, as the kernel changes them on its own between cells:
+// neighbour entries, route expiry times, a route's linkdown flag and
+// routes learnt from router advertisements. A link's own routes come and
+// go with it.
 const nodeStateScript = `
 ps -eo pid=,ppid=,args= | awk -v me=$$ '$1 != me && $2 != me { pid = $1; $1 = ""; $2 = ""; sub(/^ +/, ""); print "process " pid " " $0 }'
 ip -br link show | awk '{ sub(/@.*/, "", $1); print "link " $1 }'
+ip -br addr show | awk '{ sub(/@.*/, "", $1); for (i = 3; i <= NF; i++) print "addr " $1 " " $i }'
+ip -4 route show table all | grep -v 'proto ra' | sed -e 's/ expires [^ ]*//' -e 's/ linkdown//' -e 's/ *$//' -e 's/^/route4 /'
+ip -6 route show table all | grep -v 'proto ra' | sed -e 's/ expires [^ ]*//' -e 's/ linkdown//' -e 's/ *$//' -e 's/^/route6 /'
 ip -4 rule show | sed 's/^/rule4 /'
 ip -6 rule show | sed 's/^/rule6 /'
 nft list tables | sed 's/^/nft /'
@@ -92,7 +99,8 @@ func (s nodeState) String() string {
 }
 
 // undo is the commands that remove what extra holds but processes (which
-// the reset kills first): tables, links, policy rules, files.
+// the reset kills first) and routes and addresses (undoAddressing): tables,
+// links, policy rules, files.
 func (extra nodeState) undo() [][]string {
 	var cmds [][]string
 	for _, table := range extra["nft"] {
@@ -114,6 +122,24 @@ func (extra nodeState) undo() [][]string {
 	return cmds
 }
 
+// undoAddressing is the commands that remove the routes and addresses
+// extra holds. Read after undo's commands ran: the routes and addresses of
+// a link they deleted are gone with it, and deleting them again would fail.
+func (extra nodeState) undoAddressing() [][]string {
+	var cmds [][]string
+	for _, f := range []struct{ flag, kind string }{{"-4", "route4"}, {"-6", "route6"}} {
+		for _, route := range extra[f.kind] {
+			cmds = append(cmds, append([]string{"ip", f.flag, "route", "del"}, strings.Fields(route)...))
+		}
+	}
+	for _, a := range extra["addr"] {
+		if link, cidr, ok := strings.Cut(a, " "); ok {
+			cmds = append(cmds, []string{"ip", "addr", "del", cidr, "dev", link})
+		}
+	}
+	return cmds
+}
+
 // pids is the process ids of a state's process lines.
 func (s nodeState) pids() []string {
 	var pids []string
@@ -126,16 +152,19 @@ func (s nodeState) pids() []string {
 
 // TestNodeState: a node's state reads by kind, a cell's leftovers are
 // extra, what it removed is missing, and the reset's commands undo the
-// extras, a policy rule by its whole spec.
+// extras, a policy rule and a route by their whole spec.
 func TestNodeState(t *testing.T) {
 	clean := parseNodeState("process 1 /sbin/docker-init -- sh -c wait\nprocess 7 sleep infinity\nlink lo\nlink eth0\n" +
 		"rule4 0:\tfrom all lookup local\nnft table netdev tplab_eth0\nfile /tmp/camouflage\n")
 	now := parseNodeState("process 1 /sbin/docker-init -- sh -c wait\nprocess 7 sleep infinity\nprocess 90 thinkpol up\nlink lo\nlink wg4\n" +
 		"rule4 0:\tfrom all lookup local\nrule4 5208:\tfrom all fwmark 0x5 lookup 52\nnft table netdev tplab_eth0\nnft table inet censor\n" +
-		"queue 100\nfile /tmp/camouflage\nfile /run/censor\nfile /var/lib/thinkpol\n")
+		"queue 100\nfile /tmp/camouflage\nfile /run/censor\nfile /var/lib/thinkpol\n" +
+		"route4 default dev wg4 table 52 scope link\nroute6 2001:db8::/64 dev eth0 metric 1024 pref medium\naddr eth0 192.0.2.9/32\n")
 	extra, missing := clean.diff(now)
 	want := nodeState{"process": {"90 thinkpol up"}, "link": {"wg4"}, "rule4": {"5208:\tfrom all fwmark 0x5 lookup 52"},
-		"nft": {"table inet censor"}, "queue": {"100"}, "file": {"/run/censor", "/var/lib/thinkpol"}}
+		"nft": {"table inet censor"}, "queue": {"100"}, "file": {"/run/censor", "/var/lib/thinkpol"},
+		"route4": {"default dev wg4 table 52 scope link"}, "route6": {"2001:db8::/64 dev eth0 metric 1024 pref medium"},
+		"addr": {"eth0 192.0.2.9/32"}}
 	if !maps.EqualFunc(extra, want, slices.Equal) {
 		t.Errorf("extra:%s\nwant:%s", extra, want)
 	}
@@ -154,6 +183,15 @@ func TestNodeState(t *testing.T) {
 	}
 	if !slices.EqualFunc(got, wantCmds, slices.Equal) {
 		t.Errorf("undo: %q\nwant %q", got, wantCmds)
+	}
+	gotAddressing := extra.undoAddressing()
+	wantAddressing := [][]string{
+		{"ip", "-4", "route", "del", "default", "dev", "wg4", "table", "52", "scope", "link"},
+		{"ip", "-6", "route", "del", "2001:db8::/64", "dev", "eth0", "metric", "1024", "pref", "medium"},
+		{"ip", "addr", "del", "192.0.2.9/32", "dev", "eth0"},
+	}
+	if !slices.EqualFunc(gotAddressing, wantAddressing, slices.Equal) {
+		t.Errorf("undoAddressing: %q\nwant %q", gotAddressing, wantAddressing)
 	}
 	if e, m := clean.diff(clean); len(e) > 0 || len(m) > 0 {
 		t.Errorf("a state differs from itself: %s / %s", e, m)
@@ -223,9 +261,10 @@ func (r *matrixRow) eachNode(f func(n *lab.Node) error) error {
 // reset puts the lab back in its clean state after a cell, whose own
 // cleanups have stopped its processes and censord, and checks it held:
 // it kills what still runs, then (nothing running to make new flows)
-// removes the links, policy rules, tables and files the cell left,
-// clears the router's censor table and conntrack (censord -reset), which
-// also removes the verdict log, and reads every node back.
+// removes the links, policy rules, tables and files the cell left (the
+// verdict log with /run/censor), then the routes and addresses left on
+// the links that remain, clears the router's censor table and conntrack
+// (censord -reset), and reads every node back.
 func (r *matrixRow) reset() error {
 	if r.broken != nil {
 		return r.broken
@@ -262,6 +301,21 @@ func (r *matrixRow) reset() error {
 			}
 			var errs []error
 			for _, cmd := range extra.undo() {
+				if _, err := execRead(n, pollTimeout, cmd...); err != nil {
+					errs = append(errs, err)
+				}
+			}
+			return errors.Join(errs...)
+		})
+	}
+	if err == nil {
+		err = r.eachNode(func(n *lab.Node) error {
+			extra, err := r.leftovers(n)
+			if err != nil {
+				return err
+			}
+			var errs []error
+			for _, cmd := range extra.undoAddressing() {
 				if _, err := execRead(n, pollTimeout, cmd...); err != nil {
 					errs = append(errs, err)
 				}

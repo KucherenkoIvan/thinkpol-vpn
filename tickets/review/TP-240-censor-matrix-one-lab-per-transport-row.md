@@ -24,8 +24,8 @@ The censor matrix costs 9 labs, not 90. The owner wants a full lab to take at mo
 - Moving the rhythm cell to the long-wait stream: TP-239.
 
 ## Acceptance
-- [x] `docker events` for a full lab shows ≤ 9 matrix labs. Evidence: the run's container-start count by owner, in the ticket Log. (A targeted `TestCensorMatrix` run on 632ed83a; no full lab, which the lab-speed rule reserves for now: 9 labs, 63 container starts; see Notes.)
-- [x] RESULTS.md is identical in verdicts to one made with per-cell labs on the same commit. Evidence: a diff of two runs' RESULTS.md. (The per-cell RESULTS.md from TP-229's full lab on 0369d34e, whose matrix files equal this branch's base; see Notes.)
+- [x] The censor matrix starts ≤ 9 labs. Evidence: `docker events` container starts by Compose project during a targeted `TestCensorMatrix` run on 632ed83a: 9 labs, 63 container starts (see Notes). Not shown in a full lab: targeted runs only until the lab tickets land; the full-lab number comes from the first full lab on rewrite after they do.
+- [x] RESULTS.md is identical in verdicts to one made with per-cell labs on matching matrix code. Evidence: a diff of the per-row RESULTS.md from 632ed83a against the per-cell one from TP-229's full lab on 0369d34e, a different commit whose matrix files, lab/censor and lab/censord equal this branch's base: the 90 verdicts are identical (see Log). Not a same-commit comparison.
 - [x] A mutant that skips the reset step fails a cell. Evidence: the mutation run's output. (Every cell of the plain-tcp row failed; see Log.)
 
 ## Notes
@@ -35,7 +35,13 @@ The censor matrix costs 9 labs, not 90. The owner wants a full lab to take at mo
 - The per-cell transport setup needs the reset beyond censord: kernel WireGuard's `ip link add wg4` fails if the last cell's link is still there, and a fresh map space at version 1 needs `/var/lib/thinkpol` gone.
 - Container starts (`docker events`, start events by Compose project, live during the run): per row, 9 labs × 7 containers = 63 starts, plus 1 for the run's in-node package lab. Per cell: 90 labs, 56 in `lab.Standard()` (6 containers) and 34 in `lab.Upstream()` (7), so 574 starts; TP-229's lab timeline of its full lab on 0369d34e shows the 90 matrix labs.
 - Matrix wall time: per row, `TestCensorMatrix` took 915 s on 632ed83a (rows 160–865 s; reality, with the 7.5-minute rhythm hold, the longest). Per cell, the 90 labs of TP-229's full lab on 0369d34e started between 19:51:57 and 20:30:40 (at least 39 minutes); a targeted per-cell `TestCensorMatrix` run at this branch's base (80c10648) ran 23 of 90 cells before labctl's 60-minute cap, its labs waiting on the subnet lock.
-- `go test` runs at most GOMAXPROCS tests at once, so on a runner with fewer cores than rows the last rows (random-tcp, relay-tcp, reality) wait for a slot; reality, the longest row, waits too. Moving the long rows to the front of `transports` would bring the matrix close to its longest row; not done here.
+- `go test` runs at most GOMAXPROCS tests at once, so on a runner with fewer cores than rows some rows wait for a slot. `transports` lists the long rows first (reality, then udp, both holding their tunnel 7.5 minutes), so they never wait: the matrix should take about its longest row, reality's (~865 s), plus a lab start.
+
+## Review findings
+- [ ] R1.1 The reset's snapshot missed routes in every table and addresses: a `thinkpol up` killed after its grace could leave routes the reset and check didn't see. The snapshot now reads `ip -4/-6 route show table all` and `ip -br addr`, and the reset deletes leftover routes and addresses after the links go; neighbour entries, route expiry, the linkdown flag and RA routes are left out (the kernel changes them on its own).
+- [ ] R1.2 The reset's comment said `censord -reset` removes the verdict log; the file cleanup of /run/censor does. Comment fixed.
+- [ ] R1.3 Acceptance boxes 1 and 2 said "a full lab" and "the same commit"; reworded to what was shown.
+- [ ] R1.4 `transports` lists the longest rows first (reality, udp).
 
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority; from the lab-speed audit)
