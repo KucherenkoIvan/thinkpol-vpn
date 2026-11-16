@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/mdlayher/netlink"
+	vnl "github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
 
@@ -47,4 +48,21 @@ func flushConntrack() error {
 		}
 	}
 	return nil
+}
+
+// ConntrackEntries is every conntrack entry of the router's network
+// namespace, IPv4 and IPv6, one line each: what a reset that didn't hold
+// left behind.
+func ConntrackEntries() ([]string, error) {
+	var entries []string
+	for _, family := range []vnl.InetFamily{unix.AF_INET, unix.AF_INET6} {
+		flows, err := vnl.ConntrackTableList(vnl.ConntrackTable, family)
+		if err != nil {
+			return nil, fmt.Errorf("censor: conntrack list (family %d): %w", family, err)
+		}
+		for _, f := range flows {
+			entries = append(entries, f.String())
+		}
+	}
+	return entries, nil
 }

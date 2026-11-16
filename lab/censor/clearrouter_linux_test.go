@@ -6,14 +6,15 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 )
 
-// TestClearRouter: after ClearRouter the node has no censor table and no
-// conntrack entry, though a censor's queue rule and tracked flows were
-// there. It needs the lab: only there are nftables and conntrack ours to
+// TestClearRouter: ConntrackEntries lists the flows conntrack tracks, and
+// after ClearRouter the node has no censor table and no conntrack entry,
+// though a censor's queue rule and tracked flows were there. It needs the lab: only there are nftables and conntrack ours to
 // command.
 func TestClearRouter(t *testing.T) {
 	if os.Getenv("THINKPOL_LAB") == "" {
@@ -44,6 +45,14 @@ table inet censor-test-ct {
 	}
 	if n := conntrackCount(t); n == 0 {
 		t.Fatal("no conntrack entry before the reset: the test tracks nothing")
+	}
+	entries, err := ConntrackEntries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(entries, func(e string) bool { return strings.Contains(e, "dst=127.0.0.2") }) ||
+		!slices.ContainsFunc(entries, func(e string) bool { return strings.Contains(e, "dst=::1") }) {
+		t.Errorf("the entries don't list the test's flows over both families:\n%s", strings.Join(entries, "\n"))
 	}
 
 	if err := ClearRouter(); err != nil {

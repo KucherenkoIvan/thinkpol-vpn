@@ -336,23 +336,77 @@ func (r *matrixRow) reset() error {
 }
 
 // clearRouter clears the router's censor table and conntrack until no
-// entry comes back. A killed process's orphaned TCP sockets go on
-// retransmitting their FIN for a while, and a cell whose censor dropped
-// their packets leaves them unanswered until the censor table is gone, so
-// the first flush can race one last retransmission. A flow that still
-// makes new entries after the deadline is the check's to report.
+// entry comes back (clearUntilEmpty), within 30 s.
 func (r *matrixRow) clearRouter() error {
 	router := r.lab.Node(lab.Router)
-	deadline := time.Now().Add(30 * time.Second)
+	return clearUntilEmpty(
+		func() error {
+			_, err := execRead(router, pollTimeout, "censord", "-reset")
+			return err
+		},
+		func() (string, error) {
+			return execRead(router, pollTimeout, "cat", "/proc/sys/net/netfilter/nf_conntrack_count")
+		},
+		func() (string, error) { return execRead(router, pollTimeout, "censord", "-conntrack") },
+		time.Second, 30*time.Second)
+}
+
+// clearUntilEmpty clears, waits settle and reads the conntrack count, until
+// the count is 0. A killed process's orphaned TCP sockets go on
+// retransmitting for a while, and a cell whose censor dropped their
+// packets leaves them unanswered until the censor table is gone, so one
+// flush can race a last retransmission. A count still above 0 after
+// timeout is a flow that keeps making entries: the error lists them.
+func clearUntilEmpty(clear func() error, count, list func() (string, error), settle, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
 	for {
-		if _, err := execRead(router, pollTimeout, "censord", "-reset"); err != nil {
+		if err := clear(); err != nil {
 			return err
 		}
-		time.Sleep(time.Second)
-		count, err := execRead(router, pollTimeout, "cat", "/proc/sys/net/netfilter/nf_conntrack_count")
-		if err != nil || strings.TrimSpace(count) == "0" || time.Now().After(deadline) {
+		time.Sleep(settle)
+		n, err := count()
+		if err != nil {
 			return err
 		}
+		if n = strings.TrimSpace(n); n == "0" {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			entries, err := list()
+			if err != nil {
+				entries = fmt.Sprintf("(couldn't list them: %v)", err)
+			}
+			return fmt.Errorf("router: %s conntrack entries came back after every flush for %v:\n%s", n, timeout, strings.TrimSpace(entries))
+		}
+	}
+}
+
+// TestClearUntilEmpty: entries that come back after a flush are flushed
+// again until none does, and entries that keep coming back past the
+// timeout fail the reset with the entries listed.
+func TestClearUntilEmpty(t *testing.T) {
+	entry := "tcp\t6 src=192.0.2.2 dst=192.0.2.3 sport=40000 dport=443"
+	list := func() (string, error) { return entry + "\n", nil }
+	clears, reads := 0, 0
+	clear := func() error { clears++; return nil }
+	countdown := func() (string, error) {
+		reads++
+		if reads <= 3 {
+			return "3\n", nil
+		}
+		return "0\n", nil
+	}
+	if err := clearUntilEmpty(clear, countdown, list, 0, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if clears != 4 {
+		t.Errorf("%d flushes, want 4: one per read until the count read 0", clears)
+	}
+
+	stuck := func() (string, error) { return "1\n", nil }
+	err := clearUntilEmpty(clear, stuck, list, time.Millisecond, 20*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), entry) || !strings.Contains(err.Error(), "1 conntrack entries") {
+		t.Errorf("entries that never go: %v, want an error listing them", err)
 	}
 }
 

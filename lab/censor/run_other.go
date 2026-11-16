@@ -18,3 +18,8 @@ func Run(ctx context.Context, cfg Config, eng *Engine) error {
 func ClearRouter() error {
 	return errors.New("censor: the censor's reset runs only on Linux, in the lab's router")
 }
+
+// ConntrackEntries never runs, as Run doesn't.
+func ConntrackEntries() ([]string, error) {
+	return nil, errors.New("censor: conntrack is read only on Linux, in the lab's router")
+}
