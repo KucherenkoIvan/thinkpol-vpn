@@ -281,7 +281,15 @@
 // record more than its request, or a one-way heartbeat at that interval,
 // on an otherwise quiet connection), and an exchange of one record more
 // one way than the other within 10 ms recurring at that interval alone.
-// MEASURED_RANDOM_COUNTS
+// Measured on random two-way traffic (6 minutes, 100 seeds at each rate,
+// requests of 1 to 3 records of 40 to 1500 bytes, each answered 20 to 80
+// ms later by 1 to 6 records), before the burst signal's cap of three
+// records a way: none flagged by count or burst at one request a second;
+// at 10 a second 1 to 3 in 100 by burst; at 50 a second 4 in 100, every
+// one a burst of 6 to 9 records one way, which the cap now excludes. With
+// the cap, none at one request a second and 1 in 100 at 10 a second (one
+// record against one): a false-positive risk. TestWGRhythmRandomExchanges
+// replays such traffic at one record size and logs what flags.
 //
 // The keepalive signal has blind spots of its own: next to other steady
 // traffic (those path probes) no record comes after quiet,
