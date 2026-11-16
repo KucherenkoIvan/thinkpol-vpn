@@ -1,7 +1,7 @@
 ---
 id: TP-207
 title: "Kill switch from boot, before the agent starts"
-milestone: M3
+milestone: later
 area: agent
 stream: core
 repo: thinkpol-vpn
@@ -34,6 +34,8 @@ With the kill switch on (or the crash posture meant up for this boot), nothing l
 ## Notes
 - The oneshot must not need the network or the controller: entries come from the last map on disk.
 - From TP-048's review (R1.5, RR59).
+- After the MVP: a rare case that doesn't work against the main use case; traffic that leaks at boot is blocked by the censor anyway (owner, 2026-11-16).
 
 ## Log
 - 2026-11-12 created in backlog (from TP-048's review)
+- 2026-11-16 milestone M3 → later (owner, 2026-11-16: after the MVP; from the M2 gate review)

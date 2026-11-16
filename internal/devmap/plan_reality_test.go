@@ -116,18 +116,25 @@ func TestRealityEndpointsLinkANodeAndADevice(t *testing.T) {
 	defer func() { _ = l.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	type dialed struct {
+		link transport.Link
+		err  error
+	}
+	dials := make(chan dialed, 1)
 	go func() {
 		link, err := tr.Dial(ctx, l.Addr().String(), transport.DialConfig{Credential: endpoint.Credential, Settings: endpoint.Settings})
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		<-ctx.Done()
-		_ = link.Close()
+		dials <- dialed{link, err}
 	}()
-	_, id, err := l.Accept(ctx)
-	if err != nil {
-		t.Fatal(err)
+	_, id, acceptErr := l.Accept(ctx)
+	// The listener accepts once it has the client's Finished, which can be
+	// before Dial returns; cancelling ctx then fails the dial (the TLS
+	// handshake's interrupt), so ctx outlives the dial.
+	d := <-dials
+	if d.link != nil {
+		defer func() { _ = d.link.Close() }()
+	}
+	if acceptErr != nil || d.err != nil {
+		t.Fatalf("accept: %v; dial: %v", acceptErr, d.err)
 	}
 	if id.Node != transport.NodeID(device.Node.ID) {
 		t.Fatalf("accepted %s, want device-a %s", id, device.Node.ID)
