@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -116,8 +117,12 @@ func busy(msgs []wgMessage) []wgMessage {
 }
 
 // wgTLSOverhead is the test transport's: TLS 1.3's AEAD tag and content
-// type, and a 2-byte length of its own.
-const wgTLSOverhead = 19
+// type, and a 2-byte length of its own. wgUDPOverhead is thinkpol's udp
+// transport's per datagram.
+const (
+	wgTLSOverhead = 19
+	wgUDPOverhead = 74
+)
 
 // eachInRecord carries each message in a record of its own, of the size
 // recordSize gives it.
@@ -137,6 +142,11 @@ func withOverhead(n int) func(wgMessage) int {
 // inside the record's 17 bytes of AEAD tag and content type.
 func paddedTo(n int) func(wgMessage) int {
 	return func(m wgMessage) int { return (m.size+2+n-1)/n*n + 17 }
+}
+
+// floorOf adds TLS's overhead and pads the record to at least n bytes.
+func floorOf(n int) func(wgMessage) int {
+	return func(m wgMessage) int { return max(m.size+wgTLSOverhead, n) }
 }
 
 // perDirection adds one overhead to the client's messages and another to
@@ -199,6 +209,8 @@ type wgRun struct {
 	clientSeq, serverSeq uint32
 	mss                  int
 	actions              []wgAction
+	// udp carries each record as a datagram of its size instead.
+	udp bool
 }
 
 type wgAction struct {
@@ -217,6 +229,15 @@ func newWGRun(t testing.TB, settings string, mss int) *wgRun {
 	r.send(0, true, tlsRecord(0x16, 512))
 	r.send(0, false, append(tlsRecord(0x16, 122), append(tlsRecord(0x14, 1), tlsRecord(0x17, 2048)...)...))
 	r.send(0, true, append(tlsRecord(0x14, 1), tlsRecord(0x17, 53)...))
+	return r
+}
+
+// newWGUDPRun is a udp-like flow, each record a datagram, through an
+// engine with the rhythm module.
+func newWGUDPRun(t testing.TB, settings string) *wgRun {
+	t.Helper()
+	r := newWGEngine(t, settings, 0)
+	r.udp = true
 	return r
 }
 
@@ -258,11 +279,26 @@ func (r *wgRun) send(at time.Duration, toServer bool, b []byte) {
 	}
 }
 
-// carryIn sends each record as a TLS record of type typ.
+// carryIn sends each record as a TLS record of type typ, or as a datagram
+// of its size on a udp run.
 func (r *wgRun) carryIn(typ byte, recs []wireRecord) {
 	for _, w := range recs {
+		if r.udp {
+			r.datagram(w.at, w.toServer, w.size)
+			continue
+		}
 		r.send(w.at, w.toServer, tlsRecord(typ, w.size))
 	}
+}
+
+// datagram sends a datagram of n bytes one way at offset at.
+func (r *wgRun) datagram(at time.Duration, toServer bool, n int) {
+	r.clock = time.Unix(1_700_000_000, 0).Add(at)
+	p := udpPacket(clientAddr, serverAddr, 40000, 51820, make([]byte, n))
+	if !toServer {
+		p = udpPacket(serverAddr, clientAddr, 51820, 40000, make([]byte, n))
+	}
+	r.actions = append(r.actions, wgAction{at, toServer, r.eng.Handle(p)})
 }
 
 // carry sends each record as an application-data record.
@@ -353,7 +389,13 @@ func TestWGRhythmFlagsTheRhythm(t *testing.T) {
 		{"batched, rekey after a keepalive", batched(wgRekeyTimeline(keepaliveTrigger, 125*s, 190*s, 125*s), 20*time.Millisecond),
 			440*s + 35*time.Millisecond, "records of 201 and 111 bytes exchanged 3 times", false},
 		{"length prefixed, keepalives", lengthPrefixed(wgTimeline(true)), wgKeepaliveAt, "of 19 bytes", false},
-		{"length prefixed, rekey", lengthPrefixed(wgTimeline(false)), wgRekeyAt, "records of 165 and 109 bytes", false},
+		// The lengths' records, one size each way, are an exchange that
+		// stands out after quiet at each rekey too, and flag first.
+		{"length prefixed, rekey", lengthPrefixed(wgTimeline(false)), wgRekeyAt, "records of 19 and 19 bytes", false},
+		// Every record padded to at least 512 bytes, as reality's floor
+		// does: sizes hidden, timing kept.
+		{"floor of 512, keepalives", eachInRecord(wgTimeline(true), floorOf(512)), wgKeepaliveAt, "of 512 bytes", false},
+		{"floor of 512, rekey", eachInRecord(wgTimeline(false), floorOf(512)), wgRekeyAt, "records of 512 and 512 bytes", false},
 	} {
 		mssList := []int{1400}
 		if c.splitToo {
@@ -389,17 +431,17 @@ func TestWGRhythmFlagsTheRhythm(t *testing.T) {
 // by the client's 300, neither new, and 700 µs later the client's 200,
 // new, by the server's 300, new: one occurrence of the 200/300 exchange,
 // standing out at its second answer, three times 130 s apart. The other
-// records keep the 200/300 records from following quiet and answer the
-// idle ones.
+// records, of another size each time so their own exchanges never recur,
+// keep the 200/300 records from following quiet and answer the idle ones.
 func TestWGRhythmStandsOutLateInAnOccurrence(t *testing.T) {
 	ms := time.Millisecond
 	var recs []wireRecord
-	for _, at := range []time.Duration{20 * time.Second, 150 * time.Second, 280 * time.Second} {
+	for i, at := range []time.Duration{20 * time.Second, 150 * time.Second, 280 * time.Second} {
 		recs = append(recs,
 			wireRecord{at - 10000*ms, false, 200},
-			wireRecord{at - 9900*ms, true, 1000},
+			wireRecord{at - 9900*ms, true, 1000 + i},
 			wireRecord{at - 4500*ms, true, 300},
-			wireRecord{at - 4400*ms, false, 1000},
+			wireRecord{at - 4400*ms, false, 1100 + i},
 			wireRecord{at - 1000*ms, false, 200},
 			wireRecord{at - 500*ms, true, 300},
 			wireRecord{at - 300*ms, true, 200},
@@ -416,15 +458,15 @@ func TestWGRhythmStandsOutLateInAnOccurrence(t *testing.T) {
 // TestWGRhythmPaddedTriggerAfterBandTraffic: a padded rekey whose trigger
 // is the initiation's size and follows other band traffic within wgQuiet
 // stands out by freshness alone, which the initiation takes from the
-// trigger: a client record of 150 bytes (answered out of the band) 3 s
-// before each trigger, rekeys 125 s and 190 s apart.
+// trigger: a client record of 150 bytes, answered by one of another size
+// each time, 3 s before each trigger, rekeys 125 s and 190 s apart.
 func TestWGRhythmPaddedTriggerAfterBandTraffic(t *testing.T) {
 	ms := time.Millisecond
 	var recs []wireRecord
-	for _, at := range []time.Duration{10 * time.Second, 135 * time.Second, 325 * time.Second} {
+	for i, at := range []time.Duration{10 * time.Second, 135 * time.Second, 325 * time.Second} {
 		recs = append(recs,
 			wireRecord{at - 3000*ms, true, 150},
-			wireRecord{at - 2900*ms, false, 1000},
+			wireRecord{at - 2900*ms, false, 1000 + i},
 			wireRecord{at - ms/2, true, 273},
 			wireRecord{at, true, 273},
 			wireRecord{at + 15*ms, false, 273})
@@ -442,16 +484,17 @@ func TestWGRhythmPaddedTriggerAfterBandTraffic(t *testing.T) {
 // within wgPairWindow lends its standing out. Each 130 s the client's 200
 // bytes follow quiet 60 s before its 200-byte exchange, which is neither
 // new nor after quiet (a 300-byte record 3 s before it): no rekey. The
-// out-of-band records answer the idle ones.
+// server's records, of another size each time so their own exchanges
+// never recur, answer the idle ones.
 func TestWGRhythmStaleBandRecordLendsNothing(t *testing.T) {
 	ms := time.Millisecond
 	var recs []wireRecord
-	for at := 70 * time.Second; at < 600*time.Second; at += 130 * time.Second {
+	for i, at := 0, 70*time.Second; at < 600*time.Second; i, at = i+1, at+130*time.Second {
 		recs = append(recs,
 			wireRecord{at - 60000*ms, true, 200},
-			wireRecord{at - 59900*ms, false, 1000},
+			wireRecord{at - 59900*ms, false, 1000 + i},
 			wireRecord{at - 3000*ms, true, 300},
-			wireRecord{at - 2900*ms, false, 1000},
+			wireRecord{at - 2900*ms, false, 1100 + i},
 			wireRecord{at - 500*ms, true, 200},
 			wireRecord{at, false, 200})
 	}
@@ -546,9 +589,6 @@ func TestWGRhythmRemovedPasses(t *testing.T) {
 		// Answered within the pair window, like an HTTP/2 PING.
 		{"a pair, answered keepalives", slices.Concat(pair(0, true),
 			idle(true, 25*s, 50*s, 75*s, 100*s), idle(false, 25*s+30*time.Millisecond, 50*s+30*time.Millisecond, 75*s+30*time.Millisecond, 100*s+30*time.Millisecond))},
-		// Without an exchange, four idle records are not yet a steady
-		// idle period.
-		{"four keepalives, no exchange", idle(true, 25*s, 50*s, 75*s, 100*s)},
 	} {
 		msgs := slices.Clone(c.msgs)
 		slices.SortStableFunc(msgs, func(a, b wgMessage) int { return int(a.at - b.at) })
@@ -558,18 +598,27 @@ func TestWGRhythmRemovedPasses(t *testing.T) {
 			t.Errorf("%s: blocked at %s: %+v", c.name, a.at, a)
 		}
 	}
+	// Without an exchange, four idle records are not yet a steady idle
+	// period. A TLS connection has one from its first request (any record
+	// takes part), so only a datagram flow shows it.
+	r := newWGUDPRun(t, `{}`)
+	r.carry(eachInRecord(idle(true, 25*s, 50*s, 75*s, 100*s), withOverhead(wgUDPOverhead)))
+	if a, blocked := r.firstBlocked(); blocked {
+		t.Errorf("four keepalives, no exchange: blocked at %s: %+v", a.at, a)
+	}
 }
 
-// TestWGRhythmSteadyIdlePeriodAlone: without any exchange in the
-// handshake band, an idle run shows the rhythm at its fifth record, once
-// its answer window has passed: on the sixth.
+// TestWGRhythmSteadyIdlePeriodAlone: without any exchange (a datagram
+// flow: a TLS connection has one from its first request), an idle run
+// shows the rhythm at its fifth record, once its answer window has passed:
+// on the sixth.
 func TestWGRhythmSteadyIdlePeriodAlone(t *testing.T) {
-	r := newWGRun(t, `{}`, 1400)
+	r := newWGUDPRun(t, `{}`)
 	var msgs []wgMessage
 	for at := 25 * time.Second; at <= 150*time.Second; at += 25 * time.Second {
 		msgs = append(msgs, wgMessage{at, true, wgKeepalive})
 	}
-	r.carry(eachInRecord(msgs, withOverhead(wgTLSOverhead)))
+	r.carry(eachInRecord(msgs, withOverhead(wgUDPOverhead)))
 	if a, blocked := r.firstBlocked(); !blocked || a.at != 150*time.Second || !strings.Contains(a.Reason, "5 idle records") {
 		t.Errorf("first blocked %+v (blocked %v), want a drop for five keepalives at the sixth, 150 s", a, blocked)
 	}
@@ -657,7 +706,10 @@ func TestWGRhythmOrdinaryTLS(t *testing.T) {
 		{"HTTP/2 browsing, idle PINGs", browse, 0},
 		{"gRPC stream with keepalive PINGs", grpc, 0},
 		{"bulk download", download, 0},
-		{"HTTP/2 poll every 2 minutes", h2Poll, 0},
+		// Risk: any request and response repeated at an interval within
+		// the rekey window, whatever their sizes (an HTTP/2 poll's
+		// indexed request too).
+		{"HTTP/2 poll every 2 minutes", h2Poll, -1},
 		// An identical request and response, both in the handshake band,
 		// at a steady interval shorter than a rekey period never stands
 		// out a rekey period after it last did.
@@ -963,4 +1015,118 @@ func BenchmarkWGRhythmRandomInBand(b *testing.B) {
 		r.carry(recs)
 	}
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*len(recs)), "ns/record")
+}
+
+// TestWGRhythmDatagrams: over UDP each datagram is a record, so a
+// tunnel that hides WireGuard's headers but not its timing (thinkpol's
+// udp, 74 bytes a datagram) shows the rhythm by its keepalives or its
+// rekeys, and is blocked both ways from then on.
+func TestWGRhythmDatagrams(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		msgs       []wgMessage
+		wantAt     time.Duration
+		wantReason string
+	}{
+		{"keepalives", wgTimeline(true), wgKeepaliveAt, "WireGuard keepalives: 3 idle records of 106 bytes, 25s apart"},
+		{"rekey", wgTimeline(false), wgRekeyAt, "WireGuard rekey: records of 222 and 166 bytes exchanged 3 times, the last 2m1s apart"},
+	} {
+		r := newWGUDPRun(t, `{}`)
+		r.carry(eachInRecord(c.msgs, withOverhead(wgUDPOverhead)))
+		a, blocked := r.firstBlocked()
+		if !blocked || a.at != c.wantAt || a.Verdict != Drop || a.Reason != c.wantReason {
+			t.Errorf("%s: first blocked %+v (blocked %v), want a drop at %s for %q", c.name, a, blocked, c.wantAt, c.wantReason)
+			continue
+		}
+		for _, later := range r.actions {
+			if later.at > a.at && later.Verdict == Accept {
+				t.Errorf("%s: a datagram at %s passed after the flag", c.name, later.at)
+				break
+			}
+		}
+	}
+}
+
+// TestWGRhythmHiddenAmongSteadyRecords pins a known miss (lab/censor's
+// package doc): with every record padded to one size (a 512-byte floor)
+// and records of that size exchanged every 2 s both ways (path probes, a
+// ping), a rekey's pair is one more exchange of the same size, neither
+// new nor after quiet, and never stands out; idle keepalives never follow
+// quiet either. Without the steady records, the same rekeys show.
+func TestWGRhythmHiddenAmongSteadyRecords(t *testing.T) {
+	s, ms := time.Second, time.Millisecond
+	probes := func(until time.Duration) []wgMessage {
+		var out []wgMessage
+		for at := time.Duration(0); at < until; at += 2 * s {
+			out = append(out,
+				wgMessage{at + 300*ms, true, 40}, wgMessage{at + 301*ms, false, 40},
+				wgMessage{at + 1300*ms, false, 40}, wgMessage{at + 1301*ms, true, 40})
+		}
+		return out
+	}
+	timeline := wgRekeyTimeline(keepaliveTrigger, 121*s, 121*s, 121*s)
+	for _, c := range []struct {
+		name   string
+		msgs   []wgMessage
+		hidden bool
+	}{
+		{"rekeys alone", timeline, false},
+		{"rekeys among probes", slices.Concat(timeline, probes(400*s)), true},
+		{"keepalives among probes", slices.Concat(wgTimeline(true), probes(260*s)), true},
+	} {
+		msgs := slices.Clone(c.msgs)
+		slices.SortStableFunc(msgs, func(a, b wgMessage) int { return int(a.at - b.at) })
+		r := newWGRun(t, `{}`, 1400)
+		r.carry(eachInRecord(msgs, floorOf(512)))
+		a, blocked := r.firstBlocked()
+		switch {
+		case c.hidden && blocked:
+			t.Errorf("%s: blocked at %s: %+v; if the module now sees this, update the package doc", c.name, a.at, a)
+		case !c.hidden && !blocked:
+			t.Errorf("%s: passed", c.name)
+		}
+	}
+}
+
+// TestWGRhythmTrace: with trace set, every record the module judged is a
+// line, the one that showed the rhythm with the flag, and each handshake's
+// response with how many times in a row its exchange had stood out.
+func TestWGRhythmTrace(t *testing.T) {
+	path := t.TempDir() + "/rhythm.jsonl"
+	r := newWGUDPRun(t, `{"trace": "`+path+`"}`)
+	recs := eachInRecord(wgTimeline(false), withOverhead(wgUDPOverhead))
+	r.carry(recs)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []WGTraceLine
+	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var tl WGTraceLine
+		if err := json.Unmarshal([]byte(l), &tl); err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, tl)
+	}
+	// The flag's datagram is the last judged; the module retires after it.
+	flagAt := slices.IndexFunc(recs, func(w wireRecord) bool { return w.at == wgRekeyAt })
+	if len(lines) != flagAt+1 {
+		t.Fatalf("%d lines, want one for each of the %d datagrams up to the flag", len(lines), flagAt+1)
+	}
+	last := lines[len(lines)-1]
+	if last.Size != 166 || last.StoodOut != 3 || !strings.Contains(last.Flagged, "WireGuard rekey") || last.Flow != "udp 203.0.113.9:51820->192.0.2.1:40000" {
+		t.Errorf("the flag's line: %+v", last)
+	}
+	var stood []int
+	for _, l := range lines {
+		if l.Size == 166 {
+			stood = append(stood, l.StoodOut)
+		}
+	}
+	if !slices.Equal(stood, []int{1, 2, 3}) {
+		t.Errorf("the handshake responses' exchanges stood out %v times in a row, want 1, 2, 3", stood)
+	}
+	if _, err := newWGRhythm(json.RawMessage(`{"trace": "` + t.TempDir() + `/no/such/dir/x"}`)); err == nil {
+		t.Error("a trace file that can't be opened was accepted")
+	}
 }
