@@ -589,9 +589,10 @@ var censorCases = []censorCase{
 	// known tell, accepted in RR65 until cover records go both ways (owner,
 	// 2026-11-16). The other rows aren't held, and pass. The idle case,
 	// rhythmCase("wireguard-rhythm (idle)", true), is out of the matrix
-	// until the owner rules on the idle keepalive promise: an idle
-	// thinkpol tunnel sends no WireGuard rhythm, so udp can't be caught
-	// there (TP-223's Notes).
+	// until TP-080 (liveness rides on data, idle path probes back off)
+	// brings it back: an idle thinkpol tunnel sends no WireGuard rhythm,
+	// so udp can't be caught there, and thinkpol's path probes are the
+	// idle tell (TP-223's Notes).
 	rhythmCase("wireguard-rhythm", false),
 	// M2 gate checks (docs/design/milestones.md). Wu et al.'s exemptions
 	// on each connection's first data, UDP's first datagram too: thinkpol's
