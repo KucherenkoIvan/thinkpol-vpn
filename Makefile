@@ -4,8 +4,16 @@
 # go.mod's toolchain line names, whatever the host's default Go is: under
 # GOTOOLCHAIN=auto that line is only a minimum, so a newer local Go would
 # run as is, and govulncheck and the tests would see its standard library.
-# `make GOTOOLCHAIN=...` still overrides it.
-GO_TOOLCHAIN := $(shell sed -n 's/^toolchain //p' go.mod)
+# `make GOTOOLCHAIN=...` still overrides it. Go drops the toolchain line
+# when it equals the go line, so that line is the fallback: an empty
+# GOTOOLCHAIN would mean auto again.
+GO_TOOLCHAIN := $(shell sed -nE 's/^toolchain[[:space:]]+(go[0-9.]+).*/\1/p' go.mod)
+ifeq ($(GO_TOOLCHAIN),)
+GO_TOOLCHAIN := $(shell sed -nE 's/^go[[:space:]]+([0-9.]+).*/go\1/p' go.mod)
+endif
+ifeq ($(GO_TOOLCHAIN),)
+$(error go.mod names no toolchain and no go version)
+endif
 export GOTOOLCHAIN := $(GO_TOOLCHAIN)
 
 # Dev tools, pinned, installed per checkout into bin/tools (lint and proto
@@ -52,7 +60,8 @@ test-race: ## unit tests with the race detector (needs cgo)
 
 lint: $(TOOLS_STAMP) ## gofmt, then go vet + golangci-lint per OS (lab tests included), the Android build, the no-cgo check and vulncheck
 	@python3 tickets/test_board.py -q 2>&1 | tail -1 | grep -qx OK || { python3 tickets/test_board.py; exit 1; }
-	@out=$$(gofmt -l . 2>&1) || { echo "$$out"; exit 1; }; \
+	@goroot=$$(go env GOROOT) || exit 1; \
+	out=$$("$$goroot/bin/gofmt" -l . 2>&1) || { echo "$$out"; exit 1; }; \
 	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 	@for os in $(LINT_GOOS); do \
 		echo "go vet + golangci-lint, GOOS=$$os"; \
@@ -86,7 +95,7 @@ nocgo: ## fail if the data plane, the map or the lists depend on cgo
 	@echo "no cgo in $(NOCGO_PKGS)"
 
 fmt: ## format everything
-	gofmt -w .
+	"$$(go env GOROOT)/bin/gofmt" -w .
 
 proto-check: $(TOOLS_STAMP) ## buf lint, proto/gen up to date, no wire-breaking change against $(BUF_BREAKING_AGAINST)
 	@if [ -z "$$(find proto -name '*.proto' -not -path 'proto/gen/*')" ]; then echo "proto: no .proto files yet"; exit 0; fi; \
