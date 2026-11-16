@@ -4,7 +4,14 @@ package lab_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -83,18 +90,196 @@ func probeReality(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) cross
 	return probeUDP(t, l, to, wantPass)
 }
 
-// holdReality keeps the tunnel in use for d before the probe: a ping
-// every 2 s, so WireGuard rekeys about every 2 minutes as it does under
-// any steady use.
-func holdReality(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration) {
+// holdReality brings device-a's link up and holds it (holdTunnel).
+func holdReality(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool) {
 	if err := realityUp(t, l); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), d+time.Minute)
+	holdTunnel(t, l, to, d, idle)
+}
+
+// holdTunnel keeps device-a's tunnel to server-1 up for d before the
+// probe. In use: a ping every 2 s, so WireGuard rekeys about every 2
+// minutes as it does under any steady use. Idle: one ping, so WireGuard
+// has a session, then nothing from either end but what the tunnel sends
+// on its own; no case holds idle until TP-080 brings the idle rhythm case
+// back (results_test.go), and the branch stays for it. A hold whose pings
+// didn't cross held no tunnel, and its cell would mean nothing: it fails
+// the test.
+func holdTunnel(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool) {
+	ctx, cancel := context.WithTimeout(t.Context(), d+time.Minute)
 	defer cancel()
-	secs := fmt.Sprint(int(d / time.Second))
-	// The verdict is the probe's: lost pings during the hold aren't.
-	_, _ = l.Node(lab.DeviceA).Exec(ctx, "ping", "-q", "-i", "2", "-w", secs, to.v4.String())
+	dev := l.Node(lab.DeviceA)
+	if idle {
+		res, err := dev.Exec(ctx, "ping", "-c", "1", "-W", "5", to.v4.String())
+		if sent, got, perr := pingReceived(res.Stdout); perr != nil || sent != 1 || got != 1 {
+			t.Fatalf("the idle hold's ping didn't cross (%d of %d, %v): %v", got, sent, perr, err)
+		}
+		select {
+		case <-time.After(d):
+		case <-ctx.Done():
+			t.Fatalf("the idle hold was cut short: %v", ctx.Err())
+		}
+		return
+	}
+	res, err := dev.Exec(ctx, "ping", "-q", "-i", "2", "-w", fmt.Sprint(int(d/time.Second)), to.v4.String())
+	sent, got, perr := pingReceived(res.Stdout)
+	if perr != nil || sent == 0 || got*10 < sent*9 {
+		t.Fatalf("the hold's pings didn't cross: %d of %d came back, want 90%% (%v): %v", got, sent, perr, err)
+	}
+	t.Logf("the hold's pings: %d of %d came back", got, sent)
+}
+
+// pingReceived reads how many pings were sent and how many came back from
+// iputils ping's summary line.
+func pingReceived(out string) (sent, received int, err error) {
+	m := pingSummary.FindStringSubmatch(out)
+	if m == nil {
+		return 0, 0, fmt.Errorf("no ping summary in %q", out)
+	}
+	sent, _ = strconv.Atoi(m[1])
+	received, _ = strconv.Atoi(m[2])
+	return sent, received, nil
+}
+
+var pingSummary = regexp.MustCompile(`(?m)^(\d+) packets transmitted, (\d+) (?:packets )?received`)
+
+// TestPingReceived: the hold reads ping's summary, from either iputils or
+// busybox, and a missing one is an error.
+func TestPingReceived(t *testing.T) {
+	for _, c := range []struct {
+		out            string
+		sent, received int
+		ok             bool
+	}{
+		{"PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.\n\n--- 10.0.0.1 ping statistics ---\n225 packets transmitted, 224 received, 0.444444% packet loss, time 448012ms\nrtt min/avg/max/mdev = 0.1/0.2/0.3/0.1 ms\n", 225, 224, true},
+		{"--- 10.0.0.1 ping statistics ---\n1 packets transmitted, 0 received, 100% packet loss, time 0ms\n", 1, 0, true},
+		{"--- 10.0.0.1 ping statistics ---\n1 packets transmitted, 1 packets received, 0% packet loss\n", 1, 1, true},
+		{"ping: connect: Network is unreachable\n", 0, 0, false},
+	} {
+		sent, received, err := pingReceived(c.out)
+		if sent != c.sent || received != c.received || (err == nil) != c.ok {
+			t.Errorf("%q: %d of %d, %v; want %d of %d, ok %v", c.out, received, sent, err, c.received, c.sent, c.ok)
+		}
+	}
+}
+
+// blockReason is the reason of module's first drop or reset in the
+// verdict log, between device-a and server-1.
+func (c *censorRun) blockReason(t *testing.T, module string) string {
+	t.Helper()
+	var why string
+	c.logged(t, func(e verdictLine) bool {
+		if e.Module == module && (e.Verdict == censor.Drop || e.Verdict == censor.Reset) {
+			why = e.Reason
+			return true
+		}
+		return false
+	})
+	return why
+}
+
+// blockReasons is every reason module dropped or reset a flow for in the
+// verdict log, read once: the cell already found the block, so the lines
+// are there.
+func (c *censorRun) blockReasons(module string) ([]string, error) {
+	log, err := execRead(c.router, pollTimeout, "cat", censorLogPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading the verdict log: %w", err)
+	}
+	var reasons []string
+	_, err = matchVerdicts(completeLines(log), func(e verdictLine) bool {
+		if e.Module == module && (e.Verdict == censor.Drop || e.Verdict == censor.Reset) && !slices.Contains(reasons, e.Reason) {
+			reasons = append(reasons, e.Reason)
+		}
+		return false
+	})
+	return reasons, err
+}
+
+// traceSummary reads wireguard-rhythm's trace at path in the router and
+// sums it up per flow: how many records of which sizes, which followed
+// quiet, which answered an exchange that stood out (and how many times in
+// a row it had), and the flag, at seconds from the trace's first record.
+// With THINKPOL_LAB_TRACES set, the whole trace is also kept there, as
+// <cell>.jsonl, for analysis offline.
+func (c *censorRun) traceSummary(t *testing.T, path, cell string) string {
+	t.Helper()
+	out, err := execRead(c.router, pollTimeout, "cat", path)
+	if err != nil {
+		return fmt.Sprintf("no trace: %v", err)
+	}
+	if dir := os.Getenv("THINKPOL_LAB_TRACES"); dir != "" {
+		name := filepath.Join(dir, strings.NewReplacer(" ", "_", "(", "", ")", "", "/", "_").Replace(cell)+".jsonl")
+		if err := os.WriteFile(name, []byte(out), 0o644); err != nil {
+			t.Errorf("keeping the trace: %v", err)
+		} else {
+			t.Logf("trace kept in %s", name)
+		}
+	}
+	type flowSum struct {
+		n       int
+		sizes   map[int]int
+		quiet   []string
+		stood   []string
+		flagged string
+	}
+	var (
+		order []string
+		flows = map[string]*flowSum{}
+		zero  time.Time
+	)
+	for _, line := range strings.Split(completeLines(out), "\n") {
+		if line == "" {
+			continue
+		}
+		var tl censor.WGTraceLine
+		if err := json.Unmarshal([]byte(line), &tl); err != nil {
+			return fmt.Sprintf("trace line %q: %v", line, err)
+		}
+		if zero.IsZero() {
+			zero = tl.End
+		}
+		f := flows[tl.Flow]
+		if f == nil {
+			f = &flowSum{sizes: map[int]int{}}
+			flows[tl.Flow] = f
+			order = append(order, tl.Flow)
+		}
+		at := tl.End.Sub(zero).Seconds()
+		if tl.Flagged != "" {
+			f.flagged = fmt.Sprintf("%.1fs: %s", at, tl.Flagged)
+		}
+		if tl.Size == 0 {
+			continue // the flag's own line, no record
+		}
+		f.n++
+		f.sizes[tl.Size]++
+		if tl.AfterQuiet {
+			f.quiet = append(f.quiet, fmt.Sprintf("%.1fs:%dB", at, tl.Size))
+		}
+		if tl.StoodOut > 0 {
+			f.stood = append(f.stood, fmt.Sprintf("%.1fs:%dB(x%d)", at, tl.Size, tl.StoodOut))
+		}
+	}
+	capped := func(xs []string) string {
+		if len(xs) > 30 {
+			return fmt.Sprintf("%v and %d more", xs[:30], len(xs)-30)
+		}
+		return fmt.Sprint(xs)
+	}
+	var b strings.Builder
+	for _, name := range order {
+		f := flows[name]
+		sizes := slices.Sorted(maps.Keys(f.sizes))
+		var hist []string
+		for _, sz := range sizes {
+			hist = append(hist, fmt.Sprintf("%dB x%d", sz, f.sizes[sz]))
+		}
+		fmt.Fprintf(&b, "%s: %d records by size %s\n  after quiet: %s\n  answered an exchange that stood out: %s\n  flagged: %q\n",
+			name, f.n, capped(hist), capped(f.quiet), capped(f.stood), f.flagged)
+	}
+	return b.String()
 }
 
 // sawReality: the link is one TCP connection from device-a to server-1's
