@@ -427,6 +427,35 @@ func TestProberUpstreamTellOverOccasionalDials(t *testing.T) {
 	}
 }
 
+// TestProberBaseline: the baseline counts the host's connections to the
+// reference that started outside every probe of the host, from its other
+// addresses too, over the time the prober watched outside those probes,
+// at most upstreamKeep back; other hosts' connections and probes don't
+// count.
+func TestProberBaseline(t *testing.T) {
+	p := newTestProber(t, netip.MustParseAddrPort("198.51.100.10:443"), `, "hosts": [["192.0.2.9", "2001:db8::9"]]`)
+	t0 := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	at := func(s float64) time.Time { return t0.Add(time.Duration(s * float64(time.Second))) }
+	host, other := netip.MustParseAddr("192.0.2.9"), netip.MustParseAddr("192.0.2.7")
+	p.started = t0
+	p.probed(host, at(10), at(12))
+	p.probed(netip.MustParseAddr("2001:db8::9"), at(20), at(21))
+	p.probed(other, at(30), at(35))
+	for _, u := range []upstreamConn{
+		{host, at(5)}, {host, at(11)}, {netip.MustParseAddr("2001:db8::9"), at(20.5)}, {host, at(32)},
+		{netip.MustParseAddr("2001:db8::9"), at(39)}, {other, at(6)},
+	} {
+		p.upstream = append(p.upstream, u)
+	}
+	if n, d := p.baseline(host, at(40)); n != 3 || d != 37*time.Second {
+		t.Errorf("40 s watched, 3 s of the host's probes: %d dials in %s, want 3 in 37s", n, d)
+	}
+	// Watched longer than upstreamKeep: the minute before now.
+	if n, d := p.baseline(host, at(80)); n != 2 || d != 59*time.Second {
+		t.Errorf("80 s watched: %d dials in %s, want 2 in 59s (the last minute, its 1 s of probes out)", n, d)
+	}
+}
+
 // TestUpstreamTallyUnattributable: the tell is unattributable when the
 // host dials outside its probes at half their rate or more, and only
 // then.
