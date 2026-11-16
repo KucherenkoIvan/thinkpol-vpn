@@ -42,10 +42,13 @@
 // real ServerHello spliced to the authenticated client). Each read from
 // the client goes on in one write, so the target sees the client's
 // segments as the site would (a record header forwarded on its own made
-// the lab's nginx fail on it and reset the rest). A client sending past
-// its hello before any answer isn't a dialer (ours sends nothing more
-// until the ServerHello): it is spliced as a stranger, its hello still
-// checked, so a replay is counted as one.
+// the lab's nginx fail on it and reset the rest). A client whose read
+// that completes the hello carries more bytes isn't a dialer (ours sends
+// nothing more until the ServerHello): it is spliced as a stranger, its
+// hello still checked, so a replay is counted as one. Bytes that come in a
+// later read aren't seen in time, and that hello is decided alone: the
+// rule is camouflage (looking like the real site would to such a client),
+// not authentication, which rests on the replay cache and the start rule.
 //
 // A target that can't be reached closes the connection. The target's FIN,
 // even before it sent anything, reaches the client as a half-close and
