@@ -257,6 +257,103 @@ func TestTheCrashPostureHoldsWhileMeantUp(t *testing.T) {
 	}
 }
 
+// A change that moves the crash posture (a preset, a connect, a
+// disconnect) returns once the kill switch followed it: the status it
+// leaves, which the CLI prints, is the kill switch after the change, on
+// the host and in Status, whether the data plane runs or the device waits
+// for a section. The kill switch is slow here, so a reply ahead of it
+// would show the one from before.
+func TestAChangeReturnsWithTheKillSwitchItLeaves(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	ctx := context.Background()
+	held := func(t *testing.T, step string, host *memKillSwitches, n *Node, active bool, shape string) {
+		t.Helper()
+		st := n.Status().KillSwitch
+		r := host.rules()
+		onHost := map[bool]string{true: "connected", false: "down"}[r != nil && r.TUN != ""]
+		if r == nil {
+			onHost = "none"
+		}
+		if st.On || st.Active != active || !st.Enforced || onHost != shape {
+			t.Fatalf("%s: returned with %+v and %s on the host, want active %v and %s", step, st, onHost, active, shape)
+		}
+	}
+	preset := func(t *testing.T, n *Node, p string) {
+		t.Helper()
+		if err := n.SetRulePreset(ctx, p); err != nil && !errors.Is(err, ErrPresetUnavailable) {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("running", func(t *testing.T) {
+		host := &memKillSwitches{}
+		b := startDevice(t, s, reg, true, withKillSwitch(host, nil))
+		b.connection(t, Connected)
+		inPlace(t, host, "none")
+		host.slowBy(300 * time.Millisecond)
+
+		preset(t, b.node, "everything")
+		held(t, "rules preset everything", host, b.node, true, "connected")
+		if err := b.node.Disconnect(ctx); err != nil {
+			t.Fatal(err)
+		}
+		held(t, "disconnect", host, b.node, false, "none")
+		if err := b.node.Connect(ctx); err != nil && !errors.Is(err, ErrPresetUnavailable) {
+			t.Fatal(err)
+		}
+		held(t, "connect", host, b.node, true, "connected")
+		preset(t, b.node, "space")
+		held(t, "rules preset space", host, b.node, false, "none")
+	})
+
+	t.Run("waiting for a section", func(t *testing.T) {
+		host := &memKillSwitches{}
+		b := startDevice(t, s, reg, true, withKillSwitch(host, nil), deviceOpt{prepare: func(c *Config, _ *Platform) {
+			writeFile(t, filepath.Join(c.StateDir, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
+		}})
+		eventually(t, func() bool { return b.node.Status().Removed })
+		inPlace(t, host, "none")
+		host.slowBy(300 * time.Millisecond)
+
+		preset(t, b.node, "everything")
+		held(t, "rules preset everything", host, b.node, true, "down")
+		preset(t, b.node, "space")
+		held(t, "rules preset space", host, b.node, false, "none")
+	})
+
+	t.Run("failing", func(t *testing.T) {
+		host := &memKillSwitches{}
+		b := startDevice(t, s, reg, true, withKillSwitch(host, nil))
+		t.Cleanup(func() { host.failWith(nil); host.failCloseWith(nil); host.slowBy(0) })
+		b.connection(t, Connected)
+		inPlace(t, host, "none")
+		host.slowBy(300 * time.Millisecond)
+		notEnforced := func(t *testing.T, step string, active bool, want KillSwitchError) {
+			t.Helper()
+			if st := b.node.Status().KillSwitch; st.Active != active || st.Enforced || st.Error != want {
+				t.Fatalf("%s: returned with %+v, want active %v, not enforced: %s", step, st, active, want)
+			}
+		}
+
+		host.failWith(errors.New("nftables says no"))
+		preset(t, b.node, "everything")
+		notEnforced(t, "rules preset everything", true, KillSwitchApplyFailed)
+		host.failWith(nil)
+		if err := b.node.SetAllowLAN(ctx, false); err != nil { // the loop's own retry may have run before failWith(nil)
+			t.Fatal(err)
+		}
+		inPlace(t, host, "connected")
+		eventually(t, func() bool { return b.node.Status().KillSwitch.Enforced })
+		host.failCloseWith(errors.New("nftables says no"))
+		if err := b.node.Disconnect(ctx); err != nil {
+			t.Fatal(err)
+		}
+		notEnforced(t, "disconnect", false, KillSwitchRemoveFailed)
+	})
+}
+
 // A start narrows what a crashed run left to the down shape before it
 // connects, so it fails closed until connected again; a start that comes
 // up disconnected with nothing meant removes it.

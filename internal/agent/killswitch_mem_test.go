@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
 )
@@ -15,6 +16,8 @@ type memKillSwitches struct {
 	in        *firewall.KillSwitchRules
 	fail      error // Apply fails with it
 	failClose error // Close fails with it
+	// delay holds every Apply and Close back, as a slow pfctl or nft does.
+	delay time.Duration
 }
 
 func (h *memKillSwitches) new() KillSwitch { return memKillSwitch{h} }
@@ -38,6 +41,19 @@ func (h *memKillSwitches) failWith(err error) {
 	h.fail = err
 }
 
+func (h *memKillSwitches) slowBy(d time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.delay = d
+}
+
+func (h *memKillSwitches) wait() {
+	h.mu.Lock()
+	d := h.delay
+	h.mu.Unlock()
+	time.Sleep(d)
+}
+
 func (h *memKillSwitches) failCloseWith(err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -47,6 +63,7 @@ func (h *memKillSwitches) failCloseWith(err error) {
 type memKillSwitch struct{ h *memKillSwitches }
 
 func (k memKillSwitch) Apply(_ context.Context, r firewall.KillSwitchRules) error {
+	k.h.wait()
 	k.h.mu.Lock()
 	defer k.h.mu.Unlock()
 	if k.h.fail != nil {
@@ -57,6 +74,7 @@ func (k memKillSwitch) Apply(_ context.Context, r firewall.KillSwitchRules) erro
 }
 
 func (k memKillSwitch) Close() error {
+	k.h.wait()
 	k.h.mu.Lock()
 	defer k.h.mu.Unlock()
 	if k.h.failClose != nil {
