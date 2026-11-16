@@ -85,3 +85,4 @@ Round 1 (2026-11-16; WireGuard's constants confirmed against wireguard-go, oracl
 - 2026-11-16 not verified: a counting censor itself (R1.1's rules were run offline on the traces, not added to the detector; the owner decides); open for the owner: the idle keepalive promise (idle case out of the matrix) and whether the detector should count records each way
 - 2026-11-16 in-progress → review
 - 2026-11-16 merged origin/rewrite after the lab run (21be02d4; no lab/ file changed): make lint and make test pass at 21be02d4; the full lab above proves 17b3b1f1, not the merge
+- 2026-11-16 review → in-progress — owner: agent-tp-223, round 2: review findings
