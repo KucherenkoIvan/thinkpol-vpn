@@ -1243,9 +1243,10 @@ func TestWGRhythmCountsRecords(t *testing.T) {
 // a few ms, flagged on the first record after the third such burst a
 // rekey period after the one before, though an unanswered record every
 // minute keeps the count from staying flat. Symmetric bursts (no
-// confirming keepalive), bursts 60 s or 240 s apart, an extra burst of
-// the same counts between rekeys, and bursts bigger than a handshake (4
-// against 3) pass.
+// confirming keepalive), bursts 60 s or 240 s apart (with bursts of other
+// counts between, so their chains are judged by the window, not dropped
+// as stale), an extra burst of the same counts between rekeys, and bursts
+// bigger than a handshake (4 against 3) pass.
 func TestWGRhythmBursts(t *testing.T) {
 	s, rtt := time.Second, time.Millisecond
 	rekeys := []time.Duration{121*s + 500*time.Millisecond, 121 * s, 121 * s}
@@ -1274,7 +1275,7 @@ func TestWGRhythmBursts(t *testing.T) {
 	}{
 		{"two records each way", noKeepalive},
 		{"bursts 60 s apart", wgPingTimeline(400*s, rtt, []time.Duration{60 * s, 60 * s, 60 * s, 60 * s, 60 * s}, noise...)},
-		{"bursts 240 s apart", wgPingTimeline(800*s, rtt, []time.Duration{240 * s, 240 * s, 240 * s}, unanswered(30*s, 60*s, 800*s)...)},
+		{"bursts 240 s apart", wgPingTimeline(800*s, rtt, []time.Duration{240 * s, 240 * s, 240 * s}, slices.Concat(unanswered(30*s, 60*s, 800*s), twoAgainstOne(300*s), twoAgainstOne(540*s))...)},
 		{"another burst between rekeys", extraBurst},
 		{"four records against three", wgPingTimeline(400*s, rtt, rekeys, slices.Concat(noise, bigger)...)},
 	} {
@@ -1284,6 +1285,12 @@ func TestWGRhythmBursts(t *testing.T) {
 			t.Errorf("%s: blocked at %s: %+v", c.name, a.at, a)
 		}
 	}
+}
+
+// twoAgainstOne is a burst of two records from the client and one from
+// the server at at.
+func twoAgainstOne(at time.Duration) []wgMessage {
+	return []wgMessage{{at, true, 300}, {at + 500*time.Microsecond, true, 300}, {at + time.Millisecond, false, 300}}
 }
 
 // readRecordTrace reads a trace kept under testdata: per line, ms from the
