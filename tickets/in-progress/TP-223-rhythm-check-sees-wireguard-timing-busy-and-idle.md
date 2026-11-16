@@ -131,3 +131,4 @@ Round 3 (2026-11-16; go-paranoid, pocket-torvalds: the detector is sound):
 - 2026-11-16 lab-gotest at f6f599cf of the udp and reality rows × off, wireguard-rhythm and active prober: first run, the four censored cells timed out waiting for the lab's subnet allocation lock (lab setup, other sessions' labs); second run, five cells as expected (udp caught, reality's fail accepted for the count reason), reality × active prober timed out on the same lock; that row rerun alone at f6f599cf: off pass, active prober not judged (unattributable, 9 dials in 7.5 s of probes, 8 in 8.1 s outside). Notes
 - 2026-11-16 not verified: a full make lab-test (targeted runs accepted for this ticket, orchestrator 2026-11-16); still open: the two idle boxes, until TP-080
 - 2026-11-16 in-progress → review
+- 2026-11-16 review → in-progress — owner: agent-tp-223, delta check: R4.1
