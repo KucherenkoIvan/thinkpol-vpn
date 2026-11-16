@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-230"
+branch: "tp-230-reality-tls-every-5s"
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ During the censor matrix's reality holds (TP-223's runs, 2026-11-16), device-a o
 
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate fixes)
+- 2026-11-16 backlog → in-progress, owner: agent-tp-230
