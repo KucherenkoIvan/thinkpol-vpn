@@ -77,9 +77,11 @@ func init() {
 // the site during its probes, per second of probing, against those that
 // started outside any probe of the host, per second, over the time the
 // prober has watched (since it started, at most upstreamKeep). When the
-// rate outside is at least half the rate during the probes, the probes
-// didn't clearly cause the connections, and the tell is unattributable,
-// reported as such and never flagged. Addresses the hosts setting names as
+// rate outside is at least half the rate during the probes, over a
+// baseline at least as long as the probing, the probes didn't clearly
+// cause the connections, and the tell is unattributable, reported as such
+// and never flagged; a shorter baseline leaves the tell standing, and its
+// verdict says the baseline was short. Addresses the hosts setting names as
 // one host (at least two addresses each) count as one address for all of
 // it: an entry probed over IPv6 that dials an IPv4-only site from its IPv4
 // address shows the tell, as it does to a censor that knows both
@@ -561,11 +563,18 @@ type upstreamTally struct {
 
 // unattributable says whether the host connects to the reference outside
 // its probes at least half as often as during them: then the probes
-// didn't clearly cause the connections, which may be the host's own.
+// didn't clearly cause the connections, which may be the host's own. A
+// baseline shorter than the probing is too little evidence for that: the
+// censor starts right before the first probe, so an entry's dial for the
+// very client the censor suspects lands in a baseline of a second or two.
 func (u upstreamTally) unattributable() bool {
 	// between/outside >= during/probing / 2, in integers.
-	return u.between > 0 && 2*int64(u.between)*int64(u.probing) >= int64(u.during)*int64(u.outside)
+	return !u.shortBaseline() && u.between > 0 && 2*int64(u.between)*int64(u.probing) >= int64(u.during)*int64(u.outside)
 }
+
+// shortBaseline says whether the prober watched the host outside its
+// probes for less time than it probed.
+func (u upstreamTally) shortBaseline() bool { return u.outside < u.probing }
 
 // upstreamTell judges the connections from server's host to the
 // reference: a line for the report, or a difference when the tell flags.
@@ -575,6 +584,9 @@ func (m *prober) upstreamTell(server netip.Addr, u upstreamTally) (report, diff 
 		from += " or another address of its host"
 	}
 	base := fmt.Sprintf("%d dials in %s of probes, %d in %s outside them", u.during, u.probing.Round(time.Millisecond), u.between, u.outside.Round(time.Millisecond))
+	if u.shortBaseline() {
+		base += ", a baseline shorter than the probing, too short to call the tell unattributable"
+	}
 	tell := fmt.Sprintf("upstream tell: a connection from %s to the reference during every probe (%d of %d; %s)", from, u.probes, u.total, base)
 	switch {
 	case u.total < 2 || u.probes < u.total:

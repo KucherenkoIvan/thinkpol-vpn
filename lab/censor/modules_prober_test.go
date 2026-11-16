@@ -391,8 +391,9 @@ func TestProberUpstreamTellUnattributable(t *testing.T) {
 				}
 			}
 		}()
-		// The baseline: the host dialing before anything probes it.
-		time.Sleep(300 * time.Millisecond)
+		// The baseline: the host dialing before anything probes it, longer
+		// than the probing, or it is too short to judge the tell.
+		time.Sleep(2 * time.Second)
 		s := suspectTo(entry, 40027, helloFor(t, siteName))
 		flows <- s
 		f := waitFlag(t, flags, s.Key)
@@ -455,8 +456,8 @@ func TestProberBaseline(t *testing.T) {
 }
 
 // TestUpstreamTallyUnattributable: the tell is unattributable when the
-// host dials outside its probes at half their rate or more, and only
-// then.
+// host dials outside its probes at half their rate or more, over a
+// baseline at least as long as the probing, and only then.
 func TestUpstreamTallyUnattributable(t *testing.T) {
 	s := time.Second
 	for _, c := range []struct {
@@ -470,7 +471,9 @@ func TestUpstreamTallyUnattributable(t *testing.T) {
 		{"just under half the rate", upstreamTally{during: 8, probing: 4 * s, between: 29, outside: 30 * s}, false},
 		{"half the rate", upstreamTally{during: 8, probing: 4 * s, between: 30, outside: 30 * s}, true},
 		{"the same rate", upstreamTally{during: 8, probing: 4 * s, between: 60, outside: 30 * s}, true},
-		{"one dial in a short baseline", upstreamTally{during: 7, probing: 4 * s, between: 1, outside: s}, true},
+		{"a baseline as long as the probing", upstreamTally{during: 8, probing: 4 * s, between: 4, outside: 4 * s}, true},
+		{"one dial in a short baseline", upstreamTally{during: 7, probing: 7500 * time.Millisecond, between: 1, outside: 1500 * time.Millisecond}, false},
+		{"many dials in a short baseline", upstreamTally{during: 8, probing: 4 * s, between: 20, outside: 3 * s}, false},
 	} {
 		if got := c.u.unattributable(); got != c.want {
 			t.Errorf("%s: unattributable %v, want %v", c.name, got, c.want)
@@ -632,5 +635,27 @@ func TestProberSettings(t *testing.T) {
 		if _, err := newProber(json.RawMessage(settings)); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// TestUpstreamTellShortBaseline: a splicing entry's own dial for the
+// suspected client, in the second or so the censor ran before the first
+// probe, doesn't hide the tell (relay-tcp in the matrix: 1 dial in 1.5 s
+// outside, 7 in 7.5 s of probes); the verdict says the baseline was short.
+func TestUpstreamTellShortBaseline(t *testing.T) {
+	server := netip.MustParseAddr("192.0.2.9")
+	u := upstreamTally{probes: 7, total: 7, during: 7, probing: 7500 * time.Millisecond, between: 1, outside: 1500 * time.Millisecond}
+	const short = "a baseline shorter than the probing, too short to call the tell unattributable"
+	report, diff := (&prober{hostOf: map[netip.Addr]netip.Addr{}}).upstreamTell(server, u)
+	if report != "" || !strings.Contains(diff, "upstream tell: a connection from 192.0.2.9 to the reference during every probe (7 of 7; ") || !strings.Contains(diff, short) {
+		t.Errorf("flag: report %q, diff %q, want the tell flagged, its baseline short", report, diff)
+	}
+	report, diff = (&prober{hostOf: map[netip.Addr]netip.Addr{}, reportTell: true}).upstreamTell(server, u)
+	if diff != "" || !strings.Contains(report, "upstream tell: a connection") || !strings.Contains(report, short) || !strings.Contains(report, "reported, not flagged") {
+		t.Errorf("report: report %q, diff %q, want the tell reported, its baseline short", report, diff)
+	}
+	u.outside = 30 * time.Second
+	if _, diff := (&prober{hostOf: map[netip.Addr]netip.Addr{}}).upstreamTell(server, u); strings.Contains(diff, short) {
+		t.Errorf("a 30 s baseline: diff %q, want no word of a short baseline", diff)
 	}
 }

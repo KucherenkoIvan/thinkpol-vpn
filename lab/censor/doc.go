@@ -461,9 +461,13 @@
 // matrix, device-a opened a short connection to server-1's reality port
 // about every 5 s while its link was up, against a dial per probe, a
 // probe every half second or so). The baseline is as long as the censor
-// ran before the verdict, a few seconds on the first suspect: a short one
-// makes the rate coarse, and either way the verdict gives both counts and
-// times. An entry whose
+// watched the host outside its probes, a few seconds on the first
+// suspect, since the censor starts right before it: one shorter than the
+// probing is too little evidence to call the tell unattributable (an
+// entry that splices every connection dials for the suspected client
+// itself just before the probes), so the tell stands and its verdict
+// says the baseline was short. Either way the verdict gives both counts
+// and times. An entry whose
 // connection leaves from another address than the one probed (an IPv4
 // uplink for an IPv6 probe) is matched only when the hosts setting names
 // both addresses as one host (an entry names at least two), as a censor
