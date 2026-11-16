@@ -289,7 +289,11 @@
 // one a burst of 6 to 9 records one way, which the cap now excludes. With
 // the cap, none at one request a second and 1 in 100 at 10 a second (one
 // record against one): a false-positive risk. TestWGRhythmRandomExchanges
-// replays such traffic at one record size and logs what flags.
+// replays such traffic at one record size (1 against 1, up to 2 against 3
+// and up to 3 against 6 records, at 1, 10 and 50 requests a second, 20
+// seeds each) and fails if any connection flags: none does, which bounds
+// the rate under 5% at each request rate (0 of 60, 95% confidence).
+// Without the cap 9 of 180 flag, all at 10 or 50 a second.
 //
 // The keepalive signal has blind spots of its own: next to other steady
 // traffic (those path probes) no record comes after quiet,
