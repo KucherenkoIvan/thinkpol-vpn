@@ -1,9 +1,16 @@
 # thinkpol-vpn development targets. `make help` lists them.
 
+# Every go command here, the dev tools' builds included, runs the toolchain
+# go.mod's toolchain line names, whatever the host's default Go is: under
+# GOTOOLCHAIN=auto that line is only a minimum, so a newer local Go would
+# run as is, and govulncheck and the tests would see its standard library.
+# `make GOTOOLCHAIN=...` still overrides it.
+GO_TOOLCHAIN := $(shell sed -n 's/^toolchain //p' go.mod)
+export GOTOOLCHAIN := $(GO_TOOLCHAIN)
+
 # Dev tools, pinned, installed per checkout into bin/tools (lint and proto
-# install them on first use). Bumping a version reinstalls them all. They
-# need Go 1.26 or later to build (govulncheck, golangci-lint): an older
-# local Go must leave GOTOOLCHAIN at auto, or the install fails.
+# install them on first use). Bumping a version or the toolchain reinstalls
+# them all: govulncheck built by one Go fails on another's standard library.
 GOLANGCI_LINT_VERSION := v2.14.0
 BUF_VERSION := v1.73.0
 PROTOC_GEN_GO_VERSION := v1.36.12
@@ -11,7 +18,7 @@ PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 GOVULNCHECK_VERSION := v1.9.0
 
 TOOLS := $(CURDIR)/bin/tools
-TOOLS_STAMP := $(TOOLS)/.installed-$(GOLANGCI_LINT_VERSION)-$(BUF_VERSION)-$(PROTOC_GEN_GO_VERSION)-$(PROTOC_GEN_GO_GRPC_VERSION)-$(GOVULNCHECK_VERSION)
+TOOLS_STAMP := $(TOOLS)/.installed-$(GOTOOLCHAIN)-$(GOLANGCI_LINT_VERSION)-$(BUF_VERSION)-$(PROTOC_GEN_GO_VERSION)-$(PROTOC_GEN_GO_GRPC_VERSION)-$(GOVULNCHECK_VERSION)
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
