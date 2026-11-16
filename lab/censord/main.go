@@ -1,7 +1,9 @@
 // Command censord is the lab's censor, run in the router container: nftables
 // hands it every forwarded packet through an NFQUEUE, its modules decide,
 // and it writes every decision to the verdict log. A test starts it with a
-// config that picks the modules and reads the log back.
+// config that picks the modules and reads the log back. With -reset it
+// clears what a stopped censor leaves in the router (censor.Reset) and
+// exits, so the next censor starts from a fresh router's state.
 package main
 
 import (
@@ -17,11 +19,20 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab/censor"
 )
 
-var configPath = flag.String("config", "", "the censor's JSON config")
+var (
+	configPath = flag.String("config", "", "the censor's JSON config")
+	reset      = flag.Bool("reset", false, "remove the censor's table and flush conntrack, then exit")
+)
 
 func main() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	flag.Parse()
+	if *reset {
+		if err := censor.Reset(); err != nil {
+			log.Fatalf("censord: %v", err)
+		}
+		return
+	}
 	if *configPath == "" {
 		log.Fatal("censord: no -config")
 	}

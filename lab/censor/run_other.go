@@ -13,3 +13,8 @@ import (
 func Run(ctx context.Context, cfg Config, eng *Engine) error {
 	return errors.New("censor: NFQUEUE runs only on Linux, in the lab's router")
 }
+
+// Reset never runs, as Run doesn't.
+func Reset() error {
+	return errors.New("censor: the censor's reset runs only on Linux, in the lab's router")
+}

@@ -23,24 +23,32 @@ import (
 )
 
 // TestCensorMatrix scores every transport against every censor module
-// (PRD C4, success metric 1) and regenerates lab/RESULTS.md. Every cell is
-// probed in its own lab, and a transport's censored cells run in parallel:
-// a transport passes when its data crossed the censor in the lab router
-// over IPv4 and over IPv6, fails when it crossed over neither, and is
-// partial when only one family crossed, which only a row that varies
-// (censorCase.varies) may be. A cell whose outcome contradicts what its
-// censor means to produce fails the test, and a cell whose censor can't be
-// trusted (censord died, the kernel dropped queued packets, an active
-// module missed a snapshot, the verdict log doesn't show the probe's flows,
-// the module the cell quotes didn't compare what it must) is an error.
-// RESULTS.md is written only by a complete run with no error.
+// (PRD C4, success metric 1) and regenerates lab/RESULTS.md. Each
+// transport's row runs in one lab of its own (lab.Upstream, holding its
+// own lab slot, lab.StartOwnSlot), the rows in parallel and a row's cells
+// one after another: a transport passes when its data crossed the censor
+// in the lab router over IPv4 and over IPv6, fails when it crossed over
+// neither, and is partial when only one family crossed, which only a row
+// that varies (censorCase.varies) may be. A cell whose outcome contradicts
+// what its censor means to produce fails the test, and a cell whose
+// censor can't be trusted (censord died, the kernel dropped queued
+// packets, an active module missed a snapshot, the verdict log doesn't
+// show the probe's flows, the module the cell quotes didn't compare what
+// it must) is an error. RESULTS.md is written only by a complete run with
+// no error.
 //
-// A transport's off cell (no censor) runs before its censored cells and
-// they read its result: a transport must pass without a censor before it
-// is judged against one. A censored cell without a passing off cell is an
+// Every cell sets its transport up afresh, and after it the row's lab is
+// reset to the state it came up in (matrixRow.reset): the cell's
+// processes, censord with them, stopped, the links, policy rules, tables
+// and files it left removed, the router's censor table and conntrack
+// cleared, the verdict log gone. A reset that didn't hold makes the cell
+// an error, and every later cell of its row.
+//
+// A transport's off cell (no censor) runs first and the censored cells
+// read its result: a transport must pass without a censor before it is
+// judged against one. A censored cell without a passing off cell is an
 // error and fails fast, whether the off cell didn't run (a -run filter can
-// select the cell alone) or it failed. Every cell holds its own lab slot
-// (lab.StartOwnSlot).
+// select the cell alone) or it failed.
 func TestCensorMatrix(t *testing.T) {
 	t.Parallel()
 	var (
@@ -54,17 +62,22 @@ func TestCensorMatrix(t *testing.T) {
 	}
 	t.Cleanup(func() { writeResults(t, cells, len(transports)*len(censorCases)) })
 
-	// runCell probes one cell and records it: t.Fatal below ends the
-	// function before its return, the deferred record is what survives.
-	runCell := func(t *testing.T, tr transport, cc censorCase) matrixCell {
-		cell := matrixCell{transport: tr.name, censor: cc.name, result: "error"}
-		defer func() { record(cell) }()
+	// runCell probes one cell, resets the row's lab after it, and records
+	// it: t.Fatal below ends the function before its return, the cleanup
+	// is what survives.
+	runCell := func(t *testing.T, row *matrixRow, tr transport, cc censorCase) matrixCell {
+		cell := &matrixCell{transport: tr.name, censor: cc.name, result: "error"}
+		// Registered first, so it runs after the cleanups that stop the
+		// cell's processes.
+		t.Cleanup(func() {
+			if err := row.reset(); err != nil {
+				cell.result, cell.detail = "error", "the lab's reset after the cell didn't hold"
+				t.Errorf("%s against %s: %s: %v", tr.name, cc.name, cell.detail, err)
+			}
+			record(*cell)
+		})
 
-		topology := lab.Standard()
-		if cc.upstream || tr.upstream {
-			topology = lab.Upstream()
-		}
-		l := lab.StartOwnSlot(t, topology)
+		l := row.lab
 		target, err := tr.setup(t, l)
 		if err != nil {
 			cell.detail = "setup failed"
@@ -179,7 +192,7 @@ func TestCensorMatrix(t *testing.T) {
 		} else {
 			t.Logf("%s against %s: %s (%s)", tr.name, cc.name, cell.result, cell.detail)
 		}
-		return cell
+		return *cell
 	}
 
 	if err := checkMatrix(censorCases, transports); err != nil {
@@ -189,28 +202,31 @@ func TestCensorMatrix(t *testing.T) {
 	for _, tr := range transports {
 		t.Run(tr.name, func(t *testing.T) {
 			t.Parallel()
+			row := startRow(t)
 			offResult := "" // the off cell's result; "" when it didn't run
 			t.Run(off.name, func(t *testing.T) {
 				// runCell records the cell even when t.Fatal stops it,
 				// but the assignment would not happen: claim that the
 				// cell ran before it can fail.
 				offResult = "error"
-				offResult = runCell(t, tr, off).result
+				offResult = runCell(t, row, tr, off).result
 			})
 			for _, cc := range censored {
 				t.Run(cc.name, func(t *testing.T) {
-					t.Parallel()
-					if offResult == "" {
-						record(matrixCell{transport: tr.name, censor: cc.name,
-							result: "error", detail: gateNotRun})
-						t.Fatal(gateNotRun)
+					gate := ""
+					switch {
+					case offResult == "":
+						gate = gateNotRun
+					case offResult != "pass":
+						gate = gateNotPassed
+					case row.broken != nil:
+						gate = row.broken.Error()
 					}
-					if offResult != "pass" {
-						record(matrixCell{transport: tr.name, censor: cc.name,
-							result: "error", detail: gateNotPassed})
-						t.Fatal(gateNotPassed)
+					if gate != "" {
+						record(matrixCell{transport: tr.name, censor: cc.name, result: "error", detail: gate})
+						t.Fatal(gate)
 					}
-					runCell(t, tr, cc)
+					runCell(t, row, tr, cc)
 				})
 			}
 		})
@@ -481,9 +497,6 @@ type censorCase struct {
 	// known, never as news, and stays a correct cell like any expected
 	// fail, as long as the blocker blocked for that tell alone.
 	accepted map[string]knownTell
-	// upstream runs the cell in lab.Upstream: the camouflage site behind
-	// the router.
-	upstream bool
 	// settle probes twice, the cell scoring the second, once the active
 	// modules have flagged every flow of server-1 a module tagged.
 	settle bool
@@ -743,7 +756,7 @@ var censorCases = []censorCase{
 	// is told server-1's two addresses are one host, as a censor that
 	// knows them would (RR31), so the tell shows over either family.
 	{name: "active prober", expect: map[string]string{rowRandomTCP: "fail", rowOpenVPNTCP: "fail", rowRelayTCP: "fail"}, blocker: "prober",
-		upstream: true, settle: true, report: "prober",
+		settle: true, report: "prober",
 		verdictSays: map[string]string{rowHTTPS: "TLS: the server", rowRelayTCP: "upstream tell: a connection", rowReality: "upstream tell: "},
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			camouflage := lab.StartCamouflage(t, l)
@@ -756,7 +769,7 @@ var censorCases = []censorCase{
 	// site: their server hellos are compared with the site's answer to the
 	// same ClientHello (the relay's is the site's own, reality's REALITY's
 	// imitation of it).
-	{name: "server-hello", upstream: true, settle: true, report: "server-hello",
+	{name: "server-hello", settle: true, report: "server-hello",
 		verdictSays: map[string]string{rowHTTPS: "server hello matches the site", rowRelayTCP: "server hello matches the site", rowReality: "server hello matches the site"},
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			camouflage := lab.StartCamouflage(t, l)
@@ -833,8 +846,6 @@ type transport struct {
 	// sawFlows checks the verdict log has the probe's flows on the
 	// underlay: the censor saw what it judged.
 	sawFlows func(t *testing.T, l *lab.Lab, c *censorRun) error
-	// upstream runs every cell of the row in lab.Upstream.
-	upstream bool
 	// udp: the row's underlay is UDP, which the prober never probes.
 	udp bool
 	// oneUnderlay: both overlay families ride one underlay family, so a
@@ -939,7 +950,7 @@ var transports = []transport{
 	{name: rowOpenVPNUDP, setup: openVPN{"udp"}.setup, probe: openVPN{"udp"}.probe, sawFlows: openVPN{"udp"}.sawFlows, udp: true},
 	{name: rowOpenVPNTCP, setup: openVPN{"tcp"}.setup, probe: openVPN{"tcp"}.probe, sawFlows: openVPN{"tcp"}.sawFlows},
 	{name: rowRandomTCP, setup: setupRandom, probe: probeRandom, sawFlows: sawRandom},
-	{name: rowRelayTCP, setup: setupRelay, probe: probeHTTPSOn(relayRowPort), sawFlows: sawRelay, upstream: true, tls: true},
+	{name: rowRelayTCP, setup: setupRelay, probe: probeHTTPSOn(relayRowPort), sawFlows: sawRelay, tls: true},
 	realityRow,
 }
 
