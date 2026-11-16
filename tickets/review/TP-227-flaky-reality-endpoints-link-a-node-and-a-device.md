@@ -49,3 +49,4 @@ branch: "tp-227-flaky-devmap-reality-endpoints"
 - 2026-11-16 `make lint` and `make test` green on 4ef6611 (umask 022); no product code changed, so no lab run
 - 2026-11-16 out of scope: none found; reality's Dial failing when its context is cancelled after the handshake's last write is crypto/tls's behaviour, and correct for a dial abandoned before it returns
 - 2026-11-16 in-progress → review
+- 2026-11-16 review round 1: merge, no findings
