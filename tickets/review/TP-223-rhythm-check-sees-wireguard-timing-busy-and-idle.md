@@ -64,6 +64,7 @@ M2's gate promises `reality` shows no WireGuard rhythm: no 2-minute rekey pair a
 - MQTT over TLS (PINGREQ/PINGRESP every 60 s, an unanswered QoS 0 publish every 150 s) is flagged by the count at the third publish (TestWGRhythmFlagsMQTTKeepalive): a documented, accepted risk of the lab detector, with websocket presence messages and 120–210 s long polls (lab/censor/doc.go).
 - Lab-gotest at f6f599cf (udp and reality × off, wireguard-rhythm, active prober): udp caught on its rekey ("records of 240 and 184 bytes exchanged 3 times, the last 2m0s apart"); reality caught by the count ("stepped 3 times by +1, the last 2m1s apart"), the reason the accepted entry covers, so the cell reads known, accepted; reality × active prober not judged: "upstream tell: unattributable (9 dials in 7.544s of probes, 8 in 8.09s outside them, ...)". device-a's own connections made server-1 dial the target about once a second, as often as the probes did, so the tell can't be pinned on the probes in this lab.
 - The window's upper bound in the chains is nearly redundant with pruning (stale chains are dropped at most once a window); TestWGRhythmBursts' 240 s case times bursts of other counts so the chains outlive the prune and only the bound decides.
+- Round 4 (2026-11-16): reality's prober cell can read pass or not judged from run to run while TP-230's background dials exist (device-a's short TLS connection to server-1 about every 5 s): with enough of them in the baseline the tell is unattributable (not judged), with too few it shows (pass, reported, not flagged). Both are accepted. relay-tcp's own dial for the suspected client no longer hides its tell: a baseline shorter than the probing can't make the tell unattributable (R4.1).
 
 ## Review findings
 Round 1 (2026-11-16; WireGuard's constants confirmed against wireguard-go, oracles real):
@@ -90,6 +91,9 @@ Round 3 (2026-11-16; go-paranoid, pocket-torvalds: the detector is sound):
 - [x] R3.5 doc.go: the idle case is out of the matrix until TP-080; the >90 s pause miss applies to all three chained signals; the count isn't flat under TCP inside the tunnel.
 - [x] R3.6 TestWGRhythmRandomExchanges skips under -short and -race (and in the lab node), logs its wall time, TODO naming TP-239.
 - [x] R3.7 Nits: wgBurstMax named a choice; holdTunnel's idle branch marked unused until TP-080; the lab box says what ran; the Log names the development machine.
+
+Round 4 (2026-11-16, delta check):
+- [x] R4.1 (should-fix) A baseline shorter than the probing can't make the upstream tell unattributable: the censor starts right before the first probe, so relay-tcp's own dial for the suspected client fell in a 1.5 s baseline against 7.5 s of probes and the cell read not judged. The tell stands and its verdict says the baseline was short (upstreamTally.shortBaseline, lab/censor/modules_prober.go); TestUpstreamTallyUnattributable, TestUpstreamTellShortBaseline, mutations.
 
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate review)
@@ -132,3 +136,9 @@ Round 3 (2026-11-16; go-paranoid, pocket-torvalds: the detector is sound):
 - 2026-11-16 not verified: a full make lab-test (targeted runs accepted for this ticket, orchestrator 2026-11-16); still open: the two idle boxes, until TP-080
 - 2026-11-16 in-progress → review
 - 2026-11-16 review → in-progress — owner: agent-tp-223, delta check: R4.1
+- 2026-11-16 delta check: fix R4.1, merge
+- 2026-11-16 R4.1 upstreamTally.shortBaseline: a baseline outside the probes shorter than the probing never makes the tell unattributable; the tell stands, its verdict says the baseline was short (doc.go, lab/README.md); TestUpstreamTallyUnattributable (short-baseline and equal-length cases), TestUpstreamTellShortBaseline; TestProberUpstreamTellUnattributable's baseline lengthened to 2 s, longer than its probing. Mutations, each killed: the shortBaseline guard dropped (both tests); < made <= (TestUpstreamTallyUnattributable, "a baseline as long as the probing"); the verdict's short-baseline words dropped (TestUpstreamTellShortBaseline)
+- 2026-11-16 make lint and make test pass at 0b3c3c97; go test ./lab/censor/... -count 3 of the prober tests passes at 0b3c3c97
+- 2026-11-16 lab-gotest at 0b3c3c97 of the relay-tcp and reality rows × off and active prober: relay-tcp off pass, active prober fails as expected ("upstream tell: ... during every probe (7 of 7; 8 dials in 5.516s of probes, 1 in 365ms outside them, a baseline shorter than the probing, ...)"); reality's row timed out waiting for the lab's subnet allocation lock (other sessions' labs, TP-229), twice; rerun alone at 0b3c3c97: off pass, active prober not judged (unattributable, 9 dials in 7.52s of probes, 8 in 8.12s outside)
+- 2026-11-16 not verified: a full make lab-test (targeted runs accepted for this ticket, orchestrator 2026-11-16); still open: the two idle boxes, until TP-080
+- 2026-11-16 in-progress → review
