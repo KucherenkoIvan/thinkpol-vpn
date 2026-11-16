@@ -134,7 +134,18 @@ func DownStale(ctx context.Context) ([]string, error) {
 	})
 }
 
+// downWhere removes the labs match picks, then the subnet reservations
+// whose owner is gone (reserveSubnets).
 func downWhere(ctx context.Context, match func(project, root string) bool) ([]string, error) {
+	removed, err := downMatching(ctx, match)
+	dir, lerr := lockDir()
+	if lerr == nil {
+		lerr = reclaimReservations(ctx, dir)
+	}
+	return removed, errors.Join(err, lerr)
+}
+
+func downMatching(ctx context.Context, match func(project, root string) bool) ([]string, error) {
 	projects, err := labProjects(ctx)
 	if err != nil {
 		return nil, err
