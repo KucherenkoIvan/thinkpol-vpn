@@ -245,7 +245,11 @@ func goTestPackage(ctx context.Context, root, project string, pkg GoPackage, out
 			entry = nil
 		} else if t, ok := cache.Store.Lookup(entry.action, entry.resolve); ok {
 			res.Cached, res.Tests = true, TestTally{Passed: t.Passed, Skipped: t.Skipped}
-			fmt.Fprintf(out, "%s (cached: %d passed, %d skipped)\n", header, t.Passed, t.Skipped)
+			if t == (testcache.Tally{}) { // not verbose: nothing was counted
+				fmt.Fprintf(out, "%s (cached)\n", header)
+			} else {
+				fmt.Fprintf(out, "%s (cached: %d passed, %d skipped)\n", header, t.Passed, t.Skipped)
+			}
 			return res, nil
 		} else {
 			fmt.Fprintln(out, header)
