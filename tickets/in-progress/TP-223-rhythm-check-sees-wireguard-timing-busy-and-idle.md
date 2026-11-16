@@ -56,14 +56,14 @@ M2's gate promises `reality` shows no WireGuard rhythm: no 2-minute rekey pair a
 
 ## Review findings
 Round 1 (2026-11-16; WireGuard's constants confirmed against wireguard-go, oracles real):
-- [ ] R1.1 Measure first, offline on the held traces (busy and idle, udp and reality): (a) record-count imbalance per connection, d = n(A→B) − n(B→A), stepping +1 three times 120–210 s apart and flat otherwise; (b) per 2 s ping tick, one extra record each way recurring 120–210 s apart three times. Numbers in Notes whatever they show; no product change, no new rule in the detector this round.
-- [ ] R1.2 The reality rhythm cells' detail names the blind spot (and what R1.1 found), never a bare pass.
-- [ ] R1.3 checkMatrix requires the udp control row, held and expected to fail, whenever a case holds; TestCheckMatrix covers a matrix without it.
-- [ ] R1.4 prober: host dials between probes are a baseline; a nonzero baseline reports "upstream tell: unattributable (N dials between probes)"; a `hosts` entry names at least two addresses.
-- [ ] R1.5 holdTunnel checks the hold's pings crossed (busy: under 90% received fails; idle: the one ping) and the idle wait honours ctx.
-- [ ] R1.6 Doc honesty: wgPairWindow, wgSteadyJitter and the keepalive count are choices; the 30 s slack and thinkpol's missing persistent keepalive; a tunnel idle over ~90 s between rekeys breaks the chain; the idle passive-keepalive claim reconciled with the trace.
-- [ ] R1.7 The idle rhythm case leaves the matrix until the owner rules (holdTunnel's idle branch and its test stay); acceptance boxes reworded so each ticked one is true.
-- [ ] R1.8 Nits: tests close the trace file; the trace setting's comment says each line is a synchronous write in the packet path.
+- [x] R1.1 Measure first, offline on the held traces (busy and idle, udp and reality): (a) record-count imbalance per connection, d = n(A→B) − n(B→A), stepping +1 three times 120–210 s apart and flat otherwise; (b) per 2 s ping tick, one extra record each way recurring 120–210 s apart three times. Numbers in Notes whatever they show; no product change, no new rule in the detector this round.
+- [x] R1.2 The reality rhythm cells' detail names the blind spot (and what R1.1 found), never a bare pass.
+- [x] R1.3 checkMatrix requires the udp control row, held and expected to fail, whenever a case holds; TestCheckMatrix covers a matrix without it.
+- [x] R1.4 prober: host dials between probes are a baseline; a nonzero baseline reports "upstream tell: unattributable (N dials between probes)"; a `hosts` entry names at least two addresses.
+- [x] R1.5 holdTunnel checks the hold's pings crossed (busy: under 90% received fails; idle: the one ping) and the idle wait honours ctx.
+- [x] R1.6 Doc honesty: wgPairWindow, wgSteadyJitter and the keepalive count are choices; the 30 s slack and thinkpol's missing persistent keepalive; a tunnel idle over ~90 s between rekeys breaks the chain; the idle passive-keepalive claim reconciled with the trace.
+- [x] R1.7 The idle rhythm case leaves the matrix until the owner rules (holdTunnel's idle branch and its test stay); acceptance boxes reworded so each ticked one is true.
+- [x] R1.8 Nits: tests close the trace file; the trace setting's comment says each line is a synchronous write in the packet path.
 
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate review)
@@ -76,3 +76,8 @@ Round 1 (2026-11-16; WireGuard's constants confirmed against wireguard-go, oracl
 - 2026-11-16 in-progress → review
 - 2026-11-16 review → in-progress — owner: agent-tp-223, round 1: review findings
 - 2026-11-16 review round 1: fix R1.1–R1.8; owner decides the idle promise
+- 2026-11-16 R1.1 measured offline on whole traces of a lab-gotest at c7c43441 (udp and reality × both rhythm cases, held 7.5 min, kept with THINKPOL_LAB_TRACES): the record-count imbalance catches reality's busy rekeys (+1 at 124.5, 246.0, 366.1 s); the per-tick rule as worded doesn't (rekey ticks are 3+2 records, and chance 2+2 ticks chain), its 3+2 form does; idle: one passive keepalive, no chain; numbers in Notes
+- 2026-11-16 R1.2 reality's rhythm cell names its blind spot and R1.1's result (results_test.go realityRhythmBlindSpot); R1.3 checkMatrix needs the udp row, held and expected to fail, in every held case; R1.4 the prober counts the host's dials in a pause after each probe and reports "upstream tell: unattributable (N dials between probes; ...)", hosts need two addresses; R1.5 holdTunnel fails under 90% of pings back (idle: the one ping) and waits on the test's context; R1.6 choices named as choices, the 30 s slack and the ~90 s gap explained, the idle passive keepalive confirmed by the trace (doc.go right, the earlier Note wrong); R1.7 idle case out of the matrix, boxes reworded; R1.8 closeTrace for tests, the trace's synchronous write noted
+- 2026-11-16 mutations, each killed: dials in the pause not counted (TestProberUpstreamTellUnattributable); one-address host accepted (TestProberSettings); control rule only when a udp row exists (TestCheckMatrix, "no control row"); busybox ping summary not read (TestPingReceived). Not mutation-checked: closeTrace (nothing a test sees changes), and the lab-only paths, seen working in the lab-gotest at fa8e0658 instead: the holds' "225 of 225" and "222 of 225" pings, reality's blind-spot detail
+- 2026-11-16 make lint and make test pass at fa8e0658; lab-gotest at fa8e0658 of the udp, reality, https, random-tcp, relay-tcp and openvpn-tcp rows × off, wireguard-rhythm and active prober (18 cells) passes: relay-tcp still flagged on the tell (7 of 7), reality's tell now unattributable (1 dial between probes), udp caught in use at the third rekey
+- 2026-11-16 out of scope, still open: device-a opens a short TLS connection to server-1's reality port about every 5 s while its link rides the other family; it is what makes reality's tell unattributable

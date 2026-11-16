@@ -90,8 +90,9 @@ const (
 //     with no record either way, none answered by a record the other way
 //     within wgPairWindow, at one steady interval: at least `keepalives`
 //     (3 by default, a choice like wgRekeys) of them once the connection
-//     has carried an exchange, two more without. A record counts once its wgPairWindow has passed, judged on
-//     the connection's next packet either way.
+//     has carried an exchange, two more without. A record counts once its
+//     wgPairWindow has passed, judged on the connection's next packet
+//     either way.
 //
 // Flow shape beyond that (size distributions, bursts) is not its business
 // (owner, 2026-11-07). A TCP stream it can't frame as TLS from its first
