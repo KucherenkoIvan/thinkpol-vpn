@@ -375,7 +375,7 @@ $ thinkpol spaces
 
 #### `rules preset`
 
-Switches a device's routing rules to a preset: `space` (the space's own rules), `everything`, or `all-but-domestic`. The service stores the choice in `rules.local`. Synopsis: `thinkpol rules preset [-socket path] <space|everything|all-but-domestic>`. It prints the status once the data plane and the kill switch follow the preset: the kill switch's line shows whether the new preset's crash posture holds it. There is no form that shows the current preset: `status` shows it.
+Switches a device's routing rules to a preset: `space` (the space's own rules), `everything`, or `all-but-domestic`. The service stores the choice in the device file (`device.json`). Synopsis: `thinkpol rules preset [-socket path] <space|everything|all-but-domestic>`. It prints the status once the data plane and the kill switch follow the preset: the kill switch's line shows whether the new preset's crash posture holds it. There is no form that shows the current preset: `status` shows it.
 
 ```
 $ thinkpol rules preset space
@@ -790,10 +790,10 @@ Limits: 32 connections and 16 calls per connection. All watchers share one statu
 |---|---|---|---|---|---|
 | `GetStatus` | unary | control | `{}` | `{ status: Status }` | — |
 | `WatchStatus` | server stream | control | `{ interval: Duration }` (unset: 1s; at least 250ms) | stream of `{ status: Status }`, the first at once | — |
-| `Connect` | unary | control | `{}` | `{ status: Status }` once up | `server_mode`, `not_running`, `dns_not_protected`, `start_failed:<step>` |
-| `Disconnect` | unary | control | `{}` | `{ status: Status }` once down | `server_mode`, `not_running` |
+| `Connect` | unary | control | `{}` | `{ status: Status }` once up and the kill switch follows | `server_mode`, `not_running`, `dns_not_protected`, `start_failed:<step>` |
+| `Disconnect` | unary | control | `{}` | `{ status: Status }` once down and the kill switch follows | `server_mode`, `not_running` |
 | `ListSpaces` | unary | control | `{}` | `{ spaces: [ { id, active } ] }` (always one, active) | — |
-| `SetRulePreset` | unary | control | `{ preset: string }` | `{ status: Status }` | `unknown_rule_preset`, `rule_preset_unavailable` (stored anyway), `rule_preset_not_enforced` (stored, the router keeps the preset it had until a retry lays it out), `rule_preset_incomplete` (stored and in place, the rest of its layout retried), `not_running` (stored for the next start), `server_mode` |
+| `SetRulePreset` | unary | control | `{ preset: string }` | `{ status: Status }` once the data plane and the kill switch follow | `unknown_rule_preset`, `rule_preset_unavailable` (stored anyway), `rule_preset_not_enforced` (stored, the router keeps the preset it had until a retry lays it out), `rule_preset_incomplete` (stored and in place, the rest of its layout retried), `not_running` (stored for the next start), `server_mode` |
 | `TailLogs` | server stream | admin | `{ lines: uint32 (0: 100), follow: bool }` | stream of `{ lines: [string], missed: uint64 }` | — |
 | `Diagnose` | unary | control (host parts: admin) | `{}` | `{ diagnostics: Diagnostics }` | — |
 

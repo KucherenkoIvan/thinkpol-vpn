@@ -22,7 +22,7 @@ branch: "tp-224-status-line-after-change"
 ## Out of scope
 
 ## Acceptance
-- [x] Both commands print the kill switch's post-change state; tests on Linux and on macOS (fake pfctl, no real host tools) that fail on the old output.
+- [x] Both commands print the kill switch's post-change state; tests on Linux and on macOS that fail on the old output, with the in-memory kill switch on both (no real host tools; the fix is in OS-independent node code, see Notes).
 - [x] Any other command with the same pattern fixed or listed in Notes with why not.
 - [ ] Mutation-checked; `make lint`, `make test`, `make lab-test` pass.
 
@@ -37,7 +37,16 @@ branch: "tp-224-status-line-after-change"
   - `thinkpol connect` from disconnected under `everything`/`all-but-domestic`: `kill switch:  off, allow-LAN off` → `kill switch:  off, allow-LAN off (held by the crash posture while the connection is meant up)`.
   - With the toggle on the text doesn't change (`on, allow-LAN …  (in place)` before and after). A kill switch that fails to apply or remove now shows `(not enforced: apply_failed, retrying)` / `(not enforced: remove_failed, retrying)` in the change's own output instead of only in a later `status`. Column alignment follows the status's tabwriter as before.
 - Tests: `TestAChangeReturnsWithTheKillSwitchItLeaves` (internal/agent) runs the real node with the in-memory kill switch slowed to 300 ms, so a reply ahead of the kill switch loses every time, and checks Status and the host right as each change returns. It runs on Linux and macOS alike with no host tools. The firewall package's fake pfctl is internal to that package, which another ticket owns right now; the fix is in OS-independent node code, so the darwin run with the in-memory kill switch exercises the same path a pf-backed one would.
+- A failed apply makes the loop's next turn retry it straight away (`keep` in internal/agent/killswitch.go skips a repeat only while nothing failed), so a hung pfctl stalls the node loop about twice as long per command as before; the status in the reply is honest at the moment it returns.
 - Out of scope: `connect`, `disconnect` and `rules preset` still exit 0 when the kill switch they moved failed to apply or remove; only the toggles say `kill_switch_not_enforced`. The printed line now shows it; whether the exit code should too is a separate decision.
+
+## Review findings
+- [x] R1.1 internal/agent/node.go SetRulePreset: the "Taken" wait comment now names the kill switch's Apply or Close (pfctl runs on macOS, nftables on Linux) and that the wait ignores ctx.
+- [x] R1.2 A failure-path step in TestAChangeReturnsWithTheKillSwitchItLeaves ("failing"): `rules preset everything` while meant up returns with apply_failed, not enforced; `disconnect` with a failing remove returns with remove_failed.
+- [x] R1.3 Acceptance box 1 says the in-memory kill switch runs on both OSes, not a fake pfctl.
+- [x] R1.4 Docs: internal/agent/doc.go says connect, disconnect and the rule preset return once the kill switch followed; docs/design/api-overview-reference.md Connect/Disconnect/SetRulePreset rows say the kill switch follows, and `rules preset` stores the choice in device.json, not rules.local.
+- [x] R1.5 Rewrapped the Connect, Disconnect and SetRulePreset doc comments in internal/agent/node.go.
+- [x] R1.6 Notes line: a failed apply is retried at once at the loop's next turn, so a hung pfctl stalls the loop about twice as long per command.
 
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate review)
@@ -47,3 +56,5 @@ branch: "tp-224-status-line-after-change"
 - 2026-11-16 full make lab-test at b7a591e3, first run: failed outside this branch: internal/dataplane/dns TestResolvConfASlowWriterPastTheCapKeepsItsServers (the TP-220 flake; 2 of 5 alone in a lab node; the package doesn't depend on internal/agent) and TestCensorMatrix cells on "waiting for the subnet allocation lock: context deadline exceeded" (machine loaded)
 - 2026-11-16 full make lab-test at b7a591e3, re-run: the session lost its output after a long lock wait; the run went on, regenerated lab/RESULTS.md (TestCensorMatrix passed) and tore its labs down, but its exit status is unknown, so the lab-test box stays open
 - 2026-11-16 handoff: code and tests done; left: one full make lab-test with a cited exit status (rerun once TP-220 lands, or judge the dns flake as TP-220's), then in-progress → review
+- 2026-11-16 review round 1: fix R1.1–R1.6, then the full lab
+- 2026-11-16 R1.2 mutations (each fails 3/3 on the new "failing" step, passes restored): takeRules without its enforceKillSwitch (preset returns not active, enforced, no error), runner.request without its enforceKillSwitch (disconnect returns active, enforced, no error)

@@ -322,6 +322,33 @@ func TestAChangeReturnsWithTheKillSwitchItLeaves(t *testing.T) {
 		preset(t, b.node, "space")
 		held(t, "rules preset space", host, b.node, false, "none")
 	})
+
+	t.Run("failing", func(t *testing.T) {
+		host := &memKillSwitches{}
+		b := startDevice(t, s, reg, true, withKillSwitch(host, nil))
+		t.Cleanup(func() { host.failWith(nil); host.failCloseWith(nil); host.slowBy(0) })
+		b.connection(t, Connected)
+		inPlace(t, host, "none")
+		host.slowBy(300 * time.Millisecond)
+		notEnforced := func(t *testing.T, step string, active bool, want KillSwitchError) {
+			t.Helper()
+			if st := b.node.Status().KillSwitch; st.Active != active || st.Enforced || st.Error != want {
+				t.Fatalf("%s: returned with %+v, want active %v, not enforced: %s", step, st, active, want)
+			}
+		}
+
+		host.failWith(errors.New("nftables says no"))
+		preset(t, b.node, "everything")
+		notEnforced(t, "rules preset everything", true, KillSwitchApplyFailed)
+		host.failWith(nil)
+		inPlace(t, host, "connected")
+		eventually(t, func() bool { return b.node.Status().KillSwitch.Enforced })
+		host.failCloseWith(errors.New("nftables says no"))
+		if err := b.node.Disconnect(ctx); err != nil {
+			t.Fatal(err)
+		}
+		notEnforced(t, "disconnect", false, KillSwitchRemoveFailed)
+	})
 }
 
 // A start narrows what a crashed run left to the down shape before it

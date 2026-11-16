@@ -256,21 +256,20 @@ func (n *Node) Status() Status { return n.report.status() }
 
 // Connect brings a device's data plane up on its latest map and returns
 // once it is up and its kill switch follows (Status shows both), or why
-// it failed to start (a *StartError); a device
-// removed from its space comes up once a map includes it again.
-// ErrServerMode on a server.
+// it failed to start (a *StartError); a device removed from its space
+// comes up once a map includes it again. ErrServerMode on a server.
 func (n *Node) Connect(ctx context.Context) error { return n.request(ctx, true) }
 
 // Disconnect takes a device's data plane down, leaving nothing of it on
 // the host, and returns once it is down and its kill switch follows
-// (Status shows both). The device goes on following its
-// space's maps. ErrServerMode on a server. The choice is recorded for the
-// boot (ConnectRecord) before the node hears of it, so a node that can't
-// act on it, busy with a first start that fails and returns while the
-// caller waits (ErrNotRunning), starts disconnected next time, its kill
-// switch removed unless toggled on. A caller that gives up first (its
-// ctx ends) while the node still runs puts the node's own choice back in
-// the record: the node goes on as it was, and so does its next start.
+// (Status shows both). The device goes on following its space's maps.
+// ErrServerMode on a server. The choice is recorded for the boot
+// (ConnectRecord) before the node hears of it, so a node that can't act on
+// it, busy with a first start that fails and returns while the caller
+// waits (ErrNotRunning), starts disconnected next time, its kill switch
+// removed unless toggled on. A caller that gives up first (its ctx ends)
+// while the node still runs puts the node's own choice back in the record:
+// the node goes on as it was, and so does its next start.
 func (n *Node) Disconnect(ctx context.Context) error {
 	if n.Mode() == ModeServer {
 		return ErrServerMode
@@ -293,19 +292,19 @@ func (n *Node) Disconnect(ctx context.Context) error {
 // "everything", "all-but-domestic"), keeping its own rules. The goroutine
 // that runs the node takes the choice: it stores it in DeviceFile (only
 // the service writes it), has the data plane and the kill switch follow
-// it, then Status shows it, before SetRulePreset returns. A caller whose ctx ends before the
-// node took the request (waiting for another SetRulePreset, too) changed
-// nothing and gets the ctx's error; once taken, it gets the outcome. With
-// no data plane running (a node that waits for a section, or stopped) the
-// choice is stored and shown, for the next start; a stopped node says
-// ErrNotRunning, as a kill switch toggle does. ErrUnknownPreset for
-// another name; ErrPresetUnavailable when the space's map can't build the
-// preset, which is then kept and enforced failing closed (see
-// rules.PresetRules); ErrPresetNotEnforced when laying it out failed
-// before the router took it, ErrPresetIncomplete when the router took it
-// but laying out the rest failed: either way it is kept, Status shows
-// what the router enforces, and the layout is retried; ErrServerMode on a
-// server.
+// it, then Status shows it, before SetRulePreset returns. A caller whose
+// ctx ends before the node took the request (waiting for another
+// SetRulePreset, too) changed nothing and gets the ctx's error; once
+// taken, it gets the outcome. With no data plane running (a node that
+// waits for a section, or stopped) the choice is stored and shown, for the
+// next start; a stopped node says ErrNotRunning, as a kill switch toggle
+// does. ErrUnknownPreset for another name; ErrPresetUnavailable when the
+// space's map can't build the preset, which is then kept and enforced
+// failing closed (see rules.PresetRules); ErrPresetNotEnforced when laying
+// it out failed before the router took it, ErrPresetIncomplete when the
+// router took it but laying out the rest failed: either way it is kept,
+// Status shows what the router enforces, and the layout is retried;
+// ErrServerMode on a server.
 func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	if n.Mode() == ModeServer {
 		return ErrServerMode
@@ -333,10 +332,12 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 		return ctx.Err()
 	}
 	// Taken: every goroutine that receives rulesRequests replies in the
-	// same step, after a file write and one Engine.SetRules, so the wait
-	// is bounded by that engine call (its OS routing table change has no
-	// deadline of its own; only the engine's Close ends it) and the
-	// caller hears what happened, not its ctx.
+	// same step, after a file write, one Engine.SetRules (its OS routing
+	// table change has no deadline of its own; only the engine's Close
+	// ends it) and the kill switch's Apply or Close (on macOS several
+	// pfctl runs of up to the firewall's pfctlTimeout each; on Linux
+	// nftables over netlink). The wait is bounded by those and ignores
+	// ctx: the caller hears what happened, not its ctx.
 	return <-done
 }
 

@@ -383,7 +383,12 @@
 // member changes a toggle ([Node.SetKillSwitch], [Node.SetAllowLAN]),
 // which return once it was acted on, with a [KillSwitchNotEnforcedError]
 // if the kill switch is then not as meant (the toggle stays), or
-// [ErrNotRunning] from a stopped node (stored for its next start). A stop is no deliberate disconnect:
+// [ErrNotRunning] from a stopped node (stored for its next start). A
+// connect, a disconnect and a rule preset ([Node.Connect],
+// [Node.Disconnect], [Node.SetRulePreset]) also return only once the
+// kill switch followed them, so the Status a caller reads then (and the
+// CLI prints) is the kill switch after the change, a failed apply or
+// remove included; their error doesn't say it. A stop is no deliberate disconnect:
 // the node returning leaves the down shape in place if it was meant up or
 // the toggle is on, as a crash would, and warns so ([KillSwitchStopNote])
 // whenever rules are in place, an apply that put them there but failed
