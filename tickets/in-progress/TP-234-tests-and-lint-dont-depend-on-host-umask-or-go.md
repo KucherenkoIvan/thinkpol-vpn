@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-234"
+branch: "tp-234-env-independent-tests"
 ---
 
 ## Goal
@@ -30,3 +30,4 @@ On a Linux host whose account umask is 0002 (common with per-user groups), some 
 
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate fixes)
+- 2026-11-16 backlog → in-progress, owner: agent-tp-234
