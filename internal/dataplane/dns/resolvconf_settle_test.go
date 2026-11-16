@@ -917,19 +917,37 @@ func TestResolvConfAnUpdateOverAWriteSinceItsReadWaitsForIt(t *testing.T) {
 // Another program's write between the take-over's read and its rename
 // is not renamed over: the take-over writes nothing, tells nothing of the
 // file it read, and the watch takes the file back once it settles, the
-// write in the original.
+// write in the original. That file is told whether the caller had read
+// the OS's resolvers before (the take-over's read is what it is told
+// against) or not (its first good read).
 func TestResolvConfAWriteDuringTheTakeOverIsNotLost(t *testing.T) {
-	errs := make(chan error, 1)
-	withNewRewrite(t, appending("nameserver 192.0.2.9\n"), errs)
-	path, r, told := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: 100 * time.Millisecond, settleMax: 10 * time.Second})
-	wrote(t, errs)
-	want := isp + "nameserver 192.0.2.9\n"
-	takenBackWith(t, path, want)
-	toldOnly(t, told, []netip.Addr{netip.MustParseAddr("192.0.2.53"), netip.MustParseAddr("2001:db8::53"), netip.MustParseAddr("192.0.2.9")})
-	if p := r.Problem(); p != nil {
-		t.Errorf("problem %v", p)
+	for _, unknown := range []bool{false, true} {
+		t.Run(fmt.Sprintf("UpstreamsUnknown=%t", unknown), func(t *testing.T) {
+			errs := make(chan error, 1)
+			withNewRewrite(t, appending("nameserver 192.0.2.9\n"), errs)
+			path := filepath.Join(t.TempDir(), "resolv.conf")
+			if err := os.WriteFile(path, []byte(isp), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			told := make(chan []netip.Addr, 64)
+			c := testSystem
+			c.Upstreams = func(a []netip.Addr) { told <- a }
+			c.UpstreamsUnknown = unknown
+			r, err := setResolvConfTimed(path, "", c, resolvConfTiming{check: 20 * time.Millisecond, settle: 100 * time.Millisecond, settleMax: 10 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = r.Restore() })
+			wrote(t, errs)
+			want := isp + "nameserver 192.0.2.9\n"
+			takenBackWith(t, path, want)
+			toldOnly(t, told, []netip.Addr{netip.MustParseAddr("192.0.2.53"), netip.MustParseAddr("2001:db8::53"), netip.MustParseAddr("192.0.2.9")})
+			if p := r.Problem(); p != nil {
+				t.Errorf("problem %v", p)
+			}
+			restoredTo(t, path, r, want)
+		})
 	}
-	restoredTo(t, path, r, want)
 }
 
 // A file created at a missing path during the take-over, still empty (a
