@@ -24,9 +24,9 @@ Lab tests read facts from `thinkpol status -json` and start nodes through one sh
 - Adding fields to `status -json`: that is TP-168; a missing field is a new ticket, not a grep.
 
 ## Acceptance
-- [ ] No lab test greps a log line for a fact `status` reports; evidence: a grep over the lab tests that finds none.
-- [ ] Lab tests start nodes through the one helper; evidence: a grep for direct `up` command lines in the lab tests that finds none outside the helper.
-- [ ] The remaining log-line assertions are listed, each with a reason; evidence: the grep listing in this ticket's Log.
+- [x] No lab test greps a log line for a fact `status` reports; evidence: a grep over the lab tests that finds none.
+- [x] Lab tests start nodes through the one helper; evidence: a grep for direct `up` command lines in the lab tests that finds none outside the helper.
+- [x] The remaining log-line assertions are listed, each with a reason; evidence: the grep listing in this ticket's Log.
 - [ ] `make lint`, `make test`, `make lab-test` pass.
 
 ## Notes
@@ -46,3 +46,5 @@ Lab tests read facts from `thinkpol status -json` and start nodes through one sh
 - 2026-11-16 merged origin/rewrite (tickets only); `make lint`, `make test` pass on bf4532a6. Full `make lab-test` on bf4532a6: the lab phase passes (lab ok in 2872 s, the censor matrix among it, every test this ticket changed) and the node phase passes but for one timing check in a package this branch doesn't touch, `TestResolvConfAWriterThatNeverSettlesIsTakenBackAtTheCap` (internal/dataplane/dns: "taken back after 1.327s, want within 1.3s", with other full labs running); `make lab-gotest PKG=./internal/dataplane/dns RUN=TestResolvConfAWriterThatNeverSettlesIsTakenBackAtTheCap COUNT=5` on bf4532a6 passes 5 of 5. An earlier full run on bf4532a6 lost its output with its session and isn't counted
 - 2026-11-16 full `make lab-test` on bf4532a6 again: passes (lab ok in 2903 s; node phase 39 packages, the dns timing check among them)
 - 2026-11-16 merged origin/rewrite (TP-224, TP-228); `make lint`, `make test` pass on a0a5934c. Full `make lab-test` on a0a5934c fails as TP-229 describes, on a loaded host (load 8.4 on 6 cores): the lab phase reaches its 60 m cap with two of the matrix's kernel WireGuard reference cells still running (`wireguard (reference)/sni-blocklist (entry)` 4 m, `/wireguard-fingerprint` 7 m; their setup, vpnpeers_test.go, is untouched here), and the node phase's last lab times out on the subnet allocation lock; no test reports a failed assertion. Re-run on a0a5934c follows
+- 2026-11-16 the re-run of the full `make lab-test` on a0a5934c started (lab lock taken); its result couldn't be read: the test runner stopped answering mid-run. Boxes 1–3 ticked on the greps above; the lab box stays open
+- 2026-11-16 handoff: code, tests, docs and Log done; what's left is one green full `make lab-test` on the head (a0a5934c plus ticket-only commits), then in-progress → review. If the re-run's output is lost, run it again; a failure in the censor matrix's reference rows or the subnet allocation lock under load is TP-229's
