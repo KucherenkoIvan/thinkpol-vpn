@@ -29,8 +29,8 @@ The owner (2026-11-16): a full lab must take at most ~15 minutes on the remote r
 ## Acceptance
 - [x] Every `lab/` test that doesn't need the host to itself runs in parallel with the others (list in Notes which can't, and why).
 - [x] Tests that truly must run alone run in their own stream, alongside the parallel tests instead of in front of them.
-- [ ] No new flakes: the changed tests pass 3 full labs in a row on the remote runner.
-- [ ] The `lab/` package's wall time before and after, in Notes.
+- [x] No new flakes: targeted lab runs of the changed tests are green at the merge head (the orchestrator, 2026-11-17, replaced three green full labs with this; the first full lab on rewrite once TP-240 lands gives the full-lab check).
+- [x] The `lab/` package's wall time before and after, in Notes, as measured: the serial prefix removed (82 s + 88 s), and the runs before and after, killed at the cap under load, with TP-229 merged in a scratch copy showing no setup failures (the orchestrator, 2026-11-17); the full-lab before/after comes from the first full lab on rewrite once TP-240 lands.
 
 ## Notes
 Depends on TP-200 (it changes how lab tests start nodes, in many of the same files): build on it.
@@ -57,6 +57,12 @@ No run finished inside the cap, so there's no before/after number yet. Two thing
 
 **Not changed, for later.** The `lab/` phase runs `go test` with the default `-parallel` (GOMAXPROCS), below the lab slot cap (12); raising it may help only if lab starts aren't the bottleneck (Docker on the runner starts about 18 to 20 containers a minute whatever the parallelism).
 
+## Review findings
+- [x] R1.1 (test gap) the process id could stop reaching the lab and gotest names (processID set to "" or a constant) and every test still passed: start and GoTestEach now name labs through ownTestProject and ownGoTestPackageProject (lab/project.go), and TestProcessesOfOneRunNameTheirLabsApart (lab/harness_test.go) compares those names across two processes.
+- [x] R1.2 doc: a killed-and-retried process under the same run id leaves its labs until labctl down -run; make lab-test's clean-up does it unless THINKPOL_LAB_KEEP is set or make itself is killed (lab/doc.go, lab/README.md).
+- [x] R1.3 lab/bindir_lab_test.go: the override's comment gave an outdated reason.
+- [x] R1.4 lab/doc.go: "practically never" (24-bit hash), stray line break.
+
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority)
 - 2026-11-16 backlog → in-progress, owner: agent-tp-238
@@ -67,3 +73,6 @@ No run finished inside the cap, so there's no before/after number yet. Two thing
 - 2026-11-16 after, run 3 on c7cf5d67, started with no other lab on the runner (others started during it): killed at the 60 min cap (exit 2), 11 failures, again all lab setups out of the start's 10 min deadline (10 on the subnet allocation lock, TestLabsBelongToTheirCheckout among them, 1 in a slow `docker compose up`). With every lab start holding the host-wide subnet lock through its whole `compose up`, more tests in parallel only lengthen that queue: this ticket's gain can't show, and its 3-green-runs box can't be met, until TP-229 lands
 - 2026-11-17 measurement only: c7cf5d67 with origin/tp-229-subnet-lock-scope c15ecac9 merged in a scratch checkout (no commit): killed at the 60 min cap with the censor matrix still running, no lab setup failures, 1 failure (`TestBlobDistribution`: device-a's blob file missing; it passed in an earlier rewrite run: out of scope, for its owner)
 - 2026-11-17 handoff: code done, boxes 1 and 2 ticked (re-read the diff); boxes 3 and 4 wait on TP-229 (lab setups time out on its lock under load) and on the censor matrix's length (TP-239/TP-240): no lab/ run can finish inside the 60 min cap until then. Next: once TP-229 is in rewrite, merge it, run make lab-gotest PKG=./lab three times and one full make lab-test, fill the table, move to review. No full make lab-test on this branch yet
+- 2026-11-17 review round 1: fix R1.1–R1.4, merge
+- 2026-11-17 R1.1–R1.4 fixed; merged origin/rewrite (TP-200, TP-229 in). Mutations, each failing TestProcessesOfOneRunNameTheirLabsApart: processID a constant; ownTestProject passing "" for the process; ownGoTestPackageProject passing "" for the process; restored. make lint and make test green on 8d24fcab
+- 2026-11-17 targeted lab run on 8d24fcab, make lab-gotest PKG=./lab RUN of TestLabsBelongToTheirCheckout, TestDownRunRemovesOnlyItsRun, TestDiag, TestEgress, TestRunProjectNames, TestProcessesOfOneRunNameTheirLabsApart: all pass, package 93 s, run in parallel. No full make lab-test (the orchestrator: targeted runs only until the matrix rework). Boxes 3 and 4 reworded as the orchestrator set them and ticked
