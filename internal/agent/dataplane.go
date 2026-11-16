@@ -546,7 +546,7 @@ func (r *runner) loop(ctx context.Context) error {
 		case ups := <-r.dp.dnsUpstreams:
 			r.setUpstreams(ups)
 		case req := <-r.dp.rulesRequests:
-			req.done <- r.takeRules(req)
+			req.done <- r.takeRules(ctx, req)
 		}
 	}
 }
@@ -555,8 +555,10 @@ func (r *runner) loop(ctx context.Context) error {
 // first (a store that fails changes nothing), then handed to the engine
 // (and kept for every later start), then reported. Status shows the
 // preset as enforced only while the engine's router enforces it
-// (statusWith); layOutRules says what a failed layout left.
-func (r *runner) takeRules(req rulesRequest) error {
+// (statusWith); layOutRules says what a failed layout left. The kill
+// switch follows the preset (the crash posture) before the reply, as
+// request has it follow a connect or disconnect.
+func (r *runner) takeRules(ctx context.Context, req rulesRequest) error {
 	l, err := req.take()
 	if err != nil {
 		return err
@@ -569,6 +571,7 @@ func (r *runner) takeRules(req rulesRequest) error {
 	// layoutFailed goes with the preset: publish would leave a moment
 	// showing this preset with the previous one's layout failure.
 	r.dp.report.set(func(p *report) { p.preset, p.switching, p.layoutFailed = l.Preset.String(), "", r.rulesPending })
+	r.enforceKillSwitch(ctx)
 	r.publish()
 	return err
 }
@@ -651,6 +654,9 @@ func (r *runner) request(ctx context.Context, req connectRequest) {
 		r.dp.remember(req.connect)
 	}
 	err := r.connect(ctx, req.connect)
+	// The kill switch follows before the reply, which carries the status:
+	// a reply ahead of it would show the switch from before the change.
+	r.enforceKillSwitch(ctx)
 	r.publish()
 	req.done <- err
 }
