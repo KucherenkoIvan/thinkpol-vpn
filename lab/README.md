@@ -149,6 +149,7 @@ Several checkouts, and several runs from one checkout, can run `make lab-test` (
 | `THINKPOL_LAB_SUBNET_POOL` | IPv4 range for lab networks (default `172.16.0.0/16`) |
 | `THINKPOL_LAB_PERF` | set to 1 in the nodes by `make lab-perf`; tests check their performance targets only then |
 | `THINKPOL_LAB_GOARCH` | architecture to build for (default: the Docker server's) |
+| `THINKPOL_LAB_TRACES` | a directory the censor matrix's rhythm cells keep `wireguard-rhythm`'s whole trace of the held connection in (`<row>_-_<case>.jsonl`, one JSON line per record), for analysis offline |
 
 ## Gotchas
 

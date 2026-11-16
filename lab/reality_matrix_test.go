@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -131,11 +133,21 @@ func (c *censorRun) blockReason(t *testing.T, module string) string {
 // sums it up per flow: how many records of which sizes, which followed
 // quiet, which answered an exchange that stood out (and how many times in
 // a row it had), and the flag, at seconds from the trace's first record.
-func (c *censorRun) traceSummary(t *testing.T, path string) string {
+// With THINKPOL_LAB_TRACES set, the whole trace is also kept there, as
+// <cell>.jsonl, for analysis offline.
+func (c *censorRun) traceSummary(t *testing.T, path, cell string) string {
 	t.Helper()
 	out, err := execRead(c.router, pollTimeout, "cat", path)
 	if err != nil {
 		return fmt.Sprintf("no trace: %v", err)
+	}
+	if dir := os.Getenv("THINKPOL_LAB_TRACES"); dir != "" {
+		name := filepath.Join(dir, strings.NewReplacer(" ", "_", "(", "", ")", "", "/", "_").Replace(cell)+".jsonl")
+		if err := os.WriteFile(name, []byte(out), 0o644); err != nil {
+			t.Errorf("keeping the trace: %v", err)
+		} else {
+			t.Logf("trace kept in %s", name)
+		}
 	}
 	type flowSum struct {
 		n       int

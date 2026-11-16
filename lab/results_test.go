@@ -107,7 +107,7 @@ func TestCensorMatrix(t *testing.T) {
 				cell.detail = strings.TrimPrefix(fmt.Sprintf("%s; %s %v first", cell.detail, cc.heldHow(), cc.hold), "; ")
 			}
 			if cc.trace != "" {
-				t.Logf("%s's trace of the connection %s for %v:\n%s", cc.watch, cc.heldHow(), cc.hold, c.traceSummary(t, cc.trace))
+				t.Logf("%s's trace of the connection %s for %v:\n%s", cc.watch, cc.heldHow(), cc.hold, c.traceSummary(t, cc.trace, tr.name+" - "+cc.name))
 			}
 			if err := judgedFromTheStart(t, l, c, cc.watch); err != nil {
 				cell.result, cell.detail = "error", "the censor didn't frame the held connection"
