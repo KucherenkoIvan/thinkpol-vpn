@@ -33,6 +33,10 @@ type Lab struct {
 	gateways map[string][]netip.Addr // Docker's bridge addresses, by network
 	bridges  map[string]Bridge       // by network
 	release  func()                  // the host-wide lab slot
+	subnets  *reservation            // held until the lab is down or kept
+	// The last docker compose up's start and end, and its attempt number.
+	upFrom, upTo time.Time
+	upAttempt    int
 }
 
 // Bridge is Docker's own end of a lab network: the bridge in the Docker VM.
@@ -138,6 +142,7 @@ func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool) {
 			err := bins.keep(l.Project)
 			if err == nil {
 				t.Logf("lab %s kept: docker compose -p %s exec <node> bash; make lab-down removes it", l.Project, l.Project)
+				l.releaseSubnets()
 				l.releaseSlot()
 				return
 			}
@@ -234,36 +239,25 @@ func up(ctx context.Context, root, project string, topo Topology, slotKey string
 	return l, nil
 }
 
-// create allocates the lab's subnets and starts it. Allocation and network
-// creation are serialized host-wide; a subnet another daemon user took in
-// the meantime means another try.
+// create reserves the lab's subnets and starts it. Only the reservation is
+// serialized host-wide (reserveSubnets); docker compose up runs outside the
+// allocation lock, beside other labs' start-ups. A subnet another daemon
+// user took in the meantime means another try.
 func (l *Lab) create(ctx context.Context, img image) error {
 	pool, err := subnetPool()
 	if err != nil {
 		return err
 	}
-	unlock, err := lockAllocation(ctx)
+	dir, err := lockDir()
 	if err != nil {
 		return err
 	}
-	defer unlock()
 	for attempt := 1; ; attempt++ {
-		used, err := usedSubnets(ctx)
-		if err != nil {
+		l.releaseSubnets()
+		if l.subnets, err = reserveSubnets(ctx, dir, l.Topology.Networks, pool, usedSubnets); err != nil {
 			return err
 		}
-		subnets, err := allocateSubnets(l.Topology.Networks, pool, used)
-		if err != nil {
-			return err
-		}
-		file, err := renderCompose(l.Project, l.Topology, img, l.root, l.binDir, subnets)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(l.ComposeFile(), file, 0o644); err != nil {
-			return err
-		}
-		_, err = runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "up", "-d", "--wait")
+		err := l.composeUp(ctx, img, l.subnets, attempt)
 		if err == nil {
 			return nil
 		}
@@ -276,6 +270,22 @@ func (l *Lab) create(ctx context.Context, img image) error {
 	}
 }
 
+// composeUp starts the lab on r's subnets, and notes when in the timeline.
+func (l *Lab) composeUp(ctx context.Context, img image, r *reservation, attempt int) error {
+	file, err := renderCompose(l.Project, l.Topology, img, l.root, l.binDir, r.subnets)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(l.ComposeFile(), file, 0o644); err != nil {
+		return err
+	}
+	from := time.Now()
+	_, err = runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "up", "-d", "--wait")
+	l.upFrom, l.upTo, l.upAttempt = from, time.Now(), attempt
+	noteTimeline(l.Project, attempt, r, from, l.upTo, err)
+	return err
+}
+
 // ComposeFile is the generated Compose file, under lab/.run.
 func (l *Lab) ComposeFile() string { return filepath.Join(l.stateDir, "compose.json") }
 
@@ -285,7 +295,15 @@ func (l *Lab) Down(ctx context.Context) error {
 	if err := downProject(ctx, l.Project, l.root); err != nil {
 		return err
 	}
+	l.releaseSubnets()
 	return os.RemoveAll(l.stateDir)
+}
+
+// releaseSubnets gives up the lab's subnet reservation: its networks are
+// gone, or stay on the daemon, which every allocation reads.
+func (l *Lab) releaseSubnets() {
+	l.subnets.release()
+	l.subnets = nil
 }
 
 func (l *Lab) releaseSlot() {
