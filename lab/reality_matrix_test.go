@@ -4,7 +4,10 @@ package lab_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -83,18 +86,117 @@ func probeReality(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) cross
 	return probeUDP(t, l, to, wantPass)
 }
 
-// holdReality keeps the tunnel in use for d before the probe: a ping
-// every 2 s, so WireGuard rekeys about every 2 minutes as it does under
-// any steady use.
-func holdReality(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration) {
+// holdReality brings device-a's link up and holds it (holdTunnel).
+func holdReality(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool) {
 	if err := realityUp(t, l); err != nil {
 		t.Fatal(err)
 	}
+	holdTunnel(t, l, to, d, idle)
+}
+
+// holdTunnel keeps device-a's tunnel to server-1 up for d before the
+// probe. In use: a ping every 2 s, so WireGuard rekeys about every 2
+// minutes as it does under any steady use. Idle: one ping, so WireGuard
+// has a session, then nothing from either end but what the tunnel sends
+// on its own.
+func holdTunnel(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), d+time.Minute)
 	defer cancel()
-	secs := fmt.Sprint(int(d / time.Second))
+	dev := l.Node(lab.DeviceA)
 	// The verdict is the probe's: lost pings during the hold aren't.
-	_, _ = l.Node(lab.DeviceA).Exec(ctx, "ping", "-q", "-i", "2", "-w", secs, to.v4.String())
+	if idle {
+		_, _ = dev.Exec(ctx, "ping", "-c", "1", "-W", "5", to.v4.String())
+		time.Sleep(d)
+		return
+	}
+	_, _ = dev.Exec(ctx, "ping", "-q", "-i", "2", "-w", fmt.Sprint(int(d/time.Second)), to.v4.String())
+}
+
+// blockReason is the reason of module's first drop or reset in the
+// verdict log, between device-a and server-1.
+func (c *censorRun) blockReason(t *testing.T, module string) string {
+	t.Helper()
+	var why string
+	c.logged(t, func(e verdictLine) bool {
+		if e.Module == module && (e.Verdict == censor.Drop || e.Verdict == censor.Reset) {
+			why = e.Reason
+			return true
+		}
+		return false
+	})
+	return why
+}
+
+// traceSummary reads wireguard-rhythm's trace at path in the router and
+// sums it up per flow: how many records of which sizes, which followed
+// quiet, which answered an exchange that stood out (and how many times in
+// a row it had), and the flag, at seconds from the trace's first record.
+func (c *censorRun) traceSummary(t *testing.T, path string) string {
+	t.Helper()
+	out, err := execRead(c.router, pollTimeout, "cat", path)
+	if err != nil {
+		return fmt.Sprintf("no trace: %v", err)
+	}
+	type flowSum struct {
+		n       int
+		sizes   map[int]int
+		quiet   []string
+		stood   []string
+		flagged string
+	}
+	var (
+		order []string
+		flows = map[string]*flowSum{}
+		zero  time.Time
+	)
+	for _, line := range strings.Split(completeLines(out), "\n") {
+		if line == "" {
+			continue
+		}
+		var tl censor.WGTraceLine
+		if err := json.Unmarshal([]byte(line), &tl); err != nil {
+			return fmt.Sprintf("trace line %q: %v", line, err)
+		}
+		if zero.IsZero() {
+			zero = tl.End
+		}
+		f := flows[tl.Flow]
+		if f == nil {
+			f = &flowSum{sizes: map[int]int{}}
+			flows[tl.Flow] = f
+			order = append(order, tl.Flow)
+		}
+		at := tl.End.Sub(zero).Seconds()
+		f.n++
+		f.sizes[tl.Size]++
+		if tl.AfterQuiet {
+			f.quiet = append(f.quiet, fmt.Sprintf("%.1fs:%dB", at, tl.Size))
+		}
+		if tl.StoodOut > 0 {
+			f.stood = append(f.stood, fmt.Sprintf("%.1fs:%dB(x%d)", at, tl.Size, tl.StoodOut))
+		}
+		if tl.Flagged != "" {
+			f.flagged = fmt.Sprintf("%.1fs: %s", at, tl.Flagged)
+		}
+	}
+	capped := func(xs []string) string {
+		if len(xs) > 30 {
+			return fmt.Sprintf("%v and %d more", xs[:30], len(xs)-30)
+		}
+		return fmt.Sprint(xs)
+	}
+	var b strings.Builder
+	for _, name := range order {
+		f := flows[name]
+		sizes := slices.Sorted(maps.Keys(f.sizes))
+		var hist []string
+		for _, sz := range sizes {
+			hist = append(hist, fmt.Sprintf("%dB x%d", sz, f.sizes[sz]))
+		}
+		fmt.Fprintf(&b, "%s: %d records by size %s\n  after quiet: %s\n  answered an exchange that stood out: %s\n  flagged: %q\n",
+			name, f.n, capped(hist), capped(f.quiet), capped(f.stood), f.flagged)
+	}
+	return b.String()
 }
 
 // sawReality: the link is one TCP connection from device-a to server-1's

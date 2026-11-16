@@ -82,7 +82,7 @@ func TestCensorMatrix(t *testing.T) {
 		want := cc.want(tr.name)
 		held := cc.hold > 0 && tr.hold != nil
 		if held {
-			tr.hold(t, l, target, cc.hold)
+			tr.hold(t, l, target, cc.hold, cc.idle)
 		}
 		if cc.settle {
 			// An active module judges a connection after it has crossed:
@@ -100,10 +100,14 @@ func TestCensorMatrix(t *testing.T) {
 			// The probe after the hold crosses on a redialled connection
 			// even if the censor cut the one it held: what it blocked
 			// during the hold is the cell's verdict.
-			if how, err := blockedBy(t, l, c, cc.watch, crossed{}, true); err == nil {
-				cell.result, cell.detail = "fail", fmt.Sprintf("the censor %s the connection held for %v", how, cc.hold)
+			how, err := blockedBy(t, l, c, cc.watch, crossed{}, true)
+			if err == nil {
+				cell.result, cell.detail = "fail", fmt.Sprintf("the censor %s the connection %s for %v: %s", how, cc.heldHow(), cc.hold, c.blockReason(t, cc.watch))
 			} else if cell.result == "pass" {
-				cell.detail = strings.TrimPrefix(fmt.Sprintf("%s; held %v first", cell.detail, cc.hold), "; ")
+				cell.detail = strings.TrimPrefix(fmt.Sprintf("%s; %s %v first", cell.detail, cc.heldHow(), cc.hold), "; ")
+			}
+			if cc.trace != "" {
+				t.Logf("%s's trace of the connection %s for %v:\n%s", cc.watch, cc.heldHow(), cc.hold, c.traceSummary(t, cc.trace))
 			}
 			if err := judgedFromTheStart(t, l, c, cc.watch); err != nil {
 				cell.result, cell.detail = "error", "the censor didn't frame the held connection"
@@ -222,6 +226,11 @@ func checkMatrix(cases []censorCase, rows []transport) error {
 			return fmt.Errorf("censor case %q checks verdicts but names no module to report", cc.name)
 		}
 		for _, tr := range rows {
+			// udp shows WireGuard's timing untouched: a held row's pass
+			// means something only if the same hold catches udp.
+			if cc.hold > 0 && tr.name == rowUDP && (tr.hold == nil || cc.expect[rowUDP] != "fail") {
+				return fmt.Errorf("censor case %q holds tunnels, but %s, the control, isn't held and expected to fail", cc.name, rowUDP)
+			}
 			if _, tuned := tr.moduleSettings[cc.report]; tuned && cc.report != "" && cc.verdictSays[tr.name] == "" {
 				return fmt.Errorf("%s sets %s's settings, but censor case %q doesn't say what its verdict must say (verdictSays)", tr.name, cc.report, cc.name)
 			}
@@ -280,6 +289,25 @@ func TestCheckMatrix(t *testing.T) {
 			t.Errorf("%s: %v", c.name, err)
 		case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
 			t.Errorf("%s: %v, want an error saying %q", c.name, err, c.wantErr)
+		}
+	}
+	// A held case must catch the control: udp held and expected to fail.
+	held := func(expect map[string]string) []censorCase {
+		return []censorCase{{name: "off"}, {name: "held", modules: on, hold: time.Minute, expect: expect, blocker: "wireguard-rhythm"}}
+	}
+	hold := func(*testing.T, *lab.Lab, probeTarget, time.Duration, bool) {}
+	for _, c := range []struct {
+		name    string
+		cases   []censorCase
+		rows    []transport
+		wantErr bool
+	}{
+		{"control held, expected to fail", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowUDP, udp: true, hold: hold}}, false},
+		{"control expected to pass", held(nil), []transport{{name: rowUDP, udp: true, hold: hold}}, true},
+		{"control not held", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowUDP, udp: true}}, true},
+	} {
+		if err := checkMatrix(c.cases, c.rows); (err != nil) != c.wantErr {
+			t.Errorf("%s: %v, want an error %v", c.name, err, c.wantErr)
 		}
 	}
 }
@@ -350,11 +378,15 @@ type censorCase struct {
 	// blocker is the module a cell expected to fail must find blocking
 	// in the verdict log.
 	blocker string
-	// hold keeps the tunnel of a row with a hold (a TLS-shaped transport)
-	// in use this long before the probe, and the cell fails if watch, a
-	// module of the case, blocked its connection meanwhile.
+	// hold keeps the tunnel of a row with a hold up this long before the
+	// probe, in use or, with idle, idle after one ping, and the cell fails
+	// if watch, a module of the case, blocked its connection meanwhile.
+	// trace is the path watch writes its trace to, which the cell logs a
+	// summary of.
 	hold  time.Duration
+	idle  bool
 	watch string
+	trace string
 	// upstream runs the cell in lab.Upstream: the camouflage site behind
 	// the router.
 	upstream bool
@@ -372,6 +404,14 @@ type censorCase struct {
 	// a family with no flag is an error, never a pass: the IPv4
 	// connection's match says nothing of the IPv6 one's.
 	verdictSays map[string]string
+}
+
+// heldHow says how the case held the tunnel.
+func (cc censorCase) heldHow() string {
+	if cc.idle {
+		return "held idle"
+	}
+	return "held in use"
 }
 
 // judgment is a flag of the report module on a connection between
@@ -506,16 +546,17 @@ var censorCases = []censorCase{
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			return []censor.ModuleConfig{{Name: "openvpn-fingerprint", Settings: json.RawMessage(`{}`)}}
 		}},
-	// An M2 gate check (docs/design/milestones.md). A TLS-shaped
-	// transport's pass means something only when its probe runs long
-	// enough for the rhythm to show: three rekeys (up to 7 minutes, up to
-	// about 10 minutes when batched), or three idle keepalives. So reality,
-	// which doesn't batch, holds its tunnel in use for 7.5 minutes first,
-	// with its default settings; the other rows aren't TLS and pass.
-	{name: "wireguard-rhythm", hold: 450 * time.Second, watch: "wireguard-rhythm",
-		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
-			return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{}`)}}
-		}},
+	// M2 gate checks (docs/design/milestones.md). A transport's pass means
+	// something only when its tunnel runs long enough for the rhythm to
+	// show: three rekeys (up to 7 minutes, up to about 10 minutes when
+	// batched), or three idle keepalives. So reality, which doesn't batch,
+	// and udp, the control (WireGuard's timing untouched), hold their
+	// tunnels for 7.5 minutes first, in use (a ping every 2 s) and idle
+	// (one ping, then nothing), with the module's default settings; udp
+	// must be caught both ways for reality's pass to mean anything. The
+	// other rows aren't held, and pass.
+	rhythmCase("wireguard-rhythm", false),
+	rhythmCase("wireguard-rhythm (idle)", true),
 	// M2 gate checks (docs/design/milestones.md). Wu et al.'s exemptions
 	// on each connection's first data, UDP's first datagram too: thinkpol's
 	// udp sends random bytes first (exempt by chance about once in 400
@@ -537,19 +578,19 @@ var censorCases = []censorCase{
 	// answers, and shows the upstream tell. So does reality, which splices
 	// every probe to its target; its tell is reported, not flagged (owner,
 	// 2026-11-09: REALITY's design can't avoid it), and its verdict must
-	// show the tell was looked for. The prober counts the tell by the
-	// probed address: reality's target is one IPv4 address, so a link over
-	// IPv6 dials it from server-1's IPv4 address and the report reads
-	// "connections to the reference during 0 of n probes"; a censor that
-	// knows both addresses are one host sees it anyway (RR31).
+	// show the tell on every probe (n of n). reality's target is one IPv4
+	// address, so a link over IPv6 dials it from server-1's IPv4 address:
+	// the prober is told server-1's two addresses are one host, as a
+	// censor that knows them would (RR31), so the tell shows over either
+	// family.
 	{name: "active prober", expect: map[string]string{rowRandomTCP: "fail", rowOpenVPNTCP: "fail", rowRelayTCP: "fail"}, blocker: "prober",
 		upstream: true, settle: true, report: "prober",
-		verdictSays: map[string]string{rowHTTPS: "TLS: the server", rowRelayTCP: "upstream tell: a connection", rowReality: "to the reference during"},
+		verdictSays: map[string]string{rowHTTPS: "TLS: the server", rowRelayTCP: "upstream tell: a connection", rowReality: "upstream tell: a connection"},
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			camouflage := lab.StartCamouflage(t, l)
 			return []censor.ModuleConfig{
 				{Name: "fully-encrypted", Settings: json.RawMessage(`{"tagOnly": true}`)},
-				{Name: "prober", Settings: proberSettings(t, l, camouflage)},
+				{Name: "prober", Settings: withServerHost(t, l, proberSettings(t, l, camouflage))},
 			}
 		}},
 	// The https, relay and reality rows' ClientHellos name the camouflage
@@ -566,6 +607,37 @@ var censorCases = []censorCase{
 			}
 			return []censor.ModuleConfig{{Name: "server-hello", Settings: b}}
 		}},
+}
+
+// rhythmTrace is where the rhythm cases' module writes its trace, in the
+// router.
+const rhythmTrace = "/run/censor/rhythm.jsonl"
+
+// rhythmCase is the wireguard-rhythm case that holds the held rows'
+// tunnels in use, or idle.
+func rhythmCase(name string, idle bool) censorCase {
+	return censorCase{name: name, hold: 450 * time.Second, idle: idle, watch: "wireguard-rhythm", trace: rhythmTrace,
+		expect: map[string]string{rowUDP: "fail"}, blocker: "wireguard-rhythm",
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+			return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{"trace": "` + rhythmTrace + `"}`)}}
+		}}
+}
+
+// withServerHost adds to the prober's settings that server-1's addresses
+// are one host.
+func withServerHost(t *testing.T, l *lab.Lab, settings json.RawMessage) json.RawMessage {
+	t.Helper()
+	var s map[string]any
+	if err := json.Unmarshal(settings, &s); err != nil {
+		t.Fatal(err)
+	}
+	server := l.Node(lab.Server1)
+	s["hosts"] = [][]string{{server.IPv4(lab.NetServers).String(), server.IPv6(lab.NetServers).String()}}
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 // entryIPBlocklist lists server-1's addresses.
@@ -613,9 +685,9 @@ type transport struct {
 	// the camouflage site, so the server-hello comparison has something
 	// to compare (checkMatrix).
 	tls bool
-	// hold, if set, keeps the transport in use for a while (a case's
-	// hold) before the probe.
-	hold func(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration)
+	// hold, if set, keeps the transport up for a while (a case's hold)
+	// before the probe: in use, or idle.
+	hold func(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool)
 }
 
 // withRowSettings is the case's module configs with a row's overrides
@@ -695,7 +767,7 @@ func TestWithRowSettings(t *testing.T) {
 var transports = []transport{
 	{name: rowPlainTCP, setup: setupPlainTCP, probe: probePlainTCP, sawFlows: sawPlainTCP},
 	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPSOn(443), sawFlows: sawHTTPS, tls: true},
-	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP, udp: true, oneUnderlay: true},
+	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP, udp: true, oneUnderlay: true, hold: holdTunnel},
 	{name: rowWireGuard, setup: setupWireGuard, probe: probeUDP, sawFlows: sawWireGuard, udp: true},
 	{name: rowOpenVPNUDP, setup: openVPN{"udp"}.setup, probe: openVPN{"udp"}.probe, sawFlows: openVPN{"udp"}.sawFlows, udp: true},
 	{name: rowOpenVPNTCP, setup: openVPN{"tcp"}.setup, probe: openVPN{"tcp"}.probe, sawFlows: openVPN{"tcp"}.sawFlows},
