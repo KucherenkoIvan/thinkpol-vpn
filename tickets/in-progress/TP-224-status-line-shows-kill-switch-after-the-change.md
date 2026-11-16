@@ -22,8 +22,8 @@ branch: "tp-224-status-line-after-change"
 ## Out of scope
 
 ## Acceptance
-- [ ] Both commands print the kill switch's post-change state; tests on Linux and on macOS (fake pfctl, no real host tools) that fail on the old output.
-- [ ] Any other command with the same pattern fixed or listed in Notes with why not.
+- [x] Both commands print the kill switch's post-change state; tests on Linux and on macOS (fake pfctl, no real host tools) that fail on the old output.
+- [x] Any other command with the same pattern fixed or listed in Notes with why not.
 - [ ] Mutation-checked; `make lint`, `make test`, `make lab-test` pass.
 
 ## Notes
@@ -43,3 +43,7 @@ branch: "tp-224-status-line-after-change"
 - 2026-11-16 created in backlog (from the M2 gate review)
 - 2026-11-16 backlog → in-progress, owner: agent-tp-224
 - 2026-11-16 node replies to preset/connect/disconnect after its kill switch follows; test TestAChangeReturnsWithTheKillSwitchItLeaves; mutations (each fails 3/3, passes restored): takeRules without its enforceKillSwitch (preset step fails), runner.request without its enforceKillSwitch (disconnect step fails), awaitSection replying before keepKillSwitch (waiting preset step fails)
+- 2026-11-16 at b7a591e3: make lint and make test pass; TestAChangeReturnsWithTheKillSwitchItLeaves passes on Linux (-race, -count=5) and macOS; lab-gotest of ./internal/agent/... and ./cmd/thinkpol/... passes in a lab node
+- 2026-11-16 full make lab-test at b7a591e3, first run: failed outside this branch: internal/dataplane/dns TestResolvConfASlowWriterPastTheCapKeepsItsServers (the TP-220 flake; 2 of 5 alone in a lab node; the package doesn't depend on internal/agent) and TestCensorMatrix cells on "waiting for the subnet allocation lock: context deadline exceeded" (machine loaded)
+- 2026-11-16 full make lab-test at b7a591e3, re-run: the session lost its output after a long lock wait; the run went on, regenerated lab/RESULTS.md (TestCensorMatrix passed) and tore its labs down, but its exit status is unknown, so the lab-test box stays open
+- 2026-11-16 handoff: code and tests done; left: one full make lab-test with a cited exit status (rerun once TP-220 lands, or judge the dns flake as TP-220's), then in-progress → review
