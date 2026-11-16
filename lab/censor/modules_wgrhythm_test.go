@@ -611,16 +611,17 @@ func TestWGRhythmRemovedPasses(t *testing.T) {
 // TestWGRhythmSteadyIdlePeriodAlone: without any exchange (a datagram
 // flow: a TLS connection has one from its first request), an idle run
 // shows the rhythm at its fifth record, once its answer window has passed:
-// on the sixth.
+// on the sixth. The flow's first datagram follows nothing, so it isn't
+// idle.
 func TestWGRhythmSteadyIdlePeriodAlone(t *testing.T) {
 	r := newWGUDPRun(t, `{}`)
 	var msgs []wgMessage
-	for at := 25 * time.Second; at <= 150*time.Second; at += 25 * time.Second {
+	for at := 25 * time.Second; at <= 175*time.Second; at += 25 * time.Second {
 		msgs = append(msgs, wgMessage{at, true, wgKeepalive})
 	}
 	r.carry(eachInRecord(msgs, withOverhead(wgUDPOverhead)))
-	if a, blocked := r.firstBlocked(); !blocked || a.at != 150*time.Second || !strings.Contains(a.Reason, "5 idle records") {
-		t.Errorf("first blocked %+v (blocked %v), want a drop for five keepalives at the sixth, 150 s", a, blocked)
+	if a, blocked := r.firstBlocked(); !blocked || a.at != 175*time.Second || !strings.Contains(a.Reason, "5 idle records") {
+		t.Errorf("first blocked %+v (blocked %v), want a drop for five keepalives at the sixth, 175 s", a, blocked)
 	}
 }
 
@@ -1064,15 +1065,20 @@ func TestWGRhythmHiddenAmongSteadyRecords(t *testing.T) {
 		}
 		return out
 	}
-	timeline := wgRekeyTimeline(keepaliveTrigger, 121*s, 121*s, 121*s)
+	rekeys := wgRekeyTimeline(keepaliveTrigger, 121*s, 121*s, 121*s)
+	keepalives := wgHandshake(0)
+	for at := 25 * s; at < 260*s; at += 25 * s {
+		keepalives = append(keepalives, wgMessage{at, true, wgKeepalive})
+	}
 	for _, c := range []struct {
 		name   string
 		msgs   []wgMessage
 		hidden bool
 	}{
-		{"rekeys alone", timeline, false},
-		{"rekeys among probes", slices.Concat(timeline, probes(400*s)), true},
-		{"keepalives among probes", slices.Concat(wgTimeline(true), probes(260*s)), true},
+		{"rekeys alone", rekeys, false},
+		{"rekeys among probes", slices.Concat(rekeys, probes(400*s)), true},
+		{"keepalives alone", keepalives, false},
+		{"keepalives among probes", slices.Concat(keepalives, probes(260*s)), true},
 	} {
 		msgs := slices.Clone(c.msgs)
 		slices.SortStableFunc(msgs, func(a, b wgMessage) int { return int(a.at - b.at) })
