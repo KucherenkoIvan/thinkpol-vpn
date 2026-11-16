@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/netip"
 	"os"
@@ -363,7 +364,7 @@ func TestPrintOwnProjects(t *testing.T) {
 	if os.Getenv(printOwnProjectsEnv) == "" {
 		t.Skip("the child of TestProcessesOfOneRunNameTheirLabsApart")
 	}
-	os.Stdout.WriteString(ownProjects())
+	fmt.Print(ownProjects())
 }
 
 // longestOverride, longestRunID and longestTestProject make the longest
