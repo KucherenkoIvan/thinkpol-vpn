@@ -34,8 +34,9 @@ type Lab struct {
 	bridges  map[string]Bridge       // by network
 	release  func()                  // the host-wide lab slot
 	subnets  *reservation            // held until the lab is down or kept
-	// The last docker compose up's start and end.
+	// The last docker compose up's start and end, and its attempt number.
 	upFrom, upTo time.Time
+	upAttempt    int
 }
 
 // Bridge is Docker's own end of a lab network: the bridge in the Docker VM.
@@ -280,7 +281,7 @@ func (l *Lab) composeUp(ctx context.Context, img image, r *reservation, attempt 
 	}
 	from := time.Now()
 	_, err = runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "up", "-d", "--wait")
-	l.upFrom, l.upTo = from, time.Now()
+	l.upFrom, l.upTo, l.upAttempt = from, time.Now(), attempt
 	noteTimeline(l.Project, attempt, r, from, l.upTo, err)
 	return err
 }

@@ -51,6 +51,12 @@ Original report: A full `make lab-test` fails on censor-matrix reference cells (
 - **Wall time.** Before, rewrite e1efa92a (the baseline run made earlier on this ticket; log read back): 3627 s, the lab phase stopped by its 60 min timeout inside the censor matrix (openvpn-tcp and wireguard reference cells still running), the node phase green. After, on 02597cb7: 3605 s, the lab phase again stopped at 60 min (reality and udp cells running), the node phase green. With `LAB_TIMEOUT=150m`: 4678 s and 4858 s on 02597cb7, 4813 s on 0369d34e (lab phase 4669, 4855, 4810 s). All on a host running two or three other lab runs at once. So the full lab is not faster yet: the lab phase is past 60 min on a loaded host either way. Setup no longer waits on the lock; it now goes to compose up itself (median 74–100 s per lab with 7–9 at once, up to 221 s), to lab-slot waits, and to the matrix's own length (TP-240, TP-241, TP-242).
 - **Reference rows, 3 full labs in a row, each beside other lab runs:** `make lab-test LAB_TIMEOUT=150m` on 02597cb7 (twice) and on 0369d34e (after merging rewrite): `TestCensorMatrix` passed every time, reference rows included, with no failed compose up in the matrix. The first two runs failed elsewhere: TestShapingCapture (setup budget used up before its compose up, see Log) and TestBlobDistribution (twice, see Log). The third was green (exit 0). The run before them, with the default 60 min, ended on that timeout with matrix cells still running, so it says nothing about the rows.
 
+## Review findings
+Round 1 (2026-11-17): correctness (merge, with nits).
+- [x] R1.1 `lab/subnets_lab_test.go` ~129-140: the real-lab subnet check can't fail, since Docker refuses an overlapping network and the loser retries. Also assert that every lab came up on attempt 1 (`Lab.upAttempt`).
+- [x] R1.2 `lab/subnets_lab_test.go` ~97-122: the four parallel subtests wait on each other while holding `-parallel` slots, so below `-parallel 4` the run hangs until the lab timeout. The test now skips with a message when `-parallel` is below the number of labs.
+- [x] R1.3 `lab/reservations_test.go` ~113-116: the dead-owner test's first expected failure accepted any error; it now requires the "no free /24" error.
+
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate fixes)
 - 2026-11-16 widened: the subnet lock's scope is the cause (owner: lab fixes, top priority)
@@ -63,3 +69,4 @@ Original report: A full `make lab-test` fails on censor-matrix reference cells (
 - 2026-11-17 full labs with LAB_TIMEOUT=150m beside other lab runs: 02597cb7 twice (4678 s, 4858 s; the censor matrix passed both times; failed: TestShapingCapture once, TestBlobDistribution twice), then merged rewrite and ran 0369d34e: exit 0, 4813 s. `make lint` and `make test` green on 0369d34e. Lab commit: 0369d34e
 - 2026-11-17 out of scope, for follow-ups: (1) `lab.Start` counts the wait for a lab slot against its 10 min setup budget; the slots are shared by every run with the same TMPDIR, so on a busy host a test can time out on setup without having started (TestShapingCapture: compose up killed 13 s in, 9m50s after the test began). (2) TestBlobDistribution (blobs_test.go:113): under load `sha256sum` finds no file on device-a right after "blob fetched" is logged (2 of 4 runs). (3) The lab phase is past 60 min on a loaded host before and after this change. (4) TP-242 moves the lab-harness self-tests, `TestLabStartsOverlapOnDistinctSubnets` among them
 - 2026-11-17 in-progress → review
+- 2026-11-17 review round 1: merge, nits R1.1–R1.3

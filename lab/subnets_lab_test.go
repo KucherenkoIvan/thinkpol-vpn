@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -77,6 +78,13 @@ func TestUsedSubnetsSurvivesANetworkRemovedMidway(t *testing.T) {
 func TestLabStartsOverlapOnDistinctSubnets(t *testing.T) {
 	t.Parallel()
 	const labs = 4
+	// The labs' subtests wait on each other, each holding a -parallel slot:
+	// with fewer slots than labs they'd wait until the run's timeout.
+	if p := flag.Lookup("test.parallel"); p != nil {
+		if n, ok := p.Value.(flag.Getter).Get().(int); ok && n < labs {
+			t.Skipf("needs -parallel %d or more to start %d labs at once, got %d", labs, labs, n)
+		}
+	}
 	topo := Topology{
 		Networks: []Network{{Name: "a"}, {Name: "b", IPv4Only: true}},
 		Nodes:    []NodeSpec{{Name: "n", Networks: []string{"a", "b"}}},
@@ -84,6 +92,7 @@ func TestLabStartsOverlapOnDistinctSubnets(t *testing.T) {
 	type started struct {
 		project  string
 		from, to time.Time
+		attempt  int
 		subnets  []netip.Prefix
 	}
 	var (
@@ -100,7 +109,7 @@ func TestLabStartsOverlapOnDistinctSubnets(t *testing.T) {
 				up := func() { once.Do(allUp.Done) }
 				defer up()
 				l := Start(t, topo)
-				s := started{project: l.Project, from: l.upFrom, to: l.upTo}
+				s := started{project: l.Project, from: l.upFrom, to: l.upTo, attempt: l.upAttempt}
 				for _, n := range topo.Networks {
 					res, err := docker(t.Context(), "network", "inspect", "--format", "{{range .IPAM.Config}}{{.Subnet}} {{end}}", l.Project+"_"+n.Name)
 					if err != nil {
@@ -128,7 +137,12 @@ func TestLabStartsOverlapOnDistinctSubnets(t *testing.T) {
 	}
 	owner := map[netip.Prefix]string{}
 	for _, s := range all {
-		t.Logf("%s: docker compose up %s-%s, subnets %v", s.project, s.from.Format("15:04:05.000"), s.to.Format("15:04:05.000"), s.subnets)
+		t.Logf("%s: docker compose up %s-%s, attempt %d, subnets %v", s.project, s.from.Format("15:04:05.000"), s.to.Format("15:04:05.000"), s.attempt, s.subnets)
+		// Docker refuses an overlapping network and the loser retries, so
+		// distinct subnets alone don't show the reservations kept them apart.
+		if s.attempt != 1 {
+			t.Errorf("%s came up on attempt %d: Docker refused an overlapping subnet the reservations let through", s.project, s.attempt)
+		}
 		for _, p := range s.subnets {
 			for q, other := range owner {
 				if p.Overlaps(q) {

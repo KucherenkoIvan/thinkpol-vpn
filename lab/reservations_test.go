@@ -110,9 +110,13 @@ func TestReservationOfADeadOwnerIsReclaimed(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			owner := startReservingProcess(t, dir, pool)
-			if r, err := reserveSubnets(t.Context(), dir, nets, pool, none); err == nil {
+			r, err := reserveSubnets(t.Context(), dir, nets, pool, none)
+			if err == nil {
 				r.release()
 				t.Fatalf("got %v, which a live process holds", r.subnets["a"].v4)
+			}
+			if !strings.Contains(err.Error(), "no free /24") {
+				t.Fatalf("want the pool exhausted while a live process holds its /24, got %v", err)
 			}
 			if err := owner.Process.Kill(); err != nil {
 				t.Fatal(err)
