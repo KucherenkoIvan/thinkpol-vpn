@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-200]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-238"
+branch: "tp-238-parallel-lab-tests"
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ Depends on TP-200 (it changes how lab tests start nodes, in many of the same fil
 
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority)
+- 2026-11-16 backlog → in-progress, owner: agent-tp-238
