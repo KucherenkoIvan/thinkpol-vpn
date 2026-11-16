@@ -774,9 +774,27 @@ func checkUpdatedRenewal(t *testing.T, path string, r *resolvConf, told <-chan [
 // A writer that pauses longer than the settle, and goes on past the cap,
 // has its first part taken; what it appends then lands in the managed
 // file and joins the original, so its servers are not lost.
+//
+// Each write is made under the configuration's lock, so none falls
+// inside a take-back: a line written in place by a writer that opened
+// the file before the take-back's last check and writes after its rename
+// lands in the replaced file and is lost (RESIDUAL-RISKS.md RR5), and a
+// stall (a loaded machine) can line the writer up with the take-back
+// there. What the take-back does with a write before that check is
+// TestResolvConfAWriteDuringATakeBackIsNotLost's.
 func TestResolvConfASlowWriterPastTheCapKeepsItsServers(t *testing.T) {
 	path, r, told := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: 100 * time.Millisecond, settleMax: 300 * time.Millisecond})
-	writeInPlaceSlowly(t, path, 400*time.Millisecond, 400*time.Millisecond)
+	underLock := func(write func()) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		write()
+	}
+	underLock(func() { truncateFile(t, path) })
+	time.Sleep(400 * time.Millisecond)
+	for _, line := range []string{"search lan\n", "nameserver 192.0.2.7\n", "nameserver 2001:db8::7\n"} {
+		underLock(func() { appendFile(t, path, line) })
+		time.Sleep(400 * time.Millisecond)
+	}
 	takenBackWith(t, path, renewedInPlace)
 	if got := lastTold(t, told); !slices.Equal(got, renewedInPlaceServers) {
 		t.Errorf("told %v last, want %v", got, renewedInPlaceServers)
