@@ -58,3 +58,6 @@ branch: "tp-224-status-line-after-change"
 - 2026-11-16 handoff: code and tests done; left: one full make lab-test with a cited exit status (rerun once TP-220 lands, or judge the dns flake as TP-220's), then in-progress → review
 - 2026-11-16 review round 1: fix R1.1–R1.6, then the full lab
 - 2026-11-16 R1.2 mutations (each fails 3/3 on the new "failing" step, passes restored): takeRules without its enforceKillSwitch (preset returns not active, enforced, no error), runner.request without its enforceKillSwitch (disconnect returns active, enforced, no error)
+- 2026-11-16 merged origin/rewrite (TP-221, TP-227); at 2fb1bb87: make lint and make test pass
+- 2026-11-16 full make lab-test at 2fb1bb87 started and queued for the full-lab lock behind other branches; no exit status yet
+- 2026-11-16 handoff: R1.1–R1.6 done; left: the full make lab-test result at 2fb1bb87 (box 3), then in-progress → review
