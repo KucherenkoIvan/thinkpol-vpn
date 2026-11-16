@@ -214,8 +214,12 @@
 // the rename, it reads the path again, and if another program wrote it
 // since the read (an in-place writer's next line, while the new file
 // was synced) it writes nothing, and the watch settles that write
-// (below). Restore puts the original back, as a file or the symlink it
-// was; a resolv.conf another program wrote since is left alone.
+// (below). A take-back past the settle's cap writes over whatever is
+// there: the cap takes a write that hasn't settled anyway, and a writer
+// that writes again within every take-back (faster than the sync, as on
+// a loaded disk) would never be taken back. Restore puts the original
+// back, as a file or the symlink it was; a resolv.conf another program
+// wrote since is left alone.
 //
 // The file is watched (inotify on its directory, set up before the
 // take-over, and polled every 2 s as a backstop) and taken back if
@@ -293,7 +297,9 @@
 // the rewrite read the path again and written after the rename, it
 // lands in the file the rename replaced (no read of the path sees a file
 // open for writing that has no new byte yet), and so does a write
-// between that read and the rename (RESIDUAL-RISKS.md RR5). After a
+// between that read and the rename, or any write during a take-back
+// past the cap, which doesn't read the path again (RESIDUAL-RISKS.md
+// RR5). After a
 // rewrite of the node's own in place (a bind mount) fails partway (no
 // space, a quota, an I/O error), the file may end anywhere in the node's
 // new content: empty, inside the header line, inside the original's
