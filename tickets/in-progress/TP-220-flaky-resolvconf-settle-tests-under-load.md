@@ -26,7 +26,7 @@ branch: tp-220-flaky-resolvconf-settle-tests
 ## Acceptance
 - [x] The root cause named in Notes, with the failing run's evidence.
 - [x] A fix in the test or the code, with the docs it touches updated.
-- [x] The settle tests pass 20 runs under load (a full lab or the same freezes beside them) on Linux, and a mutation that brings the cause back fails them.
+- [x] The settle tests pass 20 runs under load (a full lab or the same freezes beside them) on Linux. A mutation that brings SlowWriter's cause back is caught by the deterministic tests (M1, M11 and TestResolvConfARewriteChecksThePathAfterItsNewFileIsSynced), not by SlowWriter, which writes under the configuration's lock and no longer exercises the race; NeverSettles' cause (its wall-clock bound under stalls) fails it under the freezes with the stall discount removed (M9, M9b).
 - [x] No retries and no longer timeouts without a cause.
 
 ## Notes
@@ -50,6 +50,14 @@ branch: tp-220-flaky-resolvconf-settle-tests
 - **NeverSettles: the test's bound.** It bounded the take-back by wall time from the start: 1.3 s (the cap and a settle). Under the freezes the whole process stops, the watch's timers with it, so the take-back lands at the end of the stall: the failing runs' writer opened the file at e.g. 0, 521, 917, 1527 ms (100 ms due each time), taken back after the 1527 ms open. And in the lab the take-back's own sync took long enough that the rename landed after the bound with the writer not stalled (on cdf7a333, 1 of 20: "taken back after 1.36s running (5.6ms stalled)"). The bound is unchanged; it now applies to when the take-back began writing (a wrapper on `r.rewrite`) less the stalls the writer measured (how late each open came after its sleep).
 - **A regression found on the way.** With the check and no exception at the cap (fadf0364), NeverSettles failed 15 of 20 in a lab container beside another full lab, never taken back or taken back at 2 to 3 s: every take-back found the file written during its sync. Fixed by the cap's exception (8e754a9e) and its test.
 
+## Review findings
+- [x] R1.1 (should-fix) A take-over whose rewrite found the file changed since its read returned with nothing written and no settle begun until the watch's first pass, so the agent's Problem and Deferred right after it read clean while the host's servers were in the file. The take-over now begins the settle under its lock (resolvconf.go, setResolvConfTimed); the watch's first pass then finds the write still going on and starts the quiet timer.
+- [x] R1.2 (should-fix) NeverSettles timed the first rewrite that differed from the file, even one that wrote nothing, and took off stalls after it began. It now times the start of the take-back that wrote, and takes off only the stalls whose open came before it; the 1.3 s bound is unchanged.
+- [x] R1.3 (should-fix) No test pinned that the check runs after the new file's sync. TestResolvConfARewriteChecksThePathAfterItsNewFileIsSynced appends to the path from inside replace's create step and requires errChangedSinceRead, the line kept and no new file left.
+- [x] R1.4 (nit) The watch recomputed the cap from the clock instead of taking decide's branch, so a rename event after a settle that passed its cap while asleep skipped the check too. decide now returns whether it took the past-the-cap branch. RR5's wording already said what holds.
+- [x] R1.5 (ticket) Acceptance box 3 says which tests catch SlowWriter's cause now that SlowWriter writes under the lock.
+- [x] R1.6 (doc honesty) Restore and putBackOriginal rewrite with no check, so a write between Restore's read and its rename is renamed over. doc.go, Restore's comment and RR5 now say so; Restore's code is unchanged (a follow-up).
+
 ## Log
 - 2026-11-15 created in backlog (from TP-211's and TP-197's lab runs)
 - 2026-11-16 backlog → in-progress, owner: agent-tp-220
@@ -62,3 +70,8 @@ branch: tp-220-flaky-resolvconf-settle-tests
 - 2026-11-16 on Linux on 5fdae489: under the freezes SlowWriter and NeverSettles passed 100 of 100 each, the five new tests 30 of 30 each; in a lab container beside another full lab (lab-gotest COUNT=20) all seven passed 20 of 20. Earlier heads: a8926c2b 100 of 100 each under the freezes; 60a7fa20 (the check, SlowWriter not yet under the lock) SlowWriter 99 of 100, the one failure the residual in Notes
 - 2026-11-16 `make lint` and `make test` green on 5fdae489 (umask 022)
 - 2026-11-16 handoff: the full `make lab-test` on 5fdae489 has not run: two waits of 2 h each for the full-lab lock (taken by other labs meanwhile) ran out; the second request stays queued and runs the lab when it gets the lock. Left in in-progress until a full lab is green on the final commit, then in-progress → review
+- 2026-11-16 review round 1: fix R1.1–R1.6
+- 2026-11-16 R1.5: SlowWriter, under the configuration's lock since a8926c2b, no longer exercises the race; its cause is caught by M1, M11 and the R1.3 test
+- 2026-11-16 round-1 mutations, plain go test on macOS: MR1.1 no settle begun at the take-over: the take-over test's new check fails 10 of 10 per subtest ("not deferred", "problem <nil>"); MR1.3 the check before the new file is made: the R1.3 test fails 5 of 5 (the line lost); MR1.2 the first capped take-back backing off for 1.5 s (a late take-back): NeverSettles fails 3 of 3 ("began after 2.5s"), and its previous form passes 3 of 3 under it; MR1.4 decide never reporting capped: the cap test fails 3 of 3; M6 again on the no-file take-over test, which now watches through the polls (the take-over begins the settle, so its old wait loop ended at once): fails 5 of 5. R1.2's stall cut-off has no mutation of its own (it only narrows the discount)
+- 2026-11-16 on Linux on da0b9339: `make lint` and `make test` green (umask 022); under the freezes SlowWriter, NeverSettles and the six tests round 1 touched or added passed 30 of 30 each
+- 2026-11-16 out of scope: TestResolvConfProblemReportsAWriteThatDoesNotSettle, failed in another branch's full lab on rewrite-based code, is a separate flake: its 50 ms writer goes quiet past the 200 ms settle during a stall, and that write settles and is told as the product says it should. Not the rename race and not R1.1; it fails 15 of 30 under the freezes on da0b9339. Not fixed here
