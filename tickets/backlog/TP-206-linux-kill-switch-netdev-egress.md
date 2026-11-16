@@ -1,7 +1,7 @@
 ---
 id: TP-206
 title: "Linux: a netdev egress chain so layer-2-bridged traffic meets the kill switch"
-milestone: M3
+milestone: later
 area: dataplane/firewall
 stream: core
 repo: thinkpol-vpn
@@ -32,6 +32,8 @@ On Linux, traffic bridged at layer 2 onto the uplink (Docker's macvlan and ipvla
 ## Notes
 - Egress hooks in the netdev family need Linux 5.16+; the lab kernel's version decides what can be tested.
 - From TP-048's review rounds 2 and 3 (R2.6, RR61).
+- Lab cases should also cover ipvlan and libvirt macvtap (`direct`), which RR61 names.
 
 ## Log
 - 2026-11-12 created in backlog (from TP-048's review)
+- 2026-11-16 milestone M3 → later (owner, 2026-11-16: after the MVP; from the M2 gate review)
