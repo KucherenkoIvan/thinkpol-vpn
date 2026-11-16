@@ -38,10 +38,10 @@ The censor matrix costs 9 labs, not 90. The owner wants a full lab to take at mo
 - `go test` runs at most GOMAXPROCS tests at once, so on a runner with fewer cores than rows some rows wait for a slot. `transports` lists the long rows first (reality, then udp, both holding their tunnel 7.5 minutes), so they never wait: the matrix should take about its longest row, reality's (~865 s), plus a lab start.
 
 ## Review findings
-- [ ] R1.1 The reset's snapshot missed routes in every table and addresses: a `thinkpol up` killed after its grace could leave routes the reset and check didn't see. The snapshot now reads `ip -4/-6 route show table all` and `ip -br addr`, and the reset deletes leftover routes and addresses after the links go; neighbour entries, route expiry, the linkdown flag and RA routes are left out (the kernel changes them on its own).
-- [ ] R1.2 The reset's comment said `censord -reset` removes the verdict log; the file cleanup of /run/censor does. Comment fixed.
-- [ ] R1.3 Acceptance boxes 1 and 2 said "a full lab" and "the same commit"; reworded to what was shown.
-- [ ] R1.4 `transports` lists the longest rows first (reality, udp).
+- [x] R1.1 The reset's snapshot missed routes in every table and addresses: a `thinkpol up` killed after its grace could leave routes the reset and check didn't see. The snapshot now reads `ip -4/-6 route show table all` and `ip -br addr`, and the reset deletes leftover routes and addresses after the links go; neighbour entries, route expiry, the linkdown flag and RA routes are left out (the kernel changes them on its own).
+- [x] R1.2 The reset's comment said `censord -reset` removes the verdict log; the file cleanup of /run/censor does. Comment fixed.
+- [x] R1.3 Acceptance boxes 1 and 2 said "a full lab" and "the same commit"; reworded to what was shown.
+- [x] R1.4 `transports` lists the longest rows first (reality, udp).
 
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority; from the lab-speed audit)
@@ -53,3 +53,7 @@ The censor matrix costs 9 labs, not 90. The owner wants a full lab to take at mo
 - 2026-11-17 verdicts: RESULTS.md from the per-row run on 632ed83a vs the per-cell one from TP-229's full lab on 0369d34e (matrix files, lab/censor and lab/censord identical to this branch's base): the 90 verdicts and the header are identical; details differ only where they vary from run to run in per-cell runs too (the prober's random probes and their answers, which counting signal flags reality's rekey first)
 - 2026-11-17 not run: a full `make lab-test` (targeted runs only until this rework lands); `make lint` and `make test` green on 632ed83a; lab commit 632ed83a
 - 2026-11-17 in-progress → review
+- 2026-11-17 review round 1: fix R1.1–R1.4, merge
+- 2026-11-17 R1.1–R1.4 done; origin/rewrite merged (TP-200, TP-238); `make lint`, `make test` green on 684a9ffe; `TestNodeState` passed; mutation, `undoAddressing` drops the address deletes: `TestNodeState` failed
+- 2026-11-17 `TestCensorMatrix` on 684a9ffe failed: 921 s; 8 rows passed, every reset held (udp 681 s); reality's reset after `ip-blocklist (entry)` (fail, as expected) left 3 router conntrack entries, so the row's last 7 cells errored and RESULTS.md wasn't written. Likely cause: the killed client's orphaned TCP sockets kept retransmitting, and one retransmission crossed after the single `censord -reset`. Fix: `matrixRow.clearRouter` flushes again until `nf_conntrack_count` reads 0 (up to 30 s)
+- 2026-11-17 handoff: the `clearRouter` fix is untested in a lab (this round allowed one matrix run). A `TestCensorMatrix` run is needed before the merge

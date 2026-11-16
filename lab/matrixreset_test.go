@@ -264,7 +264,7 @@ func (r *matrixRow) eachNode(f func(n *lab.Node) error) error {
 // removes the links, policy rules, tables and files the cell left (the
 // verdict log with /run/censor), then the routes and addresses left on
 // the links that remain, clears the router's censor table and conntrack
-// (censord -reset), and reads every node back.
+// (censord -reset, clearRouter), and reads every node back.
 func (r *matrixRow) reset() error {
 	if r.broken != nil {
 		return r.broken
@@ -324,7 +324,7 @@ func (r *matrixRow) reset() error {
 		})
 	}
 	if err == nil {
-		_, err = execRead(r.lab.Node(lab.Router), pollTimeout, "censord", "-reset")
+		err = r.clearRouter()
 	}
 	if err == nil {
 		err = r.check()
@@ -333,6 +333,27 @@ func (r *matrixRow) reset() error {
 		r.broken = fmt.Errorf("an earlier cell's reset didn't hold: %w", err)
 	}
 	return err
+}
+
+// clearRouter clears the router's censor table and conntrack until no
+// entry comes back. A killed process's orphaned TCP sockets go on
+// retransmitting their FIN for a while, and a cell whose censor dropped
+// their packets leaves them unanswered until the censor table is gone, so
+// the first flush can race one last retransmission. A flow that still
+// makes new entries after the deadline is the check's to report.
+func (r *matrixRow) clearRouter() error {
+	router := r.lab.Node(lab.Router)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := execRead(router, pollTimeout, "censord", "-reset"); err != nil {
+			return err
+		}
+		time.Sleep(time.Second)
+		count, err := execRead(router, pollTimeout, "cat", "/proc/sys/net/netfilter/nf_conntrack_count")
+		if err != nil || strings.TrimSpace(count) == "0" || time.Now().After(deadline) {
+			return err
+		}
+	}
 }
 
 // leftovers is what n has beyond its clean state.
