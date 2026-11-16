@@ -839,7 +839,8 @@ func (e taggedUnprotected) Is(target error) bool { return target == ErrUnprotect
 func applyOnce(t *testing.T, r *resolvConf) {
 	t.Helper()
 	r.mu.Lock()
-	tell, _ := r.apply(readResolvConfFile(r.path))
+	f, ferr := readResolvConfFile(r.path)
+	tell, _ := r.apply(f, ferr, false)
 	r.mu.Unlock()
 	if tell != nil {
 		tell()

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -442,8 +443,8 @@ func TestResolvConfAFileRenamedInDuringAnApplyThatWritesNothingIsTakenAtOnce(t *
 	path, r, told := startInPlace(t, resolvConfTiming{check: time.Hour, settle: time.Hour, settleMax: time.Hour})
 	r.mu.Lock()
 	c, rewrite, once := r.cfg, r.rewrite, false
-	r.rewrite = func(path string, f resolvConfFile, content []byte) error {
-		err := rewrite(path, f, content)
+	r.rewrite = func(path string, f resolvConfFile, content []byte, capped bool) error {
+		err := rewrite(path, f, content, capped)
 		if err == nil && bytes.Equal(content, f.content) && !once { // wrote nothing
 			once = true
 			if err := replace(path, func(tmp string) error { return writeNew(tmp, []byte(renewedInPlace)) }, nil); err != nil {
@@ -806,13 +807,13 @@ func TestResolvConfASlowWriterPastTheCapKeepsItsServers(t *testing.T) {
 // that writes something: another program writing the file between the
 // read that rewrite was rendered from and its rename. write's error goes
 // to errs.
-func writingBefore(rewrite func(string, resolvConfFile, []byte) error, write func(path string) error, errs chan<- error) func(string, resolvConfFile, []byte) error {
+func writingBefore(rewrite func(string, resolvConfFile, []byte, bool) error, write func(path string) error, errs chan<- error) func(string, resolvConfFile, []byte, bool) error {
 	var once sync.Once
-	return func(path string, f resolvConfFile, content []byte) error {
+	return func(path string, f resolvConfFile, content []byte, capped bool) error {
 		if !bytes.Equal(content, f.content) {
 			once.Do(func() { errs <- write(path) })
 		}
-		return rewrite(path, f, content)
+		return rewrite(path, f, content, capped)
 	}
 }
 
@@ -887,6 +888,35 @@ func TestResolvConfAWriteDuringATakeBackIsNotLost(t *testing.T) {
 	restoredTo(t, path, r, want)
 	if strings.Contains(log.String(), "failed") {
 		t.Errorf("reported as a failed take-back:\n%s", log.String())
+	}
+}
+
+// A writer that writes the file again within every take-back (while the
+// take-back's new file is synced, slower than the writer on a loaded
+// disk) is still taken back at the settle's cap: past it, the take-back
+// writes over whatever is there.
+func TestResolvConfATakeBackAtTheCapWritesOverAWriteSinceItsRead(t *testing.T) {
+	path, r, _ := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: 50 * time.Millisecond, settleMax: 300 * time.Millisecond})
+	var writes atomic.Int32
+	r.mu.Lock()
+	rewrite := r.rewrite
+	r.rewrite = func(path string, f resolvConfFile, content []byte, capped bool) error {
+		if !bytes.Equal(content, f.content) {
+			n := writes.Add(1)
+			if err := os.WriteFile(path, []byte(fmt.Sprintf("nameserver 192.0.2.%d\n", 10+n%200)), 0o644); err != nil {
+				return err
+			}
+		}
+		return rewrite(path, f, content, capped)
+	}
+	r.mu.Unlock()
+	overwriteInPlace(t, path, "nameserver 192.0.2.10\n")
+	deadline := time.Now().Add(5 * time.Second)
+	for !parseResolvConf([]byte(readString(t, path))).managed {
+		if time.Now().After(deadline) {
+			t.Fatalf("never taken back; %d take-backs each found the file written since their read", writes.Load())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -1053,9 +1083,9 @@ func TestResolvConfAPartialRewriteIsNotTakenAsAppendedLines(t *testing.T) {
 	t.Cleanup(func() { _ = r.Restore() })
 	r.mu.Lock()
 	failed := false
-	r.rewrite = func(path string, f resolvConfFile, content []byte) error {
+	r.rewrite = func(path string, f resolvConfFile, content []byte, capped bool) error {
 		if failed {
-			return rewriteResolvConf(path, f, content)
+			return rewriteResolvConf(path, f, content, capped)
 		}
 		failed = true
 		// The node's servers, then the write fails before the search line.
@@ -1092,9 +1122,9 @@ func TestResolvConfARewriteThatFailedBeforeItsRenameKeepsAHandAppend(t *testing.
 	path, r, told := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: 100 * time.Millisecond, settleMax: time.Second})
 	r.mu.Lock()
 	failed := false
-	r.rewrite = func(path string, f resolvConfFile, content []byte) error {
+	r.rewrite = func(path string, f resolvConfFile, content []byte, capped bool) error {
 		if failed {
-			return rewriteResolvConf(path, f, content)
+			return rewriteResolvConf(path, f, content, capped)
 		}
 		failed = true
 		appendFile(t, path, "nameserver 192.0.2.9\n")
@@ -1118,9 +1148,9 @@ func TestResolvConfARewriteThatFailedPartwayKeepsTheWholeOriginal(t *testing.T) 
 	path, r, _ := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: 100 * time.Millisecond, settleMax: time.Second})
 	r.mu.Lock()
 	failed := false
-	r.rewrite = func(path string, f resolvConfFile, content []byte) error {
+	r.rewrite = func(path string, f resolvConfFile, content []byte, capped bool) error {
 		if failed {
-			return rewriteResolvConf(path, f, content)
+			return rewriteResolvConf(path, f, content, capped)
 		}
 		failed = true
 		// Cut inside the original's last line, its options.
@@ -1220,13 +1250,13 @@ func failPartway(t *testing.T, r *resolvConf, cut func(content []byte) int) (suc
 	var mu sync.Mutex
 	failing, n := true, 0
 	r.mu.Lock()
-	r.rewrite = func(path string, f resolvConfFile, content []byte) error {
+	r.rewrite = func(path string, f resolvConfFile, content []byte, capped bool) error {
 		mu.Lock()
 		fail := failing
 		n++
 		mu.Unlock()
 		if !fail {
-			return rewriteResolvConf(path, f, content)
+			return rewriteResolvConf(path, f, content, capped)
 		}
 		if err := os.WriteFile(path, content[:cut(content)], 0o644); err != nil {
 			return err

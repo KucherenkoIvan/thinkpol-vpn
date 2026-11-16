@@ -306,7 +306,7 @@ type resolvConf struct {
 	originalLink string // the symlink the original was, as last rendered
 	// rewrite puts content at path (rewriteResolvConf; a field so tests can
 	// make a write fail partway).
-	rewrite func(path string, f resolvConfFile, content []byte) error
+	rewrite func(path string, f resolvConfFile, content []byte, capped bool) error
 	// foreign is another program's write that may still be going on,
 	// while the watch waits for it to settle; nil when there is none. Update
 	// leaves the rewrite to the watch meanwhile.
@@ -370,7 +370,7 @@ func setResolvConfTimed(path, uplink string, c SystemConfig, timing resolvConfTi
 	startWatch, closeWatch := watchResolvConf(r.path)
 	r.mu.Lock()
 	f, ferr := readResolvConfFile(r.path)
-	tell, err := r.apply(f, ferr)
+	tell, err := r.apply(f, ferr, false)
 	// The state check below decides first, so the kind of the start's
 	// signal changes no outcome; own still keeps the take-over's own event
 	// from being signalled: that pending non-rename signal would merge
@@ -423,9 +423,9 @@ var newRewrite = rewriteResolvConf
 // failed partway (failedWrite), the file may end anywhere in the node's
 // own content, so nothing is taken as appended, and a file that is part
 // of that rewrite or still parses as managed has the original held in
-// memory. It returns what to tell the caller, run after unlocking, or
-// nil. r.mu is held.
-func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error) {
+// memory. capped is rewriteResolvConf's. It returns what to tell the
+// caller, run after unlocking, or nil. r.mu is held.
+func (r *resolvConf) apply(f resolvConfFile, ferr error, capped bool) (tell func(), err error) {
 	defer func() {
 		if !errors.Is(err, errChangedSinceRead) {
 			r.err = err
@@ -458,7 +458,7 @@ func (r *resolvConf) apply(f resolvConfFile, ferr error) (tell func(), err error
 		}
 	}
 	content := render(r.cfg, m.original, symlink)
-	werr := r.rewrite(r.path, f, content)
+	werr := r.rewrite(r.path, f, content, capped)
 	if errors.Is(werr, errChangedSinceRead) {
 		// f is stale: nothing is written or told. At the take-over it is
 		// still what later changes are told against, as the caller told
@@ -598,12 +598,19 @@ func (r *resolvConf) recordOriginal(original []byte, read bool) (tell func()) {
 // new file replacing what is there. It writes only over f: when the
 // path holds anything else by the time content is ready to go in
 // (another program wrote it since f was read), it writes nothing and
-// returns errChangedSinceRead.
-func rewriteResolvConf(path string, f resolvConfFile, content []byte) error {
+// returns errChangedSinceRead. Unless capped: a take-back past the
+// settle's cap writes over whatever is there, as the cap takes a write
+// that hasn't settled anyway, and a writer that writes again within
+// every rewrite (faster than the new file's sync) would otherwise never
+// be taken back.
+func rewriteResolvConf(path string, f resolvConfFile, content []byte, capped bool) error {
 	if string(content) == string(f.content) {
 		return nil
 	}
-	still := func() error { return stillAt(path, f) }
+	var still func() error
+	if !capped {
+		still = func() error { return stillAt(path, f) }
+	}
 	if f.info != nil && f.info.Mode().IsRegular() {
 		return writeFile(path, content, still)
 	}
@@ -672,10 +679,11 @@ func (r *resolvConf) watch(first func(), changed bool, changes <-chan bool, clos
 			continue
 		}
 		foreign := r.foreign
+		capped := foreign != nil && time.Since(foreign.began) >= r.timing.settleMax
 		r.foreign = nil
 		quiet.Stop()
 		prev := r.err
-		tell, err := r.apply(f, ferr)
+		tell, err := r.apply(f, ferr, capped)
 		if errors.Is(err, errChangedSinceRead) {
 			// Another program wrote the file after the read: a write that
 			// may still be going on, judged at the next wake (its close's
@@ -869,7 +877,7 @@ func (r *resolvConf) Update(c SystemConfig) error {
 		r.mu.Unlock()
 		return nil
 	}
-	tell, err := r.apply(f, ferr)
+	tell, err := r.apply(f, ferr, false)
 	if errors.Is(err, errChangedSinceRead) {
 		r.leaveToWatch(f, ferr)
 		err = nil
