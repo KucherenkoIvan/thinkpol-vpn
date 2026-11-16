@@ -26,6 +26,15 @@ const reservationSuffix = ".subnets"
 
 func reservationsDir(lockDir string) string { return filepath.Join(lockDir, "reservations") }
 
+// lockAllocation takes the host-wide subnet allocation lock. It is not the
+// subnets.lock that labs before reservations held through their whole
+// docker compose up: waiting behind those would undo the point. A subnet
+// one of them takes at the same time is caught by Docker's overlap check
+// and retried, as any other daemon user's is.
+func lockAllocation(ctx context.Context, lockDir string) (func(), error) {
+	return waitLock(ctx, "the subnet allocation lock", filepath.Join(lockDir, "subnet-reservations.lock"))
+}
+
 // reservation is a lab's subnets, reserved host-wide until release.
 type reservation struct {
 	subnets map[string]netSubnets
@@ -50,7 +59,7 @@ func (r *reservation) release() {
 // the host-wide allocation lock in lockDir only while it does.
 func reserveSubnets(ctx context.Context, lockDir string, networks []Network, pool netip.Prefix, used func(context.Context) ([]netip.Prefix, error)) (*reservation, error) {
 	r := &reservation{lockWait: time.Now()}
-	unlock, err := waitLock(ctx, "the subnet allocation lock", filepath.Join(lockDir, "subnets.lock"))
+	unlock, err := lockAllocation(ctx, lockDir)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +163,7 @@ func liveReservations(dir string) ([]netip.Prefix, error) {
 // reclaimReservations removes the reservations in lockDir whose owner is
 // gone, under the allocation lock.
 func reclaimReservations(ctx context.Context, lockDir string) error {
-	unlock, err := waitLock(ctx, "the subnet allocation lock", filepath.Join(lockDir, "subnets.lock"))
+	unlock, err := lockAllocation(ctx, lockDir)
 	if err != nil {
 		return err
 	}
