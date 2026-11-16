@@ -217,11 +217,7 @@ func newStreamTap(t *testing.T, address string) *streamTap {
 			return
 		}
 		go func() {
-			_, _ = io.Copy(io.MultiWriter(up, writerFunc(func(p []byte) (int, error) {
-				tp.mu.Lock()
-				defer tp.mu.Unlock()
-				return tp.sent.Write(p)
-			})), c)
+			_, _ = io.Copy(recordThenForward{&tp.mu, &tp.sent, up}, c)
 			_ = up.Close()
 		}()
 		_, _ = io.Copy(c, up)
@@ -230,9 +226,28 @@ func newStreamTap(t *testing.T, address string) *streamTap {
 	return tp
 }
 
-type writerFunc func([]byte) (int, error)
+// recordThenForward keeps each chunk before passing it on, so whatever
+// the far end has read is already in the capture: a check right after
+// the far end accepted sees the bytes that got it there. What the forward
+// didn't take is dropped from the capture again.
+type recordThenForward struct {
+	mu  *sync.Mutex
+	rec *bytes.Buffer
+	to  io.Writer
+}
 
-func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+func (w recordThenForward) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	w.rec.Write(p)
+	w.mu.Unlock()
+	n, err := w.to.Write(p)
+	if n < len(p) {
+		w.mu.Lock()
+		w.rec.Truncate(w.rec.Len() - (len(p) - n))
+		w.mu.Unlock()
+	}
+	return n, err
+}
 
 func (tp *streamTap) captured() []byte {
 	tp.mu.Lock()

@@ -313,6 +313,9 @@ func TestAHelloWithBytesAfterItIsSplicedAsAStranger(t *testing.T) {
 		t.Fatal(err)
 	}
 	stream := tp.captured()[0]
+	if hello := recordHeaderSize + (int(stream[3])<<8 | int(stream[4])); len(stream) <= hello {
+		t.Fatalf("captured %d bytes, the hello's %d: nothing after it", len(stream), hello)
+	}
 	if v := seen.verdict(t); v != transport.StreamRouted {
 		t.Fatalf("the dialer's verdict %d, want StreamRouted", v)
 	}
@@ -326,6 +329,7 @@ func TestAHelloWithBytesAfterItIsSplicedAsAStranger(t *testing.T) {
 	// the dial would make the start rule refuse it (StreamStale).
 	behind := newTransport(Options{Now: func() time.Time { return time.Now().Add(-time.Minute) }})
 	fresh := startShared(t, behind, theTarget(t), k, map[transport.SpaceID][]transport.PeerLink{a: {peerLink(id)}})
+	// probe's one Write of the hello and what followed arrives in one read on loopback.
 	probe(t, fresh.addr(), stream)
 	if v := fresh.verdict(t); v != transport.StreamUnknown {
 		t.Fatalf("verdict %d, want StreamUnknown", v)

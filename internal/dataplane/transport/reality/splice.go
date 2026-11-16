@@ -99,10 +99,12 @@ func (e targetWriteError) Unwrap() error { return e.error }
 // would, not a record header on its own), except the last heldBack bytes
 // of a whole record. Once the record is whole, authenticate decides: true
 // hands the connection off, the tail still held back; anything else
-// forwards the tail and splices it. A client sending past its hello
-// before any answer isn't a dialer (ours sends nothing more until the
+// forwards the tail and splices it. A read that completes the hello and
+// carries more isn't a dialer's (ours sends nothing more until the
 // ServerHello) and is spliced, its hello decided all the same, so the
-// caller can tell a replay. It returns the bytes read and the error
+// caller can tell a replay. Only that read counts: bytes in a later one
+// come after the decision, which is fine, since the rule is camouflage,
+// not authentication (the replay cache and the start rule are). It returns the bytes read and the error
 // that ended it, if any (reading from the client, or a
 // targetWriteError); the target speaking or closing first splices too.
 func (m *mirror) gather(authenticate func(record []byte) bool) (record []byte, authenticated bool, err error) {
