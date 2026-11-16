@@ -209,9 +209,13 @@
 // new file, synced, renamed over it); only a file that can't be renamed
 // over (a bind mount, as /etc/resolv.conf often is in containers: EBUSY,
 // EXDEV) is rewritten in place, and is empty between the open's
-// truncation and the write (RESIDUAL-RISKS.md RR63). Restore puts the
-// original back, as a file or the symlink it was; a resolv.conf another
-// program wrote since is left alone.
+// truncation and the write (RESIDUAL-RISKS.md RR63). A rewrite writes
+// only over the file it read: once its new file is synced, right before
+// the rename, it reads the path again, and if another program wrote it
+// since the read (an in-place writer's next line, while the new file
+// was synced) it writes nothing, and the watch settles that write
+// (below). Restore puts the original back, as a file or the symlink it
+// was; a resolv.conf another program wrote since is left alone.
 //
 // The file is watched (inotify on its directory, set up before the
 // take-over, and polled every 2 s as a backstop) and taken back if
@@ -283,7 +287,13 @@
 // symlink: Restore puts the link back, and the appended lines go with
 // the managed file. That is the backstop behind the settle, not a
 // replacement for it: on its own it would read the truncated file first,
-// telling and recording an empty original before the real one. After a
+// telling and recording an empty original before the real one. A line
+// written while the node rewrites the file is lost only when the
+// rewrite can't see it: written in place through a file opened before
+// the rewrite read the path again and written after the rename, it
+// lands in the file the rename replaced (no read of the path sees a file
+// open for writing that has no new byte yet), and so does a write
+// between that read and the rename (RESIDUAL-RISKS.md RR5). After a
 // rewrite of the node's own in place (a bind mount) fails partway (no
 // space, a quota, an I/O error), the file may end anywhere in the node's
 // new content: empty, inside the header line, inside the original's
@@ -307,9 +317,12 @@
 // caught by the backstop, but a writer that writes through one open
 // file loses what it writes after the take-over (RESIDUAL-RISKS.md RR5).
 // Another program's write between the take-over's read and its write
-// (a file renamed in, or a write in place) is overwritten by it: what
-// that program wrote is lost, the original is the file read before it,
-// and nothing reports it until the program writes the file again (RR5).
+// (a file renamed in, or a write in place) is not overwritten: the
+// take-over writes nothing and tells nothing of what it read, the watch
+// settles that write and takes it back, and its servers are told against
+// the take-over's read (or, when the node started untold, as its first
+// good read). Update over a file changed since its read leaves its
+// configuration to the watch the same way ([Deferred] says so).
 //
 // An empty /etc/resolv.conf can be a valid configuration (the resolver
 // then asks the local host), so one that stays empty through the settle
