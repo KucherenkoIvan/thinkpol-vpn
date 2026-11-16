@@ -137,9 +137,17 @@ var ErrInputChanged = errors.New("testcache: an input changed during the run")
 // Record stores a pass of action, started at started, that read the inputs
 // in testLog (its -test.testlogfile, run in the node directory action.Dir).
 func (s Store) Record(action Action, testLog []byte, resolve Resolver, started time.Time, t Tally) error {
-	inputs, err := ParseTestLog(testLog, action.Dir)
+	read, err := ParseTestLog(testLog, action.Dir)
 	if err != nil {
 		return err
+	}
+	// Only the inputs that resolve: the rest (a t.TempDir's random name)
+	// would make every run's list another, and the action record keeps one.
+	var inputs []string
+	for _, in := range read {
+		if resolve(in) != "" {
+			inputs = append(inputs, in)
+		}
 	}
 	id := action.ID()
 	key, err := passKey(id, inputs, resolve, started)
@@ -171,7 +179,7 @@ func passKey(actionID string, inputs []string, resolve Resolver, changedAfter ti
 // symlinks, as the test's open and stat did.
 func hashInput(hostPath string, changedAfter time.Time) (string, error) {
 	if hostPath == "" {
-		return "ignored", nil
+		return "ignored", nil // an action record from an older Record
 	}
 	info, err := os.Stat(hostPath)
 	if errors.Is(err, fs.ErrNotExist) {

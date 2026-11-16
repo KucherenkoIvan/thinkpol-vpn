@@ -192,6 +192,23 @@ func TestPassPerInputs(t *testing.T) {
 	}
 }
 
+// Runs that differ only in what they read outside the mounts (a
+// t.TempDir's random name) share an input list, so a pass recorded before
+// another run's still serves its inputs.
+func TestScratchPathsDontSplitTheInputs(t *testing.T) {
+	f := newFixture(t)
+	golden := filepath.Join(f.src, "internal/pkg/testdata/a.golden")
+	f.log = append(f.log, "open /tmp/TestA1/001/x\n"...)
+	f.record(t)
+	write(t, golden, "golden2")
+	f.log = append(f.log, "open /tmp/TestA2/001/x\n"...)
+	f.record(t)
+	write(t, golden, "golden")
+	if !f.hit(t) {
+		t.Fatal("the first pass is lost after a run with other scratch paths")
+	}
+}
+
 func TestInputChangedDuringTheRunIsNotRecorded(t *testing.T) {
 	f := newFixture(t)
 	started := time.Now()
