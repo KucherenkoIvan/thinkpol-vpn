@@ -219,7 +219,7 @@
 // that writes again within every take-back (faster than the sync, as on
 // a loaded disk) would never be taken back. Restore puts the original
 // back, as a file or the symlink it was, over the managed file only: a
-// resolv.conf another program wrote since Restore read it is left
+// resolv.conf another program wrote before Restore read it is left
 // alone. It doesn't read the path again before its rename: another
 // program's write between its read and its rename (while its new file
 // is synced) is renamed over, and the original it put back, the

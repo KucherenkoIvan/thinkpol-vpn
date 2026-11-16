@@ -770,6 +770,10 @@ func (r *resolvConf) decide(f resolvConfFile, ferr error, ev event, quiet *time.
 		// fast as its own events come.
 		return r.failedWrite == nil || !ev.changed, false
 	case kind == wholeWrite:
+		// A file renamed in over a settle past its cap: a take-back whose
+		// check found a newer rename each time (two programs fighting
+		// over the file by rename) would otherwise never write.
+		capped = r.foreign != nil && time.Since(r.foreign.began) >= r.timing.settleMax
 	case r.foreign == nil: // a write begins
 		r.beginForeign(now)
 		quiet.Reset(r.quietFor())

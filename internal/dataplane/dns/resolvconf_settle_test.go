@@ -991,6 +991,40 @@ func TestResolvConfATakeBackAtTheCapWritesOverAWriteSinceItsRead(t *testing.T) {
 	}
 }
 
+// The same with a writer that renames a new file in within every
+// take-back: each one is a whole write, taken at once, whose take-back
+// finds a newer rename. Past the settle's cap the take-back writes over
+// it all the same.
+func TestResolvConfATakeBackAtTheCapWritesOverAFileRenamedInSinceItsRead(t *testing.T) {
+	hasChangeEvents(t)
+	path, r, _ := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: 50 * time.Millisecond, settleMax: 300 * time.Millisecond})
+	var writes atomic.Int32
+	r.mu.Lock()
+	rewrite := r.rewrite
+	r.rewrite = func(path string, f resolvConfFile, content []byte, capped bool) error {
+		if !bytes.Equal(content, f.content) {
+			n := writes.Add(1)
+			tmp := filepath.Join(filepath.Dir(path), "resolv.conf.new")
+			if err := os.WriteFile(tmp, []byte(fmt.Sprintf("nameserver 192.0.2.%d\n", 10+n%200)), 0o644); err != nil {
+				return err
+			}
+			if err := os.Rename(tmp, path); err != nil {
+				return err
+			}
+		}
+		return rewrite(path, f, content, capped)
+	}
+	r.mu.Unlock()
+	overwriteInPlace(t, path, "nameserver 192.0.2.10\n")
+	deadline := time.Now().Add(5 * time.Second)
+	for !parseResolvConf([]byte(readString(t, path))).managed {
+		if time.Now().After(deadline) {
+			t.Fatalf("never taken back; %d take-backs each found a file renamed in since their read", writes.Load())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // An Update whose rewrite finds the file changed since its read (a line
 // appended by hand meanwhile) writes nothing over it: it leaves the
 // configuration to the watch, which takes the file back once it settles,
@@ -1034,7 +1068,10 @@ func TestResolvConfAWriteDuringTheTakeOverIsNotLost(t *testing.T) {
 			c := testSystem
 			c.Upstreams = func(a []netip.Addr) { told <- a }
 			c.UpstreamsUnknown = unknown
-			r, err := setResolvConfTimed(path, "", c, resolvConfTiming{check: 20 * time.Millisecond, settle: 100 * time.Millisecond, settleMax: 10 * time.Second})
+			// No settle ends before the checks below: a stall of the test
+			// right after the take-over can't let the watch take the file
+			// back first.
+			r, err := setResolvConfTimed(path, "", c, resolvConfTiming{check: 20 * time.Millisecond, settle: time.Hour, settleMax: time.Hour})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1047,6 +1084,16 @@ func TestResolvConfAWriteDuringTheTakeOverIsNotLost(t *testing.T) {
 			if p := r.Problem(); !Unprotected(p) {
 				t.Errorf("problem %v right after a take-over that wrote nothing, want unprotected", p)
 			}
+			// Then the settle is shortened and the watch woken to time it
+			// again. The watch reads its timing unlocked as it starts: the
+			// second send completes only once it took the first, after
+			// that read.
+			r.wake <- struct{}{}
+			r.wake <- struct{}{}
+			r.mu.Lock()
+			r.timing.settle, r.timing.settleMax = 100*time.Millisecond, 10*time.Second
+			r.mu.Unlock()
+			r.wake <- struct{}{}
 			wrote(t, errs)
 			want := isp + "nameserver 192.0.2.9\n"
 			takenBackWith(t, path, want)
