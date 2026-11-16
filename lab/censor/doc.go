@@ -160,81 +160,108 @@
 //     pattern (an obfuscating patch, a static key).
 //
 // wireguard-rhythm is a censor of its own, one of the M2 gate's checks
-// (docs/design/milestones.md): it frames each TCP stream's TLS records and
-// blocks a connection, both ways, whose application-data records show
-// WireGuard's rhythm. It reads recurrence, not WireGuard's exact sizes, so
-// padding to small buckets or a different overhead each way doesn't hide
-// it. Two signals each show the rhythm:
+// (docs/design/milestones.md): it frames each TCP stream's TLS records, or
+// takes each UDP datagram as a record, and blocks a connection, both ways,
+// whose application-data records show WireGuard's rhythm. It reads timing
+// and recurrence, not sizes: a record of any size takes part, so padding
+// (to buckets, to a floor, at random) and a different overhead each way
+// don't hide the rhythm by themselves (TP-223; it used to read only
+// records of 92 to 404 bytes, and a transport padding every record to 512
+// bytes passed it on size alone). Its thresholds are WireGuard's timers as
+// wireguard-go defines them, REKEY_AFTER_TIME (120 s), REJECT_AFTER_TIME
+// (180 s), REKEY_TIMEOUT (5 s) and KEEPALIVE_TIMEOUT (10 s), and the
+// persistent keepalive interval wg(8) suggests (25 s), never what a
+// transport was measured to do. Two signals each show the rhythm:
 //
 //   - rekey: an exchange, a record one way answered within 2 s by one the
-//     other way, both 92 to 404 bytes (a handshake message with any
-//     plausible overhead, padding to a 256-byte bucket included), that
-//     stands out: each of its two sizes new to its direction over the
-//     rekey period before it, or its first record sent after 5 s with no
-//     record of the band either way. A record of the size of one sent its
-//     way within 2 s before it takes on that one's standing out: WireGuard
-//     sends an initiation right after the packet that triggered it, and
-//     padded to one bucket the two are one size. It shows the rhythm when
-//     it stands out three times in a row, each 2 minutes to 3.5 minutes
-//     after the one before; an exchange answered more than once within
-//     2 s is one occurrence, standing out if any answer does. WireGuard
-//     rekeys on the first packet past 2 minutes when it sends, past 165 s
-//     when it only receives, so with a 25 s keepalive the gaps run from
-//     120 s to about 190 s, and three rekeys can take up to 7 minutes of a
+//     other way, that stands out: each of its two sizes new to its
+//     direction over the rekey period (REKEY_AFTER_TIME) before it, or its
+//     first record sent after REKEY_TIMEOUT with no record either way. A
+//     record of the size of one sent its way within 2 s before it takes on
+//     that one's standing out: WireGuard sends an initiation right after
+//     the packet that triggered it, and padded to one size the two are one
+//     size. It shows the rhythm when it stands out three times in a row,
+//     each from REKEY_AFTER_TIME to REJECT_AFTER_TIME plus 30 s (a
+//     persistent keepalive interval and a REKEY_TIMEOUT) after the one
+//     before; an exchange answered more than once within 2 s is one
+//     occurrence, standing out if any answer does. WireGuard rekeys on the
+//     first packet past REKEY_AFTER_TIME when it sends, past
+//     REJECT_AFTER_TIME - KEEPALIVE_TIMEOUT - REKEY_TIMEOUT (165 s) when it
+//     only receives, so with a 25 s keepalive the gaps run from 120 s to
+//     about 190 s, and three rekeys can take up to 7 minutes of a
 //     connection, up to about 10 minutes when batched (below).
-//   - keepalive: an idle run, records of one size each sent after 5 s with
-//     no record either way and not answered within 2 s, at one steady
-//     interval (within 1 s): three of them once the connection has carried
-//     an exchange of that band, five without. A record is judged once its
-//     2 s have passed, on the connection's next packet, so a run shows on
-//     the record after its third: three idle keepalives and one more.
+//   - keepalive: an idle run, records of one size each sent after
+//     REKEY_TIMEOUT with no record either way (under KEEPALIVE_TIMEOUT, so
+//     a passive keepalive follows quiet) and not answered within 2 s, at
+//     one steady interval (within 1 s: WireGuard's keepalive timers have no
+//     jitter): three of them once the connection has carried an exchange,
+//     five without. A record is judged once its 2 s have passed, on the
+//     connection's next packet, so a run shows on the record after its
+//     third: three idle keepalives and one more. A TLS connection carries
+//     an exchange from its first request on, so "five without" is for
+//     datagram flows.
 //
 // Only what stands out is chained, from the latest time it stood out, so a
-// steady stream of records in the band (thinkpol's own 2 s path probes
-// under 256-byte padding, a ping, an interactive or TURN stream), whatever
-// its sizes and rate, and a request repeated at any interval shorter than
-// 2 minutes never show the rhythm. Sizes must be new on their own, not
-// only as a pair: random sizes at a few records a second make nearly every
-// pair new, and pairs then chain by chance within 5 minutes. Measured: 6 minutes of
-// random band sizes, from one exchange every 10 s to 50 a second, none
-// flagged in 100 seeds at any rate. The price: a handshake pair hidden
-// among identical records exchanged steadily (padded to one bucket, say)
-// stands out only after 5 s quiet in the band, and is invisible while the
-// tunnel carries such records. The keepalive signal has blind spots of its
-// own: next to other steady traffic (those path probes, say) no record
-// comes after 5 s of quiet, and when both peers send persistent
-// keepalives in step each answers the other's within 2 s; in both, the
-// rekey is the only signal. The "five without an exchange" rule almost
-// never applies: TLS 1.3's NewSessionTicket and the first request usually
-// make an exchange in the band.
+// steady stream of records (thinkpol's own 2 s path probes, a ping, an
+// interactive or TURN stream), whatever its sizes and rate, and a request
+// repeated at any interval shorter than 2 minutes never show the rhythm.
+// Sizes must be new on their own, not only as a pair: random sizes at a few
+// records a second make nearly every pair new, and pairs then chain by
+// chance within 5 minutes. Measured, 6 minutes of two-way records of random
+// sizes, 100 seeds at each rate: sizes of 92 to 404 bytes, from one
+// exchange every 10 s to 50 a second, none flagged at any rate; sizes of 40
+// to 1500 bytes, none flagged at one exchange every 10 s, one a second and
+// 50 a second, but 8 in 100 at 10 a second, where sizes are new often
+// enough to stand out and a pair recurs a rekey period apart by chance: a
+// false-positive risk.
+//
+// The price: an exchange that is neither new nor after quiet never stands
+// out, so a handshake pair among records of its sizes exchanged steadily is
+// invisible while the tunnel carries them. With every small record padded
+// to one size (reality's 512-byte floor) and records of that size
+// exchanged every 2 s both ways (the path probes both ends of a thinkpol
+// link send, internal/dataplane/path), no size is ever new and the
+// connection is never quiet: neither signal can fire, whatever WireGuard
+// does inside. The keepalive signal has blind spots of its own: next to
+// other steady traffic (those path probes) no record comes after quiet,
+// and when both peers send persistent keepalives in step each answers the
+// other's within 2 s; in both, the rekey is the only signal. And thinkpol
+// sets no persistent keepalive (internal/dataplane/wg): an idle thinkpol
+// tunnel carries no WireGuard records but one passive keepalive
+// KEEPALIVE_TIMEOUT after the last data it received, and rekeys only when
+// traffic resumes.
 //
 // Records are kept by age, not count, so a burst of data around a rekey
 // doesn't hide it, and stale exchanges are dropped at most once a rekey
-// window, so a record's work is bounded by the band, not by the exchanges
-// a connection carried. Records coalesced or split by the transport: a
-// batching window leaves idle keepalives alone in their records, and a
-// length written as a record of its own is a record like any other, so
-// both still show. But WireGuard sends an initiation right after the
-// packet that triggered it, so through a batching window the two share a
-// record. Of batched rekeys only a keepalive-triggered one still shows:
-// the record has one size each time, but the first handshake had no
-// trigger, so the third of that size is the fourth handshake, up to about
-// 10 minutes in. A batched rekey triggered by data, or sent while the
-// tunnel is busy, leaves the pair's sizes changing or the band, and is missed
-// whenever the tunnel is in use at the 2-minute mark (the idle keepalives,
-// if any, still show). Measured false-positive risks on ordinary TLS,
-// flagged by design: an identical request and response, both in the band,
-// repeated at an interval of 2 to 3.5 minutes (HTTP/1.1 polling every 2
+// window, so a record's work is bounded by the sizes seen the other way
+// within 2 s, not by the exchanges a connection carried (two-way traffic
+// of many random sizes keeps many: over 10,000 at 50 records a second each
+// way). Records coalesced or split by the transport: a batching window
+// leaves idle keepalives alone in their records, and a length written as a
+// record of its own is a record like any other, so both still show. But
+// WireGuard sends an initiation right after the packet that triggered it,
+// so through a batching window the two share a record. Of batched rekeys
+// only a keepalive-triggered one still shows: the record has one size each
+// time, but the first handshake had no trigger, so the third of that size
+// is the fourth handshake, up to about 10 minutes in. A batched rekey
+// triggered by data of another size each time, or sent while the tunnel is
+// busy, leaves the pair's sizes changing, and is missed whenever the
+// tunnel is in use at the 2-minute mark (the idle keepalives, if any,
+// still show). Measured false-positive risks on ordinary TLS, flagged by
+// design: an identical request and response, of any sizes, repeated at an
+// interval of 2 to 3.5 minutes (HTTP/1.1 or HTTP/2 polling every 2
 // minutes), and a server heartbeat, one unanswered record of one size at a
 // steady idle interval (a server-sent events comment line). HTTP/2
 // browsing with idle PINGs, a gRPC stream with keepalive PINGs (answered),
-// a bulk download, HTTP/2 polling (its indexed request is below the band)
-// and HTTP/1.1 polling every 30 s pass. Flow shape beyond that is not
-// judged. A stream it can't frame from its first byte (not TLS, joined
-// midstream, or with bytes it wasn't shown because a module before it
-// dropped their packet) is never judged, and is tagged once,
+// a bulk download and HTTP/1.1 polling every 30 s pass. Flow shape beyond
+// that is not judged. A TCP stream it can't frame from its first byte (not
+// TLS, joined midstream, or with bytes it wasn't shown because a module
+// before it dropped their packet) is never judged, and is tagged once,
 // "wireguard-rhythm: stream not framed", so a pass for that reason shows
-// in the verdict log.
+// in the verdict log. With its trace setting it writes a JSON line for
+// every record it judges ([WGTraceLine]: size, end, whether it followed
+// quiet or was new, how often in a row the exchange it answered had stood
+// out), so a lab cell can say what a connection showed, flagged or not.
 //
 // # Fully encrypted traffic, the prober and the server hello
 //
@@ -320,7 +347,10 @@
 // another's connections, but a connection the entry's real clients cause
 // during a probe still counts for it. An entry whose connection leaves
 // from another address than the one probed (an IPv4 uplink for an IPv6
-// probe) isn't matched.
+// probe) is matched only when the hosts setting names both addresses as
+// one host, as a censor that knows they are one machine would (the
+// matrix does, for server-1); the servers of one host are then probed one
+// at a time.
 //
 // server-hello compares a real connection's server hello with the site's:
 // on a TCP connection whose ClientHello names a listed site (the sites
@@ -393,7 +423,13 @@
 // whose result is chance by nature (WireGuard against fully-encrypted)
 // varies: any result is accepted and shown, with why, and each family that
 // didn't cross must still be the module's doing. Only a reference row may
-// vary, so a gate row (a thinkpol transport) never does.
+// vary, so a gate row (a thinkpol transport) never does. The rhythm's two
+// cases hold the reality row's tunnel and udp's for 7.5 minutes before the
+// probe, one in use (a ping every 2 s), one idle (one ping, then nothing),
+// and log a summary of the module's trace; udp, which carries WireGuard
+// with its timing untouched, is the control and must be caught in both, or
+// the run fails: a held row's pass means nothing unless the same hold
+// catches udp.
 //
 // # Limits
 //
