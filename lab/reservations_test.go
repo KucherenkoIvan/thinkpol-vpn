@@ -123,7 +123,7 @@ func TestReservationOfADeadOwnerIsReclaimed(t *testing.T) {
 			}
 			_ = owner.Wait()
 			reclaim(t, dir)
-			r, err := reserveSubnets(t.Context(), dir, nets, pool, none)
+			r, err = reserveSubnets(t.Context(), dir, nets, pool, none)
 			if err != nil {
 				t.Fatalf("the dead owner's subnet wasn't reclaimed: %v", err)
 			}
