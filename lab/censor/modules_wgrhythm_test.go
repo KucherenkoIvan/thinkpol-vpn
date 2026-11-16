@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"os"
 	"slices"
@@ -1361,30 +1362,53 @@ func TestWGRhythmRealityTrace(t *testing.T) {
 	}
 }
 
-// randomExchanges is d of two-way traffic, requests at random (a Poisson
-// process of perSecond), each 1 to maxReq records from the client, each
-// answered 20 to 80 ms later by 1 to maxResp records from the server,
-// every record of one size: only the record counts tell anything.
-func randomExchanges(rng *rand.Rand, perSecond float64, d time.Duration, maxReq, maxResp int) []wireRecord {
-	var out []wireRecord
+// carryRandomExchanges sends d of two-way traffic, requests at random (a
+// Poisson process of perSecond), each 1 to maxReq records from the client,
+// each answered 20 to 80 ms later by 1 to maxResp records from the server,
+// every record of one size: only the record counts tell anything. It
+// draws the traffic as it sends it, holding only the records of exchanges
+// still in flight, and stops at the first packet the censor doesn't
+// accept, which it returns.
+func (r *wgRun) carryRandomExchanges(rng *rand.Rand, perSecond float64, d time.Duration, maxReq, maxResp int) (wgAction, bool) {
+	var pending []wireRecord
+	// flush sends the pending records before until, in time order.
+	flush := func(until time.Duration) (wgAction, bool) {
+		slices.SortStableFunc(pending, func(a, b wireRecord) int { return int(a.at - b.at) })
+		n := 0
+		for _, w := range pending {
+			if w.at >= until {
+				break
+			}
+			r.actions = r.actions[:0]
+			r.send(w.at, w.toServer, tlsRecord(0x17, w.size))
+			if a, blocked := r.firstBlocked(); blocked {
+				return a, true
+			}
+			n++
+		}
+		pending = append(pending[:0], pending[n:]...)
+		return wgAction{}, false
+	}
 	next := func() time.Duration { return time.Duration(rng.ExpFloat64() / perSecond * float64(time.Second)) }
 	for at := next(); at < d; at += next() {
+		if a, blocked := flush(at); blocked {
+			return a, true
+		}
 		for i := range 1 + rng.IntN(maxReq) {
-			out = append(out, wireRecord{at + time.Duration(i)*time.Millisecond, true, 507})
+			pending = append(pending, wireRecord{at + time.Duration(i)*time.Millisecond, true, 507})
 		}
 		resp := at + time.Duration(20+rng.IntN(61))*time.Millisecond
 		for i := range 1 + rng.IntN(maxResp) {
-			out = append(out, wireRecord{resp + time.Duration(i)*time.Millisecond, false, 507})
+			pending = append(pending, wireRecord{resp + time.Duration(i)*time.Millisecond, false, 507})
 		}
 	}
-	slices.SortStableFunc(out, func(a, b wireRecord) int { return int(a.at - b.at) })
-	return out
+	return flush(math.MaxInt64)
 }
 
 // TestWGRhythmRandomExchanges measures the count and burst signals' false
 // positives on random request and response counts, every record one size
 // (so the rekey signal never reads it), 6 minutes at 1, 10 and 50 requests
-// a second, 20 seeds each: the flags are pinned, so a change shows.
+// a second, 20 seeds each, and pins the flags so a change shows.
 func TestWGRhythmRandomExchanges(t *testing.T) {
 	if testing.Short() {
 		t.Skip("about 4 million records")
@@ -1394,8 +1418,7 @@ func TestWGRhythmRandomExchanges(t *testing.T) {
 			flagged := 0
 			for seed := range uint64(20) {
 				r := newWGRun(t, `{}`, 1400)
-				r.carry(randomExchanges(rand.New(rand.NewPCG(seed, 223)), rate, 360*time.Second, shape[0], shape[1]))
-				if a, blocked := r.firstBlocked(); blocked {
+				if a, blocked := r.carryRandomExchanges(rand.New(rand.NewPCG(seed, 223)), rate, 360*time.Second, shape[0], shape[1]); blocked {
 					flagged++
 					t.Logf("up to %d against %d records, %v/s, seed %d: blocked at %s: %s", shape[0], shape[1], rate, seed, a.at, a.Reason)
 				}
