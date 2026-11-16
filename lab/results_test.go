@@ -5,6 +5,7 @@ package lab_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -135,8 +136,16 @@ func TestCensorMatrix(t *testing.T) {
 				cell.detail += "; the censor " + how + " them"
 			}
 		}
-		if k := cc.accepted[tr.name]; k != "" && cell.result == "fail" {
-			cell.detail += "; known, accepted: " + k
+		if k, ok := cc.accepted[tr.name]; ok && cell.result == "fail" {
+			reasons, err := c.blockReasons(cc.blocker)
+			if err == nil {
+				err = k.covers(reasons)
+			}
+			if err != nil {
+				cell.result, cell.detail = "error", fmt.Sprintf("%s; %v", cell.detail, err)
+				t.Fatalf("%s against %s: %v", tr.name, cc.name, err)
+			}
+			cell.detail += "; known, accepted: " + k.why
 		}
 		if want == "varies" {
 			cell.detail = strings.TrimPrefix(cell.detail+"; varies: "+cc.varies[tr.name], "; ")
@@ -154,6 +163,15 @@ func TestCensorMatrix(t *testing.T) {
 			if err := cc.verdictMisses(tr.name, flags, tr.oneUnderlay); err != nil {
 				cell.result, cell.detail = "error", err.Error()
 				t.Fatalf("%s against %s: %v", tr.name, cc.name, err)
+			}
+			if why, ok := unjudged(flags); ok && cell.result == "pass" {
+				cell.result = "not judged"
+				if why != flags[0].why {
+					cell.detail += "; " + cc.report + ": " + why
+				}
+				if want == "pass" {
+					want = cell.result
+				}
 			}
 		}
 		if cell.result != want {
@@ -229,9 +247,12 @@ func checkMatrix(cases []censorCase, rows []transport) error {
 				return fmt.Errorf("censor case %q lets %s vary: only a reference row may, a gate row's result is never chance", cc.name, tr)
 			}
 		}
-		for tr := range cc.accepted {
+		for tr, k := range cc.accepted {
 			if cc.expect[tr] != "fail" {
 				return fmt.Errorf("censor case %q accepts %s's fail, but doesn't expect it to fail", cc.name, tr)
+			}
+			if len(k.reasons) == 0 {
+				return fmt.Errorf("censor case %q accepts %s's fail, but names no block reason it accepts it for", cc.name, tr)
 			}
 		}
 		if len(cc.verdictSays) > 0 && cc.report == "" {
@@ -275,8 +296,9 @@ func isReferenceOrControl(row string) bool {
 // gate row missing from the prober case's verdictSays, a TLS gate row
 // missing from the server-hello case's, a row tuning a report module
 // without a verdictSays entry, a row tuning a module that doesn't exist,
-// a held case without udp held and expected to fail (the control), and
-// an accepted fail the case doesn't expect each fail the run.
+// a held case without udp held and expected to fail (the control), an
+// accepted fail the case doesn't expect, and one that names no block
+// reason each fail the run.
 func TestCheckMatrix(t *testing.T) {
 	if err := checkMatrix(censorCases, transports); err != nil {
 		t.Fatalf("the matrix: %v", err)
@@ -329,13 +351,53 @@ func TestCheckMatrix(t *testing.T) {
 	}
 	// An accepted fail is an expected fail, nothing else.
 	accepting := censorCase{name: "accepting", modules: on, blocker: "wireguard-rhythm",
-		expect: map[string]string{rowReality: "fail"}, accepted: map[string]string{rowReality: "a known tell"}}
+		expect: map[string]string{rowReality: "fail"}, accepted: map[string]knownTell{rowReality: {why: "a known tell", reasons: []string{censor.WGRhythmByBurst}}}}
 	if err := checkMatrix([]censorCase{{name: "off"}, accepting}, nil); err != nil {
 		t.Errorf("an accepted, expected fail: %v", err)
 	}
+	accepting.accepted = map[string]knownTell{rowReality: {why: "a known tell"}}
+	if err := checkMatrix([]censorCase{{name: "off"}, accepting}, nil); err == nil {
+		t.Error("an accepted fail that names no block reason passed the checks")
+	}
+	accepting.accepted = map[string]knownTell{rowReality: {why: "a known tell", reasons: []string{censor.WGRhythmByBurst}}}
 	accepting.expect = nil
 	if err := checkMatrix([]censorCase{{name: "off"}, accepting}, nil); err == nil {
 		t.Error("an accepted fail the case doesn't expect passed the checks")
+	}
+}
+
+// TestKnownTellCovers: reality's accepted rhythm fail covers blocks by the
+// count and burst signals only. A block for a size or quiet tell (the
+// rekey signal's reason, keepalives), beside them or alone, or no block
+// reason at all, is news: an error that names the reason.
+func TestKnownTellCovers(t *testing.T) {
+	k := rhythmCase("wireguard-rhythm", false).accepted[rowReality]
+	const (
+		burst     = "WireGuard rekey by burst: 3 records one way and 2 the other within 10ms, 3 times, the last 2m0s apart"
+		count     = "WireGuard rekey by record count: the difference each way stepped 3 times by +1, the last 2m0s apart, flat in between"
+		sizes     = "WireGuard rekey: records of 167 and 111 bytes exchanged 3 times, the last 2m0s apart"
+		keepalive = "WireGuard keepalives: 3 idle records of 507 bytes, 25s apart"
+	)
+	for _, c := range []struct {
+		name    string
+		reasons []string
+		bad     string // the reason the error must name; "" when covered
+	}{
+		{"burst", []string{burst}, ""},
+		{"count", []string{count}, ""},
+		{"both counting signals", []string{count, burst}, ""},
+		{"sizes", []string{sizes}, sizes},
+		{"keepalives", []string{keepalive}, keepalive},
+		{"a burst and keepalives", []string{burst, keepalive}, keepalive},
+		{"no reason", nil, "no block reason"},
+	} {
+		err := k.covers(c.reasons)
+		switch {
+		case c.bad == "" && err != nil:
+			t.Errorf("%s: %v", c.name, err)
+		case c.bad != "" && (err == nil || !strings.Contains(err.Error(), c.bad)):
+			t.Errorf("%s: %v, want an error naming %q", c.name, err, c.bad)
+		}
 	}
 }
 
@@ -415,10 +477,10 @@ type censorCase struct {
 	watch string
 	trace string
 	// accepted holds the rows expected to fail on a tell the design
-	// accepts, with what shows and the residual risk that accepts it: a
-	// failing cell's detail says so, so the fail reads as known, never as
-	// news, and stays a correct cell like any expected fail.
-	accepted map[string]string
+	// accepts: a failing cell's detail says so, so the fail reads as
+	// known, never as news, and stays a correct cell like any expected
+	// fail, as long as the blocker blocked for that tell alone.
+	accepted map[string]knownTell
 	// upstream runs the cell in lab.Upstream: the camouflage site behind
 	// the router.
 	upstream bool
@@ -436,6 +498,64 @@ type censorCase struct {
 	// a family with no flag is an error, never a pass: the IPv4
 	// connection's match says nothing of the IPv6 one's.
 	verdictSays map[string]string
+}
+
+// knownTell is a tell the design accepts: what shows and the residual
+// risk that accepts it (why), and the starts of the blocker's reasons it
+// is (reasons).
+type knownTell struct {
+	why     string
+	reasons []string
+}
+
+// covers is an error unless every reason the blocker blocked for is the
+// tell's: a block for anything else is news, never the known fail.
+func (k knownTell) covers(reasons []string) error {
+	if len(reasons) == 0 {
+		return errors.New("the blocker logged no block reason: not the known tell")
+	}
+	for _, r := range reasons {
+		if !slices.ContainsFunc(k.reasons, func(p string) bool { return strings.HasPrefix(r, p) }) {
+			return fmt.Errorf("blocked for %q, not the known tell (%s)", r, strings.Join(k.reasons, " or "))
+		}
+	}
+	return nil
+}
+
+// unjudged finds a flag that couldn't judge what its cell is for: the
+// prober's upstream tell, unattributable. Such a cell is "not judged",
+// never a pass.
+func unjudged(flags []judgment) (string, bool) {
+	for _, f := range flags {
+		if strings.Contains(f.why, "upstream tell: unattributable") {
+			return f.why, true
+		}
+	}
+	return "", false
+}
+
+// TestUnjudged: a flag whose upstream tell is unattributable, on either
+// family, makes the cell not judged; a tell shown or absent doesn't.
+func TestUnjudged(t *testing.T) {
+	const (
+		shown  = "accept, server 192.0.2.9:443 answers like the reference: upstream tell: a connection from 192.0.2.9 to the reference during every probe (7 of 7; 8 dials in 4s of probes, 1 in 30s outside them), reported, not flagged"
+		unsure = "accept, server [2001:db8::9]:443 answers like the reference: upstream tell: unattributable (8 dials in 4s of probes, 30 in 30s outside them, at least half the rate; a connection from 2001:db8::9 to the reference during 7 of 7 probes)"
+		absent = "accept, server 192.0.2.9:443 answers like the reference: connections to the reference during 0 of 7 probes"
+	)
+	for _, c := range []struct {
+		name  string
+		flags []judgment
+		want  bool
+	}{
+		{"shown", []judgment{{true, shown}}, false},
+		{"absent", []judgment{{true, absent}}, false},
+		{"unattributable on IPv6", []judgment{{true, shown}, {false, unsure}}, true},
+		{"no flag", nil, false},
+	} {
+		if why, ok := unjudged(c.flags); ok != c.want || ok && why != unsure {
+			t.Errorf("%s: %q, %v, want %v", c.name, why, ok, c.want)
+		}
+	}
 }
 
 // heldHow says how the case held the tunnel.
@@ -616,8 +736,9 @@ var censorCases = []censorCase{
 	// every probe to its target; its tell is reported, not flagged (owner,
 	// 2026-11-09: REALITY's design can't avoid it), and its verdict must
 	// judge the tell: shown on every probe (n of n), or unattributable
-	// when server-1 also dialed the site between probes (device-a's own
-	// connections make it dial). reality's target is one IPv4 address, so
+	// when server-1 dialed the site outside the probes at half their rate
+	// or more (device-a's own connections make it dial), which scores the
+	// cell not judged, never a pass. reality's target is one IPv4 address, so
 	// a link over IPv6 dials it from server-1's IPv4 address: the prober
 	// is told server-1's two addresses are one host, as a censor that
 	// knows them would (RR31), so the tell shows over either family.
@@ -663,7 +784,7 @@ const realityRhythmCounted = "each rekey leaves one more record from the device 
 func rhythmCase(name string, idle bool) censorCase {
 	return censorCase{name: name, hold: 450 * time.Second, idle: idle, watch: "wireguard-rhythm", trace: rhythmTrace,
 		expect: map[string]string{rowUDP: "fail", rowReality: "fail"}, blocker: "wireguard-rhythm",
-		accepted: map[string]string{rowReality: realityRhythmCounted},
+		accepted: map[string]knownTell{rowReality: {why: realityRhythmCounted, reasons: []string{censor.WGRhythmByCount, censor.WGRhythmByBurst}}},
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{"trace": "` + rhythmTrace + `"}`)}}
 		}}
@@ -1238,7 +1359,8 @@ func writeResults(t *testing.T, cells []matrixCell, expected int) {
 		"random-tcp, a naive echo server fed random bytes (what a fully encrypted proxy looks like), which fully-encrypted and the prober must block, " +
 		"and relay-tcp, an entry that splices every connection to the camouflage site as REALITY does with what it doesn't recognize, which the prober's upstream tell must block. " +
 		"A cell of the active prober or server-hello quotes the module's verdict on the row's first connection to server-1. " +
-		"A cell whose detail says `varies` is chance by nature, and says why: it shows what this run got, and only a `(reference)` row may vary.\n\n")
+		"A cell whose detail says `varies` is chance by nature, and says why: it shows what this run got, and only a `(reference)` row may vary. " +
+		"A cell `not judged` crossed, but its module couldn't judge what the cell is for: the prober's upstream tell, unattributable when server-1 dialed the site outside the probes at half their rate or more.\n\n")
 	b.WriteString("| transport | censor | result | detail |\n|---|---|---|---|\n")
 	for _, c := range cells {
 		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.transport, c.censor, c.result, strings.ReplaceAll(c.detail, "|", `\|`))

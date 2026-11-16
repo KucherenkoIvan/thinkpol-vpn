@@ -109,3 +109,5 @@ Round 2 (2026-11-16; owner: reality's rhythm result is reported as caught, a kno
 - 2026-11-16 the idle case's wording names TP-080 (lab/README.md, results_test.go; comments and docs only, after the lab run): make lint and make test pass at 0b94a30a
 - 2026-11-16 not verified: a full make lab-test (blocked by TP-229's lab-setup serialization; targeted runs accepted for this ticket, orchestrator 2026-11-16). Still open: the two idle boxes, until TP-080 brings the idle case back (owner, 2026-11-16)
 - 2026-11-16 in-progress → review
+- 2026-11-16 review → in-progress — owner: agent-tp-223, round 3: review findings
+- 2026-11-16 review round 3: fix R3.1–R3.7

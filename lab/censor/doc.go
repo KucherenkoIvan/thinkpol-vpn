@@ -421,15 +421,24 @@
 // within half a second after it, every probe of at least two; the servers
 // of one address are probed one at a time so as not to blame one for
 // another's connections. A connection the entry's real clients cause
-// during a probe would still count for it, so after each probe the prober
-// pauses as long as the probe took and counts the entry's connections to
-// the reference in the pause, the baseline: when any came, the tell is
-// unattributable ("upstream tell: unattributable (N dials between
-// probes; ...)"), reported and never flagged, whatever upstreamTell says.
-// A REALITY entry dials its target for every connection of its own
-// clients too, so on an entry its clients keep connecting to the tell is
-// unattributable (in the matrix, device-a opened a short connection to
-// server-1's reality port about every 5 s while its link was up). An entry whose
+// during a probe would still count for it, so the prober compares rates,
+// adding no wait of its own: the host's connections to the reference
+// during its probes (each probe's half second included) per second of
+// probing, against the baseline, those that started outside every probe
+// of the host per second, over the time the prober has watched (since it
+// started, at most a minute). When the baseline's rate is at least half
+// the probes', the tell is unattributable ("upstream tell: unattributable
+// (N dials in Xs of probes, M in Ys outside them, ...)"), reported and
+// never flagged, whatever upstreamTell says; the matrix scores such a
+// cell not judged, never a pass. A REALITY entry dials its target for
+// every connection of its own clients too, so on an entry its clients
+// connect to as often as it is probed the tell is unattributable (in the
+// matrix, device-a opened a short connection to server-1's reality port
+// about every 5 s while its link was up, against a dial per probe, a
+// probe every half second or so). The baseline is as long as the censor
+// ran before the verdict, a few seconds on the first suspect: a short one
+// makes the rate coarse, and either way the verdict gives both counts and
+// times. An entry whose
 // connection leaves from another address than the one probed (an IPv4
 // uplink for an IPv6 probe) is matched only when the hosts setting names
 // both addresses as one host (an entry names at least two), as a censor

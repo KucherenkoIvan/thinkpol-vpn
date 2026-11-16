@@ -343,8 +343,8 @@ func TestProberUpstreamTellAcrossHostAddresses(t *testing.T) {
 	for _, c := range []struct {
 		hosts, want string
 	}{
-		{`, "hosts": [["127.0.0.1", "192.0.2.77"]]`, "upstream tell: a connection from 127.0.0.1 or another address of its host to the reference during every probe (7 of 7), reported, not flagged"},
-		{`, "hosts": [["192.0.2.77", "127.0.0.1"]]`, "(7 of 7), reported"},
+		{`, "hosts": [["127.0.0.1", "192.0.2.77"]]`, "upstream tell: a connection from 127.0.0.1 or another address of its host to the reference during every probe (7 of 7; 7 dials in "},
+		{`, "hosts": [["192.0.2.77", "127.0.0.1"]]`, "(7 of 7; 7 dials in "},
 		{"", "connections to the reference during 0 of 7 probes"},
 		{`, "hosts": [["127.0.0.1", "192.0.2.78"]]`, "connections to the reference during 0 of 7 probes"},
 	} {
@@ -362,10 +362,10 @@ func TestProberUpstreamTellAcrossHostAddresses(t *testing.T) {
 }
 
 // TestProberUpstreamTellUnattributable: an entry whose host also connects
-// to the reference while nothing probes it (its own clients' connections,
-// a REALITY entry's dials for them) shows no tell, whatever upstreamTell
-// says: the connections during the probes may be its own. The verdict
-// says how many came between the probes.
+// to the reference while nothing probes it, as often as during the probes
+// (its own clients' connections, a REALITY entry's dials for them), shows
+// no tell, whatever upstreamTell says: the connections during the probes
+// may be its own. The verdict says how many came outside the probes.
 func TestProberUpstreamTellUnattributable(t *testing.T) {
 	ref := webServer(t, webTLS(t, siteName))
 	for _, settings := range []string{`, "upstreamTell": "flag"`, `, "upstreamTell": "report"`} {
@@ -391,13 +391,62 @@ func TestProberUpstreamTellUnattributable(t *testing.T) {
 				}
 			}
 		}()
+		// The baseline: the host dialing before anything probes it.
+		time.Sleep(300 * time.Millisecond)
 		s := suspectTo(entry, 40027, helloFor(t, siteName))
 		flows <- s
 		f := waitFlag(t, flags, s.Key)
 		cancel()
 		<-background
-		if f.verdict != Accept || !strings.Contains(f.why, "upstream tell: unattributable (") || !strings.Contains(f.why, "dials between probes") {
+		if f.verdict != Accept || !strings.Contains(f.why, "upstream tell: unattributable (") || !strings.Contains(f.why, "outside them, at least half the rate") {
 			t.Errorf("settings %q, the host dialing between probes: %+v", settings, f)
+		}
+	}
+}
+
+// TestProberUpstreamTellOverOccasionalDials: an entry whose host dialed
+// the reference once before the probes, then on every probe, shows the
+// tell: one dial outside the probes is far under half their rate, so it
+// doesn't make the tell unattributable.
+func TestProberUpstreamTellOverOccasionalDials(t *testing.T) {
+	ref := webServer(t, webTLS(t, siteName))
+	p := newTestProber(t, ref, `, "upstreamTell": "report"`)
+	// Watching for 10 s already, rather than waiting that long.
+	p.started = time.Now().Add(-10 * time.Second)
+	flows, flags := runProber(t, p)
+	var entry netip.AddrPort
+	dial := func() {
+		flows <- FlowSnapshot{Key: FlowKey{Proto: ProtoTCP, Src: entry.Addr(), Dst: ref.Addr(), SrcPort: 50000, DstPort: ref.Port()}, Started: time.Now()}
+	}
+	entry = listen(t, relay(ref, dial))
+	dial()
+	s := suspectTo(entry, 40028, helloFor(t, siteName))
+	flows <- s
+	if f := waitFlag(t, flags, s.Key); f.verdict != Accept || !strings.Contains(f.why, "upstream tell: a connection") || !strings.Contains(f.why, ", 1 in ") || !strings.Contains(f.why, "reported, not flagged") {
+		t.Errorf("a relay that dialed once before its probes: %+v, want the tell reported, one dial outside the probes", f)
+	}
+}
+
+// TestUpstreamTallyUnattributable: the tell is unattributable when the
+// host dials outside its probes at half their rate or more, and only
+// then.
+func TestUpstreamTallyUnattributable(t *testing.T) {
+	s := time.Second
+	for _, c := range []struct {
+		name string
+		u    upstreamTally
+		want bool
+	}{
+		{"no dial outside", upstreamTally{during: 7, probing: 4 * s, outside: 30 * s}, false},
+		{"one dial in 30 s outside", upstreamTally{during: 7, probing: 4 * s, between: 1, outside: 30 * s}, false},
+		{"a dial every 5 s, probes every 0.6 s", upstreamTally{during: 8, probing: 4 * s, between: 6, outside: 30 * s}, false},
+		{"just under half the rate", upstreamTally{during: 8, probing: 4 * s, between: 29, outside: 30 * s}, false},
+		{"half the rate", upstreamTally{during: 8, probing: 4 * s, between: 30, outside: 30 * s}, true},
+		{"the same rate", upstreamTally{during: 8, probing: 4 * s, between: 60, outside: 30 * s}, true},
+		{"one dial in a short baseline", upstreamTally{during: 7, probing: 4 * s, between: 1, outside: s}, true},
+	} {
+		if got := c.u.unattributable(); got != c.want {
+			t.Errorf("%s: unattributable %v, want %v", c.name, got, c.want)
 		}
 	}
 }

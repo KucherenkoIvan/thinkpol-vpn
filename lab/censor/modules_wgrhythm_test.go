@@ -1200,8 +1200,8 @@ func unanswered(first, every, d time.Duration) []wgMessage {
 // records each way steps by one at each rekey and is flat in between, and
 // is flagged on the first record after the third step's quiet. Over UDP,
 // sizes and all, it is caught as well. It isn't when the steps come
-// sooner than a rekey period, differ in size, or the count moves in
-// between.
+// sooner than a rekey period or later than the rekey window, differ in
+// size, or the count moves in between.
 func TestWGRhythmCountsRecords(t *testing.T) {
 	s, rtt := time.Second, 20*time.Millisecond
 	rekeys := []time.Duration{121*s + 500*time.Millisecond, 121 * s, 121 * s}
@@ -1226,6 +1226,7 @@ func TestWGRhythmCountsRecords(t *testing.T) {
 		msgs []wgMessage
 	}{
 		{"steps 60 s apart", wgPingTimeline(400*s, rtt, []time.Duration{60 * s, 60 * s, 60 * s, 60 * s, 60 * s})},
+		{"steps 240 s apart", wgPingTimeline(800*s, rtt, []time.Duration{240 * s, 240 * s, 240 * s})},
 		{"steps of +1, +2, +1", twoKeepalives},
 		{"the count moves in between", wgPingTimeline(400*s, rtt, rekeys, unanswered(30*s, 60*s, 400*s)...)},
 	} {
@@ -1242,9 +1243,9 @@ func TestWGRhythmCountsRecords(t *testing.T) {
 // a few ms, flagged on the first record after the third such burst a
 // rekey period after the one before, though an unanswered record every
 // minute keeps the count from staying flat. Symmetric bursts (no
-// confirming keepalive), bursts 60 s apart, an extra burst of the same
-// counts between rekeys, and bursts bigger than a handshake (4 against 3)
-// pass.
+// confirming keepalive), bursts 60 s or 240 s apart, an extra burst of
+// the same counts between rekeys, and bursts bigger than a handshake (4
+// against 3) pass.
 func TestWGRhythmBursts(t *testing.T) {
 	s, rtt := time.Second, time.Millisecond
 	rekeys := []time.Duration{121*s + 500*time.Millisecond, 121 * s, 121 * s}
@@ -1273,6 +1274,7 @@ func TestWGRhythmBursts(t *testing.T) {
 	}{
 		{"two records each way", noKeepalive},
 		{"bursts 60 s apart", wgPingTimeline(400*s, rtt, []time.Duration{60 * s, 60 * s, 60 * s, 60 * s, 60 * s}, noise...)},
+		{"bursts 240 s apart", wgPingTimeline(800*s, rtt, []time.Duration{240 * s, 240 * s, 240 * s}, unanswered(30*s, 60*s, 800*s)...)},
 		{"another burst between rekeys", extraBurst},
 		{"four records against three", wgPingTimeline(400*s, rtt, rekeys, slices.Concat(noise, bigger)...)},
 	} {
@@ -1363,13 +1365,13 @@ func TestWGRhythmRealityTrace(t *testing.T) {
 }
 
 // carryRandomExchanges sends d of two-way traffic, requests at random (a
-// Poisson process of perSecond), each 1 to maxReq records from the client,
-// each answered 20 to 80 ms later by 1 to maxResp records from the server,
-// every record of one size: only the record counts tell anything. It
-// draws the traffic as it sends it, holding only the records of exchanges
-// still in flight, and stops at the first packet the censor doesn't
-// accept, which it returns.
-func (r *wgRun) carryRandomExchanges(rng *rand.Rand, perSecond float64, d time.Duration, maxReq, maxResp int) (wgAction, bool) {
+// Poisson process of perSecond), each 1 to maxReq records from the client
+// 1 ms apart, each answered rtt later (uniform in rtt's range) by 1 to
+// maxResp records from the server 1 ms apart, every record of one size:
+// only the record counts tell anything. It draws the traffic as it sends
+// it, holding only the records of exchanges still in flight, and stops at
+// the first packet the censor doesn't accept, which it returns.
+func (r *wgRun) carryRandomExchanges(rng *rand.Rand, perSecond float64, d time.Duration, maxReq, maxResp int, rtt [2]time.Duration) (wgAction, bool) {
 	var pending []wireRecord
 	// flush sends the pending records before until, in time order.
 	flush := func(until time.Duration) (wgAction, bool) {
@@ -1397,7 +1399,7 @@ func (r *wgRun) carryRandomExchanges(rng *rand.Rand, perSecond float64, d time.D
 		for i := range 1 + rng.IntN(maxReq) {
 			pending = append(pending, wireRecord{at + time.Duration(i)*time.Millisecond, true, 507})
 		}
-		resp := at + time.Duration(20+rng.IntN(61))*time.Millisecond
+		resp := at + rtt[0] + time.Duration(rng.Int64N(int64(rtt[1]-rtt[0])+1))
 		for i := range 1 + rng.IntN(maxResp) {
 			pending = append(pending, wireRecord{resp + time.Duration(i)*time.Millisecond, false, 507})
 		}
@@ -1405,27 +1407,83 @@ func (r *wgRun) carryRandomExchanges(rng *rand.Rand, perSecond float64, d time.D
 	return flush(math.MaxInt64)
 }
 
+// wgRandomFlags pins TestWGRhythmRandomExchanges' measured flags: of 20
+// seeds, how many connections flag, by round trip, request and response
+// records, and requests a second.
+var wgRandomFlags = map[string]int{}
+
 // TestWGRhythmRandomExchanges pins the count and burst signals' false
 // positives on random request and response counts, every record one size
-// (so the rekey signal never reads it), 6 minutes at 1, 10 and 50 requests
-// a second, 20 seeds each: none flags. With 0 of 60 runs at each rate, the
-// rate of flagged 6-minute connections of this traffic is under 5% (95%
-// confidence, the rule of three); a rule that flags more fails here.
+// (so the rekey signal never reads it), 6 minutes, 20 seeds each: answers
+// 0.2 to 5 ms later (the lab's vantage, where request and answer often
+// share a 10 ms burst) and 20 to 80 ms later (a far censor), at 1/60,
+// 1/10, 1, 10 and 50 requests a second, requests of up to 1, 2 or 3
+// records answered by up to 1, 3 or 6. Every count must be the pinned
+// one (wgRandomFlags; lab/censor/doc.go states the bound they give): a
+// rule that flags more, or less, fails here. Seeded, so the counts are
+// exact. It replays about 8 million records: not under -short or -race,
+// nor in the lab node, which runs every package's tests and needs none
+// of this; make test runs it.
+//
+// TODO(TP-239): move it to the long-wait stream with a time budget.
 func TestWGRhythmRandomExchanges(t *testing.T) {
-	if testing.Short() {
-		t.Skip("about 4 million records")
+	switch {
+	case testing.Short():
+		t.Skip("about 8 million records")
+	case raceEnabled:
+		t.Skip("about 8 million records: too slow under the race detector")
+	case os.Getenv("THINKPOL_LAB") != "":
+		t.Skip("needs no lab: make test runs it")
 	}
-	for _, shape := range [][2]int{{1, 1}, {2, 3}, {3, 6}} {
-		for _, rate := range []float64{1, 10, 50} {
-			flagged := 0
-			for seed := range uint64(20) {
-				r := newWGRun(t, `{}`, 1400)
-				if a, blocked := r.carryRandomExchanges(rand.New(rand.NewPCG(seed, 223)), rate, 360*time.Second, shape[0], shape[1]); blocked {
-					flagged++
-					t.Errorf("up to %d against %d records, %v/s, seed %d: blocked at %s: %s", shape[0], shape[1], rate, seed, a.at, a.Reason)
+	start := time.Now()
+	ms := time.Millisecond
+	for _, rtt := range []struct {
+		name string
+		rtt  [2]time.Duration
+	}{{"0.2-5ms", [2]time.Duration{200 * time.Microsecond, 5 * ms}}, {"20-80ms", [2]time.Duration{20 * ms, 80 * ms}}} {
+		for _, shape := range [][2]int{{1, 1}, {2, 3}, {3, 6}} {
+			for _, rate := range []float64{1.0 / 60, 1.0 / 10, 1, 10, 50} {
+				key := fmt.Sprintf("%s %d:%d %.3g/s", rtt.name, shape[0], shape[1], rate)
+				flagged := 0
+				var why []string
+				for seed := range uint64(20) {
+					r := newWGRun(t, `{}`, 1400)
+					if a, blocked := r.carryRandomExchanges(rand.New(rand.NewPCG(seed, 223)), rate, 360*time.Second, shape[0], shape[1], rtt.rtt); blocked {
+						flagged++
+						why = append(why, fmt.Sprintf("seed %d at %s: %s", seed, a.at.Round(time.Second), a.Reason))
+					}
 				}
+				if want := wgRandomFlags[key]; flagged != want {
+					t.Errorf("%s: %d of 20 flagged, pinned %d: %s", key, flagged, want, strings.Join(why, "; "))
+				}
+				t.Logf("%s: %d of 20 flagged %s", key, flagged, strings.Join(why, "; "))
 			}
-			t.Logf("up to %d against %d records, %v/s: %d of 20 flagged", shape[0], shape[1], rate, flagged)
 		}
+	}
+	t.Logf("took %s", time.Since(start).Round(time.Millisecond))
+}
+
+// TestWGRhythmFlagsMQTTKeepalive pins a false positive the package doc
+// names: MQTT over TLS at the lab's vantage, PINGREQ and PINGRESP every
+// 60 s, and a QoS 0 publish that nothing answers every 150 s, of another
+// size each time. Neither counting rule needs a quiet connection: the
+// pings leave the record count flat, and each publish steps it by one,
+// 150 s apart, so the count flags it at the third publish. A documented,
+// accepted risk of the lab's detector.
+func TestWGRhythmFlagsMQTTKeepalive(t *testing.T) {
+	s, ms := time.Second, time.Millisecond
+	var recs []wireRecord
+	for at := 60 * s; at < 500*s; at += 60 * s {
+		recs = append(recs, wireRecord{at, true, 2 + wgTLSOverhead}, wireRecord{at + ms, false, 2 + wgTLSOverhead})
+	}
+	for i, at := 0, 157*s; at < 500*s; i, at = i+1, at+150*s {
+		recs = append(recs, wireRecord{at, true, 60 + 13*i + wgTLSOverhead})
+	}
+	slices.SortStableFunc(recs, func(a, b wireRecord) int { return int(a.at - b.at) })
+	r := newWGRun(t, `{}`, 1400)
+	r.carry(recs)
+	a, blocked := r.firstBlocked()
+	if !blocked || a.at < 457*s || !strings.HasPrefix(a.Reason, WGRhythmByCount+": the difference each way stepped 3 times by +1, the last 2m30s apart") {
+		t.Errorf("MQTT keepalives and a publish every 150 s: first blocked %+v (blocked %v), want a drop by record count after the third publish at 457 s", a, blocked)
 	}
 }

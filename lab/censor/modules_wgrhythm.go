@@ -82,6 +82,13 @@ const (
 	wgBurstMax = 3
 )
 
+// WGRhythmByCount and WGRhythmByBurst start the count and burst
+// signals' block reasons, so a lab cell can tell which signal blocked.
+const (
+	WGRhythmByCount = "WireGuard rekey by record count"
+	WGRhythmByBurst = "WireGuard rekey by burst"
+)
+
 // wgRhythm flags a connection that carries WireGuard with its rhythm
 // showing (docs/design/milestones.md, M2): the handshake WireGuard runs
 // every 2 minutes, and its keepalives. It reads timing and recurrence, not
@@ -636,7 +643,7 @@ func (m *wgRhythm) readCount(c *wgConn) {
 	}
 	k.chain.next(k.since, m.rekey, m.window())
 	if k.chain.n >= wgRekeys {
-		c.flagged = fmt.Sprintf("WireGuard rekey by record count: the difference each way stepped %d times by %+d, the last %s apart, flat in between",
+		c.flagged = fmt.Sprintf(WGRhythmByCount+": the difference each way stepped %d times by %+d, the last %s apart, flat in between",
 			k.chain.n, step, k.chain.gap.Round(time.Second))
 	}
 }
@@ -669,7 +676,7 @@ func (m *wgRhythm) closeBurst(c *wgConn) {
 	}
 	ch.next(b.start, m.rekey, window)
 	if ch.n >= wgRekeys {
-		c.flagged = fmt.Sprintf("WireGuard rekey by burst: %d records one way and %d the other within %s, %d times, the last %s apart",
+		c.flagged = fmt.Sprintf(WGRhythmByBurst+": %d records one way and %d the other within %s, %d times, the last %s apart",
 			b.n[0], b.n[1], wgBurstGap, ch.n, ch.gap.Round(time.Second))
 	}
 }

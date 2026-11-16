@@ -177,6 +177,24 @@ func (c *censorRun) blockReason(t *testing.T, module string) string {
 	return why
 }
 
+// blockReasons is every reason module dropped or reset a flow for in the
+// verdict log, read once: the cell already found the block, so the lines
+// are there.
+func (c *censorRun) blockReasons(module string) ([]string, error) {
+	log, err := execRead(c.router, pollTimeout, "cat", censorLogPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading the verdict log: %w", err)
+	}
+	var reasons []string
+	_, err = matchVerdicts(completeLines(log), func(e verdictLine) bool {
+		if e.Module == module && (e.Verdict == censor.Drop || e.Verdict == censor.Reset) && !slices.Contains(reasons, e.Reason) {
+			reasons = append(reasons, e.Reason)
+		}
+		return false
+	})
+	return reasons, err
+}
+
 // traceSummary reads wireguard-rhythm's trace at path in the router and
 // sums it up per flow: how many records of which sizes, which followed
 // quiet, which answered an exchange that stood out (and how many times in
