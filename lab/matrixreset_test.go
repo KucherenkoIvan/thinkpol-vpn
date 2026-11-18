@@ -348,6 +348,8 @@ func (r *matrixRow) clearRouter() error {
 			return execRead(router, pollTimeout, "cat", "/proc/sys/net/netfilter/nf_conntrack_count")
 		},
 		func() (string, error) { return execRead(router, pollTimeout, "censord", "-conntrack") },
+		// A retransmission that would make a new entry is an absence no
+		// watcher can see: the settle is a window, once per cell.
 		time.Second, 30*time.Second)
 }
 

@@ -564,6 +564,12 @@
 // whose payload was kept out for each reason, and, when the censor stops
 // (or a flow starts over), one summary per flow with its packets by what
 // the queue did with them and by why payload was kept out. A flow of a million packets is a handful of lines.
+// At a flush after the queue moved, a watermark line ([EventWatermark])
+// names the last packet id the censor decided: a reader that finds it at
+// or past the queue's id_sequence ([QueueStats.Sequence]) it read before
+// has every passive decision on those packets, so the tests wait for that
+// instead of polling for an absence. An active module's flag comes on its
+// own time, before or after it.
 //
 // # Whole datagrams
 //

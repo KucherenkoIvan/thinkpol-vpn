@@ -22,7 +22,15 @@ func TestResolvConfOwnInPlaceWritesOnABindMountStartNoSettle(t *testing.T) {
 	if os.Getenv("THINKPOL_LAB") == "" {
 		t.Skip("needs the lab")
 	}
+	// On a tmpfs: every Update syncs the files it writes, about 0.2 s on a
+	// disk-backed node, 115 s for the 500 updates; the race the test is
+	// for (a watch read between the rewrite's truncate and its write)
+	// doesn't wait for the sync.
 	dir := t.TempDir()
+	if err := unix.Mount("tmpfs", dir, "tmpfs", 0, "size=1m"); err != nil {
+		t.Fatalf("tmpfs: %v", err)
+	}
+	t.Cleanup(func() { _ = unix.Unmount(dir, unix.MNT_DETACH) })
 	source, path := filepath.Join(dir, "source.conf"), filepath.Join(dir, "resolv.conf")
 	if err := os.WriteFile(source, []byte(isp), 0o644); err != nil {
 		t.Fatal(err)

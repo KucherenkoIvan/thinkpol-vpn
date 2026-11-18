@@ -497,7 +497,7 @@ func runDeafWorker() int {
 	if err := c.Send(ipc.Message{Kind: ipc.KindReady}); err != nil {
 		return 1
 	}
-	time.Sleep(time.Hour) // alive, reading nothing
+	time.Sleep(time.Hour) // alive, reading nothing, until the test kills it
 	return 0
 }
 
@@ -955,6 +955,8 @@ func TestNoPacketCrossesSpaces(t *testing.T) {
 	for i, w := range ws {
 		waitGot(t, s, w, fmt.Sprintf("root-%d", i))
 	}
+	// Nothing crossing is an absence no watcher can see: a window, which
+	// load can only make pass.
 	time.Sleep(2 * time.Second)
 	if got := root.received(); len(got) > 0 {
 		t.Errorf("the root namespace received %d datagrams from spaces, the first %q", len(got), got[0])
