@@ -29,11 +29,11 @@ func events(t *testing.T, evs ...testEvent) string {
 	return b.String()
 }
 
-func out(test, s string) testEvent {
+func outEvent(test, s string) testEvent {
 	return testEvent{Action: "output", Package: "x/lab", Test: test, Output: s}
 }
 
-func end(action, test string, secs float64) testEvent {
+func endEvent(action, test string, secs float64) testEvent {
 	return testEvent{Action: action, Package: "x/lab", Test: test, Elapsed: secs}
 }
 
@@ -45,35 +45,35 @@ func end(action, test string, secs float64) testEvent {
 // top-level tests and their direct subtests that ended.
 func TestFilterTestJSON(t *testing.T) {
 	in := "go: downloading example.net/m v1.0.0\n" + events(t,
-		out("TestPass", "=== RUN   TestPass\n"),
-		out("TestPass", "    pass_test.go:1: quiet\n"),
-		out("TestPass", "--- PASS: TestPass (1.50s)\n"),
-		end("pass", "TestPass", 1.5),
-		out("TestFail", "=== RUN   TestFail\n"),
-		out("TestPar", "=== CONT  TestPar\n"),
-		out("TestFail", "    fail_test.go:5: setting up\n"),
-		out("TestFail/sub", "=== RUN   TestFail/sub\n"),
-		out("TestFail/sub", "    fail_test.go:9: broke\n"),
-		out("TestPar", "    par_test.go:3: par noise\n"),
-		out("TestFail/sub/deep", "    deep_test.go:1: deep noise\n"),
-		out("TestFail/sub/deep", "--- PASS: TestFail/sub/deep (0.10s)\n"),
-		end("pass", "TestFail/sub/deep", 0.1),
-		out("TestFail/sub", "--- FAIL: TestFail/sub (2.00s)\n"),
-		end("fail", "TestFail/sub", 2),
-		out("TestFail/ok", "    ok_test.go:1: fine\n"),
-		out("TestFail/ok", "--- PASS: TestFail/ok (0.50s)\n"),
-		end("pass", "TestFail/ok", 0.5),
-		out("TestFail", "--- FAIL: TestFail (3.00s)\n"),
-		end("fail", "TestFail", 3),
-		end("pass", "TestPar", 4),
-		out("TestSkip", "=== RUN   TestSkip\n"),
-		out("TestSkip", "    skip_test.go:2: needs the lab\n"),
-		out("TestSkip", "--- SKIP: TestSkip (0.00s)\n"),
-		end("skip", "TestSkip", 0),
-		out("TestHung", "=== RUN   TestHung\n"),
-		out("TestHung", "panic: test timed out\n"),
-		out("", "FAIL\tx/lab\t5.000s\n"),
-		end("fail", "", 5),
+		outEvent("TestPass", "=== RUN   TestPass\n"),
+		outEvent("TestPass", "    pass_test.go:1: quiet\n"),
+		outEvent("TestPass", "--- PASS: TestPass (1.50s)\n"),
+		endEvent("pass", "TestPass", 1.5),
+		outEvent("TestFail", "=== RUN   TestFail\n"),
+		outEvent("TestPar", "=== CONT  TestPar\n"),
+		outEvent("TestFail", "    fail_test.go:5: setting up\n"),
+		outEvent("TestFail/sub", "=== RUN   TestFail/sub\n"),
+		outEvent("TestFail/sub", "    fail_test.go:9: broke\n"),
+		outEvent("TestPar", "    par_test.go:3: par noise\n"),
+		outEvent("TestFail/sub/deep", "    deep_test.go:1: deep noise\n"),
+		outEvent("TestFail/sub/deep", "--- PASS: TestFail/sub/deep (0.10s)\n"),
+		endEvent("pass", "TestFail/sub/deep", 0.1),
+		outEvent("TestFail/sub", "--- FAIL: TestFail/sub (2.00s)\n"),
+		endEvent("fail", "TestFail/sub", 2),
+		outEvent("TestFail/ok", "    ok_test.go:1: fine\n"),
+		outEvent("TestFail/ok", "--- PASS: TestFail/ok (0.50s)\n"),
+		endEvent("pass", "TestFail/ok", 0.5),
+		outEvent("TestFail", "--- FAIL: TestFail (3.00s)\n"),
+		endEvent("fail", "TestFail", 3),
+		endEvent("pass", "TestPar", 4),
+		outEvent("TestSkip", "=== RUN   TestSkip\n"),
+		outEvent("TestSkip", "    skip_test.go:2: needs the lab\n"),
+		outEvent("TestSkip", "--- SKIP: TestSkip (0.00s)\n"),
+		endEvent("skip", "TestSkip", 0),
+		outEvent("TestHung", "=== RUN   TestHung\n"),
+		outEvent("TestHung", "panic: test timed out\n"),
+		outEvent("", "FAIL\tx/lab\t5.000s\n"),
+		endEvent("fail", "", 5),
 	)
 	var w bytes.Buffer
 	times, err := FilterTestJSON(strings.NewReader(in), &w, false)
@@ -116,14 +116,14 @@ func TestFilterTestJSONFailingCellKept(t *testing.T) {
 	var evs []testEvent
 	for i := range 6 {
 		cell := "TestMatrix/row/cell" + strconv.Itoa(i)
-		evs = append(evs, out(cell, noise))
+		evs = append(evs, outEvent(cell, noise))
 		if i == 3 {
-			evs = append(evs, out(cell, "    cell_test.go:7: THE ERROR\n"), end("fail", cell, 1))
+			evs = append(evs, outEvent(cell, "    cell_test.go:7: THE ERROR\n"), endEvent("fail", cell, 1))
 		} else {
-			evs = append(evs, end("pass", cell, 1))
+			evs = append(evs, endEvent("pass", cell, 1))
 		}
 	}
-	evs = append(evs, end("fail", "TestMatrix/row", 6), end("fail", "TestMatrix", 6))
+	evs = append(evs, endEvent("fail", "TestMatrix/row", 6), endEvent("fail", "TestMatrix", 6))
 	var w bytes.Buffer
 	if _, err := FilterTestJSON(strings.NewReader(events(t, evs...)), &w, false); err != nil {
 		t.Fatal(err)
@@ -142,9 +142,9 @@ func TestFilterTestJSONUnended(t *testing.T) {
 	names := []string{"TestH", "TestC", "TestF", "TestA", "TestG", "TestB", "TestE", "TestD"}
 	var evs []testEvent
 	for _, n := range names {
-		evs = append(evs, out(n, n+" started\n"))
+		evs = append(evs, outEvent(n, n+" started\n"))
 	}
-	evs = append(evs, out("TestD", dump), out("", "FAIL\tx/lab\t5.000s\n"), end("fail", "", 5))
+	evs = append(evs, outEvent("TestD", dump), outEvent("", "FAIL\tx/lab\t5.000s\n"), endEvent("fail", "", 5))
 	var w bytes.Buffer
 	if _, err := FilterTestJSON(strings.NewReader(events(t, evs...)), &w, false); err != nil {
 		t.Fatal(err)
@@ -166,7 +166,7 @@ func TestFilterTestJSONUnended(t *testing.T) {
 	}
 
 	w.Reset()
-	if _, err := FilterTestJSON(strings.NewReader(events(t, out("TestHung", "last words\n"))), &w, false); err != nil {
+	if _, err := FilterTestJSON(strings.NewReader(events(t, outEvent("TestHung", "last words\n"))), &w, false); err != nil {
 		t.Fatal(err)
 	}
 	if w.String() != "last words\n" {
