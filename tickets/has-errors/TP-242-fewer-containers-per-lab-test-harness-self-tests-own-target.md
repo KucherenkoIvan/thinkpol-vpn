@@ -43,6 +43,19 @@ Each lab has only the nodes its test drives. The owner wants a full lab to take 
 - **After, counted** the same way: full `make lab-test` at 61112839, green (EXIT 0), wall 3018 s, on a runner busy with four other tickets' lab runs the whole time (so the wall time says little; ev1's 2097 s run at 3d2f04d8 failed early). 259 starts: 41 gotest labs, 63 matrix rows (9 × 7), 14 the harness phase, **141** the rest of the `lab/` phase (was 214 on the same footing: −73, about 4 minutes of Docker starts at 18–20 a minute). Per test it is now the declared node count (TestServiceUnderSystemd 7: its device-a starts 5 times).
 - **Start budget**: lab.Start's 10 minutes used to start before the lab slot wait, so a lab queued behind others failed "setup" without starting. Now `labBudget` (lab/lab.go) gives the slot wait its own bound (45 min, under LAB_TIMEOUT's 60) and the start 10 minutes for the part before the slot (leftover removal, binaries) and 10 more from when the slot is held (`startBudget.waitThenStart`).
 
+## Review findings
+Review round 1, accepted by the orchestrator: the 31 trimmed tests are sound; the problems are in the harness phase's hash and the start budget.
+- [ ] R1.1 (should-fix) The harness hash covers only files holding `func TestHarness`, but the harness tests reach helpers elsewhere (netstate_test.go, main_lab_test.go, harness_test.go) and go.mod/go.sum aren't hashed: harness tests and every helper they reach go into hashed files, go.mod and go.sum are hashed, and a guard test (go/parser, go/ast) fails if a TestHarness test reaches, transitively within package lab, a declaration in a file the hash doesn't cover.
+- [ ] R1.2 (should-fix) The stamp is written whenever go test exits 0, even when a harness test skipped (TestHarnessLabStartsOverlapOnDistinctSubnets skips under -parallel < 4): don't stamp a run in which any harness test skipped, and say so.
+- [ ] R1.3 (should-fix) Worst case 10 + 10 + 45 + 10 = 75 min, past LAB_TIMEOUT's 60: one bound for everything before the slot, the slot wait bounded by the test's deadline minus the start budget; the oracle checks the real sum; the comment and README say exactly what holds.
+- [ ] R1.4 (should-fix) Timeouts don't say which bound expired (slot wait, before-slot preparation, start after the slot): wrap each with its bound; test at least one.
+- [ ] R1.5 (nit) `|| exit 1` inside `{ … } | git hash-object` runs in the pipe's subshell, so a failed read still hashes partial input and exits 0: check the files before the pipe and fail on any read error.
+- [ ] R1.6 (should-fix) The hash keys only the Go and Docker server versions: add the Docker host's kernel version and the Compose version.
+- [ ] R1.7 (nit) harness_test.go: `time.Sleep(5 * time.Millisecond)` in a unit test: use a fixed or injected time.
+- [ ] R1.8 (nit) TestOnlyKeepsTheNamedNodesAndTheirNetworks checks names and networks only: check that the kept nodes' specs are unchanged.
+- [ ] R1.9 (ticket) Scope says 8 harness tests and 25 trimmed, Notes 9 and 31; box 2's "any change under lab/ non-test files" overstates what the hash covers; drop the "ev1" label from Notes.
+- [ ] R1.10 (check) `labctl up` now gets 10 minutes for its build where it had 15: restore it if that wasn't intended; say so in the Log.
+
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority; from the lab-speed audit)
 - 2026-11-18 backlog → in-progress, owner: agent-tp-242
@@ -55,3 +68,4 @@ Each lab has only the nodes its test drives. The owner wants a full lab to take 
 - 2026-11-18 full make lab-test at 61112839: green, wall 3018 s on a loaded runner; the harness phase ran and passed (388 s), then lab-harness-cached skipped it; 141 lab-phase non-matrix starts, 155 with the harness phase
 - 2026-11-18 not verified: the wall-time gain on a quiet runner (every run here shared it with other tickets' labs); out of scope: the censor matrix rows start all 7 upstream nodes, some of which a row may not need (TP-236's cells)
 - 2026-11-18 in-progress → review
+- 2026-11-18 review round 1: fix R1.1–R1.10
