@@ -1002,25 +1002,22 @@ func (b probeBudget) retry(v6 bool, attempt func() (bool, error)) (bool, error) 
 }
 
 // attempts is untilAnswerOr's watch for one family (v6): before each
-// attempt it marks the caught-up log's end (the last attempt's read when
-// that ran just before), after a failed one it reads the log caught up
-// again and judges only the lines past the mark: decisions on packets
-// queued while the attempt ran. What an earlier attempt, the settle
-// probe or a hold left in the log doesn't count.
+// attempt it marks the caught-up log's end, after a failed one it reads
+// the log caught up again and judges only the lines past the mark:
+// decisions on packets queued while the attempt ran. What an earlier
+// attempt, the settle probe or a hold left in the log doesn't count. The
+// mark is read again before each attempt, not taken from the last
+// attempt's read: a late packet of that attempt decided during the pause
+// between them would count toward the next.
 func (w *blockWatch) attempts(v6 bool) func() func() bool {
-	mark, fresh := 0, false
 	return func() func() bool {
-		if !fresh {
-			mark = len(w.read())
-		}
-		fresh = false
+		mark := len(w.read())
 		return func() bool {
 			log := w.read()
 			var lines string
 			if len(log) >= mark { // shorter: cleared, nothing to judge
 				lines = log[mark:]
 			}
-			mark, fresh = len(log), true
 			return w.blocked(lines, v6)
 		}
 	}
@@ -1252,10 +1249,12 @@ func TestBlames(t *testing.T) {
 }
 
 // TestProbeStopsOnItsOwnBlockOnly: a probe that should not cross stops
-// early only after a failed attempt whose own packets the blocker dropped
-// or reset and didn't accept after; what the log had before the attempt,
-// another module's drop or the other family's don't stop it, and it goes
-// on to the attempt that crosses.
+// early only after a failed attempt during which the blocker dropped or
+// reset a flow to or from server-1's address (and didn't accept it
+// after); what the log had before the attempt, a late decision on the
+// attempt before, another module's drop or the other family's don't stop
+// it, and it goes on to the attempt that crosses. The window is counted
+// in attempts, so load can't change how many fit.
 func TestProbeStopsOnItsOwnBlockOnly(t *testing.T) {
 	server4, server6 := netip.MustParseAddr("192.0.2.9"), netip.MustParseAddr("2001:db8::9")
 	line := func(sport uint16, dst netip.Addr, module string, v censor.Verdict) string {
@@ -1271,29 +1270,37 @@ func TestProbeStopsOnItsOwnBlockOnly(t *testing.T) {
 		return string(b) + "\n"
 	}
 	drop := func(sport uint16) string { return line(sport, server4, "ip-blocklist", censor.Drop) }
+	const window = 5 // attempts
 	for _, c := range []struct {
 		name string
 		// before is the log before the probe; attempts what each attempt
-		// adds to it, the last one crossing (if crosses).
+		// adds to it, the last one crossing (if crosses); late what the
+		// log gains just after the read that judged attempt i failed.
 		before   string
 		attempts []string
+		late     []string
 		crosses  bool
 		// tries is how many attempts ran, 0 for "until the window ran
 		// out"; failing is the one attempt (1-based) that fails to run.
 		tries, failing int
 	}{
-		{"the blocker dropped the flow's first packet before the probe", drop(1), []string{"", ""}, true, 2, 0},
-		{"its packet dropped, then accepted", "", []string{drop(2) + line(2, server4, "", censor.Accept), ""}, true, 2, 0},
-		{"its packet dropped", "", []string{drop(3)}, false, 1, 0},
-		{"its packet reset", "", []string{line(4, server4, "ip-blocklist", censor.Reset)}, false, 1, 0},
-		{"another module's drop", "", []string{line(5, server4, "sni-blocklist", censor.Drop)}, false, 0, 0},
-		{"the other family's drop", "", []string{line(6, server6, "ip-blocklist", censor.Drop)}, false, 0, 0},
-		{"a drop in an attempt that failed to run", "", []string{drop(7), "", ""}, true, 3, 1},
+		{"the blocker dropped the flow's first packet before the probe", drop(1), []string{"", ""}, nil, true, 2, 0},
+		{"its packet dropped, then accepted", "", []string{drop(2) + line(2, server4, "", censor.Accept), ""}, nil, true, 2, 0},
+		{"its packet dropped", "", []string{drop(3)}, nil, false, 1, 0},
+		{"its packet reset", "", []string{line(4, server4, "ip-blocklist", censor.Reset)}, nil, false, 1, 0},
+		{"another module's drop", "", []string{line(5, server4, "sni-blocklist", censor.Drop)}, nil, false, 0, 0},
+		{"the other family's drop", "", []string{line(6, server6, "ip-blocklist", censor.Drop)}, nil, false, 0, 0},
+		{"a drop in an attempt that failed to run", "", []string{drop(7), "", ""}, nil, true, 3, 1},
+		{"a drop decided after the attempt was judged", "", []string{"", "", ""}, []string{drop(8)}, true, 3, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			log, tries := c.before, 0
+			log, late, tries := c.before, "", 0
 			w := &blockWatch{
-				read: func() string { return log },
+				read: func() string {
+					read := log
+					log, late = log+late, ""
+					return read
+				},
 				blocked: func(lines string, v6 bool) bool {
 					if v6 {
 						t.Fatal("asked for IPv6")
@@ -1305,10 +1312,14 @@ func TestProbeStopsOnItsOwnBlockOnly(t *testing.T) {
 					return blocked
 				},
 			}
-			crossed, err := untilAnswerOr(time.Second, w.attempts(false), func() (bool, error) {
+			left := func() (out, gaveUp bool) { return tries >= window, tries >= 2*window }
+			crossed, err := answerWhile(left, 0, w.attempts(false), func() (bool, error) {
 				tries++
 				i := min(tries, len(c.attempts)) - 1
 				log += c.attempts[i]
+				if tries <= len(c.late) {
+					late = c.late[tries-1]
+				}
 				if tries == c.failing {
 					return false, errors.New("docker exec failed")
 				}
@@ -1321,8 +1332,8 @@ func TestProbeStopsOnItsOwnBlockOnly(t *testing.T) {
 				t.Errorf("crossed %v after %d attempts, want %v", crossed, tries, c.crosses)
 			case c.tries > 0 && tries != c.tries:
 				t.Errorf("%d attempts, want %d", tries, c.tries)
-			case c.tries == 0 && tries < 3:
-				t.Errorf("stopped after %d attempts, before the window ran out", tries)
+			case c.tries == 0 && tries != window:
+				t.Errorf("stopped after %d attempts, want the window's %d", tries, window)
 			}
 		})
 	}
@@ -1504,12 +1515,17 @@ const caughtUpWithin = 30 * time.Second
 // watermark (censor.EventWatermark) reaches it, and returns the log's
 // whole lines: every packet queued before the call has its decisions in
 // them. A failed read is retried until the bound. A packet netlink fails
-// to deliver takes an id censord never sees, so once the kernel's drop
-// counts rose it fails at once with them, rather than wait out the
-// bound. The watermark only grows: the kernel numbers packets as it
-// queues them and delivers them in that order on censord's one socket,
-// whose callback decides them one at a time, so no lower id comes after
-// a higher one is handled.
+// to deliver to censord (UserDropped) takes an id censord never sees, so
+// once that count rose it fails at once with it, rather than wait out
+// the bound. One dropped from a full queue (QueueDropped) takes no id
+// and changes nothing here; only a failed insert into the kernel's table
+// of waiting packets, rare and counted in QueueDropped too, takes one and
+// waits out the bound (net/netfilter/nfnetlink_queue.c,
+// __nfqnl_enqueue_packet, Linux 7.0: the full-queue check comes before
+// ++id_sequence, the insert and the unicast after it). The watermark only
+// grows: the kernel numbers each packet and delivers it under one lock,
+// so in id order, on censord's one socket, whose callback decides them
+// one at a time: no lower id comes after a higher one is handled.
 func (c *censorRun) caughtUp() (string, error) {
 	deadline := time.Now().Add(caughtUpWithin)
 	var queued censor.QueueStats
@@ -1534,9 +1550,9 @@ func (c *censorRun) caughtUp() (string, error) {
 		}
 		lastErr = err
 		if now, err := c.stats(); err == nil {
-			if before, after := queued.QueueDropped+queued.UserDropped, now.QueueDropped+now.UserDropped; after > before {
-				return "", fmt.Errorf("the kernel dropped %d packets on the way to censord while the verdict log caught up (queue full %d, netlink %d in all), which it can't have the decisions of",
-					after-before, now.QueueDropped, now.UserDropped)
+			if now.UserDropped > queued.UserDropped {
+				return "", fmt.Errorf("netlink failed to deliver %d packets to censord while the verdict log caught up (%d in all, queue full %d), which it can't have the decisions of",
+					now.UserDropped-queued.UserDropped, now.UserDropped, now.QueueDropped)
 			}
 		}
 		if time.Now().After(deadline) {

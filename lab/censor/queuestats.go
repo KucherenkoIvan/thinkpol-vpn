@@ -11,7 +11,8 @@ import (
 type QueueStats struct {
 	// Waiting is how many packets wait for a verdict now.
 	Waiting uint64
-	// QueueDropped counts packets dropped because the queue was full.
+	// QueueDropped counts packets dropped because the queue was full, or
+	// (rarely) because the kernel failed to file one as waiting.
 	QueueDropped uint64
 	// UserDropped counts packets netlink failed to deliver to censord.
 	UserDropped uint64

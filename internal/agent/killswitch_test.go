@@ -590,20 +590,27 @@ func TestKillSwitchSettingsComeFromTheNodeThenTheMember(t *testing.T) {
 	}
 }
 
-// countingKillSwitch counts its Applies and keeps the direct timeout set.
+// countingKillSwitch counts its Applies, keeps the direct timeout set
+// and the one set when it was first applied, and fails each Close with
+// closeErr.
 type countingKillSwitch struct {
-	applies int
-	direct  time.Duration
+	applies      int
+	direct       time.Duration
+	firstApplied time.Duration
+	closeErr     error
 }
 
 func (c *countingKillSwitch) SetDirectTimeout(d time.Duration) { c.direct = d }
 
 func (c *countingKillSwitch) Apply(context.Context, firewall.KillSwitchRules) error {
+	if c.applies == 0 {
+		c.firstApplied = c.direct
+	}
 	c.applies++
 	return nil
 }
 
-func (c *countingKillSwitch) Close() error { return nil }
+func (c *countingKillSwitch) Close() error { return c.closeErr }
 
 // The kill switch in place is applied again at every re-apply tick, the
 // tick handled a little after it fired included: on Linux that renews the
@@ -658,9 +665,18 @@ func TestTheKillSwitchDirectTimeoutIsThreePeriods(t *testing.T) {
 			t.Fatal(err)
 		}
 		n.ks.keep(context.Background(), true, firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")})
-		if ks.applies != 1 || ks.direct != want {
-			t.Errorf("the period set to %v: %d applies, direct timeout %v, want %v", set, ks.applies, ks.direct, want)
+		if ks.applies != 1 || ks.firstApplied != want {
+			t.Errorf("the period set to %v: %d applies, direct timeout %v at the first, want %v", set, ks.applies, ks.firstApplied, want)
 		}
+	}
+	// A removal that fails keeps the kill switch it made to remove a
+	// previous run's; the next want applies that one, timeout and all.
+	ks := &countingKillSwitch{closeErr: errors.New("nft: busy")}
+	k := killSwitchKeeper{newKS: func() KillSwitch { return ks }, every: 2 * time.Second, log: slog.New(slog.DiscardHandler)}
+	k.keep(context.Background(), false, firewall.KillSwitchRules{})
+	k.keep(context.Background(), true, firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")})
+	if ks.applies != 1 || ks.firstApplied != 6*time.Second {
+		t.Errorf("after a failed removal: %d applies, direct timeout %v at the first, want 6s", ks.applies, ks.firstApplied)
 	}
 	if firewall.DirectTimeout != 30*time.Second {
 		t.Errorf("firewall.DirectTimeout is %v, the design's 30 s", firewall.DirectTimeout)

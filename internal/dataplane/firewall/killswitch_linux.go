@@ -152,14 +152,17 @@ func (k *KillSwitch) expiry() time.Duration {
 }
 
 // SetDirectTimeout replaces DirectTimeout for this kill switch's direct
-// destinations from its next Apply that builds the table; zero or less is
-// DirectTimeout (nftables would read a negative one as unsigned, about
-// 2^64 ms). The agent sets three re-apply periods, DirectTimeout by
-// default; tests run the expiry in seconds with it.
+// destinations from its next Apply that builds the table; under 1 ms is
+// DirectTimeout: nftables keeps whole milliseconds, a set timeout of 0
+// never expires, and a negative one reads as unsigned, about 2^64 ms.
+// The agent sets three re-apply periods, DirectTimeout by default; tests
+// run the expiry in seconds with it.
 func (k *KillSwitch) SetDirectTimeout(d time.Duration) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	d = max(d, 0)
+	if d < time.Millisecond {
+		d = 0
+	}
 	if d != k.directTimeout {
 		k.directTimeout, k.applied = d, nil
 	}

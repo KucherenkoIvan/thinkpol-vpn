@@ -190,22 +190,33 @@ func untilAnswer(within time.Duration, attempt func() (bool, error)) (bool, erro
 func untilAnswerOr(within time.Duration, watch func() (blocked func() bool), attempt func() (bool, error)) (bool, error) {
 	deadline := time.Now().Add(within)
 	giveUp := deadline.Add(30 * time.Second)
+	return answerWhile(func() (out, gaveUp bool) {
+		now := time.Now()
+		return now.After(deadline), now.After(giveUp)
+	}, 300*time.Millisecond, watch, attempt)
+}
+
+// answerWhile is untilAnswerOr's loop on any clock: left, asked after
+// each attempt, says whether the window ran out and whether an error has
+// run past it too; pause is the time between attempts.
+func answerWhile(left func() (out, gaveUp bool), pause time.Duration, watch func() (blocked func() bool), attempt func() (bool, error)) (bool, error) {
 	for {
 		var blocked func() bool
 		if watch != nil {
 			blocked = watch()
 		}
 		yes, err := attempt()
+		out, gaveUp := left()
 		switch {
 		case err == nil && yes:
 			return true, nil
 		case err == nil:
-			if time.Now().After(deadline) || blocked != nil && blocked() {
+			if out || blocked != nil && blocked() {
 				return false, nil
 			}
-		case time.Now().After(giveUp):
+		case gaveUp:
 			return false, err
 		}
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(pause)
 	}
 }

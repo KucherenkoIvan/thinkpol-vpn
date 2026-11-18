@@ -261,9 +261,11 @@ func (k *killSwitchKeeper) keep(ctx context.Context, want bool, r firewall.KillS
 			k.fail(firewall.ErrKillSwitchUnsupported)
 			return
 		}
-		if d, ok := k.ks.(directTimeoutSetter); ok {
-			d.SetDirectTimeout(directTimeout(every))
-		}
+	}
+	// Every time: a kill switch kept after a failed removal was made
+	// there, without it (the same timeout again changes nothing).
+	if d, ok := k.ks.(directTimeoutSetter); ok {
+		d.SetDirectTimeout(directTimeout(every))
 	}
 	first := k.applied == nil || !k.applied.Equal(r)
 	if err := k.ks.Apply(ctx, r); err != nil {
