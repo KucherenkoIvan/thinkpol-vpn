@@ -204,13 +204,14 @@ type node struct {
 
 func overlay(n byte) netip.Addr { return netip.AddrFrom4([4]byte{100, 64, 0, n}) }
 
-func startNode(t *testing.T, tn *testNet, n byte, store Store, limits Limits) node {
+func startNode(t *testing.T, tn *testNet, n byte, store Store, limits Limits, wrap ...func(slog.Handler) slog.Handler) node {
 	t.Helper()
 	logs := &logBuffer{}
-	s := NewOnNet(Options{
-		Store: store, Limits: limits,
-		Log: slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
-	}, Net{Listen: tn.listen, Dial: tn.dial})
+	var h slog.Handler = slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})
+	for _, w := range wrap {
+		h = w(h)
+	}
+	s := NewOnNet(Options{Store: store, Limits: limits, Log: slog.New(h)}, Net{Listen: tn.listen, Dial: tn.dial})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); s.Run(ctx) }()
@@ -294,7 +295,7 @@ func TestADeviceFetchesItsListFromAServer(t *testing.T) {
 	}
 }
 
-// onRecord shows on every record before h handles it.
+// onRecord calls on with each record before the wrapped handler handles it.
 type onRecord struct {
 	slog.Handler
 	on func(slog.Record)
@@ -313,8 +314,8 @@ func (h onRecord) WithGroup(name string) slog.Handler {
 	return onRecord{Handler: h.Handler.WithGroup(name), on: h.on}
 }
 
-// TP-244: a reader of "blob fetched" (the lab) looks for the blob in the
-// device's store right away.
+// A reader of "blob fetched" (the lab) looks for the blob in the device's
+// store right away.
 func TestAFetchedBlobIsInTheStoreWhenItsFetchIsLogged(t *testing.T) {
 	data, ref := geoip(t, "ru", "192.0.2.0/24")
 	header := ref
@@ -325,19 +326,16 @@ func TestAFetchedBlobIsInTheStoreWhenItsFetchIsLogged(t *testing.T) {
 
 	store := newMemStore()
 	logged := make(chan bool, 1)
-	s := NewOnNet(Options{Store: store, Limits: fast, Log: slog.New(onRecord{Handler: slog.NewTextHandler(io.Discard, nil), on: func(r slog.Record) {
-		if r.Message == "blob fetched" {
-			select {
-			case logged <- store.has(ref):
-			default:
+	device := startNode(t, tn, 2, store, fast, func(h slog.Handler) slog.Handler {
+		return onRecord{Handler: h, on: func(r slog.Record) {
+			if r.Message == "blob fetched" {
+				select {
+				case logged <- store.has(ref):
+				default:
+				}
 			}
-		}
-	}})}, Net{Listen: tn.listen, Dial: tn.dial})
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { defer close(done); s.Run(ctx) }()
-	t.Cleanup(func() { cancel(); <-done })
-	device := node{Service: s, addr: overlay(2)}
+		}}
+	})
 	device.Update(device.plan([]netmap.BlobRef{ref}, server))
 
 	select {
