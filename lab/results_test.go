@@ -1003,7 +1003,9 @@ func TestWithRowSettings(t *testing.T) {
 // rows in this order as slots free up, so the rows that hold their tunnel
 // 7.5 minutes for wireguard-rhythm (reality about 865 s, udp) never wait
 // behind short ones, and the matrix takes about as long as its longest row
-// (RESULTS.md sorts the rows by name).
+// (RESULTS.md sorts the rows by name). Under make lab-test the holds run
+// in the long stream, a lab per held row, and the default stream's rows
+// are all short.
 var transports = []transport{
 	realityRow,
 	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP, udp: true, oneUnderlay: true, hold: holdTunnel},
