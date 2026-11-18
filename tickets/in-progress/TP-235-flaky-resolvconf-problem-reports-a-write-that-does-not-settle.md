@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: agent-tp-235
+branch: tp-235-resolvconf-settle-flake
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ branch: ""
 
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate fixes)
+- 2026-11-18 backlog → in-progress, owner: agent-tp-235
