@@ -69,16 +69,39 @@ func prepareImage(ctx context.Context, root string) (target, image, error) {
 }
 
 // buildTools cross-compiles thinkpol and the lab's own tools into dir.
+// thinkpol's WireGuard runs its timers sped up by WGTimerScale (an
+// overlay of wireguard-go's constants, this build only), so the lab sees
+// rekeys without waiting them out in real time.
 func buildTools(ctx context.Context, root string, t target, dir string) error {
-	for _, tool := range []struct{ name, pkg string }{
-		{"thinkpol", "./cmd/thinkpol"},
-		{"labdns", "./lab/labdns"},   // a stand-in for resolvers out in the world
-		{"censord", "./lab/censord"}, // the lab's censor, run in the router
+	scale, err := WGTimerScale()
+	if err != nil {
+		return err
+	}
+	tmp, err := os.MkdirTemp("", "thinkpol-lab-wgtimers-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
+	overlay, err := wgTimerOverlay(ctx, root, tmp, scale)
+	if err != nil {
+		return err
+	}
+	for _, tool := range []struct {
+		name, pkg string
+		overlay   bool
+	}{
+		{"thinkpol", "./cmd/thinkpol", true},
+		{"labdns", "./lab/labdns", false},   // a stand-in for resolvers out in the world
+		{"censord", "./lab/censord", false}, // the lab's censor, run in the router
 	} {
 		// Without the VCS stamp, a commit that changes none of a tool's
 		// code leaves its binary, an input of the tests that stat it, as
 		// it was.
-		if _, err := goBuild(ctx, root, t, filepath.Join(dir, tool.name), "build", "-trimpath", "-buildvcs=false", tool.pkg); err != nil {
+		args := []string{"build", "-trimpath", "-buildvcs=false"}
+		if tool.overlay && overlay != "" {
+			args = append(args, "-overlay", overlay)
+		}
+		if _, err := goBuild(ctx, root, t, filepath.Join(dir, tool.name), append(args, tool.pkg)...); err != nil {
 			return err
 		}
 	}

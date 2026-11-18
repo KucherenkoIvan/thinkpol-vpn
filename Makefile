@@ -44,7 +44,7 @@ BUF_BREAKING_AGAINST ?= rewrite
 # cgo is off unless a target turns it on (test-race).
 export CGO_ENABLED := 0
 
-.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-harness lab-harness-hash lab-harness-cached lab-perf lab-gotest lab-down lab-seccomp lab-seccomp-check
+.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-harness lab-harness-hash lab-harness-cached lab-perf lab-gotest lab-test-rhythm-real lab-down lab-seccomp lab-seccomp-check
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -224,6 +224,13 @@ lab-gotest: export LAB_RUN = $(RUN)
 lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1, its lab-tagged tests on the host; fails if all skip (PKG=./internal/... required, RUN=regexp COUNT=n)
 	$(if $(PKG),,$(error lab-gotest needs PKG, e.g. PKG=./internal/dataplane/netcfg/...; make lab-test runs every package))
 	$(LABCTL) gotest -v -tagged -fail-skipped -run "$$LAB_RUN" $(if $(COUNT),-count $(COUNT) -timeout 60m) $(PKG)
+
+# The lab's thinkpol runs WireGuard's timers sped up (lab/README.md,
+# "WireGuard's timers"); this runs the censor matrix's rhythm cells, and
+# their rows' off cells, at real time: at milestone gates, and for changes
+# to transport shaping or the rhythm rules.
+lab-test-rhythm-real: ## the censor matrix's wireguard-rhythm cells with WireGuard's real timers (about 8 minutes)
+	THINKPOL_LAB_WG_TIMER_SCALE=1 $(MAKE) --no-print-directory lab-gotest PKG=./lab RUN='TestCensorMatrix/^(udp|reality)$$/^(off|wireguard-rhythm)$$'
 
 lab-seccomp: ## regenerate lab/seccomp.json from the moby/profiles/seccomp lab/seccompgen pins (needs the network once)
 	cd lab/seccompgen && go run . -o ../seccomp.json

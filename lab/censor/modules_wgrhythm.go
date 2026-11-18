@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"os"
 	"slices"
 	"time"
@@ -38,7 +39,8 @@ const (
 	// stops waiting for an answer to its initiation and sends another.
 	wgPairWindow = 2 * time.Second
 	// wgQuiet is how long the connection must have carried no record, either
-	// way, before a record counts as sent while idle: REKEY_TIMEOUT, under
+	// way, before a record counts as sent while idle (for the default
+	// period; scaled with a shorter one, quiet()): REKEY_TIMEOUT, under
 	// KEEPALIVE_TIMEOUT (a passive keepalive comes that long after the last
 	// packet received) and under any persistent keepalive interval.
 	wgQuiet = wgRekeyTimeout
@@ -286,7 +288,9 @@ type wgIdleRun struct {
 //	 "trace": "/run/censor/rhythm.jsonl"}
 //
 // verdict is drop (default) or reset; rekey is WireGuard's rekey period,
-// REKEY_AFTER_TIME (tests shorten it to see three rekeys quickly);
+// REKEY_AFTER_TIME (tests, and a lab whose WireGuard runs its timers sped
+// up, shorten it; the windows that derive from WireGuard's timers scale
+// with it);
 // keepalives is how many records an idle run needs to show the rhythm
 // once the connection has carried an exchange (without one, two more);
 // trace, if set, is a file the module appends a JSON line to for every
@@ -491,7 +495,7 @@ func (m *wgRhythm) record(c *wgConn, dir int, f *Flow, size int, end time.Time) 
 	seen, ok := d.seen[size]
 	fresh := !ok || end.Sub(seen) >= m.rekey
 	d.seen[size] = end
-	quiet := c.last.IsZero() || end.Sub(c.last) >= wgQuiet
+	quiet := c.last.IsZero() || end.Sub(c.last) >= m.quiet()
 	stood := 0
 	// In order of size, so which of two exchanges flags first doesn't
 	// depend on map order.
@@ -519,7 +523,7 @@ func (m *wgRhythm) record(c *wgConn, dir int, f *Flow, size int, end time.Time) 
 		quiet, fresh = quiet || b.afterQuiet, fresh || b.fresh
 	}
 	d.recent[size] = wgRecentRecord{end, quiet, fresh}
-	idle := !c.last.IsZero() && end.Sub(c.last) >= wgQuiet
+	idle := !c.last.IsZero() && end.Sub(c.last) >= m.quiet()
 	c.last = end
 	if idle {
 		c.pending = &r
@@ -618,9 +622,21 @@ func (m *wgRhythm) exchange(c *wgConn, sizes [2]int, stands bool, end time.Time)
 }
 
 // window is the latest a rekey comes after the one before:
-// REJECT_AFTER_TIME, scaled with a shorter rekey period, and wgRekeySlack.
+// REJECT_AFTER_TIME and wgRekeySlack, scaled with the rekey period.
 func (m *wgRhythm) window() time.Duration {
-	return m.rekey*time.Duration(wgRejectAfterTime/time.Second)/time.Duration(wgRekeyAfterTime/time.Second) + wgRekeySlack
+	return m.scaled(wgRejectAfterTime + wgRekeySlack)
+}
+
+// quiet is wgQuiet, scaled with the rekey period.
+func (m *wgRhythm) quiet() time.Duration { return m.scaled(wgQuiet) }
+
+// scaled is a WireGuard timer d with the module's rekey period in place of
+// REKEY_AFTER_TIME: a lab whose WireGuard runs its timers sped up sets the
+// period they make, and the module's windows follow. The module's other
+// thresholds are its choices about the network and scheduling, which keep
+// real time.
+func (m *wgRhythm) scaled(d time.Duration) time.Duration {
+	return time.Duration(math.Round(float64(d) * float64(m.rekey) / float64(wgRekeyAfterTime)))
 }
 
 // readCount reads the difference of the record counts each way as a

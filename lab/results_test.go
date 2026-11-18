@@ -729,7 +729,10 @@ var censorCases = []censorCase{
 	// and udp, the control (WireGuard's timing untouched), hold their
 	// tunnels for 7.5 minutes first, in use (a ping every 2 s), with the
 	// module's default settings; udp must be caught for the case to mean
-	// anything. reality is caught too, by counting its records each way: a
+	// anything. The lab's thinkpol runs WireGuard's timers sped up
+	// (lab.WGTimerScale): the hold and the module's rekey period are
+	// scaled to match (rhythmCase), and make lab-test-rhythm-real runs
+	// these cells at real time. reality is caught too, by counting its records each way: a
 	// known tell, accepted in RR65 until cover records go both ways (owner,
 	// 2026-11-16). The other rows aren't held, and pass. The idle case,
 	// rhythmCase("wireguard-rhythm (idle)", true), is out of the matrix
@@ -811,12 +814,42 @@ const realityRhythmCounted = "each rekey leaves one more record from the device 
 // tunnels in use, or idle. reality's fail is a known tell: its cell says
 // so.
 func rhythmCase(name string, idle bool) censorCase {
-	return censorCase{name: name, hold: 450 * time.Second, idle: idle, watch: "wireguard-rhythm", trace: rhythmTrace,
+	settings := map[string]string{"trace": rhythmTrace}
+	if wgTimerScale > 1 {
+		settings["rekey"] = (wgRekeyAfterTime / time.Duration(wgTimerScale)).String()
+	}
+	b, err := json.Marshal(settings)
+	if err != nil {
+		panic(err)
+	}
+	return censorCase{name: name, hold: rhythmHold(wgTimerScale), idle: idle, watch: "wireguard-rhythm", trace: rhythmTrace,
 		expect: map[string]string{rowUDP: "fail", rowReality: "fail"}, blocker: "wireguard-rhythm",
 		accepted: map[string]knownTell{rowReality: {why: realityRhythmCounted, reasons: []string{censor.WGRhythmByCount, censor.WGRhythmByBurst}}},
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
-			return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{"trace": "` + rhythmTrace + `"}`)}}
+			return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: b}}
 		}}
+}
+
+// wgRekeyAfterTime is WireGuard's REKEY_AFTER_TIME at real time.
+const wgRekeyAfterTime = 120 * time.Second
+
+// wgTimerScale is the factor the lab's thinkpol runs WireGuard's timers
+// sped up by (lab.WGTimerScale): the rhythm cells' rekey period and hold
+// follow it. A bad setting fails the lab's build as well.
+var wgTimerScale = func() int {
+	n, err := lab.WGTimerScale()
+	if err != nil {
+		panic(err)
+	}
+	return n
+}()
+
+// rhythmHold is how long the rhythm cells hold the tunnel at the scale:
+// three rekeys and their windows (7.5 minutes at real time) scaled, and
+// 10 s for what doesn't scale, the ping's 2 s between the rekey deadline
+// and the packet that triggers each rekey.
+func rhythmHold(scale int) time.Duration {
+	return 450*time.Second/time.Duration(scale) + 10*time.Second
 }
 
 // withServerHost adds to the prober's settings that server-1's addresses
@@ -960,7 +993,8 @@ func TestWithRowSettings(t *testing.T) {
 
 // transports is the matrix's rows, longest first: go test starts parallel
 // rows in this order as slots free up, so the rows that hold their tunnel
-// 7.5 minutes for wireguard-rhythm (reality about 865 s, udp) never wait
+// for wireguard-rhythm (rhythmHold; at real time 7.5 minutes, reality
+// about 865 s, udp) never wait
 // behind short ones, and the matrix takes about as long as its longest row
 // (RESULTS.md sorts the rows by name).
 var transports = []transport{
