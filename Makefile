@@ -191,7 +191,12 @@ lab-test-long: LAB_STREAMS = long
 # binary is built once, at the start, and both streams and the assembly of
 # RESULTS.md run that binary, as go test -json would (go tool test2json),
 # so a checkout changed mid-run can't write RESULTS.md; the shares carry
-# the commit it was built from (THINKPOL_LAB_COMMIT). The other ./lab/...
+# the commit it was built from (THINKPOL_LAB_COMMIT). On Ctrl-C or a
+# TERM, the phases' processes get a TERM (a script's background jobs
+# ignore SIGINT), and once they are gone (2 minutes at most: labctl
+# gotest tears its labs down first), the run's labs are removed. The
+# recipe is one line with $(MAKE) in it, so make -n runs it: don't. The
+# other ./lab/...
 # packages run under go test. labctl testjson prints what go test without
 # -v would have and keeps each test's time for the budget's report. Exit
 # status: 1 when a test or the tear-down failed, 3 when everything passed
@@ -201,7 +206,10 @@ lab-test lab-test-default lab-test-long:
 	@start=$$(date +%s); run=; labctl=; \
 	tmp=$$(mktemp -d) || exit 1; \
 	trap 'rc=$$?; if [ -n "$$run" ] && [ -z "$$THINKPOL_LAB_KEEP" ]; then "$$labctl" down -run "$$run" || rc=1; fi; rm -rf "$$tmp"; exit $$rc' EXIT; \
-	trap 'exit 130' INT; trap 'exit 143' TERM; \
+	tree() { for c in $$(pgrep -P "$$1"); do echo "$$c"; tree "$$c"; done; }; \
+	stop() { trap '' INT TERM; pids=$$(tree $$$$); [ -z "$$pids" ] || kill -TERM $$pids 2>/dev/null; wait; \
+		n=0; for p in $$pids; do while kill -0 "$$p" 2>/dev/null && [ $$n -lt 120 ]; do sleep 1; n=$$((n+1)); done; done; exit "$$1"; }; \
+	trap 'stop 130' INT; trap 'stop 143' TERM; \
 	labctl=$$tmp/labctl; $(LABCTL_BUILD) "$$labctl" ./lab/labctl || exit 1; \
 	"$$labctl" budget -check -budget='$(LAB_BUDGET)' || exit 1; \
 	commit=$$(git rev-parse HEAD) && dirty=$$(git status --porcelain) || exit 1; \
