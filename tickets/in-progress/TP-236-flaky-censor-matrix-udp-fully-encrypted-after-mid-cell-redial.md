@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: agent-tp-236
+branch: tp-236-udp-fe-flake
 ---
 
 ## Goal
@@ -33,3 +33,4 @@ In a full lab (TP-223's run, 2026-11-16) the censor-matrix cell `udp × fully-en
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate fixes)
 - 2026-11-18 Notes: evidence from TP-240's matrix run
+- 2026-11-18 backlog → in-progress, owner: agent-tp-236
