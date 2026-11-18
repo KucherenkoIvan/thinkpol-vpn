@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-200]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-241"
+branch: "tp-241-lab-watchers"
 ---
 
 ## Goal
@@ -38,3 +38,4 @@ Waits only where no watcher can see the result. The owner wants a full lab to ta
 
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority; from the lab-speed audit)
+- 2026-11-18 backlog → in-progress, owner: agent-tp-241
