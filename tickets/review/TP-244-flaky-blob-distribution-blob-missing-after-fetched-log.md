@@ -21,10 +21,10 @@ In two or three lab runs (TP-229's and TP-238's, 2026-11-17) TestBlobDistributio
 ## Out of scope
 
 ## Acceptance
-- [ ] The root cause named in Notes, with evidence.
-- [ ] A fix.
-- [ ] 20 runs of the test under load pass, and a mutation that brings the cause back fails.
-- [ ] No retries and no longer timeouts without a cause.
+- [x] The root cause named in Notes, with evidence.
+- [x] A fix.
+- [x] 20 runs of the test under load pass, and a mutation that brings the cause back fails.
+- [x] No retries and no longer timeouts without a cause.
 
 ## Notes
 - Root cause, a product bug: `blobs.Service.obtain` logged "blob fetched" before it called `Store.Save`. On a device the store is the state directory (`diskBlobs.Save`: a temporary file, fsync, rename, directory fsync, then the index the same way), so on a slow, loaded disk the line came seconds before the file was in place, and the test's `sha256sum` right after the line found nothing. Nothing else removes or renames the file in that window: the write is atomic, and pruning runs in the same goroutine after `obtain` returns.
@@ -39,3 +39,7 @@ In two or three lab runs (TP-229's and TP-238's, 2026-11-17) TestBlobDistributio
 - 2026-11-18 lab repro: old order plus a 3 s sleep at the top of `diskBlobs.Save` fails TestBlobDistribution at the first sha256sum, "No such file or directory", as in the full lab; the fix with the same sleep passes (345 s); neither change committed
 - 2026-11-18 20 runs of TestBlobDistribution under load (other tickets' labs running) at f127d7ed: 20 pass, 0 fail; the COUNT=20 run was killed at its 60 min budget after 16 passes (runs took 42–409 s under load), the remaining 4 in a COUNT=4 run
 - 2026-11-18 make lint, make test green at f127d7ed
+- 2026-11-18 full `make lab-test` at 890b77e1 (before the orchestrator dropped the final full lab): EXIT 2 after 4050 s, every failure lab-slot starvation from concurrent full labs, not this change: 13 tests failed on "waiting for a free lab slot" or a `docker compose up` timeout, and `./lab` hit its 1 h budget with TestCensorMatrix and TestLabStartsOverlapOnDistinctSubnets still running; TestBlobDistribution passed; the 13 re-run targeted at 890b77e1 all pass (EXIT 0, 1030 s)
+- 2026-11-18 merged origin/rewrite (TP-243) at 8b2e905e; there: make lint, make test green; lab-gotest TestBlobDistribution COUNT=3 pass (833 s), lab-gotest ./internal/dataplane/blobs/... pass; no full lab per the orchestrator's 2026-11-18 rule (targeted runs on the final commit, full labs on rewrite after merges)
+- 2026-11-18 couldn't verify: a full lab green on this branch (the remote's lab slots were saturated); out of scope: the COUNT=20 lab-gotest can't finish 20 runs of a ~5 min test within lab-gotest's fixed 60 min `-timeout` under load
+- 2026-11-18 in-progress → review
