@@ -248,11 +248,14 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 			if lan {
 				continue
 			}
-			start := time.Now()
+			// Refused, not dropped: curl gives up at once by its own clock
+			// (time_total), which a loaded host's docker exec doesn't
+			// stretch.
 			url := "http://" + netip.AddrPortFrom(dst, port).String() + "/"
-			connected, out, err := curlFrom(dev, 5*time.Second, "--interface", eth, url)
-			if err != nil || connected || time.Since(start) > 3*time.Second {
-				t.Errorf("%s: curl bound to %s: connected %v after %v, %v\n%s", when, eth, connected, time.Since(start), err, out)
+			connected, out, err := curlFrom(dev, 5*time.Second, "--interface", eth, "-w", "time_total=%{time_total}\n", url)
+			took, ok := curlTook(out)
+			if err != nil || connected || !ok || took > 3*time.Second {
+				t.Errorf("%s: curl bound to %s: connected %v after %v (read %v), %v\n%s", when, eth, connected, took, ok, err, out)
 			}
 		}
 	}
@@ -450,6 +453,19 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 // dropIns is where the kill-switch test's drop-ins for the service go:
 // systemd's runtime directory, gone at a reboot.
 const dropIns = "/run/systemd/system/thinkpol.service.d"
+
+// curlTook is curl's own time_total (-w "time_total=%{time_total}\n") in
+// its output.
+func curlTook(out string) (time.Duration, bool) {
+	m := curlTimeTotal.FindStringSubmatch(out)
+	if m == nil {
+		return 0, false
+	}
+	d, err := time.ParseDuration(m[1] + "s")
+	return d, err == nil
+}
+
+var curlTimeTotal = regexp.MustCompile(`time_total=([0-9]+(?:\.[0-9]+)?)`)
 
 // nftExpires is an nftables set element's time left.
 var nftExpires = regexp.MustCompile(`expires ((?:[0-9]+[hms]+)+)`)
