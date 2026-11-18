@@ -212,7 +212,7 @@ func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int
 }
 
 func goTestFresh(ctx context.Context, root, project string, pkg GoPackage, w io.Writer, env, args []string) (labErr, testErr error) {
-	l, err := up(ctx, root, project, GoTestTopology(), "", runInputs)
+	l, err := up(ctx, labBudget.begin(time.Time{}), root, project, GoTestTopology(), "", runInputs)
 	if l != nil {
 		defer func() {
 			if err := l.Down(context.WithoutCancel(ctx)); err != nil && labErr == nil {

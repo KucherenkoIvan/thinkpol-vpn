@@ -96,7 +96,7 @@ func TestHarnessLabsBelongToTheirCheckout(t *testing.T) {
 	if err := downProject(ctx, l.Project, other); err == nil || !strings.Contains(err.Error(), "belongs to") {
 		t.Errorf("tear-down from the other checkout: %v", err)
 	}
-	if _, err := up(ctx, other, l.Project, GoTestTopology(), "", runInputs); err == nil || !strings.Contains(err.Error(), "belongs to") {
+	if _, err := up(ctx, labBudget.begin(testDeadline(t)), other, l.Project, GoTestTopology(), "", runInputs); err == nil || !strings.Contains(err.Error(), "belongs to") {
 		t.Errorf("the other checkout started a lab under the same name: %v", err)
 	}
 	if got := l.Node("gotest").MustExec(t, "echo", "alive"); got != "alive\n" {
@@ -125,7 +125,7 @@ func TestHarnessDownRunRemovesOnlyItsRun(t *testing.T) {
 		mine:  longestTestProject(checkout, mine),
 		other: goTestPackageProject(checkout, other, processID, "example.net/x"),
 	} {
-		l, err := up(ctx, root, project, GoTestTopology(), "test:"+t.Name(), runInputs)
+		l, err := up(ctx, labBudget.begin(testDeadline(t)), root, project, GoTestTopology(), "test:"+t.Name(), runInputs)
 		if l != nil {
 			t.Cleanup(func() { _ = l.Down(context.WithoutCancel(ctx)) })
 		}

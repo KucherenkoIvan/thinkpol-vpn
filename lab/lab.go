@@ -90,8 +90,14 @@ func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 	}
 	cwd, _ := os.Getwd()
 	project := claimProject(ownTestProject(checkout, run, cwd, t.Name()))
-	// The run's directory, for .kept; up gets the same one.
-	p, err := prepareWithin(labBudget.start, root)
+	clock := labBudget.begin(testDeadline(t))
+	// The run's directory, for .kept; up gets the same one, within the
+	// same bound.
+	var p preparedRun
+	err = clock.run(context.Background(), project, phaseBeforeSlot, func(ctx context.Context) (err error) {
+		p, err = prepare(ctx, root)
+		return err
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +113,7 @@ func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 			t.Fatal(err)
 		}
 	}
-	l, err := up(context.Background(), root, project, topo, slotKey, runInputs)
+	l, err := up(context.Background(), clock, root, project, topo, slotKey, runInputs)
 	if l != nil {
 		t.Cleanup(func() { l.cleanup(t, p.bin, keep) })
 	}
@@ -136,7 +142,7 @@ func claimProject(project string) string {
 // cleanup tears the lab down, or with keep (KeepEnv) keeps a failed
 // test's lab and the run directory bins it mounts.
 func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), labBudget.teardown)
 	defer cancel()
 	if t.Failed() {
 		if res, err := runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "logs", "--no-color", "--timestamps"); err == nil {
@@ -163,38 +169,118 @@ func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool) {
 // binaries are its own, built into its directory under lab/.run, and go
 // with it (Down, or labctl down).
 func UpDetached(ctx context.Context, root, project string, topo Topology) (*Lab, error) {
-	return up(ctx, root, project, topo, "", detachedInputs)
+	return up(ctx, labBudget.begin(time.Time{}), root, project, topo, "", detachedInputs)
 }
 
-func prepareWithin(d time.Duration, root string) (preparedRun, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), d)
-	defer cancel()
-	return prepare(ctx, root)
-}
-
-// labBudget bounds a lab's start: the wait for a lab slot on its own, and
-// the start itself (before the slot and from when it is held), so a lab
-// queued behind others for a slot under load doesn't fail its start
-// before it began. The wait's bound stays under make lab-test's
-// LAB_TIMEOUT, so a test still waiting fails with what it waited for.
-var labBudget = startBudget{wait: 45 * time.Minute, start: 10 * time.Minute}
+// labBudget bounds a lab's start in three phases, each with a bound of its
+// own: what comes before the lab slot (a leftover lab removed, the image
+// and binaries ready), the wait for the slot, and the start once the slot
+// is held, so a lab queued behind others under load doesn't fail its start
+// before it began. In a test, none runs past the test binary's deadline
+// (go test -timeout, make lab-test's LAB_TIMEOUT) less the tear-down, and
+// the slot wait ends early enough to leave the start its whole bound: a
+// lab still waiting fails with what it waited for, not in the timeout's
+// panic.
+var labBudget = startBudget{before: 15 * time.Minute, wait: 45 * time.Minute, start: 10 * time.Minute, teardown: 2 * time.Minute}
 
 type startBudget struct {
-	wait  time.Duration // for a lab slot
-	start time.Duration // for each part of the start: before the slot, and once it is held
+	before   time.Duration // everything before the slot, counted from the start's beginning
+	wait     time.Duration // for a lab slot
+	start    time.Duration // from when the slot is held until the lab is sealed
+	teardown time.Duration // a test lab's clean-up (Lab.cleanup)
 }
 
-// waitThenStart runs wait under b.wait, then returns the context the
-// start runs under: its b.start counts from when wait returned.
-func (b startBudget) waitThenStart(ctx context.Context, wait func(context.Context) error) (context.Context, context.CancelFunc, error) {
-	waitCtx, cancel := context.WithTimeout(ctx, b.wait)
-	err := wait(waitCtx)
-	cancel()
-	if err != nil {
-		return nil, nil, err
+// testDeadline is the test binary's deadline, if t has one.
+func testDeadline(t testing.TB) time.Time {
+	if d, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		if dl, ok := d.Deadline(); ok {
+			return dl
+		}
 	}
-	startCtx, cancel := context.WithTimeout(ctx, b.start)
-	return startCtx, cancel, nil
+	return time.Time{}
+}
+
+// begin fixes one lab start's bounds from now; deadline is its test's
+// (zero for none).
+func (b startBudget) begin(deadline time.Time) startClock {
+	return b.clock(time.Now, deadline)
+}
+
+func (b startBudget) clock(now func() time.Time, deadline time.Time) startClock {
+	c := startClock{b: b, now: now, began: now()}
+	if !deadline.IsZero() {
+		c.end = deadline.Add(-b.teardown)
+	}
+	return c
+}
+
+type startPhase int
+
+const (
+	phaseBeforeSlot startPhase = iota
+	phaseSlotWait
+	phaseAfterSlot
+)
+
+// startClock is one lab start's bounds (startBudget.begin).
+type startClock struct {
+	b     startBudget
+	now   func() time.Time
+	began time.Time
+	end   time.Time // the test's deadline less the tear-down; zero without one
+}
+
+// deadline is when phase p, beginning now, must end, and whether the
+// test's deadline cut it short.
+func (c startClock) deadline(p startPhase) (time.Time, bool) {
+	var dl time.Time
+	var reserve time.Duration
+	switch p {
+	case phaseBeforeSlot:
+		dl = c.began.Add(c.b.before)
+	case phaseSlotWait:
+		dl, reserve = c.now().Add(c.b.wait), c.b.start
+	case phaseAfterSlot:
+		dl = c.now().Add(c.b.start)
+	}
+	if !c.end.IsZero() && c.end.Add(-reserve).Before(dl) {
+		return c.end.Add(-reserve), true
+	}
+	return dl, false
+}
+
+// run runs f under phase p's bound. An error of f's once the bound has
+// passed says which bound it was; the slot wait still takes a free slot
+// with no time left (waitLock tries once).
+func (c startClock) run(ctx context.Context, project string, p startPhase, f func(context.Context) error) error {
+	from := c.now()
+	if p == phaseBeforeSlot {
+		from = c.began
+	}
+	dl, cut := c.deadline(p)
+	pctx, cancel := context.WithDeadline(ctx, dl)
+	defer cancel()
+	err := f(pctx)
+	if err == nil || pctx.Err() == nil || ctx.Err() != nil {
+		return err
+	}
+	within := max(dl.Sub(from), 0).Round(time.Millisecond)
+	if within >= time.Second {
+		within = within.Round(time.Second)
+	}
+	var what string
+	switch p {
+	case phaseBeforeSlot:
+		what = fmt.Sprintf("not ready for a lab slot within %v (leftover lab removed, image and binaries built)", within)
+	case phaseSlotWait:
+		what = fmt.Sprintf("no lab slot within %v", within)
+	case phaseAfterSlot:
+		what = fmt.Sprintf("start not done %v after the slot", within)
+	}
+	if cut {
+		what += ", cut short by the test's deadline"
+	}
+	return fmt.Errorf("lab %s: %s: %w", project, what, err)
 }
 
 // labInputs builds the image and the binaries a lab runs, and returns the
@@ -225,8 +311,8 @@ func detachedInputs(ctx context.Context, root, stateDir string) (image, string, 
 // start with ProjectPrefix), and returns once every node is running and
 // sealed into the lab. A lab of this checkout left over under the same name
 // is removed first; another checkout's lab under that name is an error. On
-// error the returned Lab, if any, still needs Down. labBudget bounds it.
-func up(ctx context.Context, root, project string, topo Topology, slotKey string, inputs labInputs) (*Lab, error) {
+// error the returned Lab, if any, still needs Down. clock bounds each phase.
+func up(ctx context.Context, clock startClock, root, project string, topo Topology, slotKey string, inputs labInputs) (*Lab, error) {
 	if !strings.HasPrefix(project, ProjectPrefix) {
 		return nil, fmt.Errorf("lab: project %q doesn't start with %q", project, ProjectPrefix)
 	}
@@ -234,19 +320,23 @@ func up(ctx context.Context, root, project string, topo Topology, slotKey string
 		return nil, err
 	}
 	stateDir := filepath.Join(root, "lab", ".run", project)
-	img, binDir, err := beforeSlot(ctx, root, project, stateDir, inputs)
+	var img image
+	var binDir string
+	err := clock.run(ctx, project, phaseBeforeSlot, func(ctx context.Context) (err error) {
+		img, binDir, err = beforeSlot(ctx, root, project, stateDir, inputs)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
 	var release func()
-	ctx, cancel, err := labBudget.waitThenStart(ctx, func(ctx context.Context) (err error) {
+	err = clock.run(ctx, project, phaseSlotWait, func(ctx context.Context) (err error) {
 		release, err = acquireSlot(ctx, slotKey)
 		return err
 	})
 	if err != nil {
 		return nil, errors.Join(err, os.RemoveAll(stateDir))
 	}
-	defer cancel()
 	l := &Lab{
 		Project:  project,
 		Topology: topo,
@@ -256,27 +346,24 @@ func up(ctx context.Context, root, project string, topo Topology, slotKey string
 		nodes:    map[string]*Node{},
 		release:  release,
 	}
-	if err := l.create(ctx, img); err != nil {
-		return l, err
-	}
-	if err := l.inspect(ctx); err != nil {
-		return l, err
-	}
-	if err := l.learnBridges(ctx); err != nil {
-		return l, err
-	}
-	if err := l.configure(ctx); err != nil {
-		return l, err
-	}
-	return l, nil
+	return l, clock.run(ctx, project, phaseAfterSlot, func(ctx context.Context) error {
+		if err := l.create(ctx, img); err != nil {
+			return err
+		}
+		if err := l.inspect(ctx); err != nil {
+			return err
+		}
+		if err := l.learnBridges(ctx); err != nil {
+			return err
+		}
+		return l.configure(ctx)
+	})
 }
 
-// beforeSlot removes a leftover lab of the name and gets the lab's inputs,
-// under the start's budget. Until the lab is created nothing of it is up:
-// on error its state directory goes, a detached lab's binaries with it.
+// beforeSlot removes a leftover lab of the name and gets the lab's inputs.
+// Until the lab is created nothing of it is up: on error its state
+// directory goes, a detached lab's binaries with it.
 func beforeSlot(ctx context.Context, root, project, stateDir string, inputs labInputs) (image, string, error) {
-	ctx, cancel := context.WithTimeout(ctx, labBudget.start)
-	defer cancel()
 	if err := downProject(ctx, project, root); err != nil {
 		return image{}, "", err
 	}

@@ -137,17 +137,24 @@ LAB_P ?= 4
 # The harness's own lab tests (named TestHarness…) check the lab itself
 # (isolation, sealing, ownership, subnets, binaries), not the product.
 # make lab-test runs them only when what they check changed: a pass is
-# remembered under the hash of the non-test Go files under lab/ (the
-# harness, its tools, the censor), the image, the seccomp profile, the
-# harness tests' own files and the Go and Docker versions, in
-# LAB_HARNESS_CACHE (shared by checkouts: the hash names the content, not
-# the checkout).
+# remembered under the hash of LAB_HARNESS_FILES (the non-test Go files
+# under lab/: the harness, its tools, the censor; the harness tests and the
+# helpers they reach, all in lab/harness*_test.go, which
+# TestTheHarnessHashCoversWhatItsTestsReach checks; the image, the seccomp
+# profile, go.mod and go.sum) and the Go, Docker, Docker kernel and Compose
+# versions, in LAB_HARNESS_CACHE (shared by checkouts: the hash names the
+# content, not the checkout). A run in which a harness test skipped isn't
+# remembered.
 LAB_HARNESS_RUN := ^TestHarness
 LAB_HARNESS_CACHE ?= $(HOME)/.cache/thinkpol-lab/harness
-LAB_HARNESS_HASH = versions=$$(go version && docker version --format '{{.Server.Version}}') || exit 1; \
-	{ echo "$$versions"; for f in $$(find lab -name '*.go' ! -name '*_test.go' | LC_ALL=C sort) $$(LC_ALL=C grep -l '^func TestHarness' lab/*_test.go) lab/Dockerfile lab/seccomp.json; do \
-		echo "== $$f" && cat "$$f" || exit 1; \
-	done; } | git hash-object --stdin
+LAB_HARNESS_GOTEST = go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) -run '$(LAB_HARNESS_RUN)' ./lab
+LAB_HARNESS_FILES = $(shell find lab -name '*.go' ! -name '*_test.go' | LC_ALL=C sort) $(sort $(wildcard lab/harness*_test.go)) lab/Dockerfile lab/seccomp.json go.mod go.sum
+# Hashed from a file, not a pipe: a read that fails inside a pipe fails
+# only the pipe's subshell, and the partial input would still hash.
+LAB_HARNESS_HASH = versions=$$(go version && docker version --format '{{.Server.Version}}' && docker info --format '{{.KernelVersion}}' && docker compose version --short) || exit 1; \
+	tmp=$$(mktemp) || exit 1; trap 'rm -f "$$tmp"' EXIT; \
+	{ echo "$$versions"; for f in $(LAB_HARNESS_FILES); do echo "== $$f" && cat "$$f" || exit 1; done; } > "$$tmp" || exit 1; \
+	git hash-object "$$tmp"
 
 lab: lab-test ## the lab suite, ending in the censor matrix (lab/RESULTS.md)
 
@@ -178,7 +185,7 @@ lab-test: ## lab tests (each starts its own lab), every package's tests inside a
 	exit $$status
 
 lab-harness: ## the lab harness's own tests (TestHarness…: isolation, sealing, ownership, subnets), each starting labs
-	go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) -run '$(LAB_HARNESS_RUN)' ./lab
+	$(LAB_HARNESS_GOTEST)
 
 # The hash lab-harness-cached keys its stamp by.
 lab-harness-hash:
@@ -191,7 +198,13 @@ lab-harness-cached:
 	stamp="$(LAB_HARNESS_CACHE)/$$hash"; \
 	if [ -e "$$stamp" ]; then echo "lab-harness: passed before on harness $$hash, not run again"; exit 0; fi; \
 	echo "lab-harness: harness $$hash not passed before, running it"; \
-	$(MAKE) --no-print-directory lab-harness && mkdir -p "$(LAB_HARNESS_CACHE)" && touch "$$stamp"
+	out=$$(mktemp) || exit 1; trap 'rm -f "$$out" "$$out.status"' EXIT; \
+	{ $(LAB_HARNESS_GOTEST) -v; echo $$? > "$$out.status"; } 2>&1 | tee "$$out"; \
+	[ "$$(cat "$$out.status" 2>/dev/null)" = 0 ] || exit 1; \
+	if grep -q -e '--- SKIP' -e 'no tests to run' "$$out"; then \
+		echo "lab-harness: passed, but a harness test skipped: not remembered, the next make lab-test runs it again"; exit 0; \
+	fi; \
+	mkdir -p "$(LAB_HARNESS_CACHE)" && touch "$$stamp"
 
 # Performance gates: tests that check THINKPOL_LAB_PERF and are named
 # Test…Throughput, in these packages (a new one adds its package here).
