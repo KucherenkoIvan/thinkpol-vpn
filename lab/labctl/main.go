@@ -290,8 +290,12 @@ func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patt
 	}
 	var results []lab.GoTestResult
 	if len(pkgs) > 0 {
-		if results, err = lab.GoTestEach(ctx, root, pkgs, opt.parallel, os.Stdout, opt.cache, env, args...); err != nil {
-			return err
+		var labErr error
+		results, labErr = lab.GoTestEach(ctx, root, pkgs, opt.parallel, os.Stdout, opt.cache, env, args...)
+		if labErr != nil {
+			// The packages that ran still took their time: the budget's
+			// report needs it most when labs failed to start.
+			return errors.Join(labErr, writeGotestTimes(opt.times, results))
 		}
 	}
 	for _, pkg := range tagged {
@@ -302,18 +306,22 @@ func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patt
 		}
 		results = append(results, res)
 	}
-	if opt.times != "" {
-		var times []lab.TestTime
-		for _, r := range results {
-			if !r.Cached {
-				times = append(times, lab.TestTime{Name: r.ImportPath, Elapsed: r.Elapsed})
-			}
-		}
-		if err := lab.WriteTestTimes(opt.times, times); err != nil {
-			return errors.Join(gotestVerdict(results, opt.failSkipped), err)
+	return errors.Join(gotestVerdict(results, opt.failSkipped), writeGotestTimes(opt.times, results))
+}
+
+// writeGotestTimes writes, to file, how long each package that ran took;
+// file "" writes nothing.
+func writeGotestTimes(file string, results []lab.GoTestResult) error {
+	if file == "" {
+		return nil
+	}
+	var times []lab.TestTime
+	for _, r := range results {
+		if !r.Cached {
+			times = append(times, lab.TestTime{Name: r.ImportPath, Elapsed: r.Elapsed})
 		}
 	}
-	return gotestVerdict(results, opt.failSkipped)
+	return lab.WriteTestTimes(file, times)
 }
 
 // testJSON filters go test -json from r into what go test would have

@@ -266,3 +266,30 @@ func TestTestJSONWritesTimes(t *testing.T) {
 		t.Error("no -times: passed")
 	}
 }
+
+// TestGotestTimesWhenALabFails: a package whose lab never starts (Docker
+// fails) still gets its line in -times, so the budget's report has the
+// node phase when it needs it most.
+func TestGotestTimesWhenALabFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the go command")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no go command here")
+	}
+	fakeDockerMarker(t)
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOFLAGS", "-mod=mod")
+	root := writeModule(t, map[string]string{
+		"go.mod":              "module example.net/nolab\n\ngo 1.26\n",
+		"plain/plain_test.go": "package plain\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {}\n",
+	})
+	times := filepath.Join(t.TempDir(), "times")
+	if err := runGotest(t.Context(), root, []string{"-times", times, "./..."}); err == nil {
+		t.Fatal("passed with Docker failing")
+	}
+	got, err := lab.ReadTestTimes(times)
+	if err != nil || len(got) != 1 || got[0].Name != "example.net/nolab/plain" {
+		t.Fatalf("times: %v, %v", got, err)
+	}
+}
