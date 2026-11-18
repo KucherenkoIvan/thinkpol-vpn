@@ -108,7 +108,9 @@ func (e *Engine) Unnoticed() uint64 { return e.flows.unnoticed.Load() }
 // in config order, and the most severe verdict among a pinned Throttle
 // and theirs decides it, the first module to give it winning a tie. A
 // Throttle, pinned or not, never stops a later module from dropping or
-// resetting the packet; Accept, pinned or not, never stops anything.
+// resetting the packet; Accept, pinned or not, never stops anything. A
+// packet every module accepts is the first module's to give a reason (an
+// exemption, say), so the verdict log names it, or no module's.
 func (e *Engine) Handle(p *Packet) Action {
 	now := e.now()
 	f, isNew := e.flows.flow(FlowKey{p.Proto, p.Src, p.Dst, p.SrcPort, p.DstPort}, now)
@@ -151,7 +153,7 @@ func (e *Engine) Handle(p *Packet) Action {
 		if r.severity() == 2 {
 			return e.apply(f, p, r, now)
 		}
-		if r.severity() > best.severity() {
+		if r.severity() > best.severity() || r.verdict == Accept && best.verdict == Accept && best.why == "" && r.why != "" {
 			best = r
 		}
 	}
