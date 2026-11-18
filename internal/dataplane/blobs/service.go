@@ -725,12 +725,14 @@ func (s *Service) obtain(ctx context.Context, gen uint64, ref netmap.BlobRef) {
 			if !s.hold(ref, data, func(st *Status) { st.Fetched++ }) {
 				return
 			}
-			s.log.Info("blob fetched", "blob", short(ref), "kind", ref.Kind, "name", ref.Name, "size", ref.Size, "peer", peer.ID)
+			// Logged only after the save returns: whoever reads the line
+			// may look for the blob in the store.
 			if s.store != nil && ref.Name != "" {
 				if err := s.store.Save(ref, data); err != nil {
 					s.log.Warn("storing a blob", "blob", short(ref), "err", err)
 				}
 			}
+			s.log.Info("blob fetched", "blob", short(ref), "kind", ref.Kind, "name", ref.Name, "size", ref.Size, "peer", peer.ID)
 			return
 		case errors.Is(err, ErrUndecodable):
 			s.fail(gen, ref)
