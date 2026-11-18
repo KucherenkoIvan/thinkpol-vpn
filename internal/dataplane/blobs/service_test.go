@@ -325,7 +325,7 @@ func TestAFetchedBlobIsInTheStoreWhenItsFetchIsLogged(t *testing.T) {
 
 	store := newMemStore()
 	logged := make(chan bool, 1)
-	s := NewOnNet(Options{Store: store, Limits: fast, Log: slog.New(onRecord{Handler: slog.DiscardHandler, on: func(r slog.Record) {
+	s := NewOnNet(Options{Store: store, Limits: fast, Log: slog.New(onRecord{Handler: slog.NewTextHandler(io.Discard, nil), on: func(r slog.Record) {
 		if r.Message == "blob fetched" {
 			select {
 			case logged <- store.has(ref):
