@@ -627,8 +627,10 @@ func TestTheKillSwitchIsReappliedAtEveryTick(t *testing.T) {
 			tick = tick.Add(every)
 		}
 	}
-	if d := (DeviceHost{}).reapplyEvery(); d != killSwitchReapply {
-		t.Errorf("the default period: %v, want %v", d, killSwitchReapply)
+	for set, want := range map[time.Duration]time.Duration{0: killSwitchReapply, 2 * time.Second: 2 * time.Second, time.Hour: killSwitchReapply} {
+		if d := (DeviceHost{KillSwitchReapply: set}).reapplyEvery(); d != want {
+			t.Errorf("the period set to %v: %v, want %v", set, d, want)
+		}
 	}
 	if firewall.DirectTimeout < 2*killSwitchReapply {
 		t.Errorf("firewall.DirectTimeout %v leaves no stall margin over a %v re-apply", firewall.DirectTimeout, killSwitchReapply)
