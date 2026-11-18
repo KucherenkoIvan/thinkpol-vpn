@@ -179,9 +179,11 @@
 // (180 s), REKEY_TIMEOUT (5 s) and KEEPALIVE_TIMEOUT (10 s), and the
 // persistent keepalive interval wg(8) suggests (25 s), never what a
 // transport was measured to do. Six numbers are the module's own
-// choices, no WireGuard timer: the 2 s an answer has (also how long the
-// record count must stay off its level to have stepped, and how much
-// sooner than a rekey period a count step may come), the 1 s an idle
+// choices, no WireGuard timer: the 2 s an answer has (also how long
+// after the records that moved it the record count must read a value off
+// its level again to have stepped, and how far apart a run of records
+// and the reading on the level before it may be for an answer in flight
+// to have hidden a step from that reading), the 1 s an idle
 // run's intervals may differ by, the three occurrences (rekeys, or idle
 // keepalives once the connection has carried an exchange) it needs, the
 // 300 ms of quiet after which it reads the record count, the 10 ms that
@@ -229,24 +231,44 @@
 //     answered, or not, as any data). The module counts each direction's
 //     records and reads their difference whenever the connection has
 //     carried no record for 300 ms. A difference read off the level is a
-//     step once it has read off the level for 2 s, from the first record
-//     after the quiet before the reading that first found it off: an
-//     answer later than 300 ms but within 2 s leaves the level alone. The
-//     rhythm shows when the difference steps by one amount three times in
-//     a row, each step (timed by that first record) REKEY_AFTER_TIME less
-//     2 s to the rekey window above after the one before, with no other
-//     change in between: under traffic of one record each way per
+//     move, and a step once a reading finds the value it was first read
+//     at (or the latest it was read at) again 2 s or more after the
+//     records that took it there ended: a request answered later than
+//     300 ms but within 2 s takes the count off the level, or to another
+//     value off it, and back, and is no step. A move read again on a
+//     packet with no record since (a bare TCP acknowledgement, the next
+//     record's packet before that record is counted) is read like any
+//     reading, so a quiet connection's step is confirmed on the next
+//     packet past its 2 s, not at the reading after the next record. A
+//     step is timed as a span, from the first record of the run (records
+//     with no 300 ms of quiet between them) whose reading found the move
+//     to the last record of the run that took the count to the value it
+//     stepped to; when the run the reading on the level before it read
+//     ended within 2 s before, the span starts with that run, since an
+//     answer in flight then can have hidden the step from that reading
+//     (a record the other way sent just before the handshake and
+//     answered late). The handshake's records lie in the span however
+//     busy the connection was around them. The rhythm shows when the
+//     difference steps by one amount three times in a row, each step's
+//     span ending REKEY_AFTER_TIME or more after the one before began and
+//     beginning within the rekey window above after it ended, with no
+//     other change in between: under traffic of one record each way per
 //     exchange (a ping, the path probes) the count is flat but for the
-//     rekeys. The 2 s below REKEY_AFTER_TIME are for the step's timing:
-//     its first record can come before the handshake's (a probe or ping
-//     with no 300 ms of quiet before the rekey, records the censor
-//     handled late), while WireGuard's rekeys under steady use come only
-//     a fraction of a second over 120 s apart (TP-245: 120.3 and 120.6 s
-//     on the trace below, 120.3 and 120.7 s on a loaded lab, where one
-//     step was timed 0.34 s before its handshake). Traffic that isn't
-//     one for one moves it: TCP inside the tunnel, segments against
-//     fewer, delayed acknowledgements, steps the level by its own amounts,
-//     and a rekey under it is missed by this signal.
+//     rekeys. WireGuard's rekeys come REKEY_AFTER_TIME and a round trip
+//     or more apart (wireguard-go starts the timer when the response
+//     arrives), so they always chain, while steps that truly come sooner
+//     chain only when they come within the length of their spans of
+//     REKEY_AFTER_TIME: under 2 s plus the runs around them under the
+//     traffic of the tests (steps 119 s apart under a ping every 2 s
+//     don't chain). TP-245 measured why the span is needed: WireGuard's
+//     rekeys under steady use came 120.13 to 120.92 s apart on 13 loaded
+//     lab runs (120.3 and 120.6 s on the trace below), and the first
+//     record of a step's run came up to 0.34 s before the handshake's (a
+//     probe and a late ping with no quiet between them and the rekey).
+//     Traffic that isn't one for one moves the count: TCP inside the
+//     tunnel, segments against fewer, delayed acknowledgements, steps
+//     the level by its own amounts, and a rekey under it is missed by
+//     this signal.
 //   - burst: the same handshake seen whole, as a burst of records each
 //     within 10 ms of the one before, either way, with one record more one
 //     way than the other and at least one each way (a rekey under a ping:
@@ -293,32 +315,53 @@
 //
 // The count and burst signals have blind spots and risks of their own.
 // The count needs 300 ms of quiet to read a level and the level flat
-// between rekeys: where a round trip at the censor takes over 2 s,
-// requests in flight make the level move, and records one way that
-// nothing answers (a server push, cover records) between rekeys break its
-// chain. The
-// burst needs a handshake's records within 10 ms of each other at the
-// censor (the lab's router; a censor beside the initiator sees the
-// response and its confirming keepalive back to back), with nothing else
-// in the burst. With both (the reality trace's server records 20 ms later
-// and one record from the server every 30 s besides) neither fires, and
-// the tunnel is again hidden from the module.
+// between rekeys, and these break its chain: records one way that
+// nothing answers (a server push, cover records) between rekeys; an
+// answer later than 2 s after the records before the reading that found
+// its request in flight (a step, and its answer another); and requests
+// answered later than 300 ms that leave a different number in flight
+// from one reading to the next, so that the level itself is read with
+// some in flight and corrected later by a step of its own. A round trip
+// over 300 ms alone breaks nothing: a request every 0.5 s answered after
+// 400 ms leaves one in flight at every reading, and the level holds it.
+// Random requests at one a second answered 0.3 to 1.9 s later do break
+// it: an unanswered record every 150 s beside them is caught by the count
+// in none of 20 connections (TestWGRhythmImbalanceBesideTraffic), so a
+// rekey under such traffic is missed by this signal too. The burst needs
+// a handshake's records within 10 ms of each other at the censor (the
+// lab's router; a censor beside the initiator sees the response and its
+// confirming keepalive back to back), with nothing else in the burst:
+// other records within 10 ms of the handshake's change its counts. With
+// both (the reality trace's server records 20 ms later and one record
+// from the server every 30 s besides) neither fires, and the tunnel is
+// again hidden from the module. Some rekeys break both chains at once: a
+// handshake answered later than REKEY_TIMEOUT makes WireGuard send a
+// second initiation, so the count steps by two and the burst, if whole,
+// holds one record more from the initiator; one such rekey starts both
+// chains over, and a 7.5-minute hold then sees too few rekeys after it.
 //
 // Neither counting rule needs a quiet connection: traffic of one record
 // each way between steps leaves the count's chain alone, and a burst of
 // one record against one restarts no burst chain. So, flagged by design,
-// as false positives: anything that leaves the same imbalance every 2 to
-// 3.5 minutes, whatever balanced traffic runs beside it (a poll whose
-// response takes one record more than its request, a one-way heartbeat),
-// and an exchange of one record more one way than the other within 10 ms
-// recurring at that interval. For instance MQTT over TLS with PINGREQ and
-// PINGRESP every 60 s and a QoS 0 publish nothing answers every 150 s
-// (pinned, TestWGRhythmFlagsMQTTKeepalive: flagged by the count at the
-// third publish), a websocket with ping and pong and a presence message
-// one way every 2 to 3.5 minutes, or a long poll whose timeout runs 120 to
-// 210 s and whose empty answer takes a record more or fewer than its
-// request. An accepted risk of the lab's detector, which judges
-// transports held in the lab, not users' traffic.
+// as false positives: anything that leaves the same imbalance from 2 (for
+// the count, a little less: its spans, above) to 3.5 minutes apart,
+// whatever balanced traffic runs beside it (a poll whose response takes
+// one record more than its request, a one-way heartbeat, on a busy or a
+// quiet connection), and an exchange of one record more one way than the
+// other within 10 ms recurring at that interval. For instance MQTT over
+// TLS with PINGREQ and PINGRESP every 60 s and a QoS 0 publish nothing
+// answers every 150 s (pinned, TestWGRhythmFlagsMQTTKeepalive: flagged by
+// the count at the third publish), such a publish every 150 s beside
+// random exchanges at a request a second answered within 80 ms (20 of 20
+// connections flagged by the count, TestWGRhythmImbalanceBesideTraffic;
+// answered 0.3 to 1.9 s later, none by the count, above), a websocket
+// with ping and pong and a presence message one way every 2 to 3.5
+// minutes, or a long poll whose timeout runs from 2 minutes (a little
+// less for the count) to 210 s and whose empty answer takes a record more
+// or fewer than its request. The 2 s hold is what lets an imbalance chain
+// beside answers 0.3 to 2 s late that used to break it; measured, it adds
+// no flag on random traffic below. An accepted risk of the lab's
+// detector, which judges transports held in the lab, not users' traffic.
 //
 // Measured on random two-way traffic, every record one size (so no size is
 // ever new), 6 minutes a connection, requests of up to 1, 2 or 3 records
@@ -333,7 +376,12 @@
 // vantage (all bursts of 2 records against 1 or 1 against 2) and none of
 // 600 farther off. So about 1.3% of such 6-minute connections, under 2.4%
 // (95% confidence), flag at one request every 10 s to a minute, and the
-// risk grows with a connection's length. Without the burst signal's cap of
+// risk grows with a connection's length. Answers 0.3 to 1.9 s later (a
+// slow path, where the count's 2 s hold runs): 6 of 600 at one request a
+// minute (all rekey, the connections that flag above), 3 of 60 at one a
+// second (all rekey: identical exchanges after 5 s of quiet), none at one
+// every 10 s or at 10 and 50 a second, and none by the count or the
+// burst at any rate. Without the burst signal's cap of
 // three records a way, 15 more flag, by bursts of 4 to 14 records a way,
 // 14 of them at 10 and 50 requests a second. An earlier measurement, sizes of 40 to
 // 1500 bytes before the cap: at 10 and 50 requests a second, 1 to 4 in
