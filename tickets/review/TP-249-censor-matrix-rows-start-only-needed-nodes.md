@@ -56,3 +56,5 @@ The owner wants a full lab to take at most 15 minutes on the remote runner (2026
 - 2026-11-19 no new test, so no mutation: a cell that needs a dropped node panics in lab.Lab.Node, and the after run finished green; make test green on d3cc0390; no full make lab-test (the brief's 2026-11-18 rule: targeted runs only)
 - 2026-11-19 make lint green on 56985e28 (code as d3cc0390)
 - 2026-11-19 in-progress → review
+- 2026-11-19 review round 1: nits R1.1–R1.3, merge
+- 2026-11-19 R1.1 maps built on the camouflage node (nothing broke), R1.2 node list inline in startRow, R1.3 ticket wording; make lint and make test green on 7a25c1c6; lab-gotest on 7a25c1c6: TestCensorMatrix/^(udp|reality)$ ok 789.6 s, every cell as expected; the brief's ^plain-tcp$ matched no row (its name is plain-tcp_(control)), so TestCensorMatrix/^plain-tcp ran on its own: ok 174.4 s, every cell as expected
