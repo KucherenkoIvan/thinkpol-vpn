@@ -31,6 +31,11 @@ In two or three lab runs (TP-229's and TP-238's, 2026-11-17) TestBlobDistributio
 - Evidence: TP-243's full lab at 3d2f04d8 failed at the first `sha256sum` after the line, "No such file or directory". On this branch, the old order plus a 3 s sleep at the top of `diskBlobs.Save` (a slow disk) fails `TestBlobDistribution` the same way, at the same check; the fixed order with the same sleep passes.
 - Fix: save, then log (`internal/dataplane/blobs/service.go`), stated in the package doc. The lab test's second check after the line had a 30 s poll that hid the same race; it is now a single read, like the first.
 
+## Review findings
+- [x] R1.1 (nit) The new unit test copied startNode's body by hand (no device log, Info level, no "log of …" dump on failure). Done: startNode takes optional handler wrappers (`wrap ...func(slog.Handler) slog.Handler`, internal/dataplane/blobs/service_test.go:207); TestAFetchedBlobIsInTheStoreWhenItsFetchIsLogged starts the device with it, so its log is dumped if it fails.
+- [x] R1.2 (nit) A failed Save warned "storing a blob" with no kind or name and still logged "blob fetched", so a lab reader saw "No such file" without knowing why. Done: the Warn carries kind and name and "blob fetched" carries `stored` (true/false), save still before the log (internal/dataplane/blobs/service.go:730-738); doc.go:68-70 says so.
+- [x] R1.3 (nit) Comments: onRecord's (service_test.go:298) reworded; the test's comment (service_test.go:317) no longer names the ticket.
+
 ## Log
 - 2026-11-18 created in backlog (seen in lab runs 2026-11-17)
 - 2026-11-18 backlog → in-progress, owner: agent-tp-244
@@ -43,3 +48,5 @@ In two or three lab runs (TP-229's and TP-238's, 2026-11-17) TestBlobDistributio
 - 2026-11-18 merged origin/rewrite (TP-243) at 8b2e905e; there: make lint, make test green; lab-gotest TestBlobDistribution COUNT=3 pass (833 s), lab-gotest ./internal/dataplane/blobs/... pass; no full lab per the orchestrator's 2026-11-18 rule (targeted runs on the final commit, full labs on rewrite after merges)
 - 2026-11-18 couldn't verify: a full lab green on this branch (the remote's lab slots were saturated); out of scope: the COUNT=20 lab-gotest can't finish 20 runs of a ~5 min test within lab-gotest's fixed 60 min `-timeout` under load
 - 2026-11-18 in-progress → review
+- 2026-11-18 review round 1: nits R1.1–R1.3, merge
+- 2026-11-18 R1.1–R1.3 at 27365eb7: go test -race -count=20 ./internal/dataplane/blobs/ pass; make lint, make test green; lab-gotest TestBlobDistribution pass (122 s); mutation: the old order (log before save) fails TestAFetchedBlobIsInTheStoreWhenItsFetchIsLogged, with the device's log dumped
