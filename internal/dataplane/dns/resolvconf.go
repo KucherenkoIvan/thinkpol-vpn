@@ -324,8 +324,8 @@ type resolvConf struct {
 type foreignWrite struct {
 	began time.Time // when the settle began; it never runs past began+settleMax
 	last  fileState // the file as last read
-	// quietUntil is when the quiet timer, as last reset, fires: tests read
-	// it to see that a change restarted the settle.
+	// quietUntil is when the quiet timer, as last reset, fires, zero while
+	// it is stopped: tests read it to see that a change restarted the settle.
 	quietUntil time.Time
 }
 
@@ -699,6 +699,7 @@ func (r *resolvConf) watch(first func(), changed bool, changes <-chan bool, clos
 			if r.foreign = foreign; r.foreign == nil {
 				r.beginForeign(stateOf(f, ferr))
 			}
+			r.foreign.quietUntil = time.Time{} // quiet was stopped above
 			r.mu.Unlock()
 			continue
 		}
