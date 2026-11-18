@@ -177,7 +177,8 @@ lab-streams:
 		phases="lab node";; \
 	esac; \
 	case " $(LAB_STREAMS) " in *" long "*) \
-		( { THINKPOL_LAB_STREAM=long go test -tags lab -json -count=1 -timeout $(LAB_TIMEOUT) -run '$(LAB_LONG_TESTS)' ./lab 2>&1; echo $$? > "$$tmp/long.status"; } | "$$labctl" testjson -times "$$tmp/long.times" 2>&1 | awk '{print "[long] " $$0; fflush()}' ) & \
+		( { THINKPOL_LAB_STREAM=long go test -tags lab -json -count=1 -timeout $(LAB_TIMEOUT) -run '$(LAB_LONG_TESTS)' ./lab 2>&1; echo $$? > "$$tmp/long.status"; } | "$$labctl" testjson -times "$$tmp/long.times" 2>&1 | awk '{print "[long] " $$0; fflush()}'; \
+			"$$labctl" budget -stream long -since $$start "$$tmp/long.times" || echo 1 > "$$tmp/long.status" ) & \
 		phases="$$phases long";; \
 	esac; \
 	case "$$phases" in lab*) \
@@ -185,7 +186,6 @@ lab-streams:
 		"$$labctl" budget -stream default -since $$start -budget $(LAB_BUDGET) "$$tmp/lab.times" "$$tmp/node.times" || status=1;; \
 	esac; \
 	wait; \
-	case "$$phases" in *long) "$$labctl" budget -stream long -since $$start "$$tmp/long.times" || status=1;; esac; \
 	for f in $$phases; do \
 		if [ -f "$$tmp/$$f.status" ]; then \
 			s=$$(cat "$$tmp/$$f.status"); [ "$$s" -eq 0 ] || status=1; \
