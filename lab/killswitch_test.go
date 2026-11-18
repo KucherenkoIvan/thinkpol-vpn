@@ -41,7 +41,12 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 			{Name: lab.Internet, Networks: []string{lab.NetServers}, Gateway: lab.Router},
 		},
 	}
+	beforeStart := time.Now()
 	l := lab.Start(t, topo)
+	t0 := time.Now()
+	t.Logf("TIMING lab start %.1fs", t0.Sub(beforeStart).Seconds())
+	mark := func(what string) { t.Logf("TIMING %6.1fs %s", time.Since(t0).Seconds(), what) }
+	t.Cleanup(func() { mark("end") })
 	server, dev, internet := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Internet)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
@@ -57,6 +62,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 		}
 	})
 
+	mark("booted")
 	space := newM0Space(t, internet, server)
 	envelope, _ := space.build(t)
 	space.install(t, server, "server-1", envelope)
@@ -78,6 +84,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	// labKillSwitchReapply): re-applied every 2 s, not 10 s, the direct
 	// destinations expiring three periods after the last, as with the
 	// defaults (firewall.DirectTimeout).
+	mark("space up, server up")
 	const reapply, directTimeout = 2 * time.Second, 6 * time.Second
 	dev.WriteFile(t, dropIns+"/lab-timing.conf", []byte(fmt.Sprintf("[Service]\nEnvironment=THINKPOL_LAB=1 THINKPOL_LAB_KILL_SWITCH_REAPPLY=%s\n", reapply)))
 	dev.MustExec(t, "/opt/thinkpol/bin/thinkpol", "service", "install")
@@ -91,6 +98,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	}
 	state := func(want string) {
 		t.Helper()
+		defer func(st time.Time) { t.Logf("TIMING   %s took %.1fs", "state", time.Since(st).Seconds()) }(time.Now())
 		waitStatusFor(t, dev, 90*time.Second, nil, connection(want))
 	}
 	// table says whether the kill switch's table is there, and whether
@@ -105,6 +113,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	}
 	wantTable := func(when string, present, connected bool) {
 		t.Helper()
+		defer func(st time.Time) { t.Logf("TIMING   %s took %.1fs", "wantTable", time.Since(st).Seconds()) }(time.Now())
 		lab.Eventually(t, 30*time.Second, func() error {
 			if p, c := table(); p != present || p && c != connected {
 				return fmt.Errorf("%s: kill switch table present %v connected %v, want %v %v", when, p, c, present, connected)
@@ -135,6 +144,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	// only connected) and each set's size as nft lists them.
 	diagShows := func(when string, present, connected bool) {
 		t.Helper()
+		defer func(st time.Time) { t.Logf("TIMING   %s took %.1fs", "diagShows", time.Since(st).Seconds()) }(time.Now())
 		lab.Eventually(t, 30*time.Second, func() error {
 			var d struct {
 				KillSwitch diagKillSwitch `json:"kill_switch"`
@@ -229,6 +239,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	// private networks) leaves device-a, both families, bound or not.
 	confined := func(when string, lan bool) {
 		t.Helper()
+		defer func(st time.Time) { t.Logf("TIMING   %s took %.1fs", "confined", time.Since(st).Seconds()) }(time.Now())
 		for _, bound := range []bool{false, true} {
 			for _, dst := range foreign {
 				if got := reaches(dst, bound); got != lan {
@@ -261,6 +272,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	}
 	open := func(when string) {
 		t.Helper()
+		defer func(st time.Time) { t.Logf("TIMING   %s took %.1fs", "open", time.Since(st).Seconds()) }(time.Now())
 		for _, dst := range foreign {
 			if !reaches(dst, true) {
 				t.Errorf("%s: ping %v bound to %s unanswered: traffic doesn't flow direct", when, dst, eth)
@@ -275,6 +287,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	// sends them direct while connected.
 	expired := func(when string) {
 		t.Helper()
+		defer func(st time.Time) { t.Logf("TIMING   %s took %.1fs", "expired", time.Since(st).Seconds()) }(time.Now())
 		lab.Eventually(t, 60*time.Second, func() error {
 			if reaches(foreign[0], false) {
 				return fmt.Errorf("%s: %v still answers", when, foreign[0])
@@ -302,11 +315,13 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 		dev.MustExec(t, "systemctl", "restart", "thinkpol.service")
 	}
 
+	mark("service installed")
 	state("disconnected")
 	wantTable("installed, off", false, false)
 	diagShows("installed, off", false, false)
 	open("installed, kill switch off")
 
+	mark("installed-off checked")
 	// On: in place at once, the tunnel down.
 	if got := thinkpol("kill-switch", "on"); !regexp.MustCompile(`kill switch: +on, allow-LAN off \(in place\)\n`).MatchString(got) {
 		t.Fatalf("kill-switch on:\n%s", got)
@@ -317,11 +332,13 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	wantTable("on, disconnected", true, false)
 	diagShows("on, disconnected", true, false)
 	confined("on, disconnected", false)
+	mark("on, disconnected, confined")
 	thinkpol("allow-lan", "on")
 	confined("on, disconnected, allow-LAN", true)
 	thinkpol("allow-lan", "off")
 	confined("on, disconnected, allow-LAN off again", false)
 
+	mark("allow-lan done")
 	// Connected, the TUN passes; a disconnect keeps the switch.
 	thinkpol("connect")
 	ping(t, dev, s4)
@@ -331,6 +348,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	wantTable("on, disconnected again", true, false)
 	confined("on, after a disconnect", false)
 
+	mark("connect/disconnect done")
 	// A crash, connected: the dead agent's table holds; the restarted one
 	// connects again.
 	thinkpol("connect")
@@ -344,6 +362,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	ping(t, dev, s4)
 	wantTable("on, restarted", true, true)
 
+	mark("crash connected done")
 	// A stop is not a disconnect: the stopped agent leaves the down shape,
 	// and the started one comes back connected.
 	dev.MustExec(t, "systemctl", "stop", "thinkpol.service")
@@ -354,6 +373,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	ping(t, dev, s4)
 	wantTable("on, started again", true, true)
 
+	mark("stop/start done")
 	// Off, connected: nothing under the space preset; a disconnect leaves
 	// traffic direct.
 	thinkpol("kill-switch", "off")
@@ -362,6 +382,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	thinkpol("disconnect")
 	open("off, disconnected")
 
+	mark("off space preset done")
 	// The crash posture: off under "everything", in place while meant up,
 	// held across a crash, removed by a deliberate disconnect.
 	thinkpol("rules", "preset", "everything")
@@ -369,6 +390,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	ping(t, dev, s4)
 	wantTable("everything, connected", true, true)
 
+	mark("everything connected")
 	// The live agent renews the direct destinations well within their
 	// timeout: their expiry moves later at its re-apply ticks, and one
 	// bound to eth0 still answers past a whole timeout. A read's expiry
@@ -399,6 +421,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	if !reaches(foreign[0], true) {
 		t.Errorf("everything, connected %v: the direct destination %v bound to %s unanswered: its renewal lapsed", time.Since(start), foreign[0], eth)
 	}
+	mark("renewals done")
 	// Removed from outside, the table is back by the next re-apply tick,
 	// reapply apart. Removed again just after a re-apply put it back, it
 	// must be back within one and a half periods, not skip a tick. (The
@@ -422,18 +445,21 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 			t.Errorf("everything, connected: the table removed from outside (%d) was back after %v, want within %v", i, d, reapply*3/2)
 		}
 	}
+	mark("reapply done")
 	wantTable("everything, re-applied", true, true)
 	crashHeld(func() {
 		wantTable("everything, crashed", true, true)
 		expired("everything, crashed")
 		confined("everything, crashed", false)
 	})
+	mark("everything crash done")
 	state("connected")
 	ping(t, dev, s4)
 	thinkpol("disconnect")
 	wantTable("everything, disconnected", false, false)
 	open("everything, disconnected")
 
+	mark("everything disconnected done")
 	// node.json opts out: a crash leaves traffic direct.
 	dev.WriteFile(t, stateDir+"/node.json", []byte(`{"fail_closed_after_crash": false}`))
 	dev.MustExec(t, "chmod", "600", stateDir+"/node.json")
@@ -448,6 +474,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	state("connected")
 	dev.MustExec(t, "rm", stateDir+"/node.json")
 
+	mark("opt-out done")
 	// Uninstall removes it, whatever left it.
 	thinkpol("kill-switch", "on")
 	wantTable("on before the uninstall", true, true)
