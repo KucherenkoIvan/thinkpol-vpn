@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-245"
+branch: "tp-245-reality-rhythm-miss"
 ---
 
 ## Goal
@@ -30,3 +30,4 @@ In TP-243's second full lab at 3d2f04d8 (2026-11-18) the cell TestCensorMatrix/r
 
 ## Log
 - 2026-11-18 created in backlog (seen in TP-243's full labs)
+- 2026-11-18 backlog → in-progress, owner: agent-tp-245
