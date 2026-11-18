@@ -37,6 +37,17 @@ In TP-243's second full lab at 3d2f04d8 (2026-11-18) the cell TestCensorMatrix/r
 - What it costs: the count flags 2 to 4 s after the third rekey instead of on the next reading. The hold and the cell stay as they were: three rekeys come by ~362 s of the 450 s hold in every run seen.
 - Proof at 2851a0ed (the code as merged; later commits are docs and the board): 10 lab-gotest runs of TestCensorMatrix udp and reality × off and wireguard-rhythm, one after another, each beside other tickets' labs (runs 1–7 and 9–10; load at 4 minutes in 20.1, 10.3, 9.0, 11.0, 11.7, 3.1, 0.6, 6.3, 6.8, 6.4) and, for runs 9 and 10, uncached go test of the module at 6 CPU slots beside them: reality failed as expected in 10 of 10 (9 by burst, 1 by count after the burst lost the first rekey), udp caught in 10 of 10, every off cell passed; 545–812 s a run.
 
+## Review findings
+Round 1.
+
+- [ ] R1.1 (should-fix) The hold doesn't protect the reading that confirms the step: a rekey at T, the next ping at T+2 s answered 400 ms late, the reading at T+2.3 s finds level+2 and records a step of +2, then the late answer reads −1 and the chain restarts. Remember the first off value and confirm only a reading that matches it; test: a 400 ms late answer to the ping right after a rekey.
+- [ ] R1.2 (should-fix) The fixed 2 s slack is a guess: the timing error is how long the run of records before the rekey lasted (no 300 ms gap for more than 2 s, or a late answer in flight when the rekey lands). Time each step as a span (first record of the run that moved the level to the last record before it settled) and chain spans: continue when the newest span's end is at least the rekey interval after the previous span's start and its start is within the window of the previous span's end. Real rekeys are at least 120 s plus one round trip apart. Tests: gapless traffic for 3 s before each rekey is caught; steps that truly come under 118 s apart are not chained. A fixed slack kept anywhere is named in doc.go as the lab's own choice, with why.
+- [ ] R1.3 (should-fix) On a quiet connection a move is only confirmed at the next reading, which includes the next exchange (one unanswered record every 120 s reads as +2 every 240 s). Re-read when a move is pending and its hold has passed, or document it; make lab/README.md's "flags a quiet connection that repeats one imbalance" true for the count signal, or fix the sentence.
+- [ ] R1.4 (should-fix) TestWGRhythmRandomExchanges' answers all come within 80 ms, so the hold never runs: add a round-trip band of 0.3–1.9 s, pin its counts, state them in doc.go's false-positive paragraph.
+- [ ] R1.5 (docs) doc.go and lab/README.md: the blind spot "round trips over 2 s" is wrong; state the real conditions after R1.1–R1.3. "2 to 3.5 minutes" / "120 to 210 s" → the actual lower bound. Add the blind spots that break both signals (a handshake answered later than REKEY_TIMEOUT; traffic landing within 10 ms of the handshake records).
+- [ ] R1.6 (nit) The test's "steps 119 s apart" is not WireGuard timing: say the case pins the widened lower bound.
+- [ ] R1.7 (ticket) Box 1 reworded to what was shown; "## Out of scope" lists the load that still breaks both signals; box 3: 20 lab runs of TestCensorMatrix udp and reality × off and wireguard-rhythm at the final head, ticked only on 20/20.
+
 ## Log
 - 2026-11-18 created in backlog (seen in TP-243's full labs)
 - 2026-11-18 backlog → in-progress, owner: agent-tp-245
@@ -49,3 +60,4 @@ In TP-243's second full lab at 3d2f04d8 (2026-11-18) the cell TestCensorMatrix/r
 - 2026-11-19 merged origin/rewrite (8a3b8850; TP-242's lab changes); at e9d5fbd0: make lint and make test pass; lab-gotest of udp and reality × off and wireguard-rhythm (other labs beside it): udp caught, reality's expected fail (burst), both off cells pass, 603 s
 - 2026-11-19 handoff: nothing left running on the test machine; the run directories are outside the repo
 - 2026-11-19 in-progress → review
+- 2026-11-19 review round 1: fix R1.1–R1.7
