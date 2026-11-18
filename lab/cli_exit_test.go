@@ -18,9 +18,9 @@ import (
 // stopped, 69.
 func TestTheCLIExitsBySysexits(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
-	server, devB, inet := l.Node(lab.Server1), l.Node(lab.DeviceB), l.Node(lab.Internet)
-	space := newM0Space(t, inet, server)
+	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceB, lab.Server1))
+	server, devB, router := l.Node(lab.Server1), l.Node(lab.DeviceB), l.Node(lab.Router)
+	space := newM0Space(t, router, server)
 	envelope, _ := space.build(t)
 	space.install(t, server, "server-1", envelope)
 	space.install(t, devB, "device-b", envelope)
@@ -29,8 +29,9 @@ func TestTheCLIExitsBySysexits(t *testing.T) {
 
 	// device-b resolves through systemd-resolved, with a domain on its
 	// physical link: names under it go past the TUN, so its DNS is not
-	// protected once it connects.
-	startResolved(t, devB, inet.IPv4(lab.NetServers))
+	// protected once it connects. No name is looked up: the resolver is the
+	// router's far address, off device-b's network, where nothing answers.
+	startResolved(t, devB, router.IPv4(lab.NetServers))
 	devB.MustExec(t, "resolvectl", "domain", devB.Interface(lab.NetDevices), "~example.org")
 	up := startUp(t, devB, "-connect=false")
 	waitStatus(t, devB, inMode("device"), connection("disconnected"))

@@ -44,7 +44,7 @@ BUF_BREAKING_AGAINST ?= rewrite
 # cgo is off unless a target turns it on (test-race).
 export CGO_ENABLED := 0
 
-.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-perf lab-gotest lab-down lab-seccomp lab-seccomp-check
+.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-harness lab-harness-hash lab-harness-cached lab-perf lab-gotest lab-down lab-seccomp lab-seccomp-check
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -134,13 +134,37 @@ LAB_TIMEOUT ?= 60m
 # same lab slot cap.
 LAB_P ?= 4
 
+# The harness's own lab tests (named TestHarness…) check the lab itself
+# (isolation, sealing, ownership, subnets, binaries), not the product.
+# make lab-test runs them only when what they check changed: a pass is
+# remembered under the hash of LAB_HARNESS_FILES (the non-test Go files
+# under lab/: the harness, its tools, the censor; the harness tests and the
+# helpers they reach, all in lab/harness*_test.go, which
+# TestTheHarnessHashCoversWhatItsTestsReach checks; lab/ip's tests, which
+# TestHarnessAnotherRun… runs in its nodes; the image, the seccomp profile,
+# go.mod and go.sum) and the Go, Docker, Docker kernel and Compose
+# versions, in LAB_HARNESS_CACHE (shared by checkouts: the hash names the
+# content, not the checkout). A run in which a harness test skipped isn't
+# remembered, nor one during which the hash changed: the run builds the lab
+# binaries from the checkout as it goes.
+LAB_HARNESS_RUN := ^TestHarness
+LAB_HARNESS_CACHE ?= $(HOME)/.cache/thinkpol-lab/harness
+LAB_HARNESS_GOTEST = go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) -run '$(LAB_HARNESS_RUN)' ./lab
+LAB_HARNESS_FILES = $(shell find lab -name '*.go' ! -name '*_test.go' | LC_ALL=C sort) $(sort $(wildcard lab/harness*_test.go)) $(sort $(wildcard lab/ip/*_test.go)) lab/Dockerfile lab/seccomp.json go.mod go.sum
+# Hashed from a file, not a pipe: a read that fails inside a pipe fails
+# only the pipe's subshell, and the partial input would still hash.
+LAB_HARNESS_HASH = versions=$$(go version && docker version --format '{{.Server.Version}}' && docker info --format '{{.KernelVersion}}' && docker compose version --short) || exit 1; \
+	tmp=$$(mktemp) || exit 1; trap 'rm -f "$$tmp"' EXIT; \
+	{ echo "$$versions"; for f in $(LAB_HARNESS_FILES); do echo "== $$f" && cat "$$f" || exit 1; done; } > "$$tmp" || exit 1; \
+	git hash-object "$$tmp"
+
 lab: lab-test ## the lab suite, ending in the censor matrix (lab/RESULTS.md)
 
 lab-up: ## start the standard topology for this checkout, for poking around
 	$(LABCTL) up
 
-lab-test: ## lab tests (each starts its own lab) and every package's tests inside a lab node, at once; tears down after (COUNT=n: node phase repeated, uncached)
-# Each phase writes its own exit status: sh has no pipefail. Both phases
+lab-test: ## lab tests (each starts its own lab), every package's tests inside a lab node, and lab-harness if the harness changed, at once; tears down after (COUNT=n: node phase repeated, uncached)
+# Each phase writes its own exit status: sh has no pipefail. The phases
 # share one run id (THINKPOL_LAB_RUN, in their labs' names), and the
 # clean-up removes that run's labs only: another run's from this checkout
 # (a lab-gotest beside it, another lab-test) stay.
@@ -148,10 +172,11 @@ lab-test: ## lab tests (each starts its own lab) and every package's tests insid
 	@run=$$($(LABCTL) run-id) || exit 1; export THINKPOL_LAB_RUN=$$run; \
 	tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
 	status=0; \
-	( { go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) ./lab/...; echo $$? > "$$tmp/lab.status"; } 2>&1 | awk '{print "[lab]  " $$0; fflush()}' ) & \
+	( { go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) -skip '$(LAB_HARNESS_RUN)' ./lab/...; echo $$? > "$$tmp/lab.status"; } 2>&1 | awk '{print "[lab]  " $$0; fflush()}' ) & \
 	( { $(LABCTL) gotest -p $(LAB_P) $(if $(COUNT),-count $(COUNT)) ./...; echo $$? > "$$tmp/node.status"; } 2>&1 | awk '{print "[node] " $$0; fflush()}' ) & \
+	( { $(MAKE) --no-print-directory lab-harness-cached; echo $$? > "$$tmp/harness.status"; } 2>&1 | awk '{print "[harness] " $$0; fflush()}' ) & \
 	wait; \
-	for f in lab node; do \
+	for f in lab node harness; do \
 		if [ -f "$$tmp/$$f.status" ]; then \
 			s=$$(cat "$$tmp/$$f.status"); [ "$$s" -eq 0 ] || status=1; \
 		else \
@@ -160,6 +185,32 @@ lab-test: ## lab tests (each starts its own lab) and every package's tests insid
 	done; \
 	if [ -z "$$THINKPOL_LAB_KEEP" ] && ! $(LABCTL) down -run "$$run"; then status=1; fi; \
 	exit $$status
+
+lab-harness: ## the lab harness's own tests (TestHarness…: isolation, sealing, ownership, subnets), each starting labs
+	$(LAB_HARNESS_GOTEST)
+
+# The hash lab-harness-cached keys its stamp by.
+lab-harness-hash:
+	@$(LAB_HARNESS_HASH)
+
+# lab-harness unless it passed before on the same harness (make lab-test's
+# third phase).
+lab-harness-cached:
+	@hash=$$($(LAB_HARNESS_HASH)) && [ -n "$$hash" ] || { echo "lab-harness: can't hash the harness" >&2; exit 1; }; \
+	stamp="$(LAB_HARNESS_CACHE)/$$hash"; \
+	if [ -e "$$stamp" ]; then echo "lab-harness: passed before on harness $$hash, not run again"; exit 0; fi; \
+	echo "lab-harness: harness $$hash not passed before, running it"; \
+	out=$$(mktemp) || exit 1; trap 'rm -f "$$out" "$$out.status"' EXIT; \
+	{ $(LAB_HARNESS_GOTEST) -v; echo $$? > "$$out.status"; } 2>&1 | tee "$$out"; \
+	[ "$$(cat "$$out.status" 2>/dev/null)" = 0 ] || exit 1; \
+	if grep -E -q -e '^ *--- SKIP: TestHarness' -e '^testing: warning: no tests to run' "$$out"; then \
+		echo "lab-harness: passed, but a harness test skipped: not remembered, the next make lab-test runs it again"; exit 0; \
+	fi; \
+	after=$$($(LAB_HARNESS_HASH)) && [ -n "$$after" ] || { echo "lab-harness: can't hash the harness after the run" >&2; exit 1; }; \
+	if [ "$$after" != "$$hash" ]; then \
+		echo "lab-harness: passed, but the harness changed during the run ($$hash, now $$after): not remembered, the next make lab-test runs it again"; exit 0; \
+	fi; \
+	mkdir -p "$(LAB_HARNESS_CACHE)" && touch "$$stamp"
 
 # Performance gates: tests that check THINKPOL_LAB_PERF and are named
 # Test…Throughput, in these packages (a new one adds its package here).
