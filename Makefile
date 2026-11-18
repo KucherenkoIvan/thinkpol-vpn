@@ -137,14 +137,15 @@ LAB_P ?= 4
 # The harness's own lab tests (named TestHarness…) check the lab itself
 # (isolation, sealing, ownership, subnets, binaries), not the product.
 # make lab-test runs them only when what they check changed: a pass is
-# remembered under the hash of the harness's non-test Go files (lab/*.go,
-# lab/labctl), the image, the seccomp profile, the harness tests' own files
-# and the Go and Docker versions, in LAB_HARNESS_CACHE (shared by
-# checkouts: the hash names the content, not the checkout).
+# remembered under the hash of the non-test Go files under lab/ (the
+# harness, its tools, the censor), the image, the seccomp profile, the
+# harness tests' own files and the Go and Docker versions, in
+# LAB_HARNESS_CACHE (shared by checkouts: the hash names the content, not
+# the checkout).
 LAB_HARNESS_RUN := ^TestHarness
 LAB_HARNESS_CACHE ?= $(HOME)/.cache/thinkpol-lab/harness
 LAB_HARNESS_HASH = versions=$$(go version && docker version --format '{{.Server.Version}}') || exit 1; \
-	{ echo "$$versions"; for f in $$(LC_ALL=C ls lab/*.go lab/labctl/*.go | grep -v '_test\.go$$') $$(LC_ALL=C grep -l '^func TestHarness' lab/*_test.go) lab/Dockerfile lab/seccomp.json; do \
+	{ echo "$$versions"; for f in $$(find lab -name '*.go' ! -name '*_test.go' | LC_ALL=C sort) $$(LC_ALL=C grep -l '^func TestHarness' lab/*_test.go) lab/Dockerfile lab/seccomp.json; do \
 		echo "== $$f" && cat "$$f" || exit 1; \
 	done; } | git hash-object --stdin
 
