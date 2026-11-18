@@ -5,6 +5,7 @@ package lab_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -69,8 +70,12 @@ func setupReality(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	return probeTarget{o4, o6}, nil
 }
 
-// realityUp starts device-a's agent once per lab and waits for its link.
-func realityUp(t *testing.T, l *lab.Lab) error {
+// realityUp starts device-a's agent once per lab and waits for its link,
+// for a minute, or, with the budget's watch, until the censor blocked a
+// 2 s wait of it (its redials are new flows): a cell that should not
+// cross doesn't wait out the minute. The first caller's budget decides:
+// a cell's warm-up probe passes the cell's watch on.
+func realityUp(t *testing.T, l *lab.Lab, b probeBudget) error {
 	v, ok := realityLabs.Load(l)
 	if !ok {
 		return fmt.Errorf("the reality row wasn't set up in this lab")
@@ -79,21 +84,47 @@ func realityUp(t *testing.T, l *lab.Lab) error {
 	d.once.Do(func() {
 		dev := l.Node(lab.DeviceA)
 		startUp(t, dev)
-		_, d.err = statusWithin(dev, 60*time.Second, nil, linkUp)
+		deadline := time.Now().Add(60 * time.Second)
+		var watch func() func() bool
+		if b.watch != nil {
+			// One link, over either family (oneUnderlay): the watch
+			// counts both.
+			watch = b.watch.attempts(false)
+		}
+		for {
+			var blocked func() bool
+			if watch != nil {
+				blocked = watch()
+			}
+			_, err := statusWithin(dev, 2*time.Second, nil, linkUp)
+			switch {
+			case err == nil:
+				return
+			case errors.Is(err, errSchemaVersion):
+				d.err = err
+				return
+			case blocked != nil && blocked():
+				d.err = fmt.Errorf("the censor blocked device-a's link: %w", err)
+				return
+			case time.Now().After(deadline):
+				d.err = err
+				return
+			}
+		}
 	})
 	return d.err
 }
 
-func probeReality(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
-	if err := realityUp(t, l); err != nil && wantPass {
+func probeReality(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
+	if err := realityUp(t, l, b); err != nil && b.pass {
 		t.Fatal(err)
 	}
-	return probeUDP(t, l, to, wantPass)
+	return probeUDP(t, l, to, b)
 }
 
 // holdReality brings device-a's link up and holds it (holdTunnel).
 func holdReality(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool) {
-	if err := realityUp(t, l); err != nil {
+	if err := realityUp(t, l, probeBudget{pass: true}); err != nil {
 		t.Fatal(err)
 	}
 	holdTunnel(t, l, to, d, idle)

@@ -67,6 +67,19 @@ const (
 // the kill switch stays not enforced until the hook is back.
 const killSwitchReapply = 10 * time.Second
 
+// directTimeout is the direct destinations' timeout for a re-apply period
+// of every: as many periods as firewall.DirectTimeout is of
+// killSwitchReapply (three), so firewall.DirectTimeout itself by default.
+func directTimeout(every time.Duration) time.Duration {
+	return every * (firewall.DirectTimeout / killSwitchReapply)
+}
+
+// directTimeoutSetter is a kill switch whose direct destinations' timeout
+// can be set (firewall.KillSwitch).
+type directTimeoutSetter interface {
+	SetDirectTimeout(time.Duration)
+}
+
 // killSwitchStopTimeout bounds the last apply as the node returns, its
 // own context done: a hung pfctl mustn't hold the stop.
 const killSwitchStopTimeout = 10 * time.Second
@@ -181,6 +194,9 @@ func entries(section netmap.Section) []netip.AddrPort {
 type killSwitchKeeper struct {
 	newKS func() KillSwitch
 	log   *slog.Logger
+	// every is the re-apply period (DeviceHost.reapplyEvery); zero is
+	// killSwitchReapply. A kill switch it makes gets directTimeout(every).
+	every time.Duration
 	// ks is the kill switch it holds; nil before the first call, after a
 	// Close, and on a host without one.
 	ks KillSwitch
@@ -201,8 +217,8 @@ type killSwitchKeeper struct {
 }
 
 // keep puts r in place (want), or removes what any run left (!want).
-// Applying what is in place again is due at the next killSwitchReapply
-// tick, or after a failure.
+// Applying what is in place again is due at the next re-apply tick
+// (every), or after a failure.
 func (k *killSwitchKeeper) keep(ctx context.Context, want bool, r firewall.KillSwitchRules) {
 	if k.newKS == nil {
 		return
@@ -236,11 +252,20 @@ func (k *killSwitchKeeper) keep(ctx context.Context, want bool, r firewall.KillS
 	if k.applied != nil && k.applied.Equal(r) && k.failed == nil && now.Before(k.reapplyAt) {
 		return
 	}
+	every := k.every
+	if every == 0 {
+		every = killSwitchReapply
+	}
 	if k.ks == nil {
 		if k.ks = k.newKS(); k.ks == nil {
 			k.fail(firewall.ErrKillSwitchUnsupported)
 			return
 		}
+	}
+	// Every time: a kill switch kept after a failed removal was made
+	// there, without it (the same timeout again changes nothing).
+	if d, ok := k.ks.(directTimeoutSetter); ok {
+		d.SetDirectTimeout(directTimeout(every))
 	}
 	first := k.applied == nil || !k.applied.Equal(r)
 	if err := k.ks.Apply(ctx, r); err != nil {
@@ -254,7 +279,7 @@ func (k *killSwitchKeeper) keep(ctx context.Context, want bool, r firewall.KillS
 	// Half a period: the ticker's next tick comes a period after the one
 	// handled here, which is earlier than a period after now; due at a
 	// whole period, every other tick would be skipped (20 s, not 10 s).
-	k.applied, k.removed, k.inPlace, k.failed, k.reapplyAt = &r, false, true, nil, now.Add(killSwitchReapply/2)
+	k.applied, k.removed, k.inPlace, k.failed, k.reapplyAt = &r, false, true, nil, now.Add(every/2)
 	if first {
 		k.log.Info("kill switch in place", "tunnel", onOff(r.TUN != ""), "allowed_ranges", len(r.Allow.Ranges()))
 	}
