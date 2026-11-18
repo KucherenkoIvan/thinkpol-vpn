@@ -39,6 +39,17 @@ In a full lab (TP-223's run, 2026-11-16) the censor-matrix cell `udp × fully-en
 - What is left: the first judgement on each 3-tuple. That is the IPv4 link's 240-byte datagram (only the six-printable start, per link and hour, about 1 in 383) and the first IPv6 redial (84 bytes, about 1 in 175 by its printable bytes). So the cell still scores wrong about once in 120 runs, down from about once in 50, and the GFW would let the same connections through. Closing it is the transport's job (a link's first datagram long enough that half of it being printable is negligible), or the matrix's (scoring the chance); both are out of this ticket's scope.
 - Seen after the fix (2026-11-18, aa9ddd36, the 22nd run of the cell): partial, only IPv6 crossed. Residual censorship held on IPv4: after the first link was blocked, the device's redial to endpoint 0 failed ("no answer within 6s"). The device then dialed its first IPv6 flow (endpoint 1), a new 3-tuple, which came up in 2 ms. That is the chance left above, not a fix that didn't hold. Deciding between the transport's fix and the matrix's is the owner's call.
 
+## Review findings
+Review round 1, accepted by the orchestrator: the diagnosis (a redial is a fresh draw on Wu et al.'s exemptions; residual censorship was missing) and the 1/120 arithmetic stand.
+- [ ] R1.1 (should-fix) The residual decision uses decidePacket, so with `"verdict":"throttle"` it pins a throttle on the reverse flow: the server's replies are throttled for good, against the doc. Residual censorship is a drop: always Drop, its reason naming the residual window; test with the throttle and reset verdicts configured.
+- [ ] R1.2 (should-fix) `exempt map[*Flow]bool` is never pruned and keeps dead flows (and their retained payload) alive after startOver/forget, and breaks the package rule that module state is keyed by FlowKey: key it by FlowKey and the flow's start time (a restarted flow is judged afresh), bounded by live keys.
+- [ ] R1.3 (should-fix) TestFullyEncryptedResidualCensorship misses: the same client and port to a different server address (a key without the server address passes every case today; name that mutation); an IPv6 key separate from the same client's IPv4; an established exempt TCP connection dropped after another connection on the same 3-tuple is blocked; re-blocking after the window ran out.
+- [ ] R1.4 (should-fix) "Not extended" and "120 or 180 seconds": read Wu et al. section 4.4, cite it in the comment, and make the code follow it; where the paper is silent or unsure, take the stricter reading and say in doc.go which choices are the lab's own.
+- [ ] R1.5 (should-fix) The residual key includes the protocol; the paper measured TCP only. Unless the paper says otherwise, drop the protocol from the key (the stricter choice) and fix the README's "3-tuple" wording to match.
+- [ ] R1.6 (nits) Docs: "per datagram" → "per new flow's first datagram" (doc.go, README); "short random datagram" → "84-byte"; the Inspect comment overclaims the Great Firewall for already-established exempt connections (the lab's own stricter choice); "a connection's first judgement on each 3-tuple" → "per 3-tuple and residual window"; doc.go's Limits lists the module's state.
+- [ ] R1.7 (should-fix, evidence) An exempt accept logs nothing: make the module's Accept carry which exemption passed the flow and which side opened it, in the verdict log. Matrix scoring unchanged in this ticket.
+- [ ] R1.8 (ticket) Box 3 ("20 runs pass") is ticked on one clean batch of 21 while 42 of 43 runs were right overall and the Goal isn't fully met: untick it, state the remaining ~1/120 and its cause in Notes, name the follow-up (scoring the known chance with logged exemptions, the owner's decision).
+
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate fixes)
 - 2026-11-18 Notes: evidence from TP-240's matrix run
@@ -53,3 +64,4 @@ In a full lab (TP-223's run, 2026-11-16) the censor-matrix cell `udp × fully-en
 - 2026-11-19 out of scope: make lab-down left a killed run's reality prototype xray container and its network (compose-labelled) in place; removed by hand
 - 2026-11-19 merged origin/rewrite (TP-242, TP-235) cleanly at 0f6f29f8: make lint, make test green; the off, fully-encrypted and active prober cells of every row 27 of 27 as RESULTS.md has them (374 s)
 - 2026-11-19 in-progress → review
+- 2026-11-19 review round 1: fix R1.1–R1.8
