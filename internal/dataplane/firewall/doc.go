@@ -600,7 +600,9 @@
 // in again (flush and add, one transaction): the agent re-applies at
 // every 10 s tick, at most about 15 s apart, so only a dead agent (or a
 // node loop stalled for about 15 s) lets them go, leaving the entries
-// and the LAN. A kernel without nf_tables makes it unsupported
+// and the LAN. [KillSwitch.SetDirectTimeout] replaces DirectTimeout for
+// tests and the lab's kill-switch test, which run the expiry in seconds;
+// the agent sets it only in a lab node. A kernel without nf_tables makes it unsupported
 // ([ErrKillSwitchUnsupported]), by the guard's probe.
 //
 // On macOS it is the anchor `com.apple/001.thinkpol-killswitch`
