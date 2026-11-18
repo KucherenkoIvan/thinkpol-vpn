@@ -69,9 +69,10 @@ func prepareImage(ctx context.Context, root string) (target, image, error) {
 }
 
 // buildTools cross-compiles thinkpol and the lab's own tools into dir.
-// thinkpol's WireGuard runs its timers sped up by WGTimerScale (an
-// overlay of wireguard-go's constants, this build only), so the lab sees
-// rekeys without waiting them out in real time.
+// thinkpol's WireGuard runs its timers sped up by WGTimerScale (a go.mod
+// of this build's own replaces wireguard-go with a copy whose constants
+// are scaled), so the lab sees rekeys without waiting them out in real
+// time.
 func buildTools(ctx context.Context, root string, t target, dir string) error {
 	scale, err := WGTimerScale()
 	if err != nil {
@@ -82,13 +83,13 @@ func buildTools(ctx context.Context, root string, t target, dir string) error {
 		return err
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
-	overlay, err := wgTimerOverlay(ctx, root, tmp, scale)
+	modfile, err := wgTimerModFile(ctx, root, tmp, scale)
 	if err != nil {
 		return err
 	}
 	for _, tool := range []struct {
 		name, pkg string
-		overlay   bool
+		scaled    bool
 	}{
 		{"thinkpol", "./cmd/thinkpol", true},
 		{"labdns", "./lab/labdns", false},   // a stand-in for resolvers out in the world
@@ -98,8 +99,8 @@ func buildTools(ctx context.Context, root string, t target, dir string) error {
 		// code leaves its binary, an input of the tests that stat it, as
 		// it was.
 		args := []string{"build", "-trimpath", "-buildvcs=false"}
-		if tool.overlay && overlay != "" {
-			args = append(args, "-overlay", overlay)
+		if tool.scaled && modfile != "" {
+			args = append(args, "-modfile", modfile)
 		}
 		if _, err := goBuild(ctx, root, t, filepath.Join(dir, tool.name), append(args, tool.pkg)...); err != nil {
 			return err

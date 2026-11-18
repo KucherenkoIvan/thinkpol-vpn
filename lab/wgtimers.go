@@ -3,6 +3,8 @@ package lab
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"go/ast"
@@ -61,11 +63,15 @@ var (
 	}
 )
 
-// wgTimerOverlay writes into dir a copy of wireguard-go's
-// device/constants.go with its timers divided by scale, and the go build
-// -overlay file that puts it in place of the module's own; it returns the
-// overlay file's path, or "" for scale 1.
-func wgTimerOverlay(ctx context.Context, root, dir string, scale int) (string, error) {
+// wgTimerModFile writes into dir a go.mod for the lab's build of thinkpol:
+// the checkout's own, with wireguard-go replaced by a copy whose
+// device/constants.go has its timers divided by scale, and the go.sum
+// go build -modfile reads beside it. It returns the go.mod's path, or ""
+// for scale 1. go build -overlay can't do it: it refuses to replace files
+// in the module cache. The copy lives in the user's cache, named by its
+// content, so the binary built with it (whose build info names the
+// replacement's directory) stays the same from run to run.
+func wgTimerModFile(ctx context.Context, root, dir string, scale int) (string, error) {
 	if scale == 1 {
 		return "", nil
 	}
@@ -73,9 +79,9 @@ func wgTimerOverlay(ctx context.Context, root, dir string, scale int) (string, e
 	if err != nil {
 		return "", fmt.Errorf("lab: find %s: %w", wireGuardModule, err)
 	}
-	var mod struct{ Dir string }
-	if err := json.Unmarshal([]byte(res.Stdout), &mod); err != nil || mod.Dir == "" {
-		return "", fmt.Errorf("lab: find %s: no directory in %q", wireGuardModule, res.Stdout)
+	var mod struct{ Dir, Version string }
+	if err := json.Unmarshal([]byte(res.Stdout), &mod); err != nil || mod.Dir == "" || mod.Version == "" {
+		return "", fmt.Errorf("lab: find %s: no directory or version in %q", wireGuardModule, res.Stdout)
 	}
 	orig := filepath.Join(mod.Dir, "device", "constants.go")
 	src, err := os.ReadFile(orig)
@@ -86,16 +92,66 @@ func wgTimerOverlay(ctx context.Context, root, dir string, scale int) (string, e
 	if err != nil {
 		return "", fmt.Errorf("lab: scale %s's timers in %s: %w", wireGuardModule, orig, err)
 	}
-	constants := filepath.Join(dir, "constants.go")
-	if err := os.WriteFile(constants, scaled, 0o644); err != nil {
-		return "", err
+	copyDir, err := scaledWireGuardCopy(mod.Dir, mod.Version, scaled)
+	if err != nil {
+		return "", fmt.Errorf("lab: copy %s with its timers scaled: %w", wireGuardModule, err)
 	}
-	overlay, err := json.Marshal(map[string]map[string]string{"Replace": {orig: constants}})
+	gomod, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, "overlay.json")
-	return path, os.WriteFile(path, overlay, 0o644)
+	if bytes.Contains(gomod, []byte("replace "+wireGuardModule)) || bytes.Contains(gomod, []byte("\t"+wireGuardModule+" =>")) {
+		return "", fmt.Errorf("lab: go.mod replaces %s already: the lab can't scale its timers", wireGuardModule)
+	}
+	gomod = fmt.Appendf(gomod, "\nreplace %s => %s\n", wireGuardModule, copyDir)
+	gosum, err := os.ReadFile(filepath.Join(root, "go.sum"))
+	if err != nil {
+		return "", err
+	}
+	modfile := filepath.Join(dir, "go.mod")
+	if err := os.WriteFile(modfile, gomod, 0o644); err != nil {
+		return "", err
+	}
+	return modfile, os.WriteFile(filepath.Join(dir, "go.sum"), gosum, 0o644)
+}
+
+// scaledWireGuardCopy copies the module in modDir, with constants in place
+// of its device/constants.go, to a directory of the user's cache named by
+// the version and the constants, unless it is there already, and returns
+// that directory.
+func scaledWireGuardCopy(modDir, version string, constants []byte) (string, error) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(constants)
+	parent := filepath.Join(cache, "thinkpol-lab", "wgtimers")
+	dst := filepath.Join(parent, version+"-"+hex.EncodeToString(sum[:6]))
+	if _, err := os.Stat(filepath.Join(dst, "go.mod")); err == nil {
+		return dst, nil
+	}
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return "", err
+	}
+	tmp, err := os.MkdirTemp(parent, ".copy-")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
+	if err := os.CopyFS(tmp, os.DirFS(modDir)); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "device", "constants.go"), constants, 0o644); err != nil {
+		return "", err
+	}
+	// Another process may have made the same copy meanwhile: either is
+	// the same content.
+	if err := os.Rename(tmp, dst); err != nil {
+		if _, serr := os.Stat(filepath.Join(dst, "go.mod")); serr != nil {
+			return "", err
+		}
+	}
+	return dst, nil
 }
 
 // scaleWGConstants rewrites wireguard-go's device/constants.go with every
