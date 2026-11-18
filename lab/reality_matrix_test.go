@@ -54,7 +54,7 @@ type realityDevice struct {
 func setupReality(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	server, dev := l.Node(lab.Server1), l.Node(lab.DeviceA)
 	camouflage := lab.StartCamouflage(t, l)
-	space := newM0Space(t, l.Node(lab.Internet), server)
+	space := newM0Space(t, l.Node(lab.Camouflage), server)
 	space.spec = "/src/lab/maps/reality.yaml"
 	space.env = append(space.env, "CAMOUFLAGE_IPV4="+camouflage[0].Addr().String())
 	envelope, version := space.build(t)
