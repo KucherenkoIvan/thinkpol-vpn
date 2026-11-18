@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"runtime"
-	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/firewall"
@@ -13,9 +12,7 @@ import (
 )
 
 // newKillSwitch: no kill switch here yet (Windows: TP-076).
-func newKillSwitch(time.Duration) func() agent.KillSwitch {
-	return func() agent.KillSwitch { return nil }
-}
+func newKillSwitch() agent.KillSwitch { return nil }
 
 // newGuard: no leak guard here yet, the route table enforces routes only.
 // Windows is TP-047/TP-048's.

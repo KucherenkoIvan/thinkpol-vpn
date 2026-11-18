@@ -380,9 +380,9 @@
 // between ticks can push the next re-apply a tick later, so they are
 // renewed, and a change from outside repaired, at most about 15 s apart,
 // and a node loop stalled for about 15 s lets them expire; a lab node
-// may shorten the tick, and the expiry to three ticks with it,
-// [DeviceHost.KillSwitchReapply]); and when a
-// member changes a toggle ([Node.SetKillSwitch], [Node.SetAllowLAN]),
+// may shorten the tick, [DeviceHost.KillSwitchReapply], and the kill
+// switch's keeper sets the expiry to three ticks, 30 s by default); and
+// when a member changes a toggle ([Node.SetKillSwitch], [Node.SetAllowLAN]),
 // which return once it was acted on, with a [KillSwitchNotEnforcedError]
 // if the kill switch is then not as meant (the toggle stays), or
 // [ErrNotRunning] from a stopped node (stored for its next start). A

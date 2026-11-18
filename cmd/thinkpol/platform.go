@@ -17,9 +17,8 @@ import (
 // platform builds what a node needs of its host, per OS: one data plane's
 // Host, and what touches the host outside one. Wiring only: every field
 // is a reference to an existing function, but for the kill switch's
-// timing in a lab node (labKillSwitchReapply).
+// re-apply period in a lab node (labKillSwitchReapply).
 func platform() agent.Platform {
-	reapply := labKillSwitchReapply(os.Getenv)
 	return agent.Platform{
 		Host: agent.Host{
 			WorkerHost: agent.WorkerHost{
@@ -28,16 +27,14 @@ func platform() agent.Platform {
 				Transports:      agent.Transports,
 			},
 			DeviceHost: agent.DeviceHost{
-				NewGuard:        newGuard,
-				NewRouteTable:   newRouteTable,
-				ClearConfig:     netcfg.Clear,
-				ClearRouteTable: routetable.Clear,
-				SetSystemDNS:    dns.SetSystem,
-				SystemUpstreams: dns.SystemUpstreams,
-				// The direct destinations' timeout is three periods, as
-				// firewall.DirectTimeout is the agent's default's.
-				NewKillSwitch:     newKillSwitch(3 * reapply),
-				KillSwitchReapply: reapply,
+				NewGuard:          newGuard,
+				NewRouteTable:     newRouteTable,
+				ClearConfig:       netcfg.Clear,
+				ClearRouteTable:   routetable.Clear,
+				SetSystemDNS:      dns.SetSystem,
+				SystemUpstreams:   dns.SystemUpstreams,
+				NewKillSwitch:     newKillSwitch,
+				KillSwitchReapply: labKillSwitchReapply(os.Getenv),
 			},
 		},
 		LockHost:      agent.HostLock,
@@ -62,16 +59,17 @@ func newRouteTable(log *slog.Logger, guard routetable.Guard) (agent.RouteEnforce
 
 // labKillSwitchReapply is the kill switch's re-apply period in a lab node
 // (THINKPOL_LAB=1): THINKPOL_LAB_KILL_SWITCH_REAPPLY, a duration from 1 s
-// to under a third of firewall.DirectTimeout (shorter than the agent's
-// default, the direct destinations' timeout with it), which the lab's
-// kill-switch test sets to run the re-apply tick and their expiry in
-// seconds. Zero, the defaults, anywhere else and for any other value.
+// to under the agent's default of a third of firewall.DirectTimeout,
+// which the lab's kill-switch test sets to run the re-apply tick, and the
+// agent the direct destinations' expiry with it, in seconds. Zero, the
+// defaults, anywhere else and for any other value. The bound divides, as
+// three times a duration of about 854 h or more wraps negative.
 func labKillSwitchReapply(getenv func(string) string) time.Duration {
 	if getenv("THINKPOL_LAB") != "1" {
 		return 0
 	}
 	d, err := time.ParseDuration(getenv("THINKPOL_LAB_KILL_SWITCH_REAPPLY"))
-	if err != nil || d < time.Second || 3*d >= firewall.DirectTimeout {
+	if err != nil || d < time.Second || d >= firewall.DirectTimeout/3 {
 		return 0
 	}
 	return d

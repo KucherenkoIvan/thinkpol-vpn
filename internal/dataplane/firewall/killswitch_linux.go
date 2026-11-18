@@ -125,11 +125,12 @@ type ksSetIDs [6]uint32
 // routes nowhere beyond its link). Not postrouting:
 // reject is refused there (input, forward and output only), and output
 // already has what the device sends itself. The direct sets' elements
-// expire DirectTimeout (or what SetDirectTimeout set) after they were put
-// in: every Apply puts them in again, so a dead agent's direct
-// destinations go within it and only the entries (and the LAN) are left. The table stays when the
-// process dies (the crash posture) and when Close isn't called; Close
-// removes it, a fresh kill switch's Close a previous run's.
+// expire DirectTimeout (or what SetDirectTimeout set) after they were
+// put in: every Apply puts them in again, so a dead agent's direct
+// destinations go within it and only the entries (and the LAN) are left.
+// The table stays when the process dies (the crash posture) and when
+// Close isn't called; Close removes it, a fresh kill switch's Close a
+// previous run's.
 type KillSwitch struct {
 	mu      sync.Mutex
 	netns   int // the namespace's fd; -1 is the calling thread's
@@ -151,12 +152,14 @@ func (k *KillSwitch) expiry() time.Duration {
 }
 
 // SetDirectTimeout replaces DirectTimeout for this kill switch's direct
-// destinations from its next Apply that builds the table; zero is
-// DirectTimeout. Tests run the expiry in seconds with it; the agent
-// keeps it above twice its re-apply period, as DirectTimeout is.
+// destinations from its next Apply that builds the table; zero or less is
+// DirectTimeout (nftables would read a negative one as unsigned, about
+// 2^64 ms). The agent sets three re-apply periods, DirectTimeout by
+// default; tests run the expiry in seconds with it.
 func (k *KillSwitch) SetDirectTimeout(d time.Duration) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	d = max(d, 0)
 	if d != k.directTimeout {
 		k.directTimeout, k.applied = d, nil
 	}

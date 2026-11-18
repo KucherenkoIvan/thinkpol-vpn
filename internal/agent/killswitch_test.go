@@ -590,8 +590,13 @@ func TestKillSwitchSettingsComeFromTheNodeThenTheMember(t *testing.T) {
 	}
 }
 
-// countingKillSwitch counts its Applies.
-type countingKillSwitch struct{ applies int }
+// countingKillSwitch counts its Applies and keeps the direct timeout set.
+type countingKillSwitch struct {
+	applies int
+	direct  time.Duration
+}
+
+func (c *countingKillSwitch) SetDirectTimeout(d time.Duration) { c.direct = d }
 
 func (c *countingKillSwitch) Apply(context.Context, firewall.KillSwitchRules) error {
 	c.applies++
@@ -634,6 +639,31 @@ func TestTheKillSwitchIsReappliedAtEveryTick(t *testing.T) {
 	}
 	if firewall.DirectTimeout < 2*killSwitchReapply {
 		t.Errorf("firewall.DirectTimeout %v leaves no stall margin over a %v re-apply", firewall.DirectTimeout, killSwitchReapply)
+	}
+}
+
+// The kill switch a node makes gets a direct timeout of three re-apply
+// periods: 30 s, firewall.DirectTimeout, unless a lab host shortened the
+// period.
+func TestTheKillSwitchDirectTimeoutIsThreePeriods(t *testing.T) {
+	s := newTestSpace(t)
+	cfg := testConfig(s.stateDir(t, s.b, 1))
+	for set, want := range map[time.Duration]time.Duration{0: 30 * time.Second, 2 * time.Second: 6 * time.Second, time.Hour: 30 * time.Second} {
+		ks := &countingKillSwitch{}
+		plat := testPlatform()
+		plat.NewKillSwitch = func() KillSwitch { return ks }
+		plat.KillSwitchReapply = set
+		n, err := Prepare(cfg, Logs{}, plat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.ks.keep(context.Background(), true, firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")})
+		if ks.applies != 1 || ks.direct != want {
+			t.Errorf("the period set to %v: %d applies, direct timeout %v, want %v", set, ks.applies, ks.direct, want)
+		}
+	}
+	if firewall.DirectTimeout != 30*time.Second {
+		t.Errorf("firewall.DirectTimeout is %v, the design's 30 s", firewall.DirectTimeout)
 	}
 }
 

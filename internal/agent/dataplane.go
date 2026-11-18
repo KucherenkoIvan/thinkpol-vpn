@@ -103,8 +103,9 @@ type DataPlane struct {
 	dnsUpstreams <-chan []netip.AddrPort
 	// killSwitch keeps a device's kill switch for the data plane's state
 	// (Node.enforceKillSwitch; nil in a worker), at every change, every
-	// re-apply period (DeviceHost.reapplyEvery), and when killSwitchRequests asks after a toggle
-	// changed (closing the channel it sent once done).
+	// re-apply period (DeviceHost.reapplyEvery), and when
+	// killSwitchRequests asks after a toggle changed (closing the channel
+	// it sent once done).
 	killSwitch         func(ctx context.Context, v killSwitchView)
 	killSwitchRequests <-chan chan struct{}
 

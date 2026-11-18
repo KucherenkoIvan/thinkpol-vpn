@@ -22,6 +22,8 @@ func TestLabKillSwitchReapply(t *testing.T) {
 		{"1", "500ms", 0},
 		{"1", "10s", 0},
 		{"1", "1h", 0},
+		{"1", "855h", 0},     // three times it wraps negative
+		{"1", "1000000h", 0}, // likewise
 	} {
 		env := map[string]string{"THINKPOL_LAB": c.lab, "THINKPOL_LAB_KILL_SWITCH_REAPPLY": c.reapply}
 		if got := labKillSwitchReapply(func(k string) string { return env[k] }); got != c.want {

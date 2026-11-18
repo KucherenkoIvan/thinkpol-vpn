@@ -68,10 +68,10 @@ type DeviceHost struct {
 	// has none yet (Windows: TP-076).
 	NewKillSwitch func() KillSwitch
 	// KillSwitchReapply replaces killSwitchReapply, the kill switch's
-	// re-apply period, when set; zero, what production runs, is the
-	// default. The lab's kill-switch test shortens it, and the direct
-	// destinations' timeout with it, through the composition root
-	// (cmd/thinkpol), to run those timers in seconds.
+	// re-apply period, when set and shorter; zero, what production runs,
+	// is the default. The lab's kill-switch test shortens it through the
+	// composition root (cmd/thinkpol) to run the tick, and the direct
+	// destinations' timeout of three ticks (directTimeout), in seconds.
 	KillSwitchReapply time.Duration
 }
 
