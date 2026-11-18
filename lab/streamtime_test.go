@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -276,6 +278,25 @@ func TestParseBudget(t *testing.T) {
 		got, err := ParseBudget(tc.in)
 		if got != tc.want || (err == nil) != tc.ok {
 			t.Errorf("ParseBudget(%q) = %v, %v", tc.in, got, err)
+		}
+	}
+}
+
+// TestMakefileTimesLabBinary: every test2json the Makefile runs a test
+// binary under has -t: without timestamps it leaves Elapsed out of its
+// events, and the budget's report would miss those tests.
+func TestMakefileTimesLabBinary(t *testing.T) {
+	mk, err := os.ReadFile(filepath.Join("..", "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := regexp.MustCompile(`go tool test2json[^|;)]*`).FindAll(mk, -1)
+	if len(runs) == 0 {
+		t.Fatal("the Makefile runs no test2json")
+	}
+	for _, r := range runs {
+		if !regexp.MustCompile(` -t( |$)`).Match(r) {
+			t.Errorf("test2json without -t: %s", r)
 		}
 	}
 }

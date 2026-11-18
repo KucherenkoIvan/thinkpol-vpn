@@ -377,6 +377,7 @@ func testJSON(r io.Reader, w io.Writer, args []string) error {
 // it when that is over its budget.
 func budget(w io.Writer, now time.Time, args []string) error {
 	fs := flag.NewFlagSet("budget", flag.ContinueOnError)
+	fs.SetOutput(w)
 	stream := fs.String("stream", "", "the stream's name, for the report")
 	since := fs.Int64("since", 0, "the stream's start, in unix seconds")
 	var limit time.Duration
