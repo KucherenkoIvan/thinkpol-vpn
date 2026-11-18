@@ -66,18 +66,6 @@ func overwriteInPlace(t *testing.T, path, s string) {
 // renewedInPlaceLines are renewedInPlace's lines.
 var renewedInPlaceLines = []string{"search lan\n", "nameserver 192.0.2.7\n", "nameserver 2001:db8::7\n"}
 
-// writeInPlaceSlowly truncates path, pauses first, then appends
-// renewedInPlace a line at a time, pausing after each line.
-func writeInPlaceSlowly(t *testing.T, path string, first, pause time.Duration) {
-	t.Helper()
-	truncateFile(t, path)
-	time.Sleep(first)
-	for _, line := range renewedInPlaceLines {
-		appendFile(t, path, line)
-		time.Sleep(pause)
-	}
-}
-
 // startInPlace manages a resolv.conf holding isp, telling its upstreams
 // on told.
 func startInPlace(t *testing.T, timing resolvConfTiming) (string, *resolvConf, chan []netip.Addr) {
@@ -164,20 +152,30 @@ func toldOnly(t *testing.T, told <-chan []netip.Addr, want []netip.Addr) {
 	}
 }
 
-// lastTold is the last thing told within a while, failing if nothing was.
-func lastTold(t *testing.T, told <-chan []netip.Addr) []netip.Addr {
+// toldAtLast says want is told, after whatever came before it, and
+// nothing different within a while after: the last thing told. It waits
+// for want rather than for a quiet spell, which a take-back's slow sync
+// between its rename and its tell can outlast.
+func toldAtLast(t *testing.T, told <-chan []netip.Addr, want []netip.Addr) {
 	t.Helper()
-	var last []netip.Addr
-	select {
-	case last = <-told:
-	case <-time.After(5 * time.Second):
-		t.Fatal("told nothing")
+	var all [][]netip.Addr
+	for deadline := time.After(5 * time.Second); len(all) == 0 || !slices.Equal(all[len(all)-1], want); {
+		select {
+		case got := <-told:
+			all = append(all, got)
+		case <-deadline:
+			t.Fatalf("told %v, want %v at last", all, want)
+		}
 	}
 	for {
 		select {
-		case last = <-told:
+		case got := <-told:
+			if !slices.Equal(got, want) {
+				t.Errorf("told %v after %v, want %v last", got, want, want)
+				return
+			}
 		case <-time.After(200 * time.Millisecond):
-			return last
+			return
 		}
 	}
 }
@@ -207,26 +205,40 @@ func checkInPlaceRenewal(t *testing.T, path string, r *resolvConf, told <-chan [
 }
 
 // The tests that step a writer with seenSettling and settleSoon start
-// with an hour's settle: the writer runs in the test's process, so a
-// stall of the process (a loaded machine, a SIGSTOP) stops the writer
-// with the watch, and a shorter settle would end in the stall and take a
-// file the writer hadn't finished, as the product should for a writer
-// that went quiet that long.
+// with an hour's settle (steppedTiming): the writer runs in the test's
+// process, so a stall of the process (a loaded machine, a SIGSTOP) stops
+// the writer with the watch, and a shorter settle would end in the stall
+// and take a file the writer hadn't finished, as the product should for
+// a writer that went quiet that long. The cap is past the settle: a
+// settle the cap cuts short is measured from its start, not from the
+// last change.
+
+// steppedTiming is the timing of a test that steps its writer, the watch
+// polling every check.
+func steppedTiming(check time.Duration) resolvConfTiming {
+	return resolvConfTiming{check: check, settle: time.Hour, settleMax: 2 * time.Hour}
+}
 
 // seenSettling waits until the watch has read the file at path as it is
-// now and is settling it as another program's write still going on.
-func seenSettling(t *testing.T, r *resolvConf, path string) {
+// now, is settling it as another program's write still going on, and
+// started its settle over at or after step, when the writer's last step
+// began: a write still changing the file is never taken.
+func seenSettling(t *testing.T, r *resolvConf, path string, step time.Time) {
 	t.Helper()
 	want := stateOf(readResolvConfFile(path))
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		r.mu.Lock()
 		seen := r.foreign != nil && r.foreign.last == want
+		restarted := seen && !r.foreign.quietUntil.Before(step.Add(r.timing.settle))
 		r.mu.Unlock()
-		if seen {
+		if restarted {
 			return
 		}
 		if time.Now().After(deadline) {
+			if seen {
+				t.Fatalf("the watch read the file as it is now, but did not start its settle over:\n%q", want.content)
+			}
 			t.Fatalf("the watch is not settling the file as it is now:\n%q", want.content)
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -236,52 +248,66 @@ func seenSettling(t *testing.T, r *resolvConf, path string) {
 // settleSoon shortens the settle, once the writer is done, and wakes the
 // watch to time it again. After seenSettling: the watch has started,
 // and with it its unlocked read of its timing.
-func settleSoon(r *resolvConf) {
+func settleSoon(t *testing.T, r *resolvConf) {
+	t.Helper()
 	r.mu.Lock()
 	r.timing.settle = 100 * time.Millisecond
 	r.mu.Unlock()
-	r.wake <- struct{}{}
+	select {
+	case r.wake <- struct{}{}:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watch never took the wake")
+	}
+}
+
+// writeInPlaceStepped truncates path, then appends renewedInPlace a line
+// at a time, each step seen settling before the next.
+func writeInPlaceStepped(t *testing.T, r *resolvConf, path string) {
+	t.Helper()
+	step := time.Now()
+	truncateFile(t, path)
+	seenSettling(t, r, path, step)
+	for _, line := range renewedInPlaceLines {
+		step = time.Now()
+		appendFile(t, path, line)
+		seenSettling(t, r, path, step)
+	}
 }
 
 // Woken by change events only (the poll is out of the way): the close
-// after the truncation wakes the watch, and the appends that follow are
-// not lost to the managed file.
+// after the truncation wakes the watch, each append's close starts the
+// settle over, and the appends are not lost to the managed file.
 func TestResolvConfAnInPlaceWriterSettlesBeforeItIsRead(t *testing.T) {
 	hasChangeEvents(t)
-	path, r, told := startInPlace(t, resolvConfTiming{check: time.Hour, settle: time.Second, settleMax: 10 * time.Second})
-	writeInPlaceSlowly(t, path, 50*time.Millisecond, 50*time.Millisecond)
+	path, r, told := startInPlace(t, steppedTiming(time.Hour))
+	writeInPlaceStepped(t, r, path)
+	settleSoon(t, r)
 	checkInPlaceRenewal(t, path, r, told)
 }
 
 // The poll reads the file empty between the truncation and the appends,
 // and then each part as it grows: with no change events, a changed file
-// is the only sign the write goes on. Each part is read before the next
-// is written, and none is taken.
+// is the only sign the write goes on (a bind mount). Each part is read
+// before the next is written, starts the settle over, and none is taken.
 func TestResolvConfAPollThatReadsAnInPlaceWriteEmptyWaits(t *testing.T) {
-	path, r, told := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: time.Hour, settleMax: time.Hour})
-	truncateFile(t, path)
-	seenSettling(t, r, path)
-	for _, line := range renewedInPlaceLines {
-		appendFile(t, path, line)
-		seenSettling(t, r, path)
-	}
-	settleSoon(r)
+	path, r, told := startInPlace(t, steppedTiming(20*time.Millisecond))
+	writeInPlaceStepped(t, r, path)
+	settleSoon(t, r)
 	checkInPlaceRenewal(t, path, r, told)
 }
 
 // A writer that keeps rewriting the same content keeps the settle going:
-// each rewrite is a change event though every read finds the same file.
+// each rewrite is a change event that starts the settle over, though
+// every read finds the same file.
 func TestResolvConfARewriteOfTheSameContentKeepsTheSettleGoing(t *testing.T) {
 	hasChangeEvents(t)
-	path, r, told := startInPlace(t, resolvConfTiming{check: time.Hour, settle: time.Second, settleMax: time.Minute})
-	end := time.Now().Add(2500 * time.Millisecond)
-	for i := 0; time.Now().Before(end); i++ {
-		if i > 0 && parseResolvConf([]byte(readString(t, path))).managed {
-			t.Fatal("taken back while the writer was still rewriting")
-		}
+	path, r, told := startInPlace(t, steppedTiming(time.Hour))
+	for range 5 {
+		step := time.Now()
 		overwriteInPlace(t, path, renewedInPlace)
-		time.Sleep(100 * time.Millisecond)
+		seenSettling(t, r, path, step)
 	}
+	settleSoon(t, r)
 	checkInPlaceRenewal(t, path, r, told)
 }
 
@@ -386,21 +412,24 @@ func overwriteInPlaceStat(t *testing.T, path, s string) fs.FileInfo {
 	return fi
 }
 
-// While another program's write goes on, unsettled, the node says it
-// isn't protected, and tells none of the files it reads meanwhile; once
-// taken back, it is protected.
+// While another program's write keeps changing the file, each change
+// starts the settle over, so it doesn't settle: the node says it isn't
+// protected, and tells none of the files it reads meanwhile; once taken
+// back, it is protected.
 func TestResolvConfProblemReportsAWriteThatDoesNotSettle(t *testing.T) {
-	path, r, told := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: time.Hour, settleMax: time.Hour})
+	path, r, told := startInPlace(t, steppedTiming(20*time.Millisecond))
 	for i := range 5 {
+		step := time.Now()
 		overwriteInPlace(t, path, fmt.Sprintf("nameserver 192.0.2.%d\n", 10+i))
-		seenSettling(t, r, path)
+		seenSettling(t, r, path, step)
 		if p := r.Problem(); !Unprotected(p) {
 			t.Errorf("problem %v while the write goes on (file %d), want unprotected", p, i+1)
 		}
 	}
+	step := time.Now()
 	overwriteInPlace(t, path, renewedInPlace)
-	seenSettling(t, r, path)
-	settleSoon(r)
+	seenSettling(t, r, path, step)
+	settleSoon(t, r)
 	checkInPlaceRenewal(t, path, r, told)
 }
 
@@ -561,8 +590,10 @@ func TestResolvConfAFileCreatedDuringTheTakeOverSettles(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	path, r, told := startInPlace(t, resolvConfTiming{check: time.Hour, settle: time.Hour, settleMax: time.Hour})
-	seenSettling(t, r, path) // the creation is seen, empty
+	step := time.Now()
+	path, r, told := startInPlace(t, steppedTiming(time.Hour))
+	seenSettling(t, r, path, step) // the creation is seen, empty
+	step = time.Now()
 	_, err := f.WriteString(renewedInPlace)
 	if cerr := f.Close(); err == nil {
 		err = cerr
@@ -570,8 +601,8 @@ func TestResolvConfAFileCreatedDuringTheTakeOverSettles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seenSettling(t, r, path)
-	settleSoon(r)
+	seenSettling(t, r, path, step)
+	settleSoon(t, r)
 	checkInPlaceRenewal(t, path, r, told)
 }
 
@@ -611,9 +642,7 @@ func TestResolvConfAFileRenamedInRightAfterTheTakeOverIsTakenAtOnce(t *testing.T
 	writeFileAtomic(t, path, renewedInPlace)
 	close(renamedIn)
 	takenBackWith(t, path, renewedInPlace)
-	if got := lastTold(t, told); !slices.Equal(got, renewedInPlaceServers) {
-		t.Errorf("told %v last, want %v", got, renewedInPlaceServers)
-	}
+	toldAtLast(t, told, renewedInPlaceServers)
 	if p := r.Problem(); p != nil {
 		t.Errorf("problem %v", p)
 	}
@@ -716,16 +745,18 @@ func TestResolvConfAFileCreatedAtThePathSettles(t *testing.T) {
 				hasChangeEvents(t)
 				check = time.Hour
 			}
-			path, r, told := startInPlace(t, resolvConfTiming{check: check, settle: time.Hour, settleMax: time.Hour})
+			path, r, told := startInPlace(t, steppedTiming(check))
 			if err := os.Remove(path); err != nil {
 				t.Fatal(err)
 			}
 			time.Sleep(tc.removed)
+			step := time.Now()
 			f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 			if err != nil {
 				t.Fatal(err)
 			}
-			seenSettling(t, r, path) // the creation is seen, empty
+			seenSettling(t, r, path, step) // the creation is seen, empty
+			step = time.Now()
 			_, err = f.WriteString(renewedInPlace)
 			if cerr := f.Close(); err == nil {
 				err = cerr
@@ -733,8 +764,8 @@ func TestResolvConfAFileCreatedAtThePathSettles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			seenSettling(t, r, path)
-			settleSoon(r)
+			seenSettling(t, r, path, step)
+			settleSoon(t, r)
 			checkInPlaceRenewal(t, path, r, told)
 		})
 	}
@@ -887,9 +918,7 @@ func TestResolvConfASlowWriterPastTheCapKeepsItsServers(t *testing.T) {
 		time.Sleep(400 * time.Millisecond)
 	}
 	takenBackWith(t, path, renewedInPlace)
-	if got := lastTold(t, told); !slices.Equal(got, renewedInPlaceServers) {
-		t.Errorf("told %v last, want %v", got, renewedInPlaceServers)
-	}
+	toldAtLast(t, told, renewedInPlaceServers)
 	restoredTo(t, path, r, renewedInPlace)
 }
 
