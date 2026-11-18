@@ -48,8 +48,8 @@ func newFixture(t *testing.T) *fixture {
 			"open testdata\n" +
 			"stat /opt/thinkpol/bin/thinkpol\n" +
 			"open /etc/os-release\n" +
-			"stat testdata/absent\n" +
-			"stat ../../lab/maps/m1.yaml\n" +
+			"stat absent\n" +
+			"stat ../../lab/m1.yaml\n" +
 			"stat ../../lab/gone/x\n"),
 	}
 	write(t, filepath.Join(f.src, "internal/pkg/testdata/a.golden"), "golden")
@@ -156,7 +156,7 @@ func TestInputChangeIsAMiss(t *testing.T) {
 			}
 		}, false},
 		{"missing input appears", func(t *testing.T, f *fixture) {
-			write(t, filepath.Join(f.src, "internal/pkg/testdata/absent"), "")
+			write(t, filepath.Join(f.src, "internal/pkg/absent"), "")
 		}, false},
 		{"input rewritten with the same content", func(t *testing.T, f *fixture) {
 			name := filepath.Join(f.src, "internal/pkg/testdata/a.golden")
@@ -220,6 +220,8 @@ func TestScratchPathsDontSplitTheInputs(t *testing.T) {
 // What changed in the checkout after the run started, the run may or may
 // not have seen: such a run is not recorded, whatever kind of input
 // changed. The lab's binary directory is the run's own and not watched.
+// The fixture's missing inputs are in lab/ and internal/pkg, so a change in
+// testdata or lab/maps is seen through the input itself.
 func TestInputChangedDuringTheRunIsNotRecorded(t *testing.T) {
 	golden := func(f *fixture) string { return filepath.Join(f.src, "internal/pkg/testdata/a.golden") }
 	maps := func(f *fixture) string { return filepath.Join(f.src, "lab/maps/m0.yaml") }
@@ -228,8 +230,14 @@ func TestInputChangedDuringTheRunIsNotRecorded(t *testing.T) {
 		name string
 		// before runs before the run starts, during after it.
 		before, during func(t *testing.T, f *fixture)
-		recorded       bool
+		// justBefore: before ran just before the start, within a coarse
+		// file clock's error, and during is empty.
+		justBefore bool
+		recorded   bool
 	}{
+		{name: "file rewritten just before the start", before: func(t *testing.T, f *fixture) {
+			write(t, golden(f), "golden2")
+		}, justBefore: true},
 		{name: "file rewritten", during: func(t *testing.T, f *fixture) {
 			write(t, golden(f), "golden2")
 		}},
@@ -248,7 +256,7 @@ func TestInputChangedDuringTheRunIsNotRecorded(t *testing.T) {
 			}
 		}},
 		{name: "missing input created and removed", during: func(t *testing.T, f *fixture) {
-			absent := filepath.Join(f.src, "lab/maps/m1.yaml")
+			absent := filepath.Join(f.src, "lab/m1.yaml")
 			write(t, absent, "")
 			if err := os.Remove(absent); err != nil {
 				t.Fatal(err)
@@ -276,11 +284,32 @@ func TestInputChangedDuringTheRunIsNotRecorded(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{name: "symlink re-pointed at an old file", before: func(t *testing.T, f *fixture) {
+			for _, name := range []string{"m0.a", "m0.b"} {
+				write(t, filepath.Join(f.src, "lab/maps", name), "map")
+				if err := os.Chtimes(filepath.Join(f.src, "lab/maps", name), old, old); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Remove(maps(f)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("m0.a", maps(f)); err != nil {
+				t.Fatal(err)
+			}
+		}, during: func(t *testing.T, f *fixture) {
+			if err := os.Remove(maps(f)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("m0.b", maps(f)); err != nil {
+				t.Fatal(err)
+			}
+		}},
 		{name: "lab binary rebuilt", during: func(t *testing.T, f *fixture) {
 			write(t, filepath.Join(f.bin, "thinkpol"), "binary2")
 		}, recorded: true},
 		{name: "file the test never read", during: func(t *testing.T, f *fixture) {
-			write(t, filepath.Join(f.src, "internal/pkg/other.txt"), "x")
+			write(t, filepath.Join(f.src, "internal/other.txt"), "x")
 		}, recorded: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -289,9 +318,12 @@ func TestInputChangedDuringTheRunIsNotRecorded(t *testing.T) {
 			if tc.before != nil {
 				tc.before(t, f)
 			}
-			started := afterWrites()
-			time.Sleep(time.Until(started))
-			tc.during(t, f)
+			started := time.Now()
+			if !tc.justBefore {
+				started = afterWrites()
+				time.Sleep(time.Until(started))
+				tc.during(t, f)
+			}
 			err := f.store.Record(f.action, f.log, f.resolve, started, Tally{Passed: 3, Skipped: 1})
 			if tc.recorded {
 				if err != nil {
