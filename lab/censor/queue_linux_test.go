@@ -150,6 +150,78 @@ table inet %s {
 		}
 	})
 
+	// Once the log's watermark reaches the kernel's id_sequence, every
+	// packet queued so far has its decision in the lines before it: a
+	// reader needs no grace period to say a decision isn't there. Only
+	// the lines before that watermark are read.
+	t.Run("watermarks what it decided", func(t *testing.T) {
+		const queue = 204
+		logPath := startCensor(t, "censor-test-watermark", queue, `{"destinations": ["127.0.0.2"]}`)
+		// startCensor returns before the censor has bound the queue, and a
+		// packet the rule queues to no one is dropped without an id.
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			proc, err := os.ReadFile("/proc/net/netfilter/nfnetlink_queue")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ParseQueueStats(string(proc), queue); err == nil {
+				break
+			} else if time.Now().After(deadline) {
+				t.Fatalf("the censor didn't bind queue %d within 10 s: %v", queue, err)
+			}
+		}
+		const flows = 20
+		for range flows {
+			c, err := net.DialUDP("udp", nil, udpAddr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = c.Write([]byte("hello"))
+			_ = c.Close()
+		}
+		proc, err := os.ReadFile("/proc/net/netfilter/nfnetlink_queue")
+		if err != nil {
+			t.Fatal(err)
+		}
+		stats, err := ParseQueueStats(string(proc), queue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stats.Sequence < flows {
+			t.Fatalf("the kernel queued %d packets, sent %d", stats.Sequence, flows)
+		}
+		var through uint64
+		var whole string
+		for deadline := time.Now().Add(10 * time.Second); through < stats.Sequence; time.Sleep(50 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("the watermark is at %d after 10 s, the kernel queued %d", through, stats.Sequence)
+			}
+			b, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			whole = ""
+			for line := range strings.Lines(string(b[:bytes.LastIndexByte(b, '\n')+1])) {
+				var e LogEntry
+				if json.Unmarshal([]byte(line), &e) == nil && e.Event == EventWatermark {
+					if through = max(through, e.Through); through >= stats.Sequence {
+						break
+					}
+				}
+				whole += line
+			}
+		}
+		dropped := map[string]bool{}
+		for _, line := range strings.Split(whole, "\n") {
+			var e LogEntry
+			if line != "" && json.Unmarshal([]byte(line), &e) == nil && e.Event == EventDecision && e.Verdict == Drop {
+				dropped[e.Flow] = true
+			}
+		}
+		if len(dropped) != flows {
+			t.Errorf("the log up to watermark %d has %d dropped flows, want %d:\n%s", through, len(dropped), flows, whole)
+		}
+	})
 }
 
 // drain discards what waits on the socket.

@@ -590,41 +590,96 @@ func TestKillSwitchSettingsComeFromTheNodeThenTheMember(t *testing.T) {
 	}
 }
 
-// countingKillSwitch counts its Applies.
-type countingKillSwitch struct{ applies int }
+// countingKillSwitch counts its Applies, keeps the direct timeout set
+// and the one set when it was first applied, and fails each Close with
+// closeErr.
+type countingKillSwitch struct {
+	applies      int
+	direct       time.Duration
+	firstApplied time.Duration
+	closeErr     error
+}
+
+func (c *countingKillSwitch) SetDirectTimeout(d time.Duration) { c.direct = d }
 
 func (c *countingKillSwitch) Apply(context.Context, firewall.KillSwitchRules) error {
+	if c.applies == 0 {
+		c.firstApplied = c.direct
+	}
 	c.applies++
 	return nil
 }
 
-func (c *countingKillSwitch) Close() error { return nil }
+func (c *countingKillSwitch) Close() error { return c.closeErr }
 
-// The kill switch in place is applied again at every killSwitchReapply
-// tick, the tick handled a little after it fired included: on Linux that
-// renews the direct destinations well within firewall.DirectTimeout.
+// The kill switch in place is applied again at every re-apply tick, the
+// tick handled a little after it fired included: on Linux that renews the
+// direct destinations well within firewall.DirectTimeout. The period is
+// killSwitchReapply unless the host sets one (the lab's shorter one).
 func TestTheKillSwitchIsReappliedAtEveryTick(t *testing.T) {
-	ks := &countingKillSwitch{}
-	clock := time.Unix(1_000_000, 0)
-	k := killSwitchKeeper{newKS: func() KillSwitch { return ks }, log: slog.New(slog.DiscardHandler), now: func() time.Time { return clock }}
-	r := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")}
-	tick := clock
-	for i := range 6 {
-		// The node loop handles a tick late, by more or less each time.
-		clock = tick.Add(time.Duration(50-49*(i%2)) * time.Millisecond)
-		k.keep(context.Background(), true, r)
-		if ks.applies != i+1 {
-			t.Fatalf("tick %d: %d applies, want %d", i, ks.applies, i+1)
+	for _, host := range []DeviceHost{{}, {KillSwitchReapply: 2 * time.Second}} {
+		every := host.reapplyEvery()
+		ks := &countingKillSwitch{}
+		clock := time.Unix(1_000_000, 0)
+		k := killSwitchKeeper{newKS: func() KillSwitch { return ks }, every: every, log: slog.New(slog.DiscardHandler), now: func() time.Time { return clock }}
+		r := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")}
+		tick := clock
+		for i := range 6 {
+			// The node loop handles a tick late, by more or less each time.
+			clock = tick.Add(time.Duration(50-49*(i%2)) * time.Millisecond)
+			k.keep(context.Background(), true, r)
+			if ks.applies != i+1 {
+				t.Fatalf("every %v, tick %d: %d applies, want %d", every, i, ks.applies, i+1)
+			}
+			clock = tick.Add(every / 4) // another event between ticks
+			k.keep(context.Background(), true, r)
+			if ks.applies != i+1 {
+				t.Fatalf("every %v: an event %v after tick %d applied it again", every, every/4, i)
+			}
+			tick = tick.Add(every)
 		}
-		clock = tick.Add(killSwitchReapply / 4) // another event between ticks
-		k.keep(context.Background(), true, r)
-		if ks.applies != i+1 {
-			t.Fatalf("an event %v after tick %d applied it again", killSwitchReapply/4, i)
+	}
+	for set, want := range map[time.Duration]time.Duration{0: killSwitchReapply, 2 * time.Second: 2 * time.Second, time.Hour: killSwitchReapply} {
+		if d := (DeviceHost{KillSwitchReapply: set}).reapplyEvery(); d != want {
+			t.Errorf("the period set to %v: %v, want %v", set, d, want)
 		}
-		tick = tick.Add(killSwitchReapply)
 	}
 	if firewall.DirectTimeout < 2*killSwitchReapply {
 		t.Errorf("firewall.DirectTimeout %v leaves no stall margin over a %v re-apply", firewall.DirectTimeout, killSwitchReapply)
+	}
+}
+
+// The kill switch a node makes gets a direct timeout of three re-apply
+// periods: 30 s, firewall.DirectTimeout, unless a lab host shortened the
+// period.
+func TestTheKillSwitchDirectTimeoutIsThreePeriods(t *testing.T) {
+	s := newTestSpace(t)
+	cfg := testConfig(s.stateDir(t, s.b, 1))
+	for set, want := range map[time.Duration]time.Duration{0: 30 * time.Second, 2 * time.Second: 6 * time.Second, time.Hour: 30 * time.Second} {
+		ks := &countingKillSwitch{}
+		plat := testPlatform()
+		plat.NewKillSwitch = func() KillSwitch { return ks }
+		plat.KillSwitchReapply = set
+		n, err := Prepare(cfg, Logs{}, plat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.ks.keep(context.Background(), true, firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")})
+		if ks.applies != 1 || ks.firstApplied != want {
+			t.Errorf("the period set to %v: %d applies, direct timeout %v at the first, want %v", set, ks.applies, ks.firstApplied, want)
+		}
+	}
+	// A removal that fails keeps the kill switch it made to remove a
+	// previous run's; the next want applies that one, timeout and all.
+	ks := &countingKillSwitch{closeErr: errors.New("nft: busy")}
+	k := killSwitchKeeper{newKS: func() KillSwitch { return ks }, every: 2 * time.Second, log: slog.New(slog.DiscardHandler)}
+	k.keep(context.Background(), false, firewall.KillSwitchRules{})
+	k.keep(context.Background(), true, firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")})
+	if ks.applies != 1 || ks.firstApplied != 6*time.Second {
+		t.Errorf("after a failed removal: %d applies, direct timeout %v at the first, want 6s", ks.applies, ks.firstApplied)
+	}
+	if firewall.DirectTimeout != 30*time.Second {
+		t.Errorf("firewall.DirectTimeout is %v, the design's 30 s", firewall.DirectTimeout)
 	}
 }
 

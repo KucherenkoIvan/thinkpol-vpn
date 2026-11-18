@@ -115,7 +115,7 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 		cfg: cfg, state: st, logs: logs, plat: plat, dnsUpstreams: upstreams,
 		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest), presetTurn: make(chan struct{}, 1),
 		killSwitchRequests: make(chan chan struct{}),
-		ks:                 killSwitchKeeper{newKS: plat.NewKillSwitch, log: logs.Logger},
+		ks:                 killSwitchKeeper{newKS: plat.NewKillSwitch, every: plat.reapplyEvery(), log: logs.Logger},
 	}
 	n.device = st.Device
 	n.report = report{mode: cfg.Mode, space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed,
@@ -719,7 +719,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 		})
 	}
 	keepKillSwitch := func(ctx context.Context, meantUp bool) { n.keepRemovedKillSwitch(ctx, f.mismatch, meantUp) }
-	reapply := time.NewTicker(killSwitchReapply)
+	reapply := time.NewTicker(n.plat.reapplyEvery())
 	defer reapply.Stop()
 	publish()
 	if f.removed {
