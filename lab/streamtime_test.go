@@ -269,6 +269,27 @@ func TestCheckBudget(t *testing.T) {
 
 // TestParseBudget: a budget is a Go duration, 0 for none; empty or
 // negative is refused, not taken as none.
+// TestSlowestTestsPackages: a package's line is never taken for a parent,
+// though its import path has a "/" in it: a slow package beside a
+// subpackage stays on the list. A test with timed subtests is left out.
+func TestSlowestTestsPackages(t *testing.T) {
+	times := []TestTime{
+		{"example.net/m/internal/agent", 5 * time.Minute},
+		{"example.net/m/internal/agent/supervisor", time.Minute},
+		{"example.net/m/lab/ip TestX", 4 * time.Minute},
+		{"example.net/m/lab/ip TestX/a", 3 * time.Minute},
+		{"example.net/m/lab/ip TestX/a/b", 2 * time.Minute},
+	}
+	var got []string
+	for _, tt := range SlowestTests(times, 10) {
+		got = append(got, tt.Name)
+	}
+	want := []string{"example.net/m/internal/agent", "example.net/m/lab/ip TestX/a/b", "example.net/m/internal/agent/supervisor"}
+	if !slices.Equal(got, want) {
+		t.Errorf("SlowestTests = %q, want %q", got, want)
+	}
+}
+
 func TestParseBudget(t *testing.T) {
 	for _, tc := range []struct {
 		in   string

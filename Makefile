@@ -191,14 +191,18 @@ lab-test-long: LAB_STREAMS = long
 # binary is built once, at the start, and both streams and the assembly of
 # RESULTS.md run that binary, as go test -json would (go tool test2json),
 # so a checkout changed mid-run can't write RESULTS.md; the shares carry
-# the commit it was built from (THINKPOL_LAB_COMMIT). On Ctrl-C or a
+# the commit it was built from (THINKPOL_LAB_COMMIT, taken once the build
+# is done, "-dirty" with uncommitted changes). On Ctrl-C or a
 # TERM, the phases' processes get a TERM (a script's background jobs
 # ignore SIGINT), and once they are gone (2 minutes at most: labctl
 # gotest tears its labs down first), the run's labs are removed. The
 # recipe is one line with $(MAKE) in it, so make -n runs it: don't. The
 # other ./lab/...
 # packages run under go test. labctl testjson prints what go test without
-# -v would have and keeps each test's time for the budget's report. Exit
+# -v would have and keeps each test's time for the budget's report; its
+# exit status fails its phase, and its TMPDIR (only its: the lab slot
+# cap's locks live in TMPDIR) is the run's directory, so the long logs it
+# spills to files go with the run on an abort. Exit
 # status: 1 when a test or the tear-down failed, 3 when everything passed
 # but the default stream ran over LAB_BUDGET (make itself exits 2 either
 # way and quotes the recipe's status, "Error 3"); the last line says which.
@@ -212,24 +216,24 @@ lab-test lab-test-default lab-test-long:
 	trap 'stop 130' INT; trap 'stop 143' TERM; \
 	labctl=$$tmp/labctl; $(LABCTL_BUILD) "$$labctl" ./lab/labctl || exit 1; \
 	"$$labctl" budget -check -budget='$(LAB_BUDGET)' || exit 1; \
+	go test -tags lab -c -o "$$tmp/lab.test" ./lab || exit 1; \
 	commit=$$(git rev-parse HEAD) && dirty=$$(git status --porcelain) || exit 1; \
 	export THINKPOL_LAB_COMMIT=$$commit$${dirty:+-dirty}; \
-	go test -tags lab -c -o "$$tmp/lab.test" ./lab || exit 1; \
 	labpkg=$$(go list -tags lab ./lab) && others=$$(go list -tags lab ./lab/... | grep -vx "$$labpkg") || exit 1; \
 	"$$labctl" down -stale || exit 1; \
 	run=$$("$$labctl" run-id) || { run=; exit 1; }; export THINKPOL_LAB_RUN=$$run THINKPOL_LAB_RESULTS_DIR=$$tmp; \
 	phases=; failed=; both=; \
 	case " $(LAB_STREAMS) " in *" default "*) case " $(LAB_STREAMS) " in *" long "*) both=1;; esac;; esac; \
 	case " $(LAB_STREAMS) " in *" default "*) \
-		( { ( cd lab && THINKPOL_LAB_STREAM=default exec go tool test2json -t -p "$$labpkg" "$$tmp/lab.test" -test.v=test2json -test.paniconexit0 -test.count=1 -test.timeout=$(LAB_TIMEOUT) -test.skip='$(LAB_HARNESS_RUN)' ) 2>&1; echo $$? > "$$tmp/lab.status"; } | "$$labctl" testjson -times "$$tmp/lab.times" 2>&1 | awk '{print "[lab]  " $$0; fflush()}' ) & lab=$$!; \
-		( { THINKPOL_LAB_STREAM=default go test -tags lab -json -count=1 -timeout $(LAB_TIMEOUT) -skip '$(LAB_HARNESS_RUN)' $$others 2>&1; echo $$? > "$$tmp/labpkgs.status"; } | "$$labctl" testjson -times "$$tmp/labpkgs.times" 2>&1 | awk '{print "[lab]  " $$0; fflush()}' ) & labpkgs=$$!; \
+		( { ( cd lab && THINKPOL_LAB_STREAM=default exec go tool test2json -t -p "$$labpkg" "$$tmp/lab.test" -test.v=test2json -test.paniconexit0 -test.count=1 -test.timeout=$(LAB_TIMEOUT) -test.skip='$(LAB_HARNESS_RUN)' ) 2>&1; echo $$? > "$$tmp/lab.status"; } | { TMPDIR="$$tmp" "$$labctl" testjson -times "$$tmp/lab.times" 2>&1; echo $$? > "$$tmp/lab.testjson"; } | awk '{print "[lab]  " $$0; fflush()}' ) & lab=$$!; \
+		( { THINKPOL_LAB_STREAM=default go test -tags lab -json -count=1 -timeout $(LAB_TIMEOUT) -skip '$(LAB_HARNESS_RUN)' $$others 2>&1; echo $$? > "$$tmp/labpkgs.status"; } | { TMPDIR="$$tmp" "$$labctl" testjson -times "$$tmp/labpkgs.times" 2>&1; echo $$? > "$$tmp/labpkgs.testjson"; } | awk '{print "[lab]  " $$0; fflush()}' ) & labpkgs=$$!; \
 		( { "$$labctl" gotest -p $(LAB_P) -times "$$tmp/node.times" $(if $(COUNT),-count $(COUNT)) ./...; echo $$? > "$$tmp/node.status"; } 2>&1 | awk '{print "[node] " $$0; fflush()}' ) & node=$$!; \
 		( { $(MAKE) --no-print-directory lab-harness-cached LABCTL="$$labctl" LAB_HARNESS_TIMES="$$tmp/harness.times"; echo $$? > "$$tmp/harness.status"; } 2>&1 | awk '{print "[harness] " $$0; fflush()}' ) & harness=$$!; \
 		phases="lab labpkgs node harness";; \
 	esac; \
 	case " $(LAB_STREAMS) " in *" long "*) \
-		( ( { ( cd lab && THINKPOL_LAB_STREAM=long exec go tool test2json -t -p "$$labpkg" "$$tmp/lab.test" -test.v=test2json -test.paniconexit0 -test.count=1 -test.timeout=$(LAB_TIMEOUT) -test.run='$(LAB_LONG_TESTS)' ) 2>&1; echo $$? > "$$tmp/long.status"; } | "$$labctl" testjson -times "$$tmp/long.times" 2>&1 | awk '{print "[long] " $$0; fflush()}' ) & \
-		  ( { THINKPOL_LAB_STREAM=long go test -tags lab -json -count=1 -timeout $(LAB_TIMEOUT) -run '$(LAB_LONG_TESTS)' $$others 2>&1; echo $$? > "$$tmp/longpkgs.status"; } | "$$labctl" testjson -times "$$tmp/longpkgs.times" 2>&1 | awk '{print "[long] " $$0; fflush()}' ) & \
+		( ( { ( cd lab && THINKPOL_LAB_STREAM=long exec go tool test2json -t -p "$$labpkg" "$$tmp/lab.test" -test.v=test2json -test.paniconexit0 -test.count=1 -test.timeout=$(LAB_TIMEOUT) -test.run='$(LAB_LONG_TESTS)' ) 2>&1; echo $$? > "$$tmp/long.status"; } | { TMPDIR="$$tmp" "$$labctl" testjson -times "$$tmp/long.times" 2>&1; echo $$? > "$$tmp/long.testjson"; } | awk '{print "[long] " $$0; fflush()}' ) & \
+		  ( { THINKPOL_LAB_STREAM=long go test -tags lab -json -count=1 -timeout $(LAB_TIMEOUT) -run '$(LAB_LONG_TESTS)' $$others 2>&1; echo $$? > "$$tmp/longpkgs.status"; } | { TMPDIR="$$tmp" "$$labctl" testjson -times "$$tmp/longpkgs.times" 2>&1; echo $$? > "$$tmp/longpkgs.testjson"; } | awk '{print "[long] " $$0; fflush()}' ) & \
 		  wait; "$$labctl" budget -stream long -since $$start "$$tmp/long.times" "$$tmp/longpkgs.times" || echo 1 > "$$tmp/long.status" ) & \
 		phases="$$phases long longpkgs";; \
 	esac; \
@@ -244,6 +248,7 @@ lab-test lab-test-default lab-test-long:
 		else \
 			echo "lab-test: the $$f phase died without a status" >&2; failed="$$failed $$f"; \
 		fi; \
+		case $$f in node|harness) ;; *) [ "$$(cat "$$tmp/$$f.testjson" 2>/dev/null)" = 0 ] || { echo "lab-test: the $$f phase's labctl testjson failed" >&2; failed="$$failed $$f-testjson"; };; esac; \
 	done; \
 	case "$$both" in 1) \
 		if ( cd lab && THINKPOL_LAB_STREAM= exec "$$tmp/lab.test" -test.v -test.count=1 -test.run='^TestAssembleCensorMatrix$$' ) > "$$tmp/assemble.out" 2>&1 \
@@ -275,16 +280,17 @@ lab-harness-hash:
 # make lab-test's default stream). With LAB_HARNESS_TIMES set (make
 # lab-test sets it, and LABCTL to its own build), it runs go test -json
 # through labctl testjson -v, which prints what go test -v would and
-# writes each test's time to that file, for the budget's report; a cached
-# harness writes an empty one.
+# writes each test's time to that file, for the budget's report (its
+# TMPDIR that file's directory); a cached harness writes an empty one.
 lab-harness-cached:
 	@hash=$$($(LAB_HARNESS_HASH)) && [ -n "$$hash" ] || { echo "lab-harness: can't hash the harness" >&2; exit 1; }; \
 	stamp="$(LAB_HARNESS_CACHE)/$$hash"; \
 	if [ -e "$$stamp" ]; then echo "lab-harness: passed before on harness $$hash, not run again"; $(if $(LAB_HARNESS_TIMES),: > "$(LAB_HARNESS_TIMES)";) exit 0; fi; \
 	echo "lab-harness: harness $$hash not passed before, running it"; \
-	out=$$(mktemp) || exit 1; trap 'rm -f "$$out" "$$out.status"' EXIT; \
-	{ $(LAB_HARNESS_GOTEST) -v $(if $(LAB_HARNESS_TIMES),-json); echo $$? > "$$out.status"; } 2>&1 $(if $(LAB_HARNESS_TIMES),| $(LABCTL) testjson -v -times "$(LAB_HARNESS_TIMES)" 2>&1) | tee "$$out"; \
+	out=$$(mktemp) || exit 1; trap 'rm -f "$$out" "$$out.status" "$$out.testjson"' EXIT; \
+	{ $(LAB_HARNESS_GOTEST) -v $(if $(LAB_HARNESS_TIMES),-json); echo $$? > "$$out.status"; } 2>&1 $(if $(LAB_HARNESS_TIMES),| { TMPDIR="$(dir $(LAB_HARNESS_TIMES))" $(LABCTL) testjson -v -times "$(LAB_HARNESS_TIMES)" 2>&1; echo $$? > "$$out.testjson"; }) | tee "$$out"; \
 	[ "$$(cat "$$out.status" 2>/dev/null)" = 0 ] || exit 1; \
+	$(if $(LAB_HARNESS_TIMES),[ "$$(cat "$$out.testjson" 2>/dev/null)" = 0 ] || { echo "lab-harness: labctl testjson failed" >&2; exit 1; }; )\
 	if grep -E -q -e '^ *--- SKIP: TestHarness' -e '^testing: warning: no tests to run' "$$out"; then \
 		echo "lab-harness: passed, but a harness test skipped: not remembered, the next make lab-test runs it again"; exit 0; \
 	fi; \

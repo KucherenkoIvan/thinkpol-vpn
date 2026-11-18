@@ -327,11 +327,12 @@ func ReadTestTimes(name string) ([]TestTime, error) {
 
 // SlowestTests is the n slowest of times, slowest first. A test whose
 // subtests are timed too is left out: its time is theirs, and its line
-// would push one of them off the list.
+// would push one of them off the list. A package's line (an import path,
+// "/" in it too) is never a parent.
 func SlowestTests(times []TestTime, n int) []TestTime {
 	parents := map[string]bool{}
 	for _, t := range times {
-		if parent, _, ok := cutLast(t.Name, "/"); ok {
+		if parent, ok := parentTest(t.Name); ok {
 			parents[parent] = true
 		}
 	}
@@ -345,6 +346,16 @@ func SlowestTests(times []TestTime, n int) []TestTime {
 		return cmp.Or(cmp.Compare(b.Elapsed, a.Elapsed), strings.Compare(a.Name, b.Name))
 	})
 	return out[:min(n, len(out))]
+}
+
+// parentTest is the parent of a subtest's "<package> <test>/<sub>" name.
+func parentTest(name string) (string, bool) {
+	pkg, test, ok := strings.Cut(name, " ")
+	if !ok {
+		return "", false
+	}
+	parent, _, ok := cutLast(test, "/")
+	return pkg + " " + parent, ok
 }
 
 // OverBudgetError is CheckBudget's failure: the stream took Took, over its
