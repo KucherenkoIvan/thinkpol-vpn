@@ -1229,7 +1229,10 @@ func leadIn(lead time.Duration, rekeys ...time.Duration) []wgMessage {
 // 400 ms late between rekeys (the count read off its level until it
 // came: no step) or exchanges 250 ms apart run for 3 s before each rekey,
 // or before the third alone, with no quiet between them and the
-// handshake (the step's span starts with them). It isn't when the steps
+// handshake (the step's span starts with them), and when rekeys 120.3 s
+// apart, as on the lab, have one hidden from the reading after it by a
+// record the other way answered 600 ms later (the step's span starts
+// with the records that reading read). It isn't when the steps
 // come 119 s or 117 s apart (no WireGuard: it never rekeys sooner than
 // REKEY_AFTER_TIME and a round trip) or later than the rekey window,
 // differ in size, or the count moves in between.
@@ -1240,6 +1243,11 @@ func TestWGRhythmCountsRecords(t *testing.T) {
 	floor := floorOf(512)
 	third := at[2]
 	lateAnswer := wgPingTimeline(400*s, rtt, rekeys, wgMessage{180 * s, true, 300}, wgMessage{180*s + 400*time.Millisecond, false, 300})
+	// hidden: rekeys 120.3 s apart, as on the lab, and a record from the
+	// server 100 ms before the second that the client answers 600 ms
+	// later, so the reading after the handshake finds the level.
+	close := []time.Duration{121*s + 500*time.Millisecond, 120*s + 300*time.Millisecond, 120*s + 300*time.Millisecond}
+	hidden := wgPingTimeline(400*s, rtt, close, wgMessage{241*s + 700*time.Millisecond, false, 300}, wgMessage{242*s + 300*time.Millisecond, true, 300})
 	for _, c := range []struct {
 		name  string
 		msgs  []wgMessage
@@ -1249,6 +1257,7 @@ func TestWGRhythmCountsRecords(t *testing.T) {
 		{"an answer 400 ms late", lateAnswer, third},
 		{"3 s of exchanges before each rekey", wgPingTimeline(400*s, rtt, rekeys, leadIn(3*s, at...)...), third},
 		{"3 s of exchanges before the third rekey", wgPingTimeline(400*s, rtt, rekeys, leadIn(3*s, third)...), third},
+		{"rekeys 120.3 s apart, the second hidden by an answer in flight", hidden, 362*s + 100*time.Millisecond},
 	} {
 		r := newWGRun(t, `{}`, 1400)
 		r.carry(eachInRecord(c.msgs, floor))
