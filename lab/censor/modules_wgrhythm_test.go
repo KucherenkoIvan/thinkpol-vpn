@@ -1490,9 +1490,10 @@ func TestWGRhythmRealityTrace(t *testing.T) {
 // maxResp records from the server 1 ms apart, every record of one size:
 // only the record counts tell anything. It draws the traffic as it sends
 // it, holding only the records of exchanges still in flight, and stops at
-// the first packet the censor doesn't accept, which it returns.
-func (r *wgRun) carryRandomExchanges(rng *rand.Rand, perSecond float64, d time.Duration, maxReq, maxResp int, rtt [2]time.Duration) (wgAction, bool) {
-	var pending []wireRecord
+// the first packet the censor doesn't accept, which it returns. extra
+// records go in among them.
+func (r *wgRun) carryRandomExchanges(rng *rand.Rand, perSecond float64, d time.Duration, maxReq, maxResp int, rtt [2]time.Duration, extra ...wireRecord) (wgAction, bool) {
+	pending := slices.Clone(extra)
 	// flush sends the pending records before until, in time order.
 	flush := func(until time.Duration) (wgAction, bool) {
 		slices.SortStableFunc(pending, func(a, b wireRecord) int { return int(a.at - b.at) })
@@ -1609,6 +1610,52 @@ func TestWGRhythmRandomExchanges(t *testing.T) {
 		}
 	}
 	t.Logf("took %s", time.Since(start).Round(time.Millisecond))
+}
+
+// wgImbalanceFlags pins TestWGRhythmImbalanceBesideTraffic's measured
+// flags: how many of 20 connections flag, by round trip.
+var wgImbalanceFlags = map[string]int{
+	"0.2-5ms":  0,
+	"20-80ms":  0,
+	"0.3-1.9s": 0,
+}
+
+// TestWGRhythmImbalanceBesideTraffic pins the false positive the count's
+// hold leaves beside slow traffic: one record nothing answers every 150 s
+// (an MQTT publish, a one-way heartbeat), of a new size each time, beside
+// random one-for-one exchanges at a request a second, 6 minutes a
+// connection, answers 0.2 to 5 ms, 20 to 80 ms or 0.3 to 1.9 s later.
+// Every count must be the pinned one (wgImbalanceFlags; lab/censor/doc.go
+// states them): an answer later than 300 ms but within 2 s is no step, so
+// slow exchanges no longer break the publishes' chain.
+func TestWGRhythmImbalanceBesideTraffic(t *testing.T) {
+	s, ms := time.Second, time.Millisecond
+	var publish []wireRecord
+	for i, at := 0, 7*s; at < 360*s; i, at = i+1, at+150*s {
+		publish = append(publish, wireRecord{at, true, 300 + 13*i})
+	}
+	for _, rtt := range []struct {
+		name string
+		rtt  [2]time.Duration
+	}{
+		{"0.2-5ms", [2]time.Duration{200 * time.Microsecond, 5 * ms}},
+		{"20-80ms", [2]time.Duration{20 * ms, 80 * ms}},
+		{"0.3-1.9s", [2]time.Duration{300 * ms, 1900 * ms}},
+	} {
+		flagged := 0
+		var why []string
+		for seed := range uint64(20) {
+			r := newWGRun(t, `{}`, 1400)
+			if a, blocked := r.carryRandomExchanges(rand.New(rand.NewPCG(seed, 245)), 1, 360*s, 1, 1, rtt.rtt, publish...); blocked {
+				flagged++
+				why = append(why, fmt.Sprintf("seed %d at %s: %s", seed, a.at.Round(time.Second), a.Reason))
+			}
+		}
+		if want := wgImbalanceFlags[rtt.name]; flagged != want {
+			t.Errorf("%s: %d of 20 flagged, pinned %d: %s", rtt.name, flagged, want, strings.Join(why, "; "))
+		}
+		t.Logf("%s: %d of 20 flagged %s", rtt.name, flagged, strings.Join(why, "; "))
+	}
 }
 
 // TestWGRhythmFlagsMQTTKeepalive pins a false positive the package doc
