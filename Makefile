@@ -229,8 +229,9 @@ lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1, its lab-ta
 # "WireGuard's timers"); this runs the censor matrix's rhythm cells, and
 # their rows' off cells, at real time: at milestone gates, and for changes
 # to transport shaping or the rhythm rules.
+lab-test-rhythm-real: export THINKPOL_LAB_WG_TIMER_SCALE = 1
 lab-test-rhythm-real: ## the censor matrix's wireguard-rhythm cells with WireGuard's real timers (about 8 minutes)
-	THINKPOL_LAB_WG_TIMER_SCALE=1 $(MAKE) --no-print-directory lab-gotest PKG=./lab RUN='TestCensorMatrix/^(udp|reality)$$/^(off|wireguard-rhythm)$$'
+	$(LABCTL) gotest -v -tagged -fail-skipped -run 'TestCensorMatrix/^(udp|reality)$$/^(off|wireguard-rhythm)$$' ./lab
 
 lab-seccomp: ## regenerate lab/seccomp.json from the moby/profiles/seccomp lab/seccompgen pins (needs the network once)
 	cd lab/seccompgen && go run . -o ../seccomp.json

@@ -131,8 +131,9 @@ func holdReality(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle
 }
 
 // holdTunnel keeps device-a's tunnel to server-1 up for d before the
-// probe. In use: a ping every 2 s, so WireGuard rekeys about every 2
-// minutes as it does under any steady use. Idle: one ping, so WireGuard
+// probe. In use: a ping every 2 s, so WireGuard rekeys about every
+// REKEY_AFTER_TIME (2 minutes, sped up in the lab) as it does under any
+// steady use. Idle: one ping, so WireGuard
 // has a session, then nothing from either end but what the tunnel sends
 // on its own; no case holds idle until TP-080 brings the idle rhythm case
 // back (results_test.go), and the branch stays for it. A hold whose pings
@@ -156,8 +157,12 @@ func holdTunnel(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle 
 	}
 	res, err := dev.Exec(ctx, "ping", "-q", "-i", "2", "-w", fmt.Sprint(int(d/time.Second)), to.v4.String())
 	sent, got, perr := pingReceived(res.Stdout)
-	if perr != nil || sent == 0 || got*10 < sent*9 {
-		t.Fatalf("the hold's pings didn't cross: %d of %d came back, want 90%% (%v): %v", got, sent, perr, err)
+	// A censor's block of the held connection costs the redial a ping or
+	// two; a hold as short as the sped-up WireGuard timers make it (28
+	// pings) can see two blocks, so a few lost pings are allowed whatever
+	// the share.
+	if perr != nil || sent == 0 || got*10 < sent*9 && sent-got > 4 {
+		t.Fatalf("the hold's pings didn't cross: %d of %d came back, want 90%% or all but 4 (%v): %v", got, sent, perr, err)
 	}
 	t.Logf("the hold's pings: %d of %d came back", got, sent)
 }
