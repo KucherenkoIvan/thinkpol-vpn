@@ -6,10 +6,10 @@ area: lab
 stream: verification
 repo: thinkpol-vpn
 size: M
-depends_on: [TP-239]
+depends_on: []
 refs: [RR65]
-owner: ""
-branch: ""
+owner: "agent-tp-251"
+branch: "tp-251-scaled-wg-timers"
 ---
 
 ## Goal
@@ -33,3 +33,5 @@ The matrix's wireguard-rhythm cells hold the tunnel 7.5 minutes of real time to 
 
 ## Log
 - 2026-11-19 created in backlog (owner: sped-up clocks wherever possible)
+- 2026-11-19 depends_on TP-239 dropped: TP-251 no longer waits on it (TP-239 merges this in)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-251
