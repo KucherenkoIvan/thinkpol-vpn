@@ -153,8 +153,8 @@ lab: lab-test ## the lab suite, ending in the censor matrix (lab/RESULTS.md)
 lab-up: ## start the standard topology for this checkout, for poking around
 	$(LABCTL) up
 
-lab-test: ## lab tests (each starts its own lab) and every package's tests inside a lab node, at once; tears down after
-# Each phase writes its own exit status: sh has no pipefail. Both phases
+lab-test: ## lab tests (each starts its own lab), every package's tests inside a lab node, and lab-harness if the harness changed, at once; tears down after
+# Each phase writes its own exit status: sh has no pipefail. The phases
 # share one run id (THINKPOL_LAB_RUN, in their labs' names), and the
 # clean-up removes that run's labs only: another run's from this checkout
 # (a lab-gotest beside it, another lab-test) stay.

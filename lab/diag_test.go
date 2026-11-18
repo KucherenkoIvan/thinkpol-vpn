@@ -398,13 +398,13 @@ type ipLink struct {
 // report. No snapshot shows a key.
 func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Internet))
-	server, dev, internet := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Internet)
-	space := newM0Space(t, internet, server)
+	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1))
+	server, dev, router := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Router)
+	space := newM0Space(t, router, server)
 	space.spec = "/src/lab/maps/routetable.yaml"
 	space.env = append(space.env, "DM_LIST=/tmp/m0/lists/dm.geoip")
-	internet.WriteFile(t, "/tmp/m0/domestic.csv", []byte(domesticList))
-	internet.MustExec(t, "sh", "-ec", "cd /tmp/m0 && thinkpol dev lists build -only dm -out lists domestic.csv >/dev/null")
+	router.WriteFile(t, "/tmp/m0/domestic.csv", []byte(domesticList))
+	router.MustExec(t, "sh", "-ec", "cd /tmp/m0 && thinkpol dev lists build -only dm -out lists domestic.csv >/dev/null")
 	envelope, v1 := space.build(t)
 	space.install(t, server, "server-1", envelope)
 	space.install(t, dev, "device-a", envelope)
@@ -416,8 +416,9 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 	server.MustExec(t, "chmod", "600", seed)
 	dev.MustExec(t, "groupadd", "-g", apiGID, "thinkpol")
 	// The device resolves through systemd-resolved: the snapshot shows its
-	// links and resolv.conf (its stub).
-	startResolved(t, dev, internet.IPv4(lab.NetServers))
+	// links and resolv.conf (its stub). No name is looked up: the resolver
+	// is the router's far address, where nothing answers.
+	startResolved(t, dev, router.IPv4(lab.NetServers))
 
 	srv := startUp(t, server, "-map-poll", "1s")
 	// The crash posture (TP-048) would put the kill switch in place under
