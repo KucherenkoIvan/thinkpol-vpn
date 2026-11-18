@@ -78,7 +78,8 @@ type Decision struct {
 	// module's tags of one flow after its first are ignored. Any verdict
 	// may carry a tag.
 	Tag string
-	// Reason is a short cause, for the verdict log.
+	// Reason is a short cause, for the verdict log: an Accept's too, when
+	// no module before it gave one.
 	Reason string
 }
 
