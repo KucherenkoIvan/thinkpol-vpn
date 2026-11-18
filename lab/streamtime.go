@@ -89,9 +89,10 @@ func FilterTestJSON(r io.Reader, w io.Writer) ([]TestTime, error) {
 
 func filterEvent(ev testEvent, w io.Writer, logs map[string]*testLog, flush func(string) error, times *[]TestTime) error {
 	if ev.Test == "" {
-		if ev.Action == "pass" || ev.Action == "fail" {
-			// The package ended: what its tests never ended goes out
-			// before its verdict line.
+		if ev.Output != "" || ev.Action == "pass" || ev.Action == "fail" {
+			// Outside a test, output comes before the first test starts or
+			// once its binary is done (its verdict line, before the
+			// package's end): what its tests never ended goes out first.
 			prefix := ev.Package + "\x00"
 			for k := range logs {
 				if strings.HasPrefix(k, prefix) {
