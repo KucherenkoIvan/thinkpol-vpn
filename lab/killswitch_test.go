@@ -5,6 +5,7 @@ package lab_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -25,11 +26,10 @@ import (
 // own, in a lab of its own, the parts in parallel, so that no lab is held
 // for the whole sequence (TP-248): with the switch on and the tunnel down
 // nothing leaves but traffic to the entries (server-1), or with allow-LAN
-// the lab's private networks, and a deliberate disconnect keeps it
-// (down); an agent killed (SIGKILL, the restart held off) leaves it in
+// the lab's private networks, a deliberate disconnect keeps it, and with
+// the switch off a disconnect leaves traffic direct (down); an agent killed (SIGKILL, the restart held off) leaves it in
 // place until the restarted agent is connected again, a stop leaves the
-// down shape as a crash would, and with the switch off a disconnect leaves
-// traffic direct (crash-and-stop); the live agent renews the direct
+// down shape as a crash would (crash-and-stop); the live agent renews the direct
 // destinations and repairs its table within a re-apply period, and
 // uninstall removes the switch (live-agent); with the switch off the
 // "everything" preset holds it across a crash (the crash posture), a
@@ -54,7 +54,9 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 
 // killSwitchDown: off once installed; on, in place at once with the
 // tunnel down, allow-LAN opening the lab's private networks; connected,
-// the TUN passes; a deliberate disconnect keeps the switch.
+// the TUN passes; a deliberate disconnect keeps the switch. Off,
+// connected: nothing under the space preset, and a disconnect leaves
+// traffic direct.
 func killSwitchDown(k *killSwitchLab) {
 	t := k.t
 	k.wantTable("installed, off", false, false)
@@ -82,14 +84,21 @@ func killSwitchDown(k *killSwitchLab) {
 	k.thinkpol("disconnect")
 	k.wantTable("on, disconnected again", true, false)
 	k.confined("on, after a disconnect", false)
+
+	k.thinkpol("connect")
+	ping(t, k.dev, k.s4)
+	k.thinkpol("kill-switch", "off")
+	k.wantTable("off, space preset", false, false)
+	k.diagShows("off, space preset", false, false)
+	k.thinkpol("disconnect")
+	k.open("off, disconnected")
 }
 
 // killSwitchCrashAndStop: with the switch on, a crash while connected
 // leaves the dead agent's table holding, its direct destinations expiring,
 // and the restarted agent connects again; a stop is not a disconnect: the
 // stopped agent leaves the down shape and the started one comes back
-// connected. Off, connected: nothing under the space preset, and a
-// disconnect leaves traffic direct.
+// connected.
 func killSwitchCrashAndStop(k *killSwitchLab) {
 	t := k.t
 	k.thinkpol("kill-switch", "on")
@@ -112,11 +121,6 @@ func killSwitchCrashAndStop(k *killSwitchLab) {
 	ping(t, k.dev, k.s4)
 	k.wantTable("on, started again", true, true)
 
-	k.thinkpol("kill-switch", "off")
-	k.wantTable("off, space preset", false, false)
-	k.diagShows("off, space preset", false, false)
-	k.thinkpol("disconnect")
-	k.open("off, disconnected")
 }
 
 // killSwitchLiveAgent: under "everything", connected, the live agent
@@ -391,12 +395,20 @@ func (k *killSwitchLab) diagShows(when string, present, connected bool) {
 			perChain[r.Chain]++
 			tun = tun || r.Text == `meta oifname "thinkpol0" accept`
 		}
-		for _, chain := range []string{"output", "forward"} {
-			listed, err := execRead(k.dev, execTimeout, "nft", "-a", "list", "chain", "inet", "thinkpol-killswitch", chain)
-			if err != nil {
-				return err
-			}
-			if n := nftRuleLines(listed); perChain[chain] != n {
+		chainNames := []string{"output", "forward"}
+		reads := make([][]string, 0, len(chainNames)+len(ks.Sets.Sets))
+		for _, chain := range chainNames {
+			reads = append(reads, []string{"nft", "-a", "list", "chain", "inet", "thinkpol-killswitch", chain})
+		}
+		for _, set := range ks.Sets.Sets {
+			reads = append(reads, []string{"nft", "-j", "list", "set", "inet", "thinkpol-killswitch", set.Name})
+		}
+		listings, err := k.readAll(reads)
+		if err != nil {
+			return err
+		}
+		for i, chain := range chainNames {
+			if n := nftRuleLines(listings[i]); perChain[chain] != n {
 				return fmt.Errorf("%s: chain %s: diag lists %d rules, nft %d", when, chain, perChain[chain], n)
 			}
 		}
@@ -404,15 +416,12 @@ func (k *killSwitchLab) diagShows(when string, present, connected bool) {
 			return fmt.Errorf("%s: the TUN passes %v, want %v:\n%s", when, tun, connected, out)
 		}
 		sizes, nftSizes := map[string]int{}, map[string]int{}
-		for _, set := range ks.Sets.Sets {
+		for i, set := range ks.Sets.Sets {
 			if set.Unreadable != "" {
 				return fmt.Errorf("%s: set %s unreadable: %s", when, set.Name, set.Unreadable)
 			}
 			sizes[set.Name] = set.Entries
-			listed, err := execRead(k.dev, execTimeout, "nft", "-j", "list", "set", "inet", "thinkpol-killswitch", set.Name)
-			if err != nil {
-				return err
-			}
+			listed := listings[len(chainNames)+i]
 			var l struct {
 				Nftables []struct {
 					Set *struct {
@@ -434,6 +443,18 @@ func (k *killSwitchLab) diagShows(when string, present, connected bool) {
 		}
 		return nil
 	})
+}
+
+// readAll runs the reads on device-a at once (each exec is slow on a
+// loaded host) and returns their outputs in order, or the first error.
+func (k *killSwitchLab) readAll(reads [][]string) ([]string, error) {
+	outs, errs := make([]string, len(reads)), make([]error, len(reads))
+	var wg sync.WaitGroup
+	for i, args := range reads {
+		wg.Go(func() { outs[i], errs[i] = execRead(k.dev, execTimeout, args...) })
+	}
+	wg.Wait()
+	return outs, errors.Join(errs...)
 }
 
 // pings says whether ping from device-a, unbound or bound to its physical
@@ -511,17 +532,25 @@ func (k *killSwitchLab) refused(dst netip.Addr) error {
 	return nil
 }
 
+// open checks that traffic to the foreign addresses flows direct, the
+// probes at once as in confined.
 func (k *killSwitchLab) open(when string) {
 	t := k.t
 	t.Helper()
+	var wg sync.WaitGroup
 	for _, dst := range k.foreign {
-		if !k.reaches(dst, true) {
-			t.Errorf("%s: ping %v bound to %s unanswered: traffic doesn't flow direct", when, dst, k.eth)
-		}
-		if got, err := tcpReaches(k.dev, dst, killSwitchPort, 3); err != nil || !got {
-			t.Errorf("%s: TCP to %v doesn't connect (%v): traffic doesn't flow direct", when, dst, err)
-		}
+		wg.Go(func() {
+			if got, err := k.pings(dst, true); err != nil || !got {
+				t.Errorf("%s: ping %v bound to %s unanswered (%v): traffic doesn't flow direct", when, dst, k.eth, err)
+			}
+		})
+		wg.Go(func() {
+			if got, err := tcpReaches(k.dev, dst, killSwitchPort, 3); err != nil || !got {
+				t.Errorf("%s: TCP to %v doesn't connect (%v): traffic doesn't flow direct", when, dst, err)
+			}
+		})
 	}
+	wg.Wait()
 }
 
 // expired waits for a dead agent's direct destinations to expire
@@ -542,8 +571,7 @@ func (k *killSwitchLab) expired(when string) {
 func (k *killSwitchLab) crashHeld(check func()) {
 	t := k.t
 	t.Helper()
-	k.dev.WriteFile(t, dropIns+"/lab-hold.conf", []byte("[Service]\nRestartSec=1h\n"))
-	k.dev.MustExec(t, "systemctl", "daemon-reload")
+	k.dev.MustExec(t, "sh", "-ec", `printf '[Service]\nRestartSec=1h\n' >"$1" && systemctl daemon-reload`, "sh", dropIns+"/lab-hold.conf")
 	signalAgent(t, k.dev, "KILL", 0)
 	lab.Eventually(t, 30*time.Second, func() error {
 		got, err := execRead(k.dev, pollTimeout, "systemctl", "show", "-p", "SubState", "--value", "thinkpol.service")
@@ -553,9 +581,7 @@ func (k *killSwitchLab) crashHeld(check func()) {
 		return nil
 	})
 	check()
-	k.dev.MustExec(t, "rm", dropIns+"/lab-hold.conf")
-	k.dev.MustExec(t, "systemctl", "daemon-reload")
-	k.dev.MustExec(t, "systemctl", "restart", "thinkpol.service")
+	k.dev.MustExec(t, "sh", "-ec", `rm "$1" && systemctl daemon-reload && systemctl restart thinkpol.service`, "sh", dropIns+"/lab-hold.conf")
 }
 
 // dropIns is where the kill-switch test's drop-ins for the service go:
