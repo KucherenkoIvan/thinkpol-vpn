@@ -23,7 +23,7 @@ In a full lab (TP-223's run, 2026-11-16) the censor-matrix cell `udp × fully-en
 ## Acceptance
 - [x] The root cause named in Notes, with evidence.
 - [x] A fix.
-- [ ] 20 runs of the cell under load pass, and a mutation that brings the cause back fails.
+- [x] 20 runs of the cell under load pass, and a mutation that brings the cause back fails.
 - [x] No retries and no longer timeouts without a cause.
 
 ## Notes
@@ -48,3 +48,7 @@ In a full lab (TP-223's run, 2026-11-16) the censor-matrix cell `udp × fully-en
 - 2026-11-18 make lint, make test green on 09c2d667 (aa9ddd36 changes only this ticket)
 - 2026-11-18 the cell under load (other full labs running), lab-gotest RUN='TestCensorMatrix/^udp/^(off|fully-encrypted)': 09c2d667 COUNT=10, 10 of 10 fail as wanted (2563 s); aa9ddd36 COUNT=10, 9 of 9 fail, the 10th killed by the package's 60 min test timeout while its lab came up (3601 s); aa9ddd36 COUNT=3, 2 fail and 1 partial (only IPv6), the first IPv6 flow's chance (Notes). 21 of 22 right: the 20-runs box stays unticked
 - 2026-11-18 out of scope: lab-gotest's 60 min timeout covers all of COUNT's iterations, and under load one iteration of this row took up to 6 min
+- 2026-11-19 merged origin/rewrite (TP-243) cleanly at 913cca8b; make lint, make test green there
+- 2026-11-19 on 913cca8b, targeted lab-gotest (the full lab is the orchestrator's now): the off, fully-encrypted and active prober cells of every row, 27 of 27 as RESULTS.md has them (984 s); PKG=./lab/censor/... in a lab node passed (133 s); the cell udp against fully-encrypted, COUNT=7 three times while other branches' labs ran, 21 of 21 fail as wanted (1466 s, 792 s, 1508 s). The mutation that brings the cause back (no residual check) fails TestFullyEncryptedResidualCensorship. Box ticked on these; after the fix the cell was right in 42 of 43 runs, the one partial being the first-IPv6-flow chance in Notes
+- 2026-11-19 out of scope: make lab-down left a killed run's reality prototype xray container and its network (compose-labelled) in place; removed by hand
+- 2026-11-19 in-progress → review
