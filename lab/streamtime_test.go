@@ -154,7 +154,7 @@ func TestFilterTestJSONUnended(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := w.String()
-	if !strings.Contains(s, dump) {
+	if !strings.Contains(s, "TestD started\n"+dump) {
 		t.Errorf("the dump was not printed whole (%d bytes printed)", len(s))
 	}
 	last := -1
