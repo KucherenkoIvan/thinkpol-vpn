@@ -36,6 +36,20 @@ Waits only where no watcher can see the result. The owner wants a full lab to ta
 - Overlaps TP-200 (waits on `status -json` instead of log greps, one node-start helper): same waits (`waitOutput` patterns) and files. Land TP-200 first, or do group (b) inside it.
 - Related: TP-173 (fixed sleeps across all tests, milestone later).
 
+## Review findings
+Review round 1 (four reviewers, two model families): two proven defects (R1.1, R1.4) and smaller ones.
+- [ ] R1.1 (should-fix) cmd/thinkpol/platform.go: `3*d >= firewall.DirectTimeout` overflows for d ≳ 854 h ("855h", "1000000h"): 3*d wraps negative, the check passes, and a negative direct timeout reaches nftables as a huge uint64 (direct destinations stay allowed long after the agent dies, or every Apply fails). Compare `d >= firewall.DirectTimeout/3`, and SetDirectTimeout treats d <= 0 as the default. Tests: "855h" and "1000000h" in TestLabKillSwitchReapply; SetDirectTimeout(negative) keeps 30 s; the default stays 30 s when the variable is unset (the mutation newKillSwitch(3*reapply) → newKillSwitch(3*time.Second) passes every test today).
+- [ ] R1.2 (should-fix) The "timeout = three re-apply periods" rule lives in cmd/thinkpol with a different constant than the agent's killSwitchReapply, while SetDirectTimeout's comment says "the agent keeps it above twice": put the rule in one place (the agent's kill-switch keeper sets the timeout from the resolved period) and make the comments say what the code does (firewall doc.go, internal/agent/doc.go, killswitch_linux.go, platform.go).
+- [ ] R1.3 (docs) docs/design/api-overview.md says lab variables are never read by a node and lists 14 THINKPOL_* keys: add THINKPOL_LAB_KILL_SWITCH_REAPPLY and correct THINKPOL_LAB's "Read by". docs/design/security.md states 30 s / 10 s as fixed: a lab node may shorten both, same ratio, and why a real install can't reach that.
+- [ ] R1.4 (should-fix) The early stop (`probeBudget.blocked`, untilAnswerOr, realityUp) counts any blocker drop/reset already in the cell's log (settle probe, hold, warm-up, an earlier attempt) and stops after the first failed attempt: a censor that drops only a flow's first packet, or one ping lost under load, scores "blocked" and a later attempt that would cross is never sent. Count only verdicts on this attempt's packets and stop only on those; otherwise probe to the old window. Tests: "stop always true" must fail one; a censor dropping only the first packet is scored as crossing. Say what the early stop can still miss.
+- [ ] R1.5 (should-fix) lab/reality_matrix_test.go: once.Do keeps the first caller's budget; in active-module rows the warm-up has no `blocked`, so blocked reality cells still wait 60 s. Pass the blocked check to the warm-up when the cell expects "fail".
+- [ ] R1.6 (should-fix) caughtUp: a packet the kernel drops before censord (QueueDropped, UserDropped) still takes an id, so the read waits 30 s and blames the watermark: fail at once with the count when they rose since `queued`. Nit: the reader keeps the max watermark; check whether a lower id can be delivered later, and say.
+- [ ] R1.7 (should-fix, likely flake) lab/killswitch_test.go: a renewal is counted only when `left > last`; polls near a multiple of the period alias and report "renewed 0 times". Count a renewal when the absolute expiry (read time + left) moves later.
+- [ ] R1.8 (should-fix, likely flake) internal/dataplane/firewall/killswitch_linux_test.go: ~0.75 s between the loop's end and the renewed expiry; widen the margin so one slow nft read or ping can't fail it.
+- [ ] R1.9 (nit) lab/reality_matrix_test.go: statusWithin returns at once on errSchemaVersion and the loop has no sleep → 60 s of docker exec spin; return on errors.Is(err, errSchemaVersion).
+- [ ] R1.10 (nit) the lab prober's 1 s timeout: check it holds for a camouflage site under load and widen if needed, with the reason.
+- [ ] R1.11 (nits) the watermark test passes with eng.Handled(id) moved before decide: make the in-node test read only lines before the watermark so it fails; wrap long comment lines (dataplane.go, firewall doc.go, killswitch_linux.go).
+
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority; from the lab-speed audit)
 - 2026-11-18 backlog → in-progress, owner: agent-tp-241
@@ -52,3 +66,4 @@ Waits only where no watcher can see the result. The owner wants a full lab to ta
 - 2026-11-18 not verified: a full lab on the final head 45007026 (it differs from ebc5e83b, the last full lab, by the queue-binding wait in one test); that test 20 of 20 and the two re-run lab tests passed targeted on it, make lint and make test green on it. The full lab under load is the orchestrator's on rewrite after the merge.
 - 2026-11-18 in-progress → review
 - 2026-11-19 merged rewrite (TP-244) after the move to review; make lint and make test green on acdb2660
+- 2026-11-19 review round 1: fix R1.1–R1.11
