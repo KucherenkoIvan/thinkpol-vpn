@@ -63,13 +63,16 @@ func overwriteInPlace(t *testing.T, path, s string) {
 	}
 }
 
+// renewedInPlaceLines are renewedInPlace's lines.
+var renewedInPlaceLines = []string{"search lan\n", "nameserver 192.0.2.7\n", "nameserver 2001:db8::7\n"}
+
 // writeInPlaceSlowly truncates path, pauses first, then appends
 // renewedInPlace a line at a time, pausing after each line.
 func writeInPlaceSlowly(t *testing.T, path string, first, pause time.Duration) {
 	t.Helper()
 	truncateFile(t, path)
 	time.Sleep(first)
-	for _, line := range []string{"search lan\n", "nameserver 192.0.2.7\n", "nameserver 2001:db8::7\n"} {
+	for _, line := range renewedInPlaceLines {
 		appendFile(t, path, line)
 		time.Sleep(pause)
 	}
@@ -203,6 +206,43 @@ func checkInPlaceRenewal(t *testing.T, path string, r *resolvConf, told <-chan [
 	restoredTo(t, path, r, renewedInPlace)
 }
 
+// The tests that step a writer with seenSettling and settleSoon start
+// with an hour's settle: the writer runs in the test's process, so a
+// stall of the process (a loaded machine, a SIGSTOP) stops the writer
+// with the watch, and a shorter settle would end in the stall and take a
+// file the writer hadn't finished, as the product should for a writer
+// that went quiet that long.
+
+// seenSettling waits until the watch has read the file at path as it is
+// now and is settling it as another program's write still going on.
+func seenSettling(t *testing.T, r *resolvConf, path string) {
+	t.Helper()
+	want := stateOf(readResolvConfFile(path))
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r.mu.Lock()
+		seen := r.foreign != nil && r.foreign.last == want
+		r.mu.Unlock()
+		if seen {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the watch is not settling the file as it is now:\n%q", want.content)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// settleSoon shortens the settle, once the writer is done, and wakes the
+// watch to time it again. After seenSettling: the watch has started,
+// and with it its unlocked read of its timing.
+func settleSoon(r *resolvConf) {
+	r.mu.Lock()
+	r.timing.settle = 100 * time.Millisecond
+	r.mu.Unlock()
+	r.wake <- struct{}{}
+}
+
 // Woken by change events only (the poll is out of the way): the close
 // after the truncation wakes the watch, and the appends that follow are
 // not lost to the managed file.
@@ -215,10 +255,17 @@ func TestResolvConfAnInPlaceWriterSettlesBeforeItIsRead(t *testing.T) {
 
 // The poll reads the file empty between the truncation and the appends,
 // and then each part as it grows: with no change events, a changed file
-// is the only sign the write goes on, and the writer outlasts the settle.
+// is the only sign the write goes on. Each part is read before the next
+// is written, and none is taken.
 func TestResolvConfAPollThatReadsAnInPlaceWriteEmptyWaits(t *testing.T) {
-	path, r, told := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: 300 * time.Millisecond, settleMax: 10 * time.Second})
-	writeInPlaceSlowly(t, path, 100*time.Millisecond, 150*time.Millisecond)
+	path, r, told := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: time.Hour, settleMax: time.Hour})
+	truncateFile(t, path)
+	seenSettling(t, r, path)
+	for _, line := range renewedInPlaceLines {
+		appendFile(t, path, line)
+		seenSettling(t, r, path)
+	}
+	settleSoon(r)
 	checkInPlaceRenewal(t, path, r, told)
 }
 
@@ -339,23 +386,21 @@ func overwriteInPlaceStat(t *testing.T, path, s string) fs.FileInfo {
 	return fi
 }
 
-// While another program's write hasn't settled for longer than the
-// settle, the node says it isn't protected; once taken back, it is.
+// While another program's write goes on, unsettled, the node says it
+// isn't protected, and tells none of the files it reads meanwhile; once
+// taken back, it is protected.
 func TestResolvConfProblemReportsAWriteThatDoesNotSettle(t *testing.T) {
-	path, r, told := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: 200 * time.Millisecond, settleMax: time.Hour})
-	start := time.Now()
-	sawUnprotected := false
-	for i := 0; time.Since(start) < 1500*time.Millisecond; i++ {
-		overwriteInPlace(t, path, fmt.Sprintf("nameserver 192.0.2.%d\n", 10+i%200))
-		time.Sleep(50 * time.Millisecond)
-		if time.Since(start) > 800*time.Millisecond && Unprotected(r.Problem()) {
-			sawUnprotected = true
+	path, r, told := startInPlace(t, resolvConfTiming{check: 20 * time.Millisecond, settle: time.Hour, settleMax: time.Hour})
+	for i := range 5 {
+		overwriteInPlace(t, path, fmt.Sprintf("nameserver 192.0.2.%d\n", 10+i))
+		seenSettling(t, r, path)
+		if p := r.Problem(); !Unprotected(p) {
+			t.Errorf("problem %v while the write goes on (file %d), want unprotected", p, i+1)
 		}
 	}
-	if !sawUnprotected {
-		t.Error("no unprotected problem while the write went on")
-	}
 	overwriteInPlace(t, path, renewedInPlace)
+	seenSettling(t, r, path)
+	settleSoon(r)
 	checkInPlaceRenewal(t, path, r, told)
 }
 
@@ -516,8 +561,8 @@ func TestResolvConfAFileCreatedDuringTheTakeOverSettles(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	path, r, told := startInPlace(t, resolvConfTiming{check: time.Hour, settle: 300 * time.Millisecond, settleMax: 10 * time.Second})
-	time.Sleep(100 * time.Millisecond) // the creation is seen, empty
+	path, r, told := startInPlace(t, resolvConfTiming{check: time.Hour, settle: time.Hour, settleMax: time.Hour})
+	seenSettling(t, r, path) // the creation is seen, empty
 	_, err := f.WriteString(renewedInPlace)
 	if cerr := f.Close(); err == nil {
 		err = cerr
@@ -525,6 +570,8 @@ func TestResolvConfAFileCreatedDuringTheTakeOverSettles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	seenSettling(t, r, path)
+	settleSoon(r)
 	checkInPlaceRenewal(t, path, r, told)
 }
 
@@ -669,7 +716,7 @@ func TestResolvConfAFileCreatedAtThePathSettles(t *testing.T) {
 				hasChangeEvents(t)
 				check = time.Hour
 			}
-			path, r, told := startInPlace(t, resolvConfTiming{check: check, settle: 300 * time.Millisecond, settleMax: 10 * time.Second})
+			path, r, told := startInPlace(t, resolvConfTiming{check: check, settle: time.Hour, settleMax: time.Hour})
 			if err := os.Remove(path); err != nil {
 				t.Fatal(err)
 			}
@@ -678,7 +725,7 @@ func TestResolvConfAFileCreatedAtThePathSettles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			time.Sleep(100 * time.Millisecond) // the creation is seen, empty
+			seenSettling(t, r, path) // the creation is seen, empty
 			_, err = f.WriteString(renewedInPlace)
 			if cerr := f.Close(); err == nil {
 				err = cerr
@@ -686,6 +733,8 @@ func TestResolvConfAFileCreatedAtThePathSettles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			seenSettling(t, r, path)
+			settleSoon(r)
 			checkInPlaceRenewal(t, path, r, told)
 		})
 	}
