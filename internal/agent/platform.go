@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"time"
 
 	wgtun "golang.zx2c4.com/wireguard/tun"
 
@@ -66,6 +67,20 @@ type DeviceHost struct {
 	// NewKillSwitch returns the host's kill switch, or nil where the host
 	// has none yet (Windows: TP-076).
 	NewKillSwitch func() KillSwitch
+	// KillSwitchReapply replaces killSwitchReapply, the kill switch's
+	// re-apply period, when set and shorter; zero, what production runs,
+	// is the default. The lab's kill-switch test shortens it through the
+	// composition root (cmd/thinkpol) to run the tick, and the direct
+	// destinations' timeout of three ticks (directTimeout), in seconds.
+	KillSwitchReapply time.Duration
+}
+
+// reapplyEvery is how often the kill switch in place is applied again.
+func (h DeviceHost) reapplyEvery() time.Duration {
+	if h.KillSwitchReapply > 0 && h.KillSwitchReapply < killSwitchReapply {
+		return h.KillSwitchReapply
+	}
+	return killSwitchReapply
 }
 
 // RouteEnforcer is route-table enforcement on the host

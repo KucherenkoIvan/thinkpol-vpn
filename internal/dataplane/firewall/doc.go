@@ -595,12 +595,15 @@
 // already holds what the device sends itself. What it refuses, a
 // published container port reached from the LAN without allow-LAN
 // included, is the kill switch working: everything not allowed is
-// refused, whoever routes it. Direct's elements expire [DirectTimeout] after they were put
-// in, and every Apply, a re-apply of what is in place included, puts them
-// in again (flush and add, one transaction): the agent re-applies at
-// every 10 s tick, at most about 15 s apart, so only a dead agent (or a
-// node loop stalled for about 15 s) lets them go, leaving the entries
-// and the LAN. A kernel without nf_tables makes it unsupported
+// refused, whoever routes it. Direct's elements expire [DirectTimeout]
+// after they were put in, and every Apply, a re-apply of what is in place
+// included, puts them in again (flush and add, one transaction): the
+// agent re-applies at every 10 s tick, at most about 15 s apart, so only
+// a dead agent (or a node loop stalled for about 15 s) lets them go,
+// leaving the entries and the LAN. [KillSwitch.SetDirectTimeout] replaces
+// DirectTimeout: the agent sets three re-apply periods, DirectTimeout
+// itself unless a lab node shortened the period, and tests run the expiry
+// in seconds with it. A kernel without nf_tables makes it unsupported
 // ([ErrKillSwitchUnsupported]), by the guard's probe.
 //
 // On macOS it is the anchor `com.apple/001.thinkpol-killswitch`

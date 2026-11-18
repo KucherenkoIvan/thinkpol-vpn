@@ -74,6 +74,12 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 		internet.Start(t, "nc", ncFamily(a), "-k", "-l", "-s", a.String(), "-p", fmt.Sprint(port))
 	}
 
+	// The agent's kill-switch timers, sped up (cmd/thinkpol,
+	// labKillSwitchReapply): re-applied every 2 s, not 10 s, the direct
+	// destinations expiring three periods after the last, as with the
+	// defaults (firewall.DirectTimeout).
+	const reapply, directTimeout = 2 * time.Second, 6 * time.Second
+	dev.WriteFile(t, dropIns+"/lab-timing.conf", []byte(fmt.Sprintf("[Service]\nEnvironment=THINKPOL_LAB=1 THINKPOL_LAB_KILL_SWITCH_REAPPLY=%s\n", reapply)))
 	dev.MustExec(t, "/opt/thinkpol/bin/thinkpol", "service", "install")
 	thinkpol := func(args ...string) string {
 		t.Helper()
@@ -105,6 +111,24 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 			}
 			return nil
 		})
+	}
+	// directExpires is how long the first element of the kill switch's
+	// direct4 set has left (nft's "expires"), and whether there is one.
+	directExpires := func() (time.Duration, bool, error) {
+		t.Helper()
+		out, err := execRead(dev, execTimeout, "nft", "list", "set", "inet", "thinkpol-killswitch", "direct4")
+		if err != nil {
+			return 0, false, err
+		}
+		m := nftExpires.FindStringSubmatch(out)
+		if m == nil {
+			return 0, false, nil
+		}
+		left, err := time.ParseDuration(m[1])
+		if err != nil {
+			t.Fatalf("direct4's expiry %q: %v", m[1], err)
+		}
+		return left, true, nil
 	}
 	// diagShows checks `thinkpol diag`'s kill switch against nft: no
 	// table, or the table with both chains, every rule (the TUN's passing
@@ -224,11 +248,14 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 			if lan {
 				continue
 			}
-			start := time.Now()
+			// Refused, not dropped: curl gives up at once by its own clock
+			// (time_total), which a loaded host's docker exec doesn't
+			// stretch.
 			url := "http://" + netip.AddrPortFrom(dst, port).String() + "/"
-			connected, out, err := curlFrom(dev, 5*time.Second, "--interface", eth, url)
-			if err != nil || connected || time.Since(start) > 3*time.Second {
-				t.Errorf("%s: curl bound to %s: connected %v after %v, %v\n%s", when, eth, connected, time.Since(start), err, out)
+			connected, out, err := curlFrom(dev, 5*time.Second, "--interface", eth, "-w", "time_total=%{time_total}\n", url)
+			took, ok := curlTook(out)
+			if err != nil || connected || !ok || took > 3*time.Second {
+				t.Errorf("%s: curl bound to %s: connected %v after %v (read %v), %v\n%s", when, eth, connected, took, ok, err, out)
 			}
 		}
 	}
@@ -244,8 +271,8 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 		}
 	}
 	// expired waits for a dead agent's direct destinations to expire
-	// (firewall.DirectTimeout): the lab's networks are private, so every
-	// preset sends them direct while connected.
+	// (directTimeout): the lab's networks are private, so every preset
+	// sends them direct while connected.
 	expired := func(when string) {
 		t.Helper()
 		lab.Eventually(t, 60*time.Second, func() error {
@@ -259,7 +286,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	// check while it is dead, then lets systemd start it again.
 	crashHeld := func(check func()) {
 		t.Helper()
-		dev.WriteFile(t, "/run/systemd/system/thinkpol.service.d/lab-hold.conf", []byte("[Service]\nRestartSec=1h\n"))
+		dev.WriteFile(t, dropIns+"/lab-hold.conf", []byte("[Service]\nRestartSec=1h\n"))
 		dev.MustExec(t, "systemctl", "daemon-reload")
 		signalAgent(t, dev, "KILL", 0)
 		lab.Eventually(t, 30*time.Second, func() error {
@@ -270,7 +297,7 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 			return nil
 		})
 		check()
-		dev.MustExec(t, "rm", "-r", "/run/systemd/system/thinkpol.service.d")
+		dev.MustExec(t, "rm", dropIns+"/lab-hold.conf")
 		dev.MustExec(t, "systemctl", "daemon-reload")
 		dev.MustExec(t, "systemctl", "restart", "thinkpol.service")
 	}
@@ -343,17 +370,40 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	wantTable("everything, connected", true, true)
 
 	// The live agent renews the direct destinations well within their
-	// timeout (firewall.DirectTimeout, 30 s): one bound to eth0 still
-	// answers after 45 s.
-	time.Sleep(45 * time.Second)
+	// timeout: their expiry moves later at its re-apply ticks, and one
+	// bound to eth0 still answers past a whole timeout. A read's expiry
+	// lies between the times before and after its docker exec plus what
+	// nft said was left: a renewal counts only when the earliest the
+	// expiry can now be is past the latest it could have been, so a slow
+	// exec neither hides one for good nor makes one up.
+	start, renewals, latest := time.Now(), 0, time.Time{}
+	lab.Eventually(t, 8*directTimeout, func() error {
+		before := time.Now()
+		left, ok, err := directExpires()
+		after := time.Now()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			t.Fatalf("everything, connected: the direct destinations expired %v in, renewed %d times", time.Since(start), renewals)
+		}
+		if !latest.IsZero() && before.Add(left).After(latest) {
+			renewals++
+		}
+		latest = after.Add(left)
+		if renewals < 2 || time.Since(start) <= directTimeout {
+			return fmt.Errorf("everything, connected: the direct destinations renewed %d times in %v, expiring in %v", renewals, time.Since(start), left)
+		}
+		return nil
+	})
 	if !reaches(foreign[0], true) {
-		t.Errorf("everything, connected 45 s: the direct destination %v bound to %s unanswered: its renewal lapsed", foreign[0], eth)
+		t.Errorf("everything, connected %v: the direct destination %v bound to %s unanswered: its renewal lapsed", time.Since(start), foreign[0], eth)
 	}
 	// Removed from outside, the table is back by the next re-apply tick,
-	// 10 s apart. Removed again just after a re-apply put it back, it
-	// must be back within 11 s, not skip a tick. (The table alone, not
-	// `nft flush ruleset`, which would take the container's own rules
-	// with it.)
+	// reapply apart. Removed again just after a re-apply put it back, it
+	// must be back within one and a half periods, not skip a tick. (The
+	// table alone, not `nft flush ruleset`, which would take the
+	// container's own rules with it.)
 	backIn := func() time.Duration {
 		t.Helper()
 		dev.MustExec(t, "nft", "delete", "table", "inet", "thinkpol-killswitch")
@@ -368,8 +418,8 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	}
 	backIn()
 	for i := range 3 {
-		if d := backIn(); d > 11*time.Second {
-			t.Errorf("everything, connected: the table removed from outside (%d) was back after %v, want within 11 s", i, d)
+		if d := backIn(); d > reapply*3/2 {
+			t.Errorf("everything, connected: the table removed from outside (%d) was back after %v, want within %v", i, d, reapply*3/2)
 		}
 	}
 	wantTable("everything, re-applied", true, true)
@@ -405,6 +455,26 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	wantTable("uninstalled", false, false)
 	open("uninstalled")
 }
+
+// dropIns is where the kill-switch test's drop-ins for the service go:
+// systemd's runtime directory, gone at a reboot.
+const dropIns = "/run/systemd/system/thinkpol.service.d"
+
+// curlTook is curl's own time_total (-w "time_total=%{time_total}\n") in
+// its output.
+func curlTook(out string) (time.Duration, bool) {
+	m := curlTimeTotal.FindStringSubmatch(out)
+	if m == nil {
+		return 0, false
+	}
+	d, err := time.ParseDuration(m[1] + "s")
+	return d, err == nil
+}
+
+var curlTimeTotal = regexp.MustCompile(`time_total=([0-9]+(?:\.[0-9]+)?)`)
+
+// nftExpires is an nftables set element's time left.
+var nftExpires = regexp.MustCompile(`expires ((?:[0-9]+[hms]+)+)`)
 
 // diagKillSwitch is the part of `thinkpol diag`'s kill switch the lab
 // checks.

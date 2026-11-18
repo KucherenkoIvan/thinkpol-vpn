@@ -16,7 +16,7 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
   
   Plus `version` and the hidden `worker`.
 - **A gRPC local API, `LocalService`, with 8 calls,** over a Unix socket in a directory that only root and the `thinkpol` group can reach. The group may call everything except `TailLogs`. `Diagnose` gives the group its snapshot without the host parts.
-- **Configuration is environment plus flags.** There are 14 `THINKPOL_*` keys, all on `up`, and no config file. The installed service sets exactly one of them, `THINKPOL_CONNECT_ON_BOOT`.
+- **Configuration is environment plus flags.** There are 14 `THINKPOL_*` keys, all on `up`, and no config file; a lab node's `thinkpol` also reads two lab variables (below). The installed service sets exactly one of them, `THINKPOL_CONNECT_ON_BOOT`.
 - **On-disk state:**
   - the state directory: `node.key`, `space.pub`, `map.bin`, `blobs/`, `rules.local`;
   - runtime locks and records under `/run/thinkpol` (macOS: `/private/var/db/thinkpol`);
@@ -88,11 +88,12 @@ Other variables the binary reads:
 
 ### Lab variables
 
-These are not user-facing. They are read by the lab tooling and by tests, never by a node in normal use.
+These are not user-facing. They are read by the lab tooling and by tests, and by a node only in a lab, where `THINKPOL_LAB=1` is set: never in normal use.
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `THINKPOL_LAB` | tests | set in lab nodes; tests that need root or namespaces skip without it |
+| `THINKPOL_LAB` | tests, `thinkpol` | set in lab nodes; tests that need root or namespaces skip without it; `thinkpol` reads the next one only with it set to 1 |
+| `THINKPOL_LAB_KILL_SWITCH_REAPPLY` | `thinkpol`, in a lab node only | the kill switch's re-apply period, 1 s to under 10 s, its direct destinations expiring after three periods; anything else is the defaults (10 s, 30 s) |
 | `THINKPOL_LAB_PROJECT` | lab | replaces the checkout part of Compose project names |
 | `THINKPOL_LAB_RUN` | lab, Makefile | the run id in test and gotest labs' names; `make lab-test` sets one |
 | `THINKPOL_LAB_KEEP` | lab, Makefile | a failed test's lab stays up |

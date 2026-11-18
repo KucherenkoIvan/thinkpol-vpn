@@ -179,7 +179,7 @@ func TestReservingProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	fmt.Println("reserved", r.subnets["a"].v4)
-	time.Sleep(time.Hour)
+	time.Sleep(time.Hour) // holds the reservation until the parent kills it
 }
 
 func reservationFiles(t *testing.T, dir string) []string {

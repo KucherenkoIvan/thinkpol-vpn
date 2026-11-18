@@ -37,13 +37,13 @@ func setupHTTPS(t *testing.T, l *lab.Lab) (probeTarget, error) {
 
 // probeHTTPSOn fetches a page from server-1's port over each family, by
 // name.
-func probeHTTPSOn(port int) func(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
-	return func(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
+func probeHTTPSOn(port int) func(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
+	return func(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
 		dev := l.Node(lab.DeviceA)
-		get := func(a netip.Addr) (bool, error) {
-			return untilAnswer(window(wantPass), func() (bool, error) { return httpsFetches(dev, a, port) })
+		get := func(a netip.Addr, v6 bool) (bool, error) {
+			return b.retry(v6, func() (bool, error) { return httpsFetches(dev, a, port) })
 		}
-		return crossed{v4: mustProbe(t)(get(to.v4)), v6: mustProbe(t)(get(to.v6))}
+		return crossed{v4: mustProbe(t)(get(to.v4, false)), v6: mustProbe(t)(get(to.v6, true))}
 	}
 }
 
@@ -263,11 +263,11 @@ func familyAddr(v6 bool) netip.Addr {
 // cell still needs the verdict log to blame the handshake (blockedBy) in
 // each family that didn't cross, so a tunnel that never came up for
 // another reason isn't scored blocked.
-func (o openVPN) probe(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
+func (o openVPN) probe(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
 	// A cell may probe twice (censorCase.settle): the clients start once.
 	if o.clientsRunning(t, dev) {
-		return o.ping(t, l, to, wantPass)
+		return o.ping(t, l, to, b)
 	}
 	for _, v6 := range []bool{false, true} {
 		ifname, port := "ovpn4", ovpnPort4
@@ -279,7 +279,7 @@ func (o openVPN) probe(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) 
 			"--tls-client", "--ca", "/tmp/ovpn/ca.crt", "--cert", "/tmp/ovpn/client.crt", "--key", "/tmp/ovpn/client.key",
 			"--ifconfig", ovpnOverlay[v6]+".2", ovpnOverlay[v6]+".1", "--connect-retry", "1", "1", "--verb", "3")
 	}
-	return o.ping(t, l, to, wantPass)
+	return o.ping(t, l, to, b)
 }
 
 // clientsRunning says whether device-a runs the OpenVPN clients already:
@@ -297,11 +297,13 @@ func (o openVPN) clientsRunning(t *testing.T, dev *lab.Node) bool {
 	return false
 }
 
-func (o openVPN) ping(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
+// ping pings each tunnel's far end; to.v6 is the tunnel over IPv6, its
+// overlay address IPv4 like the other's.
+func (o openVPN) ping(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
 	dev := l.Node(lab.DeviceA)
 	return crossed{
-		v4: mustProbe(t)(pingCrosses(dev, to.v4, window(wantPass), pingNoReplyOrRoute)),
-		v6: mustProbe(t)(pingCrosses(dev, to.v6, window(wantPass), pingNoReplyOrRoute)),
+		v4: mustProbe(t)(b.retry(false, pingOnce(dev, to.v4, pingNoReplyOrRoute))),
+		v6: mustProbe(t)(b.retry(true, pingOnce(dev, to.v6, pingNoReplyOrRoute))),
 	}
 }
 
