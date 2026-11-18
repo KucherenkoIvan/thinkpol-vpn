@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
+	"github.com/KucherenkoIvan/thinkpol-vpn/lab/testcache"
 )
 
 const usage = `usage: labctl <command>
@@ -34,6 +35,9 @@ const usage = `usage: labctl <command>
                                       go test -tags lab, as make lab-test's lab phase does)
                                       (-fail-skipped: implies -v; fail a package whose tests all
                                       skipped, and a run in which no test ran: make lab-gotest)
+                                      (a package whose recorded pass still holds is not run but
+                                      reported "(cached)"; -count, -perf or ` + testcache.NoCacheEnv + `=1 run
+                                      every package and record nothing)
   project                             print this checkout's project prefix
   run-id                              print a fresh run id, for ` + lab.RunEnv + `
 `
@@ -171,7 +175,18 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 	if *timeout != "" {
 		testArgs = append(testArgs, "-test.timeout="+*timeout)
 	}
-	return gotest(ctx, root, gotestOptions{parallel: *parallel, tagged: *tagged, failSkipped: *failSkipped}, env, testArgs, fs.Args())
+	opt := gotestOptions{parallel: *parallel, tagged: *tagged, failSkipped: *failSkipped}
+	if useCache(*count, *perf) {
+		opt.cache = lab.NewGoTestCache(os.Stdout)
+	}
+	return gotest(ctx, root, opt, env, testArgs, fs.Args())
+}
+
+// useCache says whether a gotest run may serve packages from the results
+// cache and record passes: not when it repeats tests (-count, -count=1
+// included) or measures them (-perf), nor with testcache.NoCacheEnv set.
+func useCache(count int, perf bool) bool {
+	return os.Getenv(testcache.NoCacheEnv) == "" && count == 0 && !perf
 }
 
 func up(ctx context.Context, root string) error {
@@ -209,6 +224,7 @@ func up(ctx context.Context, root string) error {
 type gotestOptions struct {
 	parallel            int
 	tagged, failSkipped bool
+	cache               *lab.GoTestCache // nil: run every package
 }
 
 func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patterns []string) error {
@@ -234,7 +250,7 @@ func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patt
 	}
 	var results []lab.GoTestResult
 	if len(pkgs) > 0 {
-		if results, err = lab.GoTestEach(ctx, root, pkgs, opt.parallel, os.Stdout, env, args...); err != nil {
+		if results, err = lab.GoTestEach(ctx, root, pkgs, opt.parallel, os.Stdout, opt.cache, env, args...); err != nil {
 			return err
 		}
 	}
@@ -254,10 +270,13 @@ func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patt
 // were not verbose has nothing to count, so failSkipped needs -test.v.
 func gotestVerdict(results []lab.GoTestResult, failSkipped bool) error {
 	var failed []string
-	ran, pkgs := 0, map[string]bool{}
+	ran, pkgs, cached := 0, map[string]bool{}, 0
 	for _, r := range results {
 		pkgs[r.ImportPath] = true
 		ran += r.Tests.Ran()
+		if r.Cached {
+			cached++
+		}
 		if r.Failed && !slices.Contains(failed, r.ImportPath) {
 			failed = append(failed, r.ImportPath)
 		}
@@ -278,6 +297,6 @@ func gotestVerdict(results []lab.GoTestResult, failSkipped bool) error {
 	if err := errors.Join(errs...); err != nil {
 		return err
 	}
-	fmt.Printf("gotest: ok, %d packages\n", len(pkgs))
+	fmt.Printf("gotest: ok, %d packages, %d of them cached\n", len(pkgs), cached)
 	return nil
 }
