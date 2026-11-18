@@ -85,3 +85,4 @@ Review round 1. The split and the assembly are sound; the problems are the TP-24
 - 2026-11-19 not verified: `make lab-test-default` alone in a full lab (its acceptance box stays open). Out of scope: the default stream is about 2.4x its budget, and TestCensorMatrix/reality's unheld cells take 8m19s
 - 2026-11-19 in-progress → review
 - 2026-11-19 review round 1: fix R1.1–R1.12
+- 2026-11-19 round 1 fixes in (R1.1–R1.11 code and docs); `make lint` and `make test` green at c6a5b4a8; 23 mutations, each failing its test (listed at the end); Ctrl-C and TERM of `make lab-test-long` mid-run leave no lab and no process of the run
