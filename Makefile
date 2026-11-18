@@ -139,7 +139,7 @@ lab: lab-test ## the lab suite, ending in the censor matrix (lab/RESULTS.md)
 lab-up: ## start the standard topology for this checkout, for poking around
 	$(LABCTL) up
 
-lab-test: ## lab tests (each starts its own lab) and every package's tests inside a lab node, at once; tears down after
+lab-test: ## lab tests (each starts its own lab) and every package's tests inside a lab node, at once; tears down after (COUNT=n: node phase repeated, uncached)
 # Each phase writes its own exit status: sh has no pipefail. Both phases
 # share one run id (THINKPOL_LAB_RUN, in their labs' names), and the
 # clean-up removes that run's labs only: another run's from this checkout
@@ -149,7 +149,7 @@ lab-test: ## lab tests (each starts its own lab) and every package's tests insid
 	tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
 	status=0; \
 	( { go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) ./lab/...; echo $$? > "$$tmp/lab.status"; } 2>&1 | awk '{print "[lab]  " $$0; fflush()}' ) & \
-	( { $(LABCTL) gotest -p $(LAB_P) ./...; echo $$? > "$$tmp/node.status"; } 2>&1 | awk '{print "[node] " $$0; fflush()}' ) & \
+	( { $(LABCTL) gotest -p $(LAB_P) $(if $(COUNT),-count $(COUNT)) ./...; echo $$? > "$$tmp/node.status"; } 2>&1 | awk '{print "[node] " $$0; fflush()}' ) & \
 	wait; \
 	for f in lab node; do \
 		if [ -f "$$tmp/$$f.status" ]; then \
