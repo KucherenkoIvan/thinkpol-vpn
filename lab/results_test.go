@@ -75,6 +75,14 @@ func TestCensorMatrix(t *testing.T) {
 			}
 			record(*cell)
 		})
+		// DEBUG TP-236: the verdict log, summaries included (censord has
+		// stopped by now).
+		if tr.name == rowUDP && cc.name == "fully-encrypted" {
+			t.Cleanup(func() {
+				out, err := execRead(row.lab.Node(lab.Router), pollTimeout, "cat", censorLogPath)
+				t.Logf("DEBUG TP-236 verdict log (%v):\n%s", err, out)
+			})
+		}
 
 		l := row.lab
 		target, err := tr.setup(t, l)
