@@ -166,8 +166,9 @@ func (m *fullyEncrypted) arm(f *Flow, tag string) {
 
 // residualDrop is the decision for a packet of a client flow whose
 // 3-tuple is under residual censorship, a Drop whatever the module's
-// verdict (a throttle or a reset would reach the server's direction, which
-// residual censorship leaves alone), not pinned: once the time is up the
+// verdict (Wu et al. saw the client's packets dropped; a throttle would
+// police the server's replies too, which residual censorship leaves
+// alone), not pinned: once the time is up the
 // flow is judged as any other. f.Last is the engine's clock at the packet,
 // but for one with a bad checksum, which its receiver discards anyway.
 func (m *fullyEncrypted) residualDrop(f *Flow) (Decision, bool) {

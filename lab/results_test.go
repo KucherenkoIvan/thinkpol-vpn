@@ -137,6 +137,12 @@ func TestCensorMatrix(t *testing.T) {
 				cell.result, cell.detail = "error", "the verdict log misses the probe's flows"
 				t.Fatal(err)
 			}
+			// Evidence only, the score doesn't read it (TP-250 may).
+			if passed, err := c.acceptedFor(); err != nil {
+				t.Logf("%s against %s: reading the accepts with a reason: %v", tr.name, cc.name, err)
+			} else if len(passed) > 0 {
+				t.Logf("%s against %s: accepted with a reason: %s", tr.name, cc.name, strings.Join(passed, "; "))
+			}
 		}
 		if want == "fail" || want == "varies" && cell.result != "pass" {
 			how, err := blockedBy(t, l, c, cc.blocker, got, tr.oneUnderlay)
@@ -1250,6 +1256,23 @@ func (c *censorRun) healthy(t *testing.T) error {
 			c.start.QueueDropped, now.QueueDropped, c.start.UserDropped, now.UserDropped)
 	}
 	return nil
+}
+
+// acceptedFor is every flow a module accepted with a reason (a
+// fully-encrypted exemption), as "flow: module: reason", in log order.
+func (c *censorRun) acceptedFor() ([]string, error) {
+	log, err := execRead(c.router, pollTimeout, "cat", censorLogPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading the verdict log: %w", err)
+	}
+	var passed []string
+	_, err = matchVerdicts(completeLines(log), func(e verdictLine) bool {
+		if e.Event == censor.EventDecision && e.Verdict == censor.Accept && e.Module != "" {
+			passed = append(passed, fmt.Sprintf("%s: %s: %s", e.Flow, e.Module, e.Reason))
+		}
+		return false
+	})
+	return passed, err
 }
 
 // verdictLine is a verdict log entry with its flow parsed.
