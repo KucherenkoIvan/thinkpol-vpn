@@ -324,6 +324,9 @@ type resolvConf struct {
 type foreignWrite struct {
 	began time.Time // when the settle began; it never runs past began+settleMax
 	last  fileState // the file as last read
+	// quietUntil is when the quiet timer, as last reset, fires, zero while
+	// it is stopped: tests read it to see that a change restarted the settle.
+	quietUntil time.Time
 }
 
 // resolvConfTiming is how a managed resolv.conf is watched.
@@ -696,6 +699,7 @@ func (r *resolvConf) watch(first func(), changed bool, changes <-chan bool, clos
 			if r.foreign = foreign; r.foreign == nil {
 				r.beginForeign(stateOf(f, ferr))
 			}
+			r.foreign.quietUntil = time.Time{} // quiet was stopped above
 			r.mu.Unlock()
 			continue
 		}
@@ -776,7 +780,7 @@ func (r *resolvConf) decide(f resolvConfFile, ferr error, ev event, quiet *time.
 		capped = r.foreign != nil && time.Since(r.foreign.began) >= r.timing.settleMax
 	case r.foreign == nil: // a write begins
 		r.beginForeign(now)
-		quiet.Reset(r.quietFor())
+		r.restartQuiet(quiet)
 		if log := r.cfg.Log; log != nil {
 			log.Debug("DNS: another program is writing resolv.conf; taking it back once the write settles", "path", r.path)
 		}
@@ -785,7 +789,7 @@ func (r *resolvConf) decide(f resolvConfFile, ferr error, ev event, quiet *time.
 		capped = true
 	case ev.changed || now != r.foreign.last: // still being written
 		r.foreign.last = now
-		quiet.Reset(r.quietFor())
+		r.restartQuiet(quiet)
 		return false, false
 	case !ev.quietEnded: // a poll during a quiet settle
 		return false, false
@@ -841,6 +845,13 @@ func (r *resolvConf) classify(f resolvConfFile, ferr error, renamed bool) fileKi
 // that rewrite's. r.mu is held.
 func (r *resolvConf) ownPartial(f resolvConfFile) bool {
 	return r.failedWrite != nil && f.read && f.symlink == "" && bytes.HasPrefix(r.failedWrite, f.content)
+}
+
+// restartQuiet starts the settling write's quiet over. r.mu is held.
+func (r *resolvConf) restartQuiet(quiet *time.Timer) {
+	d := r.quietFor()
+	r.foreign.quietUntil = time.Now().Add(d)
+	quiet.Reset(d)
 }
 
 // quietFor is how long the settling write must stay quiet, never past
