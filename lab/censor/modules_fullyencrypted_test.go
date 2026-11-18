@@ -176,9 +176,10 @@ func TestFullyEncryptedTagOnly(t *testing.T) {
 // passes about one in four. thinkpol's udp sends no zero runs: a datagram
 // that size, all random, is exempt almost never but by its first six
 // bytes (its connection id, fixed for the link's hour), while a short one
-// (84 bytes, a redial's first in the lab) is more than half printable by
-// chance about one in 175 on average over connection ids, each datagram a
-// fresh draw: TP-236's partial cell, which residual censorship closes.
+// (84 bytes, a redial's first in the lab) is exempt about one in 115 on
+// average over connection ids, more than half printable about one in 175
+// of them, each datagram a fresh draw: TP-236's partial cell, which
+// residual censorship closes.
 func TestFullyEncryptedWireGuardInitiationByChance(t *testing.T) {
 	const n = 2000
 	exempt, udpExempt, shortExempt := 0, 0, 0
@@ -188,7 +189,7 @@ func TestFullyEncryptedWireGuardInitiationByChance(t *testing.T) {
 		}
 	}
 	if shortExempt < n/100 || shortExempt > n/5 {
-		t.Errorf("%d of %d short random datagrams exempt, want about one in 175", shortExempt, 10*n)
+		t.Errorf("%d of %d short random datagrams exempt, want about one in 115", shortExempt, 10*n)
 	}
 	for seed := uint64(0); seed < n; seed++ {
 		init := randomBytes(seed, wgInitiation)
