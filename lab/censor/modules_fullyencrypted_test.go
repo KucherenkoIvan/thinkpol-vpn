@@ -281,7 +281,7 @@ func TestFullyEncryptedResidualCensorship(t *testing.T) {
 	r.expect("a block on another port, never revisited", udpPacket(clientAddr, serverAddr, 5100, 4502, blocked), Drop)
 	r.clock = r.clock.Add(time.Second)
 	a := r.expect("the exempt flow after the block", udpPacket(clientAddr, serverAddr, 4999, 4500, exempt), Drop)
-	if !strings.Contains(a.Reason, "residual censorship of 192.0.2.1:203.0.113.9:4500 from ") {
+	if !strings.Contains(a.Reason, "residual censorship of udp 192.0.2.1->203.0.113.9:4500 from ") {
 		t.Errorf("a residual drop's reason %q names no residual window", a.Reason)
 	}
 	r.expect("a redial an exemption passes", udpPacket(clientAddr, serverAddr, 5001, 4500, exempt), Drop)

@@ -180,8 +180,8 @@ func (m *fullyEncrypted) residualDrop(f *Flow) (Decision, bool) {
 		delete(m.residual, k)
 		return Decision{}, false
 	}
-	return Decision{Verdict: Drop, Reason: fmt.Sprintf("residual censorship of %s:%s from %s to %s: %s",
-		k.client, k.server, b.from.UTC().Format(time.StampMilli), b.until.UTC().Format(time.StampMilli), b.why)}, true
+	return Decision{Verdict: Drop, Reason: fmt.Sprintf("residual censorship of %s %s->%s from %s to %s: %s",
+		k.proto, k.client, k.server, b.from.UTC().Format(time.StampMilli), b.until.UTC().Format(time.StampMilli), b.why)}, true
 }
 
 // Wu et al.'s thresholds: random bytes average 4 set bits per byte.
