@@ -49,3 +49,5 @@ The owner wants a full lab to take at most 15 minutes on the remote runner (2026
 - 2026-11-19 censor-matrix rows start `lab.Upstream().Only(router, device-a, server-1, camouflage)` (`matrixRowNodes`, lab/matrixreset_test.go); the udp and reality rows build their maps on the router, not internet; lab/README.md's matrix paragraph and TestCensorMatrix's doc updated
 - 2026-11-19 targeted matrix runs: before (rewrite 0679cdf0) 63 matrix container starts, ok 1203.7 s; after (d3cc0390) 36, ok 1254.2 s; verdicts identical but for wireguard × fully-encrypted (partial / pass, logged exemptions in Notes), re-run once on d3cc0390: fail, as varies allows
 - 2026-11-19 no new test, so no mutation: a cell that needs a dropped node panics in lab.Lab.Node, and the after run finished green; make test green on d3cc0390; no full make lab-test (the brief's 2026-11-18 rule: targeted runs only)
+- 2026-11-19 make lint green on 56985e28 (code as d3cc0390)
+- 2026-11-19 in-progress → review
