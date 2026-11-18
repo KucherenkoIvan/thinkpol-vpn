@@ -45,12 +45,14 @@ const usage = `usage: labctl <command>
                                       every package and record nothing)
   project                             print this checkout's project prefix
   run-id                              print a fresh run id, for ` + lab.RunEnv + `
-  testjson -times file                read go test -json on stdin, print what go test without -v would
-                                      have, write how long each test took to file
-  budget -stream name -since unix [-budget d] [-top n] files...
+  testjson [-v] -times file           read go test -json on stdin, print what go test without -v (with
+                                      -v: with -v) would have, write how long each test took to file
+  budget -stream name -since unix [-budget d] [-over file] [-top n] files...
                                       say how long a stream has taken since its start (unix seconds)
-                                      and, with -budget, fail when it took longer, listing the slowest
-                                      tests in the -times files (make lab-test's LAB_BUDGET)
+                                      and, with -budget (0: none), fail when it took longer, listing the
+                                      slowest tests in the -times files and writing "took > budget" to
+                                      -over (make lab-test's LAB_BUDGET)
+  budget -check -budget d             only check that d is a budget: a Go duration, 0 or more
 `
 
 func main() {
@@ -167,16 +169,20 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	runFor, err := gotestRunFor(*timeout)
+	nodeFor, err := gotestRunFor(*timeout, lab.DefaultTestTimeout)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, runFor)
-	defer cancel()
+	hostFor, err := gotestRunFor(*timeout, lab.DefaultLabTestTimeout)
+	if err != nil {
+		return err
+	}
 	var env []string
 	if *perf {
 		fmt.Println("gotest: waiting until no other lab runs")
-		release, err := lab.AcquirePerfLock(ctx)
+		waitCtx, cancel := context.WithTimeout(ctx, perfWaitFor)
+		release, err := lab.AcquirePerfLock(waitCtx)
+		cancel()
 		if err != nil {
 			return err
 		}
@@ -199,26 +205,42 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 	if *timeout != "" {
 		testArgs = append(testArgs, "-test.timeout="+*timeout)
 	}
-	opt := gotestOptions{parallel: *parallel, tagged: *tagged, failSkipped: *failSkipped, times: *times}
+	opt := gotestOptions{parallel: *parallel, tagged: *tagged, failSkipped: *failSkipped, times: *times, nodeFor: nodeFor, hostFor: hostFor}
 	if useCache(*count, *perf) {
 		opt.cache = lab.NewGoTestCache(os.Stdout)
 	}
 	return gotest(ctx, root, opt, env, testArgs, fs.Args())
 }
 
-// gotestRunFor bounds a whole gotest run: an hour, or longer when the
-// test binaries' own -timeout asks for more (make lab-gotest's LAB_TIMEOUT),
-// so the run's bound never cuts a test short of its own.
-func gotestRunFor(timeout string) (time.Duration, error) {
+// perfWaitFor bounds a perf run's wait for every other lab run to end.
+const perfWaitFor = 60 * time.Minute
+
+// gotestRunFor bounds one phase of a gotest run, given the test binaries'
+// -timeout ("": def): the node phase as a whole, or each lab-tagged
+// package's host run. It is an hour, or 15 minutes past the timeout when
+// that is longer (make lab-gotest's LAB_TIMEOUT), so the bound never cuts a
+// test short of its own; a timeout of 0, none, gives no bound (0).
+func gotestRunFor(timeout, def string) (time.Duration, error) {
 	const atLeast, beyondTests = 60 * time.Minute, 15 * time.Minute
 	if timeout == "" {
-		return atLeast, nil
+		timeout = def
 	}
 	d, err := time.ParseDuration(timeout)
 	if err != nil {
 		return 0, fmt.Errorf("gotest: -timeout: %w", err)
 	}
+	if d <= 0 {
+		return 0, nil
+	}
 	return max(atLeast, d+beyondTests), nil
+}
+
+// withBound is ctx bounded by d, or not bounded when d is 0.
+func withBound(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if d <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, d)
 }
 
 // useCache says whether a gotest run may serve packages from the results
@@ -265,6 +287,8 @@ type gotestOptions struct {
 	tagged, failSkipped bool
 	times               string           // the file to write each package's time to; "": none
 	cache               *lab.GoTestCache // nil: run every package
+	// The node phase's bound and each host run's (gotestRunFor; 0: none).
+	nodeFor, hostFor time.Duration
 }
 
 func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patterns []string) error {
@@ -291,7 +315,9 @@ func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patt
 	var results []lab.GoTestResult
 	if len(pkgs) > 0 {
 		var labErr error
-		results, labErr = lab.GoTestEach(ctx, root, pkgs, opt.parallel, os.Stdout, opt.cache, env, args...)
+		nodeCtx, cancel := withBound(ctx, opt.nodeFor)
+		results, labErr = lab.GoTestEach(nodeCtx, root, pkgs, opt.parallel, os.Stdout, opt.cache, env, args...)
+		cancel()
 		if labErr != nil {
 			// The packages that ran still took their time: the budget's
 			// report needs it most when labs failed to start.
@@ -300,7 +326,9 @@ func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patt
 	}
 	for _, pkg := range tagged {
 		fmt.Printf("=== lab gotest -tags lab (on the host) %s\n", pkg.ImportPath)
-		res, err := lab.GoTestLabTagged(ctx, root, pkg, os.Stdout, env, args...)
+		hostCtx, cancel := withBound(ctx, opt.hostFor)
+		res, err := lab.GoTestLabTagged(hostCtx, root, pkg, os.Stdout, env, args...)
+		cancel()
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -317,7 +345,9 @@ func writeGotestTimes(file string, results []lab.GoTestResult) error {
 	}
 	var times []lab.TestTime
 	for _, r := range results {
-		if !r.Cached {
+		// 0: cached, or never run (no tests for Linux, a build or a
+		// lab's preparation failed).
+		if r.Elapsed > 0 {
 			times = append(times, lab.TestTime{Name: r.ImportPath, Elapsed: r.Elapsed})
 		}
 	}
@@ -325,17 +355,19 @@ func writeGotestTimes(file string, results []lab.GoTestResult) error {
 }
 
 // testJSON filters go test -json from r into what go test would have
-// printed without -v, and writes each test's time to -times.
+// printed without -v (with -v: with it), and writes each test's time to
+// -times.
 func testJSON(r io.Reader, w io.Writer, args []string) error {
 	fs := flag.NewFlagSet("testjson", flag.ContinueOnError)
 	times := fs.String("times", "", "write how long each test took to this file")
+	verbose := fs.Bool("v", false, "print what go test -v would")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *times == "" || fs.NArg() > 0 {
 		return errors.New("testjson: want -times file and no arguments")
 	}
-	got, err := lab.FilterTestJSON(r, w)
+	got, err := lab.FilterTestJSON(r, w, *verbose)
 	// Whatever was read is written: a time file missing makes the budget's
 	// report miss tests, not pass.
 	return errors.Join(err, lab.WriteTestTimes(*times, got))
@@ -347,10 +379,22 @@ func budget(w io.Writer, now time.Time, args []string) error {
 	fs := flag.NewFlagSet("budget", flag.ContinueOnError)
 	stream := fs.String("stream", "", "the stream's name, for the report")
 	since := fs.Int64("since", 0, "the stream's start, in unix seconds")
-	limit := fs.Duration("budget", 0, "fail when the stream took longer (0: only report)")
+	var limit time.Duration
+	fs.Func("budget", "fail when the stream took longer (a Go duration; 0: only report)", func(s string) (err error) {
+		limit, err = lab.ParseBudget(s)
+		return err
+	})
+	over := fs.String("over", "", `over budget, write "took > budget" to this file`)
+	check := fs.Bool("check", false, "only check -budget")
 	top := fs.Int("top", 10, "slowest tests listed when over budget")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *check {
+		if !flagSet(fs, "budget") || fs.NArg() > 0 {
+			return errors.New("budget -check: want -budget and nothing else")
+		}
+		return nil
 	}
 	if *stream == "" || *since <= 0 {
 		return errors.New("budget: want -stream and -since")
@@ -367,7 +411,10 @@ func budget(w io.Writer, now time.Time, args []string) error {
 		}
 		times = append(times, t...)
 	}
-	err := lab.CheckBudget(w, *stream, now.Sub(time.Unix(*since, 0)), *limit, times, *top)
+	err := lab.CheckBudget(w, *stream, now.Sub(time.Unix(*since, 0)), limit, times, *top)
+	if ob, ok := errors.AsType[*lab.OverBudgetError](err); ok && *over != "" {
+		err = errors.Join(err, os.WriteFile(*over, []byte(fmt.Sprintf("%v > %v\n", ob.Took, ob.Budget)), 0o644))
+	}
 	if err != nil && len(errs) > 0 {
 		err = errors.Join(err, fmt.Errorf("budget: the report misses tests: %w", errors.Join(errs...)))
 	}
@@ -408,4 +455,11 @@ func gotestVerdict(results []lab.GoTestResult, failSkipped bool) error {
 	}
 	fmt.Printf("gotest: ok, %d packages, %d of them cached\n", len(pkgs), cached)
 	return nil
+}
+
+// flagSet says whether the flag was given.
+func flagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
 }

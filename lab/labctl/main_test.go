@@ -185,6 +185,7 @@ func TestGotestSkipAndTimes(t *testing.T) {
 	}
 	t.Setenv("GOWORK", "off")
 	t.Setenv("GOFLAGS", "-mod=mod")
+	t.Setenv(testcache.NoCacheEnv, "1") // the user's own cache stays as it is
 	root := writeModule(t, map[string]string{
 		"go.mod": "module example.net/skip\n\ngo 1.26\n",
 		"tagged/tagged_test.go": "//go:build lab\n\npackage tagged\n\nimport \"testing\"\n\n" +
@@ -203,15 +204,25 @@ func TestGotestSkipAndTimes(t *testing.T) {
 	}
 }
 
+// TestGotestRunFor: a phase's bound is an hour, or 15 minutes past its
+// test binaries' timeout (given, or the phase's default) when longer; a
+// timeout of 0 gives none.
 func TestGotestRunFor(t *testing.T) {
 	for _, tc := range []struct {
-		timeout string
-		want    time.Duration
-		ok      bool
-	}{{"", time.Hour, true}, {"10m", time.Hour, true}, {"2h", 2*time.Hour + 15*time.Minute, true}, {"soon", 0, false}} {
-		got, err := gotestRunFor(tc.timeout)
+		timeout, def string
+		want         time.Duration
+		ok           bool
+	}{
+		{"", "10m", time.Hour, true},
+		{"", "60m", 75 * time.Minute, true},
+		{"10m", "60m", time.Hour, true},
+		{"2h", "10m", 2*time.Hour + 15*time.Minute, true},
+		{"0", "10m", 0, true},
+		{"soon", "10m", 0, false},
+	} {
+		got, err := gotestRunFor(tc.timeout, tc.def)
 		if got != tc.want || (err == nil) != tc.ok {
-			t.Errorf("gotestRunFor(%q) = %v, %v; want %v", tc.timeout, got, err, tc.want)
+			t.Errorf("gotestRunFor(%q, %q) = %v, %v; want %v", tc.timeout, tc.def, got, err, tc.want)
 		}
 	}
 }
@@ -235,9 +246,13 @@ func TestBudget(t *testing.T) {
 		t.Errorf("within budget: %v (%s)", err, w.String())
 	}
 	w.Reset()
-	err := budget(&w, now, []string{"-stream", "default", "-since", since(20 * time.Minute), "-budget", "15m", labTimes, nodeTimes})
+	over := filepath.Join(dir, "over")
+	err := budget(&w, now, []string{"-stream", "default", "-since", since(20 * time.Minute), "-budget", "15m", "-over", over, labTimes, nodeTimes})
 	if err == nil || !strings.Contains(w.String(), "lab TestSlow") || !strings.Contains(w.String(), "example.net/m/pkg") {
 		t.Errorf("over budget: %v, report:\n%s", err, w.String())
+	}
+	if b, err := os.ReadFile(over); err != nil || string(b) != "20m0s > 15m0s\n" {
+		t.Errorf("-over file: %q, %v", b, err)
 	}
 	w.Reset()
 	err = budget(&w, now, []string{"-stream", "default", "-since", since(20 * time.Minute), "-budget", "15m", labTimes, filepath.Join(dir, "gone.times")})
@@ -246,6 +261,33 @@ func TestBudget(t *testing.T) {
 	}
 	if err := budget(&w, now, []string{"-stream", "default", "-budget", "15m"}); err == nil {
 		t.Error("no -since: passed")
+	}
+}
+
+// TestBudgetRejectsBadBudgets: an empty or negative budget is an error,
+// with -check before anything runs and in the check itself, and an empty
+// one doesn't take the next argument for its value; 0 is none.
+func TestBudgetRejectsBadBudgets(t *testing.T) {
+	now := time.Unix(100_000, 0)
+	since := strconv.FormatInt(now.Add(-time.Hour).Unix(), 10)
+	var w bytes.Buffer
+	for _, b := range []string{"-budget=", "-budget=-5m", "-budget=soon"} {
+		if err := budget(&w, now, []string{"-check", b}); err == nil {
+			t.Errorf("-check %s: passed", b)
+		}
+		if err := budget(&w, now, []string{"-stream", "default", "-since", since, b}); err == nil {
+			t.Errorf("%s: passed", b)
+		}
+	}
+	if err := budget(&w, now, []string{"-check", "-budget=0"}); err != nil {
+		t.Errorf("-check -budget=0: %v", err)
+	}
+	if err := budget(&w, now, []string{"-check"}); err == nil {
+		t.Error("-check without -budget: passed")
+	}
+	w.Reset()
+	if err := budget(&w, now, []string{"-stream", "default", "-since", since, "-budget=0"}); err != nil || !strings.Contains(w.String(), "took 1h0m0s\n") {
+		t.Errorf("-budget=0: %v, %q", err, w.String())
 	}
 }
 
@@ -267,9 +309,10 @@ func TestTestJSONWritesTimes(t *testing.T) {
 	}
 }
 
-// TestGotestTimesWhenALabFails: a package whose lab never starts (Docker
-// fails) still gets its line in -times, so the budget's report has the
-// node phase when it needs it most.
+// TestGotestTimesWhenALabFails: when labs fail (Docker fails), -times is
+// still written, so the budget's report has the node phase when it needs
+// it most; a package that never ran (its lab's preparation failed) has no
+// line, rather than one of 0 s.
 func TestGotestTimesWhenALabFails(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the go command")
@@ -289,7 +332,7 @@ func TestGotestTimesWhenALabFails(t *testing.T) {
 		t.Fatal("passed with Docker failing")
 	}
 	got, err := lab.ReadTestTimes(times)
-	if err != nil || len(got) != 1 || got[0].Name != "example.net/nolab/plain" {
-		t.Fatalf("times: %v, %v", got, err)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("times: %v, %v; want the file, empty", got, err)
 	}
 }

@@ -23,11 +23,12 @@ type TestTime struct {
 	Elapsed time.Duration
 }
 
-// Bounds on what FilterTestJSON holds: one input line, and each test's
-// output kept for printing should the test fail (its first and its last
-// testLogKeep bytes).
+// Bounds on what FilterTestJSON holds: one input line; each test's output
+// held in memory before it spills to a temporary file; and what is printed
+// of a failed test's output, its first and its last testLogKeep bytes.
 const (
 	testJSONLineMax = 4 << 20
+	testLogMem      = 256 << 10
 	testLogKeep     = 1 << 20
 )
 
@@ -41,23 +42,18 @@ type testEvent struct {
 }
 
 // FilterTestJSON reads go test -json from r and writes to w what go test
-// without -v would have shown: a test's output only when it fails, or never
-// ends (a panic, a timeout), and every line outside a test as it comes; a
-// line that isn't a test event is copied as it is. It returns how long each
-// test that ended took: top-level tests and their direct subtests.
-func FilterTestJSON(r io.Reader, w io.Writer) ([]TestTime, error) {
-	var (
-		times []TestTime
-		logs  = map[string]*testLog{} // by package and top-level test
-	)
-	flush := func(key string) error {
-		l, ok := logs[key]
-		if !ok {
-			return nil
-		}
-		delete(logs, key)
-		return l.writeTo(w)
-	}
+// without -v would have shown, or with verbose what go test -v shows. A
+// line outside a test goes out as it comes, and a line that isn't a test
+// event is copied as it is. Without verbose, a test's output goes out only
+// when it fails: its own lines and those of its subtests that failed, not
+// of those that passed, without the === RUN, PAUSE, CONT and NAME lines,
+// and cut to its first and last testLogKeep bytes. A test that never ended
+// (a panic, a timeout's goroutine dump) goes out whole, before its
+// package's verdict. It returns how long each test that ended took:
+// top-level tests and their direct subtests.
+func FilterTestJSON(r io.Reader, w io.Writer, verbose bool) ([]TestTime, error) {
+	f := testFilter{w: w, verbose: verbose, logs: map[string]*testLog{}}
+	defer f.close()
 	br := bufio.NewReaderSize(r, 64<<10)
 	for {
 		line, readErr := readLine(br, testJSONLineMax)
@@ -65,80 +61,143 @@ func FilterTestJSON(r io.Reader, w io.Writer) ([]TestTime, error) {
 			var ev testEvent
 			if line[0] != '{' || json.Unmarshal(line, &ev) != nil || ev.Action == "" {
 				if _, err := w.Write(line); err != nil {
-					return times, err
+					return f.times, err
 				}
-			} else if err := filterEvent(ev, w, logs, flush, &times); err != nil {
-				return times, err
+			} else if err := f.event(ev); err != nil {
+				return f.times, err
 			}
 		}
 		if readErr == io.EOF {
 			break
 		}
 		if readErr != nil {
-			return times, readErr
+			return f.times, readErr
 		}
 	}
 	// Tests that never ended: their binary died under them.
-	for _, k := range slices.Sorted(maps.Keys(logs)) {
-		if err := flush(k); err != nil {
-			return times, err
-		}
-	}
-	return times, nil
+	return f.times, f.flushUnended("")
 }
 
-func filterEvent(ev testEvent, w io.Writer, logs map[string]*testLog, flush func(string) error, times *[]TestTime) error {
+type testFilter struct {
+	w       io.Writer
+	verbose bool
+	logs    map[string]*testLog // by package and full test name
+	times   []TestTime
+}
+
+func testKey(pkg, test string) string { return pkg + "\x00" + test }
+
+func (f *testFilter) event(ev testEvent) error {
 	if ev.Test == "" {
-		if ev.Output != "" || ev.Action == "pass" || ev.Action == "fail" {
+		if !f.verbose && (ev.Output != "" || ev.Action == "pass" || ev.Action == "fail") {
 			// Outside a test, output comes before the first test starts or
 			// once its binary is done (its verdict line, before the
 			// package's end): what its tests never ended goes out first.
-			prefix := ev.Package + "\x00"
-			for k := range logs {
-				if strings.HasPrefix(k, prefix) {
-					if err := flush(k); err != nil {
-						return err
-					}
-				}
+			if err := f.flushUnended(ev.Package); err != nil {
+				return err
 			}
 		}
-		if ev.Output != "" {
-			_, err := io.WriteString(w, ev.Output)
-			return err
-		}
-		return nil
+		_, err := io.WriteString(f.w, ev.Output)
+		return err
 	}
-	top, _, _ := strings.Cut(ev.Test, "/")
-	key := ev.Package + "\x00" + top
-	if ev.Output != "" {
-		l := logs[key]
-		if l == nil {
-			l = &testLog{}
-			logs[key] = l
-		}
-		l.write(ev.Output)
-	}
-	if ev.Action == "skip" && ev.Test == top {
-		delete(logs, key)
-		return nil
-	}
-	if ev.Action != "pass" && ev.Action != "fail" {
-		return nil
-	}
-	if strings.Count(ev.Test, "/") <= 1 {
-		*times = append(*times, TestTime{
+	ended := ev.Action == "pass" || ev.Action == "fail"
+	if ended && strings.Count(ev.Test, "/") <= 1 {
+		f.times = append(f.times, TestTime{
 			Name:    path.Base(ev.Package) + " " + ev.Test,
 			Elapsed: time.Duration(ev.Elapsed * float64(time.Second)),
 		})
 	}
-	if ev.Test != top {
-		return nil
+	if f.verbose {
+		_, err := io.WriteString(f.w, ev.Output)
+		return err
 	}
-	if ev.Action == "fail" {
-		return flush(key)
+	key := testKey(ev.Package, ev.Test)
+	if ev.Output != "" && !isFraming(ev.Output) {
+		l := f.logs[key]
+		if l == nil {
+			l = &testLog{}
+			f.logs[key] = l
+		}
+		if err := l.write([]byte(ev.Output)); err != nil {
+			return err
+		}
 	}
-	delete(logs, key)
+	switch ev.Action {
+	case "pass", "skip":
+		f.drop(key)
+	case "fail":
+		l := f.logs[key]
+		if l == nil {
+			return nil
+		}
+		delete(f.logs, key)
+		defer l.close()
+		parent, _, sub := cutLast(ev.Test, "/")
+		if !sub {
+			return l.writeTo(f.w, false)
+		}
+		pk := testKey(ev.Package, parent)
+		p := f.logs[pk]
+		if p == nil {
+			p = &testLog{}
+			f.logs[pk] = p
+		}
+		return l.writeTo(p, true)
+	}
 	return nil
+}
+
+func (f *testFilter) drop(key string) {
+	if l, ok := f.logs[key]; ok {
+		l.close()
+		delete(f.logs, key)
+	}
+}
+
+// flushUnended writes, whole and in name order, the output of the tests of
+// pkg ("": every package) that haven't ended.
+func (f *testFilter) flushUnended(pkg string) error {
+	prefix := ""
+	if pkg != "" {
+		prefix = testKey(pkg, "")
+	}
+	for _, k := range slices.Sorted(maps.Keys(f.logs)) {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		l := f.logs[k]
+		delete(f.logs, k)
+		err := l.writeTo(f.w, true)
+		l.close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *testFilter) close() {
+	for k := range f.logs {
+		f.drop(k)
+	}
+}
+
+// isFraming says whether a line is the testing package's framing that go
+// test without -v doesn't print.
+func isFraming(s string) bool {
+	for _, p := range []string{"=== RUN ", "=== PAUSE ", "=== CONT ", "=== NAME "} {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func cutLast(s, sep string) (before, after string, found bool) {
+	if i := strings.LastIndex(s, sep); i >= 0 {
+		return s[:i], s[i+len(sep):], true
+	}
+	return s, "", false
 }
 
 // readLine reads one line, its newline included, keeping at most max
@@ -162,39 +221,69 @@ func readLine(br *bufio.Reader, max int) ([]byte, error) {
 	}
 }
 
-// testLog is one test's output so far: its first testLogKeep bytes, and its
-// last testLogKeep bytes once there are more.
+// testLog is one test's output so far, whole: in memory up to testLogMem
+// bytes, then in a temporary file.
 type testLog struct {
-	head, tail []byte
-	cut        int // bytes dropped between head and tail
+	mem  []byte
+	file *os.File
+	size int64
 }
 
-func (l *testLog) write(s string) {
-	if room := testLogKeep - len(l.head); room > 0 {
-		n := min(room, len(s))
-		l.head = append(l.head, s[:n]...)
-		s = s[n:]
+func (l *testLog) Write(b []byte) (int, error) {
+	if err := l.write(b); err != nil {
+		return 0, err
 	}
-	l.tail = append(l.tail, s...)
-	if over := len(l.tail) - testLogKeep; over > testLogKeep {
-		l.cut += over
-		l.tail = append(l.tail[:0], l.tail[over:]...)
-	}
+	return len(b), nil
 }
 
-func (l *testLog) writeTo(w io.Writer) error {
-	tail, cut := l.tail, l.cut
-	if over := len(tail) - testLogKeep; over > 0 {
-		tail, cut = tail[over:], cut+over
+func (l *testLog) write(b []byte) error {
+	if l.file == nil && len(l.mem)+len(b) > testLogMem {
+		f, err := os.CreateTemp("", "labctl-testlog-*")
+		if err != nil {
+			return err
+		}
+		l.file = f
+		if _, err := f.Write(l.mem); err != nil {
+			return err
+		}
+		l.mem = nil
 	}
-	var b bytes.Buffer
-	b.Write(l.head)
-	if cut > 0 {
-		fmt.Fprintf(&b, "\n... (%d bytes of this test's output cut) ...\n", cut)
+	l.size += int64(len(b))
+	if l.file == nil {
+		l.mem = append(l.mem, b...)
+		return nil
 	}
-	b.Write(tail)
-	_, err := w.Write(b.Bytes())
+	_, err := l.file.Write(b)
 	return err
+}
+
+// writeTo writes the output to w: whole, or its first and its last
+// testLogKeep bytes with how much was cut between them.
+func (l *testLog) writeTo(w io.Writer, whole bool) error {
+	var r io.ReaderAt = bytes.NewReader(l.mem)
+	if l.file != nil {
+		r = l.file
+	}
+	if whole || l.size <= 2*testLogKeep {
+		_, err := io.Copy(w, io.NewSectionReader(r, 0, l.size))
+		return err
+	}
+	if _, err := io.Copy(w, io.NewSectionReader(r, 0, testLogKeep)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "\n... (%d bytes of this test's output cut) ...\n", l.size-2*testLogKeep); err != nil {
+		return err
+	}
+	_, err := io.Copy(w, io.NewSectionReader(r, l.size-testLogKeep, testLogKeep))
+	return err
+}
+
+func (l *testLog) close() {
+	if l.file != nil {
+		_ = l.file.Close()
+		_ = os.Remove(l.file.Name())
+		l.file = nil
+	}
 }
 
 // WriteTestTimes writes times to a file, one "seconds<TAB>name" line each.
@@ -224,18 +313,39 @@ func ReadTestTimes(name string) ([]TestTime, error) {
 	return times, nil
 }
 
-// SlowestTests is the n slowest of times, slowest first.
+// SlowestTests is the n slowest of times, slowest first. A test whose
+// subtests are timed too is left out: its time is theirs, and its line
+// would push one of them off the list.
 func SlowestTests(times []TestTime, n int) []TestTime {
-	out := slices.Clone(times)
+	parents := map[string]bool{}
+	for _, t := range times {
+		if parent, _, ok := cutLast(t.Name, "/"); ok {
+			parents[parent] = true
+		}
+	}
+	var out []TestTime
+	for _, t := range times {
+		if !parents[t.Name] {
+			out = append(out, t)
+		}
+	}
 	slices.SortStableFunc(out, func(a, b TestTime) int {
 		return cmp.Or(cmp.Compare(b.Elapsed, a.Elapsed), strings.Compare(a.Name, b.Name))
 	})
 	return out[:min(n, len(out))]
 }
 
+// OverBudgetError is CheckBudget's failure: the stream took Took, over its
+// Budget.
+type OverBudgetError struct{ Took, Budget time.Duration }
+
+func (e *OverBudgetError) Error() string {
+	return fmt.Sprintf("over budget: %v > %v", e.Took, e.Budget)
+}
+
 // CheckBudget reports to w how long a stream took and, with a budget
-// (0: none), fails when it took longer, listing its top slowest tests:
-// where the time went.
+// (0: none), fails with an *OverBudgetError when it took longer, listing
+// its top slowest tests: where the time went.
 func CheckBudget(w io.Writer, stream string, took, budget time.Duration, times []TestTime, top int) error {
 	took = took.Round(time.Second)
 	if budget <= 0 {
@@ -254,5 +364,22 @@ func CheckBudget(w io.Writer, stream string, took, budget time.Duration, times [
 	if _, err := io.WriteString(w, b.String()); err != nil {
 		return err
 	}
-	return errors.New("over budget")
+	return &OverBudgetError{Took: took, Budget: budget}
+}
+
+// ParseBudget parses a stream's time budget (LAB_BUDGET): a Go duration,
+// 0 for none. Empty or negative is an error: neither may turn the check
+// off unseen.
+func ParseBudget(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, errors.New("empty budget: want a Go duration, 0 for none")
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("negative budget %v: want a Go duration, 0 for none", d)
+	}
+	return d, nil
 }

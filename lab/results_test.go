@@ -59,10 +59,7 @@ import (
 // itself.
 func TestCensorMatrix(t *testing.T) {
 	t.Parallel()
-	stream, err := lab.Stream()
-	if err != nil {
-		t.Fatal(err)
-	}
+	stream := lab.SplitStreams(t)
 	var (
 		mu    sync.Mutex
 		cells []matrixCell

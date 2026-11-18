@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,8 +19,9 @@ import (
 // writes them for make lab-test to assemble RESULTS.md from.
 type matrixShare struct {
 	Stream   string
-	Expected int  // how many cells are the stream's (streamCells)
-	Failed   bool // the matrix test failed in the stream
+	Commit   string // lab.CommitEnv: what the run tested
+	Expected int    // how many cells are the stream's (streamCells)
+	Failed   bool   // the matrix test failed in the stream
 	Cells    []shareCell
 }
 
@@ -29,10 +31,23 @@ func shareFile(dir, stream string) string {
 	return filepath.Join(dir, "censor-matrix-"+stream+".json")
 }
 
-// writeMatrixShare writes the stream's own cells to lab.ResultsDirEnv's
-// directory: in the long stream, a held row's off cell is the default
-// stream's, run again only as its held cell's gate. Without the directory
-// nothing assembles them, and RESULTS.md isn't written.
+// matrixShareOf is the stream's own share of cells: in the long stream, a
+// held row's off cell is the default stream's, run again only as its held
+// cell's gate.
+func matrixShareOf(stream, commit string, failed bool, cells []matrixCell) matrixShare {
+	share := matrixShare{Stream: stream, Commit: commit, Expected: streamCells(stream), Failed: failed}
+	for _, c := range cells {
+		if stream == lab.StreamLong && c.censor == censorCases[0].name {
+			continue
+		}
+		share.Cells = append(share.Cells, shareCell{c.transport, c.censor, c.result, c.detail})
+	}
+	return share
+}
+
+// writeMatrixShare writes the stream's share of cells to
+// lab.ResultsDirEnv's directory. Without the directory nothing assembles
+// them, and RESULTS.md isn't written.
 func writeMatrixShare(t *testing.T, stream string, cells []matrixCell) {
 	t.Helper()
 	dir := os.Getenv(lab.ResultsDirEnv)
@@ -40,14 +55,7 @@ func writeMatrixShare(t *testing.T, stream string, cells []matrixCell) {
 		t.Logf("the %s stream's share of the matrix, without %s: RESULTS.md not written", stream, lab.ResultsDirEnv)
 		return
 	}
-	share := matrixShare{Stream: stream, Expected: streamCells(stream), Failed: t.Failed()}
-	for _, c := range cells {
-		if stream == lab.StreamLong && c.censor == censorCases[0].name {
-			continue
-		}
-		share.Cells = append(share.Cells, shareCell{c.transport, c.censor, c.result, c.detail})
-	}
-	b, err := json.Marshal(share)
+	b, err := json.Marshal(matrixShareOf(stream, os.Getenv(lab.CommitEnv), t.Failed(), cells))
 	if err == nil {
 		err = os.WriteFile(shareFile(dir, stream), b, 0o644)
 	}
@@ -56,11 +64,41 @@ func writeMatrixShare(t *testing.T, stream string, cells []matrixCell) {
 	}
 }
 
+// readMatrixShares reads the streams' shares in dir: a share missing is
+// left out (assembleMatrix says so); one that doesn't decode, names
+// another stream than its file's, or another commit than commit is an
+// error.
+func readMatrixShares(dir, commit string) (map[string]*matrixShare, error) {
+	shares := map[string]*matrixShare{}
+	for _, s := range []string{lab.StreamDefault, lab.StreamLong} {
+		b, err := os.ReadFile(shareFile(dir, s))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		var share matrixShare
+		if err := json.Unmarshal(b, &share); err != nil {
+			return nil, fmt.Errorf("the %s stream's share of the matrix: %w", s, err)
+		}
+		if share.Stream != s {
+			return nil, fmt.Errorf("the %s stream's share of the matrix says it is the %q stream's", s, share.Stream)
+		}
+		if share.Commit != commit {
+			return nil, fmt.Errorf("the %s stream's share of the matrix tested commit %q, this run %q", s, share.Commit, commit)
+		}
+		shares[s] = &share
+	}
+	return shares, nil
+}
+
 // TestAssembleCensorMatrix writes RESULTS.md from both streams' shares of
 // the censor matrix in lab.ResultsDirEnv's directory: make lab-test runs it
-// once both streams have ended. A share missing, short of its cells, or
-// from a stream whose matrix failed is an error, never a partial
-// RESULTS.md. It runs only outside a stream, with the directory set.
+// once both streams have ended, from the test binary both streams ran. A
+// share missing, short of its cells, of another commit, or from a stream
+// whose matrix failed is an error, never a partial RESULTS.md. It runs
+// only outside a stream, with the directory set.
 func TestAssembleCensorMatrix(t *testing.T) {
 	stream, err := lab.Stream()
 	if err != nil {
@@ -70,20 +108,9 @@ func TestAssembleCensorMatrix(t *testing.T) {
 	if dir == "" || stream != "" {
 		t.Skip("make lab-test runs it, after both streams")
 	}
-	shares := map[string]*matrixShare{}
-	for _, s := range []string{lab.StreamDefault, lab.StreamLong} {
-		b, err := os.ReadFile(shareFile(dir, s))
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		var share matrixShare
-		if err := json.Unmarshal(b, &share); err != nil {
-			t.Fatalf("the %s stream's share of the matrix: %v", s, err)
-		}
-		shares[s] = &share
+	shares, err := readMatrixShares(dir, os.Getenv(lab.CommitEnv))
+	if err != nil {
+		t.Fatalf("RESULTS.md not written: %v", err)
 	}
 	cells, err := assembleMatrix(shares)
 	if err != nil {
@@ -180,6 +207,9 @@ func TestAssembleMatrix(t *testing.T) {
 			d.Cells[0] = s[lab.StreamLong].Cells[0]
 		}, "is in both streams' shares"},
 		{"an errored cell", func(s map[string]*matrixShare) { s[lab.StreamLong].Cells[0].Result = "error" }, "errored"},
+		{"a cell renamed", func(s map[string]*matrixShare) {
+			s[lab.StreamDefault].Cells[0].Transport = "no-such-row"
+		}, "is in neither stream's share"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			shares := whole()
@@ -189,5 +219,60 @@ func TestAssembleMatrix(t *testing.T) {
 				t.Fatalf("got %v, want an error saying %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestMatrixShareOf: a stream's share says whether its matrix failed, and
+// the long stream's leaves out the off cells it ran only as gates.
+func TestMatrixShareOf(t *testing.T) {
+	var cells []matrixCell
+	for _, tr := range transports {
+		for i, cc := range censorCases {
+			if (i == 0 && slices.ContainsFunc(censorCases, func(c censorCase) bool { return heldCell(tr, c) })) || (i > 0 && heldCell(tr, cc)) {
+				cells = append(cells, matrixCell{tr.name, cc.name, "pass", ""})
+			}
+		}
+	}
+	share := matrixShareOf(lab.StreamLong, "c0ffee", true, cells)
+	if !share.Failed || share.Commit != "c0ffee" || share.Stream != lab.StreamLong {
+		t.Errorf("share %+v: want failed, commit c0ffee, the long stream", share)
+	}
+	if len(share.Cells) != streamCells(lab.StreamLong) || len(share.Cells) == len(cells) {
+		t.Fatalf("the long stream's share has %d of the %d cells it ran, want %d", len(share.Cells), len(cells), streamCells(lab.StreamLong))
+	}
+	for _, c := range share.Cells {
+		if c.Censor == censorCases[0].name {
+			t.Errorf("the long stream's share has the off cell of %s", c.Transport)
+		}
+	}
+	if matrixShareOf(lab.StreamDefault, "", false, cells).Failed {
+		t.Error("a passing stream's share says failed")
+	}
+}
+
+// TestReadMatrixShares: shares are read back as written; one under
+// another stream's file, or of another commit, is refused.
+func TestReadMatrixShares(t *testing.T) {
+	write := func(dir, file string, share matrixShare) {
+		b, err := json.Marshal(share)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(shareFile(dir, file), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := t.TempDir()
+	write(dir, lab.StreamDefault, matrixShare{Stream: lab.StreamDefault, Commit: "abc", Expected: 1})
+	shares, err := readMatrixShares(dir, "abc")
+	if err != nil || len(shares) != 1 || shares[lab.StreamDefault].Expected != 1 {
+		t.Fatalf("read %v, %v", shares, err)
+	}
+	if _, err := readMatrixShares(dir, "abc-dirty"); err == nil || !strings.Contains(err.Error(), "tested commit") {
+		t.Errorf("another commit: %v", err)
+	}
+	write(dir, lab.StreamLong, matrixShare{Stream: lab.StreamDefault, Commit: "abc"})
+	if _, err := readMatrixShares(dir, "abc"); err == nil || !strings.Contains(err.Error(), "says it is") {
+		t.Errorf("a share under another stream's file: %v", err)
 	}
 }

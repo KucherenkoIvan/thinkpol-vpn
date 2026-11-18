@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -36,10 +38,11 @@ func end(action, test string, secs float64) testEvent {
 }
 
 // TestFilterTestJSON: the filter prints what go test without -v would:
-// lines outside tests as they come, a failed test's output whole, a test
-// that never ended before its package's verdict, nothing of a test that
-// passed or skipped, interleaved parallel tests kept apart; and it times top-level
-// tests and their direct subtests that ended.
+// lines outside tests as they come; a failed test's output with its failed
+// subtests', not its passed ones' and without the === framing lines; a
+// test that never ended before its package's verdict; nothing of a test
+// that passed or skipped; interleaved parallel tests kept apart. It times
+// top-level tests and their direct subtests that ended.
 func TestFilterTestJSON(t *testing.T) {
 	in := "go: downloading example.net/m v1.0.0\n" + events(t,
 		out("TestPass", "=== RUN   TestPass\n"),
@@ -48,12 +51,18 @@ func TestFilterTestJSON(t *testing.T) {
 		end("pass", "TestPass", 1.5),
 		out("TestFail", "=== RUN   TestFail\n"),
 		out("TestPar", "=== CONT  TestPar\n"),
+		out("TestFail", "    fail_test.go:5: setting up\n"),
+		out("TestFail/sub", "=== RUN   TestFail/sub\n"),
 		out("TestFail/sub", "    fail_test.go:9: broke\n"),
 		out("TestPar", "    par_test.go:3: par noise\n"),
+		out("TestFail/sub/deep", "    deep_test.go:1: deep noise\n"),
 		out("TestFail/sub/deep", "--- PASS: TestFail/sub/deep (0.10s)\n"),
 		end("pass", "TestFail/sub/deep", 0.1),
 		out("TestFail/sub", "--- FAIL: TestFail/sub (2.00s)\n"),
 		end("fail", "TestFail/sub", 2),
+		out("TestFail/ok", "    ok_test.go:1: fine\n"),
+		out("TestFail/ok", "--- PASS: TestFail/ok (0.50s)\n"),
+		end("pass", "TestFail/ok", 0.5),
 		out("TestFail", "--- FAIL: TestFail (3.00s)\n"),
 		end("fail", "TestFail", 3),
 		end("pass", "TestPar", 4),
@@ -67,18 +76,18 @@ func TestFilterTestJSON(t *testing.T) {
 		end("fail", "", 5),
 	)
 	var w bytes.Buffer
-	times, err := FilterTestJSON(strings.NewReader(in), &w)
+	times, err := FilterTestJSON(strings.NewReader(in), &w, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := "go: downloading example.net/m v1.0.0\n" +
-		"=== RUN   TestFail\n    fail_test.go:9: broke\n--- PASS: TestFail/sub/deep (0.10s)\n--- FAIL: TestFail/sub (2.00s)\n--- FAIL: TestFail (3.00s)\n" +
-		"=== RUN   TestHung\npanic: test timed out\n" +
+		"    fail_test.go:5: setting up\n    fail_test.go:9: broke\n--- FAIL: TestFail/sub (2.00s)\n--- FAIL: TestFail (3.00s)\n" +
+		"panic: test timed out\n" +
 		"FAIL\tx/lab\t5.000s\n"
 	if w.String() != want {
 		t.Errorf("printed:\n%s\nwant:\n%s", w.String(), want)
 	}
-	wantTimes := []TestTime{{"lab TestPass", 1500 * time.Millisecond}, {"lab TestFail/sub", 2 * time.Second}, {"lab TestFail", 3 * time.Second}, {"lab TestPar", 4 * time.Second}}
+	wantTimes := []TestTime{{"lab TestPass", 1500 * time.Millisecond}, {"lab TestFail/sub", 2 * time.Second}, {"lab TestFail/ok", 500 * time.Millisecond}, {"lab TestFail", 3 * time.Second}, {"lab TestPar", 4 * time.Second}}
 	if len(times) != len(wantTimes) {
 		t.Fatalf("times %v, want %v", times, wantTimes)
 	}
@@ -87,17 +96,81 @@ func TestFilterTestJSON(t *testing.T) {
 			t.Errorf("time %d: %v, want %v", i, times[i], wantTimes[i])
 		}
 	}
+
+	w.Reset()
+	if _, err := FilterTestJSON(strings.NewReader(in), &w, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"=== RUN   TestPass\n", "--- PASS: TestFail/sub/deep (0.10s)\n", "--- SKIP: TestSkip (0.00s)\n", "panic: test timed out\n"} {
+		if !strings.Contains(w.String(), line) {
+			t.Errorf("verbose: %q missing from:\n%s", line, w.String())
+		}
+	}
 }
 
-// TestFilterTestJSONUnendedAtEOF: a test whose binary died with no package
-// verdict is printed when the input ends.
-func TestFilterTestJSONUnendedAtEOF(t *testing.T) {
+// TestFilterTestJSONFailingCellKept: a failing subtest's error is printed
+// even when its passing siblings wrote far more than the failed parent's
+// printed head and tail hold, as the censor matrix's cells do.
+func TestFilterTestJSONFailingCellKept(t *testing.T) {
+	noise := strings.Repeat("noise\n", testLogKeep/6)
+	var evs []testEvent
+	for i := range 6 {
+		cell := "TestMatrix/row/cell" + strconv.Itoa(i)
+		evs = append(evs, out(cell, noise))
+		if i == 3 {
+			evs = append(evs, out(cell, "    cell_test.go:7: THE ERROR\n"), end("fail", cell, 1))
+		} else {
+			evs = append(evs, end("pass", cell, 1))
+		}
+	}
+	evs = append(evs, end("fail", "TestMatrix/row", 6), end("fail", "TestMatrix", 6))
 	var w bytes.Buffer
-	if _, err := FilterTestJSON(strings.NewReader(events(t, out("TestHung", "last words\n"))), &w); err != nil {
+	if _, err := FilterTestJSON(strings.NewReader(events(t, evs...)), &w, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(w.String(), "THE ERROR") || strings.Contains(w.String(), "bytes of this test's output cut") || w.Len() > 2*testLogKeep {
+		t.Errorf("printed %d bytes, error kept %v", w.Len(), strings.Contains(w.String(), "THE ERROR"))
+	}
+}
+
+// TestFilterTestJSONUnended: tests that never ended are printed whole,
+// however long (a timeout's goroutine dump), in name order, before their
+// package's verdict; one whose binary died with no verdict when the input
+// ends.
+func TestFilterTestJSONUnended(t *testing.T) {
+	dump := "goroutine 1 [running]:\n" + strings.Repeat("\tframe\n", 3*testLogKeep/7) + "END OF DUMP\n"
+	names := []string{"TestH", "TestC", "TestF", "TestA", "TestG", "TestB", "TestE", "TestD"}
+	var evs []testEvent
+	for _, n := range names {
+		evs = append(evs, out(n, n+" started\n"))
+	}
+	evs = append(evs, out("TestD", dump), out("", "FAIL\tx/lab\t5.000s\n"), end("fail", "", 5))
+	var w bytes.Buffer
+	if _, err := FilterTestJSON(strings.NewReader(events(t, evs...)), &w, false); err != nil {
+		t.Fatal(err)
+	}
+	s := w.String()
+	if !strings.Contains(s, dump) {
+		t.Errorf("the dump was not printed whole (%d bytes printed)", len(s))
+	}
+	last := -1
+	for _, n := range slices.Sorted(slices.Values(names)) {
+		i := strings.Index(s, n+" started\n")
+		if i < last {
+			t.Errorf("%s printed out of name order", n)
+		}
+		last = i
+	}
+	if !strings.HasSuffix(s, "FAIL\tx/lab\t5.000s\n") {
+		t.Error("the package's verdict is not last")
+	}
+
+	w.Reset()
+	if _, err := FilterTestJSON(strings.NewReader(events(t, out("TestHung", "last words\n"))), &w, false); err != nil {
 		t.Fatal(err)
 	}
 	if w.String() != "last words\n" {
-		t.Errorf("printed %q", w.String())
+		t.Errorf("at EOF, printed %q", w.String())
 	}
 }
 
@@ -113,24 +186,31 @@ func TestReadLineCut(t *testing.T) {
 	}
 }
 
-// TestTestLogBounded: a test's output is kept as its head and its tail,
-// with how much was cut between them.
+// TestTestLogBounded: a test's output is held whole, spilling to a file
+// past testLogMem, and printed whole or as its head and tail with how much
+// was cut between them.
 func TestTestLogBounded(t *testing.T) {
 	var l testLog
-	l.write("HEAD" + strings.Repeat("h", testLogKeep))
-	for range 5 {
-		l.write(strings.Repeat("m", testLogKeep/2))
+	defer l.close()
+	whole := "HEAD" + strings.Repeat("h", testLogKeep) + strings.Repeat("m", 5*testLogKeep/2) + strings.Repeat("t", testLogKeep-4) + "TAIL"
+	for chunk := range slices.Chunk([]byte(whole), 4096) {
+		if err := l.write(chunk); err != nil {
+			t.Fatal(err)
+		}
 	}
-	l.write(strings.Repeat("t", testLogKeep-4) + "TAIL")
-	if len(l.head)+len(l.tail) > 3*testLogKeep {
-		t.Fatalf("holds %d bytes", len(l.head)+len(l.tail))
+	if len(l.mem) > testLogMem || l.file == nil {
+		t.Fatalf("holds %d bytes in memory, spilled %v", len(l.mem), l.file != nil)
 	}
 	var w bytes.Buffer
-	if err := l.writeTo(&w); err != nil {
+	if err := l.writeTo(&w, true); err != nil || w.String() != whole {
+		t.Fatalf("whole: %d bytes, %v; want %d", w.Len(), err, len(whole))
+	}
+	w.Reset()
+	if err := l.writeTo(&w, false); err != nil {
 		t.Fatal(err)
 	}
 	s := w.String()
-	cut := 4 + testLogKeep + 5*testLogKeep/2 + testLogKeep - 2*testLogKeep
+	cut := len(whole) - 2*testLogKeep
 	if !strings.HasPrefix(s, "HEAD") || !strings.HasSuffix(s, "TAIL") || !strings.Contains(s, "("+strconv.Itoa(cut)+" bytes of this test's output cut)") {
 		t.Errorf("head %q, tail %q, cut note missing (want %d cut)", s[:8], s[len(s)-8:], cut)
 	}
@@ -152,7 +232,7 @@ func TestTestTimesRoundTrip(t *testing.T) {
 // it the check fails and lists the slowest tests, slowest first, at most
 // top of them; with no budget it only reports.
 func TestCheckBudget(t *testing.T) {
-	times := []TestTime{{"lab TestA", time.Minute}, {"lab TestB", 5 * time.Minute}, {"pkg/c", 3 * time.Minute}, {"lab TestD", time.Second}}
+	times := []TestTime{{"lab TestA", time.Minute}, {"lab TestB", 5 * time.Minute}, {"pkg/c", 3 * time.Minute}, {"lab TestD", time.Second}, {"lab TestM/r", 30 * time.Second}, {"lab TestM", 9 * time.Minute}}
 	var w bytes.Buffer
 	if err := CheckBudget(&w, "default", 14*time.Minute, 15*time.Minute, times, 3); err != nil || !strings.Contains(w.String(), "took 14m0s of its 15m0s budget") {
 		t.Errorf("within budget: %v, %q", err, w.String())
@@ -160,16 +240,32 @@ func TestCheckBudget(t *testing.T) {
 	w.Reset()
 	err := CheckBudget(&w, "default", 15*time.Minute+time.Second, 15*time.Minute, times, 3)
 	report := w.String()
-	if err == nil {
-		t.Errorf("over budget passed: %q", report)
+	var over *OverBudgetError
+	if !errors.As(err, &over) || over.Took != 15*time.Minute+time.Second || over.Budget != 15*time.Minute {
+		t.Errorf("over budget: %v, report %q", err, report)
 	}
 	b, c, a := strings.Index(report, "lab TestB"), strings.Index(report, "pkg/c"), strings.Index(report, "lab TestA")
-	if !strings.Contains(report, "took 15m1s, over its 15m0s budget") || b < 0 || c < b || a < c || strings.Contains(report, "TestD") {
+	if !strings.Contains(report, "took 15m1s, over its 15m0s budget") || b < 0 || c < b || a < c || strings.Contains(report, "TestD") || strings.Contains(report, "lab TestM ") || strings.Contains(report, "lab TestM\n") {
 		t.Errorf("over budget report:\n%s", report)
 	}
 	w.Reset()
 	if err := CheckBudget(&w, "long", 2*time.Hour, 0, times, 3); err != nil || w.String() != "the long stream took 2h0m0s\n" {
 		t.Errorf("no budget: %v, %q", err, w.String())
+	}
+}
+
+// TestParseBudget: a budget is a Go duration, 0 for none; empty or
+// negative is refused, not taken as none.
+func TestParseBudget(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want time.Duration
+		ok   bool
+	}{{"15m", 15 * time.Minute, true}, {"0", 0, true}, {"", 0, false}, {"-1m", 0, false}, {"soon", 0, false}} {
+		got, err := ParseBudget(tc.in)
+		if got != tc.want || (err == nil) != tc.ok {
+			t.Errorf("ParseBudget(%q) = %v, %v", tc.in, got, err)
+		}
 	}
 }
 
