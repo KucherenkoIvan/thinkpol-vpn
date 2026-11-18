@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
@@ -124,9 +125,9 @@ type ksSetIDs [6]uint32
 // routes nowhere beyond its link). Not postrouting:
 // reject is refused there (input, forward and output only), and output
 // already has what the device sends itself. The direct sets' elements
-// expire DirectTimeout after they were put in: every Apply puts them in
-// again, so a dead agent's direct destinations go within DirectTimeout
-// and only the entries (and the LAN) are left. The table stays when the
+// expire DirectTimeout (or what SetDirectTimeout set) after they were put
+// in: every Apply puts them in again, so a dead agent's direct
+// destinations go within it and only the entries (and the LAN) are left. The table stays when the
 // process dies (the crash posture) and when Close isn't called; Close
 // removes it, a fresh kill switch's Close a previous run's.
 type KillSwitch struct {
@@ -137,6 +138,28 @@ type KillSwitch struct {
 	capable bool
 	// listBridges is innerBridges when nil (tests fail it).
 	listBridges func(netns int) ([]string, error)
+	// directTimeout is the direct sets' timeout; zero is DirectTimeout.
+	directTimeout time.Duration
+}
+
+// expiry is the direct sets' timeout. k.mu is held.
+func (k *KillSwitch) expiry() time.Duration {
+	if k.directTimeout == 0 {
+		return DirectTimeout
+	}
+	return k.directTimeout
+}
+
+// SetDirectTimeout replaces DirectTimeout for this kill switch's direct
+// destinations from its next Apply that builds the table; zero is
+// DirectTimeout. Tests run the expiry in seconds with it; the agent
+// keeps it above twice its re-apply period, as DirectTimeout is.
+func (k *KillSwitch) SetDirectTimeout(d time.Duration) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if d != k.directTimeout {
+		k.directTimeout, k.applied = d, nil
+	}
 }
 
 // NewKillSwitch returns the kill switch of the calling thread's network
@@ -205,7 +228,7 @@ func (k *KillSwitch) Apply(ctx context.Context, r KillSwitchRules) error {
 		bridges, listErr = nil, fmt.Errorf("%w: %w", ErrKillSwitchInPlace, listErr)
 	}
 	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: KillSwitchTable}
-	sets := killSwitchSets(table, r)
+	sets := killSwitchSets(table, r, k.expiry())
 	if k.applied != nil && k.applied.Equal(r) && wholeTable(c, KillSwitchTable, killSwitchChains(r, ksSetIDs{}, bridges), wants(sets)...) {
 		// Put the direct sets' elements in again, their timeouts anew.
 		for _, s := range sets[2:4] {
@@ -293,13 +316,13 @@ type ksSet struct {
 	elems []nftables.SetElement
 }
 
-// killSwitchSets are the sets for r: allow4, allow6, the expiring
-// direct4 and direct6, then nodns4 and nodns6.
-func killSwitchSets(table *nftables.Table, r KillSwitchRules) []ksSet {
+// killSwitchSets are the sets for r: allow4, allow6, direct4 and direct6
+// whose elements expire after timeout, then nodns4 and nodns6.
+func killSwitchSets(table *nftables.Table, r KillSwitchRules, timeout time.Duration) []ksSet {
 	set := func(name string, key nftables.SetDatatype, expire bool) *nftables.Set {
 		s := &nftables.Set{Table: table, Name: name, KeyType: key, Interval: true}
 		if expire {
-			s.HasTimeout, s.Timeout = true, DirectTimeout
+			s.HasTimeout, s.Timeout = true, timeout
 		}
 		return s
 	}

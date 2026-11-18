@@ -39,7 +39,7 @@ func TestHangs(t *testing.T) {
 	if err := os.Rename(f+".tmp", f); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(time.Hour)
+	time.Sleep(time.Hour) // a child that hangs until the test kills it
 }
 `,
 	})

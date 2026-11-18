@@ -470,36 +470,84 @@ func TestKillSwitchLetsOutOnlyEntriesWhileDown(t *testing.T) {
 	}
 }
 
-// The direct destinations expire DirectTimeout after the last Apply: a
-// dead agent's kill switch lets out only the entries; an Apply in time
-// renews them.
+// The direct destinations expire DirectTimeout after the last Apply (here
+// a shorter timeout, SetDirectTimeout): a dead agent's kill switch lets
+// out only the entries; an Apply in time renews them, which the set
+// element's expiry shows starting over.
 func TestKillSwitchDirectDestinationsExpireWithoutTheAgent(t *testing.T) {
+	const timeout = 3 * time.Second
 	p := ksPair(t)
 	k := p.killSwitch(t)
+	k.SetDirectTimeout(timeout)
 	ctx := context.Background()
 	up := firewall.KillSwitchRules{TUN: "thinkpol0", Mark: routetable.Mark, Allow: set(t, entry6+"/128"), Direct: set(t, domestic6+"/128")}
 	if err := k.Apply(ctx, up); err != nil {
 		t.Fatal(err)
 	}
-	// Renewed halfway: still there past the first deadline.
-	time.Sleep(firewall.DirectTimeout / 2)
+	first := time.Now()
+	// Renewed halfway: its expiry starts over, and it is still there past
+	// the first deadline.
+	half := p.waitDirect6(t, 2*timeout, "half its timeout gone", func(left time.Duration, ok bool) bool { return ok && left <= timeout/2 })
 	if err := k.Apply(ctx, up); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(firewall.DirectTimeout/2 + 5*time.Second)
-	if !p.ping(t, domestic6) {
-		t.Fatal("a renewed direct destination expired")
+	if left, ok := p.direct6Expires(t); !ok || left <= half {
+		t.Fatalf("the Apply didn't renew the direct destination: it expires in %v (present %v), %v before", left, ok, half)
 	}
-	// No Apply since (the agent died): gone within DirectTimeout.
-	deadline := time.Now().Add(firewall.DirectTimeout)
-	for p.ping(t, domestic6) {
-		if time.Now().After(deadline) {
-			t.Fatal("the direct destination didn't expire")
+	p.waitDirect6(t, 2*timeout, "past the first deadline", func(_ time.Duration, ok bool) bool {
+		if !ok {
+			t.Fatalf("a renewed direct destination expired %v after the first Apply", time.Since(first))
 		}
-		time.Sleep(time.Second)
+		return time.Since(first) > timeout+timeout/4
+	})
+	if !p.ping(t, domestic6) {
+		t.Fatal("a renewed direct destination stopped answering")
+	}
+	// No Apply since (the agent died): gone within the timeout.
+	p.waitDirect6(t, 2*timeout, "the direct destination expired", func(_ time.Duration, ok bool) bool { return !ok })
+	if p.ping(t, domestic6) {
+		t.Error("the expired direct destination still answers")
 	}
 	if !p.ping(t, entry6) || !strings.Contains(p.table(t), firewall.KillSwitchTable) {
 		t.Error("the entry went with the direct destinations")
+	}
+}
+
+// direct6Expires is how long the kill switch's direct6 element has left
+// (nft's "expires"), and whether it is there.
+func (p *pair) direct6Expires(t *testing.T) (time.Duration, bool) {
+	t.Helper()
+	out, err := exec.Command("ip", "netns", "exec", p.dev, "nft", "list", "set", "inet", firewall.KillSwitchTable, "direct6").CombinedOutput()
+	if err != nil {
+		t.Fatalf("nft list set direct6: %v: %s", err, out)
+	}
+	m := expiresRE.FindSubmatch(out)
+	if m == nil {
+		return 0, false
+	}
+	left, err := time.ParseDuration(string(m[1]))
+	if err != nil {
+		t.Fatalf("direct6's expiry %q: %v", m[1], err)
+	}
+	return left, true
+}
+
+var expiresRE = regexp.MustCompile(`expires ((?:[0-9]+[hms]+)+)`)
+
+// waitDirect6 polls direct6's element until done says so, within, and
+// returns its last expiry; the failure shows the last state read.
+func (p *pair) waitDirect6(t *testing.T, within time.Duration, what string, done func(left time.Duration, ok bool) bool) time.Duration {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		left, ok := p.direct6Expires(t)
+		if done(left, ok) {
+			return left
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: not within %v; direct6's element present %v, expiring in %v", what, within, ok, left)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

@@ -103,7 +103,7 @@ type DataPlane struct {
 	dnsUpstreams <-chan []netip.AddrPort
 	// killSwitch keeps a device's kill switch for the data plane's state
 	// (Node.enforceKillSwitch; nil in a worker), at every change, every
-	// killSwitchReapply, and when killSwitchRequests asks after a toggle
+	// re-apply period (DeviceHost.reapplyEvery), and when killSwitchRequests asks after a toggle
 	// changed (closing the channel it sent once done).
 	killSwitch         func(ctx context.Context, v killSwitchView)
 	killSwitchRequests <-chan chan struct{}
@@ -504,7 +504,11 @@ func (r *runner) loop(ctx context.Context) error {
 	defer retry.Stop()
 	status := time.NewTicker(statusEvery)
 	defer status.Stop()
-	reapply := time.NewTicker(killSwitchReapply)
+	every := killSwitchReapply
+	if r.dp.Device != nil {
+		every = r.dp.Device.reapplyEvery()
+	}
+	reapply := time.NewTicker(every)
 	defer reapply.Stop()
 	for {
 		var ended <-chan struct{}

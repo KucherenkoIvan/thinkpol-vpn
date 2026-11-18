@@ -181,6 +181,9 @@ func entries(section netmap.Section) []netip.AddrPort {
 type killSwitchKeeper struct {
 	newKS func() KillSwitch
 	log   *slog.Logger
+	// every is the re-apply period (DeviceHost.reapplyEvery); zero is
+	// killSwitchReapply.
+	every time.Duration
 	// ks is the kill switch it holds; nil before the first call, after a
 	// Close, and on a host without one.
 	ks KillSwitch
@@ -201,8 +204,8 @@ type killSwitchKeeper struct {
 }
 
 // keep puts r in place (want), or removes what any run left (!want).
-// Applying what is in place again is due at the next killSwitchReapply
-// tick, or after a failure.
+// Applying what is in place again is due at the next re-apply tick
+// (every), or after a failure.
 func (k *killSwitchKeeper) keep(ctx context.Context, want bool, r firewall.KillSwitchRules) {
 	if k.newKS == nil {
 		return
@@ -254,7 +257,11 @@ func (k *killSwitchKeeper) keep(ctx context.Context, want bool, r firewall.KillS
 	// Half a period: the ticker's next tick comes a period after the one
 	// handled here, which is earlier than a period after now; due at a
 	// whole period, every other tick would be skipped (20 s, not 10 s).
-	k.applied, k.removed, k.inPlace, k.failed, k.reapplyAt = &r, false, true, nil, now.Add(killSwitchReapply/2)
+	every := k.every
+	if every == 0 {
+		every = killSwitchReapply
+	}
+	k.applied, k.removed, k.inPlace, k.failed, k.reapplyAt = &r, false, true, nil, now.Add(every/2)
 	if first {
 		k.log.Info("kill switch in place", "tunnel", onOff(r.TUN != ""), "allowed_ranges", len(r.Allow.Ranges()))
 	}

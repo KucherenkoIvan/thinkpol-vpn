@@ -600,28 +600,35 @@ func (c *countingKillSwitch) Apply(context.Context, firewall.KillSwitchRules) er
 
 func (c *countingKillSwitch) Close() error { return nil }
 
-// The kill switch in place is applied again at every killSwitchReapply
-// tick, the tick handled a little after it fired included: on Linux that
-// renews the direct destinations well within firewall.DirectTimeout.
+// The kill switch in place is applied again at every re-apply tick, the
+// tick handled a little after it fired included: on Linux that renews the
+// direct destinations well within firewall.DirectTimeout. The period is
+// killSwitchReapply unless the host sets one (the lab's shorter one).
 func TestTheKillSwitchIsReappliedAtEveryTick(t *testing.T) {
-	ks := &countingKillSwitch{}
-	clock := time.Unix(1_000_000, 0)
-	k := killSwitchKeeper{newKS: func() KillSwitch { return ks }, log: slog.New(slog.DiscardHandler), now: func() time.Time { return clock }}
-	r := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")}
-	tick := clock
-	for i := range 6 {
-		// The node loop handles a tick late, by more or less each time.
-		clock = tick.Add(time.Duration(50-49*(i%2)) * time.Millisecond)
-		k.keep(context.Background(), true, r)
-		if ks.applies != i+1 {
-			t.Fatalf("tick %d: %d applies, want %d", i, ks.applies, i+1)
+	for _, host := range []DeviceHost{{}, {KillSwitchReapply: 2 * time.Second}} {
+		every := host.reapplyEvery()
+		ks := &countingKillSwitch{}
+		clock := time.Unix(1_000_000, 0)
+		k := killSwitchKeeper{newKS: func() KillSwitch { return ks }, every: every, log: slog.New(slog.DiscardHandler), now: func() time.Time { return clock }}
+		r := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")}
+		tick := clock
+		for i := range 6 {
+			// The node loop handles a tick late, by more or less each time.
+			clock = tick.Add(time.Duration(50-49*(i%2)) * time.Millisecond)
+			k.keep(context.Background(), true, r)
+			if ks.applies != i+1 {
+				t.Fatalf("every %v, tick %d: %d applies, want %d", every, i, ks.applies, i+1)
+			}
+			clock = tick.Add(every / 4) // another event between ticks
+			k.keep(context.Background(), true, r)
+			if ks.applies != i+1 {
+				t.Fatalf("every %v: an event %v after tick %d applied it again", every, every/4, i)
+			}
+			tick = tick.Add(every)
 		}
-		clock = tick.Add(killSwitchReapply / 4) // another event between ticks
-		k.keep(context.Background(), true, r)
-		if ks.applies != i+1 {
-			t.Fatalf("an event %v after tick %d applied it again", killSwitchReapply/4, i)
-		}
-		tick = tick.Add(killSwitchReapply)
+	}
+	if d := (DeviceHost{}).reapplyEvery(); d != killSwitchReapply {
+		t.Errorf("the default period: %v, want %v", d, killSwitchReapply)
 	}
 	if firewall.DirectTimeout < 2*killSwitchReapply {
 		t.Errorf("firewall.DirectTimeout %v leaves no stall margin over a %v re-apply", firewall.DirectTimeout, killSwitchReapply)
