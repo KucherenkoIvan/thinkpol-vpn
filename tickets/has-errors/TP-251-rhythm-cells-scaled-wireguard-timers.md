@@ -37,6 +37,18 @@ The matrix's wireguard-rhythm cells hold the tunnel 7.5 minutes of real time to 
 - Wall times (remote runner, under other sessions' load), `TestCensorMatrix/^(udp|reality)$/^(off|wireguard-rhythm)$`. Real timers (`make lab-test-rhythm-real`, 040d0d0e): udp/wireguard-rhythm 473 s, reality/wireguard-rhythm 482 s; rows udp 772 s, reality 895 s. Scaled ×10 (040d0d0e): 82 s and 82 s; rows 175 s and 187 s (an earlier scaled run at d13cecbd: 78 s and 76 s, rows 320 s and 321 s, the lab start slower under load). The matrix's longest row (reality) loses about 400 s of hold.
 - Each hold, real or scaled, got all its pings back but 2 (228 of 230, 26 of 28); at 28 pings that is the 90% line, so the hold now also accepts all but 4 (a block costs the redial a ping or two, and a scaled hold can see two blocks: udp was blocked twice in its 55 s).
 
+## Review findings
+- [ ] R1.1 (should-fix, proven) The scaled cell isn't the same experiment: at x10 KEEPALIVE_TIMEOUT is 1 s and the hold pings every 2 s, so wireguard-go sends a passive keepalive ~1 s after every reply, which a busy real tunnel never does; the record-count difference then steps +1 every 2 s and the count signal can never chain. Keep the hold's traffic in the same order relative to the scaled timers as at real time (ping interval below the scaled keepalive, count settle (300 ms) < ping interval < scaled quiet < scaled keepalive) and cap the scale at 10.
+- [ ] R1.2 (should-fix, proven) modules_wgrhythm.go: scaled quiet() is 0.5 s, so every real-time 2 s ping and 1-2 s path probe "stands out after quiet" and resets its exchange's chain, blinding the size signal. Make the scaled detector equivalent to the real one for the cells' traffic (which windows scale and which stay real, and why, in doc.go). Proof for R1.1+R1.2: the scaled run's per-signal attribution for reality and udp matches the real-timer run's.
+- [ ] R1.3 (should-fix) wgPairWindow (2 s) is documented "kept under REKEY_TIMEOUT"; scaled REKEY_TIMEOUT is 0.5 s, so a retried initiation can pair as an answer. Use min(wgPairWindow, scaled REKEY_TIMEOUT) or justify and document.
+- [ ] R1.4 (should-fix) RESULTS.md never says the scale: record it in the header and in the rhythm cells' lines.
+- [ ] R1.5 (doc honesty) lab/README.md and the ticket Scope say `-overlay`; it's `-modfile` with a replace to a cached copy. State the limits (guard checks constants.go only; where the cache copy lives; every lab test runs scaled product timeouts, real values proven only by a full lab at scale 1 at milestone gates; `make lab-test-rhythm-real` for rhythm-rule and shaping changes). Fix "can detect more easily" and "about 8 minutes".
+- [ ] R1.6 (should-fix) lab/wgtimers.go: a cached copy is reused if its go.mod exists; verify it on reuse, rebuild on mismatch; clean leftover .copy-* dirs from killed builds.
+- [ ] R1.7 (nit) Replace detection is substring-based: use `go mod edit -json` (Replace[].Old.Path == the module).
+- [ ] R1.8 (nit) reality_matrix_test.go "all but 4" pings: scale the allowance with the pings sent (e.g. max(4, sent/10)).
+- [ ] R1.9 (nits) results_test.go "7.5 minutes"; rhythmHold(1) exactly the old 450 s at scale 1; window() must not scale wg(8)'s 25 s persistent keepalive; package doc describes unscaled quiet/slack; define 120 s once; a bad THINKPOL_LAB_WG_TIMER_SCALE gives a clear error, not an init panic.
+- [ ] R1.10 (should-fix) lab/localapi_test.go checks `health: ok` once: with a 1.5 s exit deadline a rekey under load can flip it; wait for it (bounded).
+
 ## Log
 - 2026-11-19 created in backlog (owner: sped-up clocks wherever possible)
 - 2026-11-19 depends_on TP-239 dropped: TP-251 no longer waits on it (TP-239 merges this in)
@@ -45,3 +57,4 @@ The matrix's wireguard-rhythm cells hold the tunnel 7.5 minutes of real time to 
 - 2026-11-19 runs at 040d0d0e: scaled cells pass (udp fail, reality fail as expected, "12s apart"), real-timer target passes (same verdicts, "2m1s apart"); make lint, make test green; no full lab (brief: targeted only); no new tests (owner), so no mutations
 - 2026-11-19 not verified: other lab tests under scaled WireGuard timers (no full lab); out of scope: a RUN with $ anchors passed through make lab-gotest loses them (make expands $), RUN needs $$
 - 2026-11-19 in-progress → review
+- 2026-11-19 review round 1: fix R1.1–R1.10
