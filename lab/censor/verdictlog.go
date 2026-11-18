@@ -11,9 +11,10 @@ import (
 // The verdict log's events.
 const (
 	// EventDecision is the first packet of a flow to get a verdict from a
-	// module (Accept from none included): a flow has at most one per
-	// verdict and module, however many packets, or however often its
-	// packets alternate between them.
+	// module (Accept from none included, or from the first module that gave
+	// a reason for it): a flow has at most one per verdict and module,
+	// however many packets, or however often its packets alternate between
+	// them.
 	EventDecision = "decision"
 	// EventTag is a passive module tagging a flow for the active ones.
 	EventTag = "tag"

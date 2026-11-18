@@ -730,9 +730,10 @@ var censorCases = []censorCase{
 	// on each connection's first data, UDP's first datagram too, and
 	// residual censorship after a block: thinkpol's udp sends random bytes
 	// first (exempt by chance: six printable bytes first, about once in
-	// 400 tunnels, or more than half printable, about once in 175 short
-	// datagrams, which residual censorship leaves only a link's first
-	// connection over each underlay family); OpenVPN's first packet is
+	// 400 tunnels, or more than half printable, about once in 175 84-byte
+	// datagrams, which residual censorship leaves one judgement per
+	// 3-tuple and residual window, a link's first connection over each
+	// underlay family); OpenVPN's first packet is
 	// mostly zeros, and HTTPS starts with a TLS record. A WireGuard
 	// initiation ends in 16 zero bytes, and is exempt about one time in
 	// four.

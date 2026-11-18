@@ -109,7 +109,8 @@
 // Otherwise every passive module that hasn't retired from the flow sees
 // the packet, in config order: the first Drop or Reset decides it; with
 // none, a Throttle does (the flow's pinned one, else the first module's to
-// give one); else Accept. A module that pins a verdict retires from the
+// give one); else Accept, the first module's to give a reason for it (an
+// exemption, say), so the verdict log names it. A module that pins a verdict retires from the
 // flow, whatever the verdict, and the modules after it, and active
 // modules' flags, may still block it: a Throttle, pinned or not, never
 // keeps a later module from dropping or resetting the flow. A flow's
@@ -395,30 +396,37 @@
 // client that sends a first segment an exemption passes (six printable
 // bytes, say) and the rest later passes too, as it does past the Great
 // Firewall. Once it blocks a connection, it drops every packet the client
-// sends to the server's address and port, of that protocol, for 180 s
-// (residual censorship, Wu et al. section 4.4: the 3-tuple, client to
-// server only, the time not extended by what it drops): a new
-// connection's SYN or first datagram, whatever it looks like, and a
-// connection an exemption passed before. The server's packets, and the
-// client's to other ports or addresses, are judged as before. With
-// tagOnly it tags instead of blocking, for the prober, and leaves no
-// residual censorship. Random bytes are exempt only by chance: their
-// first six bytes printable, about one stream in 383, or more than half
-// of them printable, which only a short one is likely to be. thinkpol's
-// udp starts every datagram with its connection id, fixed for a link's
+// sends to the server's address and port for 180 s (residual censorship,
+// Wu et al. section 4.4, p. 2658: the 3-tuple, client to server only, the
+// time not reset by what it drops): a new connection's SYN or first
+// datagram, whatever it looks like. Residual censorship drops, whatever
+// verdict the module is set to. The server's packets, and the client's to
+// other ports or addresses, are judged as before. Wu et al. saw a TCP
+// block leave UDP to the same address and port alone, and so does the
+// lab. The lab's own choices, each the stricter reading where Wu et al.
+// are silent or unsure: it judges UDP's first datagram, and a UDP block
+// covers TCP to the same address and port too; it takes 180 s where they
+// saw 120 or 180, and never the shorter times they saw while many ports of
+// one server were blocked at once; it also drops a connection an exemption
+// passed before the block. With tagOnly it tags instead of blocking, for
+// the prober, and leaves no residual censorship. An exempt flow's accept
+// names its exemption and the address that opened the flow in the verdict
+// log. Random bytes are exempt only by chance: their first six bytes
+// printable, about one stream in 383, or more than half of them
+// printable, about one in 175 for an 84-byte datagram. thinkpol's udp
+// starts every datagram with its connection id, fixed for a link's
 // direction and hour and the same over IPv4 and IPv6 (it doesn't depend
 // on the address), so the first chance is per link and hour; the second
-// is per datagram, about one in 175 for an 84-byte one (a redial's first
-// in the lab), and a redial from a new port is a new connection, judged
-// afresh but for residual censorship: without it a link that redials a
-// few times while blocked crossed in about one cell of the matrix in 50
-// (TP-236). What is left is a connection's first judgement on each
-// 3-tuple, one per underlay family a link dials: the matrix, which
-// expects udp to fail fully-encrypted, shows an exempt one as a failed
-// run, never as a wrong score. A WireGuard initiation, ending in 16 zero
-// bytes (mac2, without a cookie), averages about 3.47 set bits per byte
-// and is exempt about one in four, its tunnel with it, since a flow is
-// judged once.
+// is per new flow's first datagram (84 bytes for a redial in the lab), and
+// a redial from a new port is a new connection, judged afresh but for
+// residual censorship: without it a link that redials a few times while
+// blocked crossed in about one cell of the matrix in 50 (TP-236). What is
+// left is one judgement per 3-tuple and residual window, one per underlay
+// family a link dials, about one cell in 120: the matrix, which expects
+// udp to fail fully-encrypted, shows an exempt one as a failed run, never
+// as a wrong score. A WireGuard initiation, ending in 16 zero bytes (mac2,
+// without a cookie), averages about 3.47 set bits per byte and is exempt
+// about one in four, its tunnel with it, since a flow is judged once.
 //
 // prober is the active prober: given a suspect TCP connection, it probes
 // the connection's server, once per server address and port, from the
@@ -589,7 +597,11 @@
 // every flow until the censor stops (a lab test's few thousand at most),
 // and so does openvpn-fingerprint its state per connection (a few packet
 // heads each), replaced only when the connection's addresses and ports
-// carry a new one. A module learns of a flow's end only from the packets
+// carry a new one, and fully-encrypted the flows an exemption passed (a
+// start time and a reason each, one per flow key). fully-encrypted's
+// residual censorship holds every 3-tuple blocked in the last 180 s, and
+// expired ones until a later block removes them, at most once per 180 s.
+// A module learns of a flow's end only from the packets
 // themselves (FIN, RST). A pinned Drop or Reset outlives the connection it
 // blocked: a new SYN on the same addresses and ports is decided by it
 // (dropped, or reset with an RST|ACK), so no SYN-ACK ever accepts the new
