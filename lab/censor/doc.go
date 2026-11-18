@@ -399,7 +399,10 @@
 // sends to the server's address and port for 180 s (residual censorship,
 // Wu et al. section 4.4, p. 2658: the 3-tuple, client to server only, the
 // time not reset by what it drops): a new connection's SYN or first
-// datagram, whatever it looks like. Residual censorship drops, whatever
+// datagram, whatever it looks like, and the client's packets on a flow
+// the server's packet started (the server spoke first, or again after a
+// UDP flow's 120 s idle), which the module otherwise leaves unjudged as
+// the server's side. Residual censorship drops, whatever
 // verdict the module is set to. The server's packets, and the client's to
 // other ports or addresses, are judged as before. Wu et al. saw a TCP
 // block leave UDP to the same address and port alone, and so does the

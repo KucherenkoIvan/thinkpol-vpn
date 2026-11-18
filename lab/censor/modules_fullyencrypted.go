@@ -98,16 +98,19 @@ func (m *fullyEncrypted) Name() string { return "fully-encrypted" }
 // while a blocked connection's 3-tuple is under residual censorship: a
 // connection that opens on it (its SYN, its first datagram), as Wu et al.
 // saw, and one an exemption passed before the block, the lab's own
-// reading of their "all subsequent TCP packets". An exempt flow's Accept
-// names its exemption and who opened the flow, for the verdict log. A
-// tagging module blocks nothing, so it leaves no residual censorship
-// either.
+// reading of their "all subsequent TCP packets". The residual check comes
+// before the initiator one: Wu et al. drop every packet from the client to
+// the server's address and port, so a flow the server's packet started
+// (the server spoke first, or again after udpIdle) is dropped too. An
+// exempt flow's Accept names its exemption and who opened the flow, for
+// the verdict log. A tagging module blocks nothing, so it leaves no
+// residual censorship either.
 func (m *fullyEncrypted) Inspect(_ *Packet, f *Flow) Decision {
-	if !f.Initiator() {
-		return retired
-	}
 	if d, ok := m.residualDrop(f); ok {
 		return d
+	}
+	if !f.Initiator() {
+		return retired
 	}
 	if e, ok := m.exempt[f.Key]; ok && e.started.Equal(f.Started) {
 		return Decision{Verdict: Accept, Reason: e.why}
@@ -125,7 +128,7 @@ func (m *fullyEncrypted) Inspect(_ *Packet, f *Flow) Decision {
 		if f.Key.Proto == ProtoTCP {
 			opener = "its SYN"
 		}
-		why = fmt.Sprintf("exempt: %s; opened by %s:%d (%s)", why, f.Key.Src, f.Key.SrcPort, opener)
+		why = fmt.Sprintf("exempt: %s; opened by %s (%s)", why, netip.AddrPortFrom(f.Key.Src, f.Key.SrcPort), opener)
 		m.exempt[f.Key] = exemptFlow{started: f.Started, why: why}
 		return Decision{Verdict: Accept, Reason: why}
 	}
@@ -142,7 +145,10 @@ func (m *fullyEncrypted) Inspect(_ *Packet, f *Flow) Decision {
 // arm puts the blocked flow's 3-tuple under residual censorship, for TCP
 // alone after a TCP block and for both protocols after a UDP one, and
 // removes the expired 3-tuples at most once per residualCensorship, so
-// the map holds no more than the blocks of the last two windows.
+// the map holds no more than the blocks of the last two windows. A block
+// replaces what its keys held: a module blocks a flow only on the packet
+// that brought its first data, so now is the engine's clock and no window
+// armed before ends later.
 func (m *fullyEncrypted) arm(f *Flow, tag string) {
 	now := f.Last
 	if now.Sub(m.pruned) >= residualCensorship {
@@ -158,9 +164,7 @@ func (m *fullyEncrypted) arm(f *Flow, tag string) {
 	m.residual[k] = b
 	if k.proto == ProtoUDP {
 		k.proto = ProtoTCP
-		if old, ok := m.residual[k]; !ok || old.until.Before(b.until) {
-			m.residual[k] = b
-		}
+		m.residual[k] = b
 	}
 }
 

@@ -51,6 +51,10 @@ Review round 1, accepted by the orchestrator: the diagnosis (a redial is a fresh
 - [x] R1.6 (nits) Docs: "per datagram" → "per new flow's first datagram" (doc.go, README); "short random datagram" → "84-byte"; the Inspect comment overclaims the Great Firewall for already-established exempt connections (the lab's own stricter choice); "a connection's first judgement on each 3-tuple" → "per 3-tuple and residual window"; doc.go's Limits lists the module's state.
 - [x] R1.7 (should-fix, evidence) An exempt accept logs nothing: make the module's Accept carry which exemption passed the flow and which side opened it, in the verdict log. Matrix scoring unchanged in this ticket.
 - [x] R1.8 (ticket) Box 3 ("20 runs pass") is ticked on one clean batch of 21 while 42 of 43 runs were right overall and the Goal isn't fully met: untick it, state the remaining ~1/120 and its cause in Notes, name the follow-up (scoring the known chance with logged exemptions, the owner's decision).
+Review round 2, a delta check before the merge:
+- [x] R2.1 (test gap) A UDP block re-arming the TCP copy was never tested while that copy was stale: a TCP SYN had always removed it first. A test now blocks a 3-tuple between two prunes, lets it expire with no TCP packet, blocks it again and sends a SYN, which must be dropped; the old-window comparison is gone, since a block is armed at the engine's clock on the packet that brought its first data and no window armed before ends later.
+- [x] R2.2 An exempt accept's opener printed an IPv6 address ambiguously (2001:db8::1:5000): it is netip.AddrPortFrom's form now ([2001:db8::1]:5000), tested.
+- [x] R2.3 (stricter, per the paper) The residual check ran after the initiator check, so the client's packets on a flow the server's packet started (the server spoke first, or again after 120 s idle) were retired and escaped residual censorship. The residual check now comes first; its key matches only packets from the blocked client to the blocked server's address and port. Tested both ways; doc.go says so.
 
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate fixes)
@@ -73,3 +77,4 @@ Review round 1, accepted by the orchestrator: the diagnosis (a redial is a fresh
 - 2026-11-19 on eb5e2393, lab-gotest: the udp row's fully-encrypted cell COUNT=7, 7 of 7 fail as wanted (651 s), no exempt accept logged; the off, fully-encrypted and active prober cells of every row, 27 of 27 as the matrix wants them (360 s). Exempt accepts logged in the fully-encrypted cells of https, relay-tcp and reality (TCP: few set bits per byte, a printable run), openvpn-tcp and openvpn-udp (few set bits), and wireguard's IPv6 initiation (3.24 set bits per byte; its cell partial, the known one in four); none in udp's
 - 2026-11-19 a first COUNT=7 run on 6435e4ba stopped after its first cells to add the cell's accept log; make lab-down removed its lab
 - 2026-11-19 has-errors → review
+- 2026-11-19 review round 2: R2.1–R2.3, merge

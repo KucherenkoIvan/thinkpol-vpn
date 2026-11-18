@@ -257,11 +257,13 @@ func (r *residualRun) expect(what string, p *Packet, want Verdict) Action {
 // packet its client sends to the server's address and port is dropped for
 // residualCensorship, whatever it looks like: a redial from a new port
 // whose first datagram an exemption passes (TP-236's partial cell), a
-// flow exempt before the block, and TCP to the same port (a UDP block
-// covers both protocols). The server's packets, other clients, other
-// server addresses and ports, and the client's other family are judged as
-// before; the time runs from the block, not from the drops, and a block
-// after it ran out starts another.
+// flow exempt before the block, TCP to the same port (a UDP block covers
+// both protocols), and a flow the server's packet started (the server
+// spoke first, or again after udpIdle). The server's packets, other
+// clients, other server addresses and ports, and the client's other
+// family are judged as before; the time runs from the block, not from the
+// drops, and a block after it ran out starts another, for TCP too even
+// when the expired TCP copy is still held.
 func TestFullyEncryptedResidualCensorship(t *testing.T) {
 	blocked, exempt := randomBytes(5, 84), redialDatagram()
 	if _, ok := judgeFirstData(blocked); ok {
@@ -291,6 +293,12 @@ func TestFullyEncryptedResidualCensorship(t *testing.T) {
 	r.expect("the same client port to another server address", udpPacket(clientAddr, otherServer, 5001, 4500, exempt), Accept)
 	r.expect("the same client over IPv6", udpPacket(client6, server6, 5001, 4500, exempt), Accept)
 	r.expect("TCP to the same port", tcpPacket(clientAddr, serverAddr, 40000, 4500, 1000, 0, Syn, nil), Drop)
+	r.expect("the server speaking first", udpPacket(serverAddr, clientAddr, 4500, 5007, exempt), Accept)
+	r.expect("the client's answer to it", udpPacket(clientAddr, serverAddr, 5007, 4500, exempt), Drop)
+
+	r.clock = start.Add(time.Second + udpIdle + time.Second)
+	r.expect("the server again after udpIdle", udpPacket(serverAddr, clientAddr, 4500, 5001, exempt), Accept)
+	r.expect("the client's answer to it after udpIdle", udpPacket(clientAddr, serverAddr, 5001, 4500, exempt), Drop)
 
 	r.clock = start.Add(residualCensorship - time.Millisecond)
 	r.expect("a redial just before the time is up", udpPacket(clientAddr, serverAddr, 5003, 4500, exempt), Drop)
@@ -302,9 +310,25 @@ func TestFullyEncryptedResidualCensorship(t *testing.T) {
 	r.expect("a block after the time ran out", udpPacket(clientAddr, serverAddr, 5005, 4500, blocked), Drop)
 	r.expect("a redial after it", udpPacket(clientAddr, serverAddr, 5006, 4500, exempt), Drop)
 	r.expect("the flow exempt since before the first block", udpPacket(clientAddr, serverAddr, 4999, 4500, exempt), Drop)
+	r.expect("TCP after it", tcpPacket(clientAddr, serverAddr, 40002, 4500, 1000, 0, Syn, nil), Drop)
 	if len(r.m.residual) != 2 {
 		t.Errorf("residual censorship holds %v, want the last block's two protocols alone, the expired ones removed", r.m.residual)
 	}
+
+	// A block between two prunes leaves its TCP copy behind once it
+	// expires, with no TCP packet to remove it: the next block on the
+	// 3-tuple must replace it.
+	r = newResidualRun(t, "")
+	start = r.clock
+	r.expect("a block that prunes", udpPacket(clientAddr, serverAddr, 5100, 4502, blocked), Drop)
+	r.clock = start.Add(residualCensorship / 2)
+	r.expect("the block between prunes", udpPacket(clientAddr, serverAddr, 5000, 4500, blocked), Drop)
+	r.clock = start.Add(residualCensorship)
+	r.expect("the next block that prunes", udpPacket(clientAddr, serverAddr, 5101, 4503, blocked), Drop)
+	r.clock = start.Add(residualCensorship / 2).Add(residualCensorship)
+	r.expect("a block once its time ran out", udpPacket(clientAddr, serverAddr, 5001, 4500, blocked), Drop)
+	r.clock = r.clock.Add(time.Second)
+	r.expect("TCP after it, its old copy expired", tcpPacket(clientAddr, serverAddr, 40000, 4500, 1000, 0, Syn, nil), Drop)
 
 	r = newResidualRun(t, "")
 	r.expect("a blocked IPv6 flow", udpPacket(client6, server6, 5000, 4500, blocked), Drop)
@@ -365,7 +389,8 @@ func TestFullyEncryptedResidualCensorshipDrops(t *testing.T) {
 }
 
 // TestFullyEncryptedExemptions: an exempt flow's accept names its
-// exemption and who opened the flow in the verdict log, once per flow; a
+// exemption and who opened the flow in the verdict log (an IPv6 address
+// in brackets, apart from its port), once per flow; a
 // flow that starts over on the same addresses and ports is judged afresh,
 // and the module keeps one exempt entry per flow key.
 func TestFullyEncryptedExemptions(t *testing.T) {
@@ -387,11 +412,15 @@ func TestFullyEncryptedExemptions(t *testing.T) {
 	if a := eng.Handle(tcpPacket(clientAddr, serverAddr, 40000, 443, seq, 5001, Ack|Psh, append([]byte("GET "), filler(60)...))); a.Verdict != Accept {
 		t.Errorf("an exempt TCP connection: %+v", a)
 	}
+	client6, server6 := netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("2001:db8::9")
+	if a := eng.Handle(udpPacket(client6, server6, 5000, 4500, redialDatagram())); a.Verdict != Accept {
+		t.Errorf("an exempt IPv6 datagram: %+v", a)
+	}
 	clock = clock.Add(udpIdle + time.Second)
 	if a := eng.Handle(udpPacket(clientAddr, serverAddr, 5000, 4500, randomBytes(5, 84))); a.Verdict != Drop {
 		t.Errorf("a random datagram once the exempt flow started over: %+v", a)
 	}
-	if len(m.exempt) != 2 {
+	if len(m.exempt) != 3 {
 		t.Errorf("exempt flows %v, want one per flow key", m.exempt)
 	}
 	eng.Shutdown()
@@ -407,8 +436,9 @@ func TestFullyEncryptedExemptions(t *testing.T) {
 		}
 	}
 	want := map[string][]string{
-		"udp 192.0.2.1:5000->203.0.113.9:4500": {"exempt: more than half printable, 50 of 84 bytes; opened by 192.0.2.1:5000 (the side seen first)"},
-		"tcp 192.0.2.1:40000->203.0.113.9:443": {"exempt: a TLS or HTTP start, 64 bytes; opened by 192.0.2.1:40000 (its SYN)"},
+		"udp 192.0.2.1:5000->203.0.113.9:4500":   {"exempt: more than half printable, 50 of 84 bytes; opened by 192.0.2.1:5000 (the side seen first)"},
+		"tcp 192.0.2.1:40000->203.0.113.9:443":   {"exempt: a TLS or HTTP start, 64 bytes; opened by 192.0.2.1:40000 (its SYN)"},
+		"udp 2001:db8::1:5000->2001:db8::9:4500": {"exempt: more than half printable, 50 of 84 bytes; opened by [2001:db8::1]:5000 (the side seen first)"},
 	}
 	if !reflect.DeepEqual(reasons, want) {
 		t.Errorf("exempt accepts in the verdict log %q, want %q", reasons, want)
