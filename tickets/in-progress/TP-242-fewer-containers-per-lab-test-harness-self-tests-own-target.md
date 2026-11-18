@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-229]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-242"
+branch: "tp-242-fewer-containers"
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ Each lab has only the nodes its test drives. The owner wants a full lab to take 
 
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority; from the lab-speed audit)
+- 2026-11-18 backlog → in-progress, owner: agent-tp-242
