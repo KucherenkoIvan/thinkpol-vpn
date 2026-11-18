@@ -1246,8 +1246,8 @@ func TestWGRhythmCountsRecords(t *testing.T) {
 	// hidden: rekeys 120.3 s apart, as on the lab, and a record from the
 	// server 100 ms before the second that the client answers 600 ms
 	// later, so the reading after the handshake finds the level.
-	close := []time.Duration{121*s + 500*time.Millisecond, 120*s + 300*time.Millisecond, 120*s + 300*time.Millisecond}
-	hidden := wgPingTimeline(400*s, rtt, close, wgMessage{241*s + 700*time.Millisecond, false, 300}, wgMessage{242*s + 300*time.Millisecond, true, 300})
+	spaced := []time.Duration{121*s + 500*time.Millisecond, 120*s + 300*time.Millisecond, 120*s + 300*time.Millisecond}
+	hidden := wgPingTimeline(400*s, rtt, spaced, wgMessage{241*s + 700*time.Millisecond, false, 300}, wgMessage{242*s + 300*time.Millisecond, true, 300})
 	for _, c := range []struct {
 		name  string
 		msgs  []wgMessage
