@@ -140,15 +140,17 @@ LAB_P ?= 4
 # remembered under the hash of LAB_HARNESS_FILES (the non-test Go files
 # under lab/: the harness, its tools, the censor; the harness tests and the
 # helpers they reach, all in lab/harness*_test.go, which
-# TestTheHarnessHashCoversWhatItsTestsReach checks; the image, the seccomp
-# profile, go.mod and go.sum) and the Go, Docker, Docker kernel and Compose
+# TestTheHarnessHashCoversWhatItsTestsReach checks; lab/ip's tests, which
+# TestHarnessAnotherRun… runs in its nodes; the image, the seccomp profile,
+# go.mod and go.sum) and the Go, Docker, Docker kernel and Compose
 # versions, in LAB_HARNESS_CACHE (shared by checkouts: the hash names the
 # content, not the checkout). A run in which a harness test skipped isn't
-# remembered.
+# remembered, nor one during which the hash changed: the run builds the lab
+# binaries from the checkout as it goes.
 LAB_HARNESS_RUN := ^TestHarness
 LAB_HARNESS_CACHE ?= $(HOME)/.cache/thinkpol-lab/harness
 LAB_HARNESS_GOTEST = go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) -run '$(LAB_HARNESS_RUN)' ./lab
-LAB_HARNESS_FILES = $(shell find lab -name '*.go' ! -name '*_test.go' | LC_ALL=C sort) $(sort $(wildcard lab/harness*_test.go)) lab/Dockerfile lab/seccomp.json go.mod go.sum
+LAB_HARNESS_FILES = $(shell find lab -name '*.go' ! -name '*_test.go' | LC_ALL=C sort) $(sort $(wildcard lab/harness*_test.go)) $(sort $(wildcard lab/ip/*_test.go)) lab/Dockerfile lab/seccomp.json go.mod go.sum
 # Hashed from a file, not a pipe: a read that fails inside a pipe fails
 # only the pipe's subshell, and the partial input would still hash.
 LAB_HARNESS_HASH = versions=$$(go version && docker version --format '{{.Server.Version}}' && docker info --format '{{.KernelVersion}}' && docker compose version --short) || exit 1; \
@@ -201,8 +203,12 @@ lab-harness-cached:
 	out=$$(mktemp) || exit 1; trap 'rm -f "$$out" "$$out.status"' EXIT; \
 	{ $(LAB_HARNESS_GOTEST) -v; echo $$? > "$$out.status"; } 2>&1 | tee "$$out"; \
 	[ "$$(cat "$$out.status" 2>/dev/null)" = 0 ] || exit 1; \
-	if grep -q -e '--- SKIP' -e 'no tests to run' "$$out"; then \
+	if grep -E -q -e '^ *--- SKIP: TestHarness' -e '^testing: warning: no tests to run' "$$out"; then \
 		echo "lab-harness: passed, but a harness test skipped: not remembered, the next make lab-test runs it again"; exit 0; \
+	fi; \
+	after=$$($(LAB_HARNESS_HASH)) && [ -n "$$after" ] || { echo "lab-harness: can't hash the harness after the run" >&2; exit 1; }; \
+	if [ "$$after" != "$$hash" ]; then \
+		echo "lab-harness: passed, but the harness changed during the run ($$hash, now $$after): not remembered, the next make lab-test runs it again"; exit 0; \
 	fi; \
 	mkdir -p "$(LAB_HARNESS_CACHE)" && touch "$$stamp"
 

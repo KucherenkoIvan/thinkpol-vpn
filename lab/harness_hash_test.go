@@ -18,6 +18,11 @@ import (
 // under lab/.
 const harnessTestFiles = "harness*_test.go"
 
+// harnessNodePackage is the package whose tests
+// TestHarnessAnotherRunFromTheCheckoutBuildsItsOwnBinaries runs in its
+// nodes: its result depends on them, so the hash covers them too.
+const harnessNodePackage = "lab/ip"
+
 // The harness phase reruns only when its hash changes, so everything a
 // TestHarness test runs must be in a hashed file: a helper elsewhere could
 // change and weaken the test without rerunning it. This follows the
@@ -34,6 +39,9 @@ func TestTheHarnessHashCoversWhatItsTestsReach(t *testing.T) {
 	}
 	if !bytes.Contains(makefile, []byte("$(wildcard lab/"+harnessTestFiles+")")) {
 		t.Fatalf("the Makefile's harness hash doesn't cover lab/%s", harnessTestFiles)
+	}
+	if !bytes.Contains(makefile, []byte("$(wildcard "+harnessNodePackage+"/*_test.go)")) {
+		t.Fatalf("the Makefile's harness hash doesn't cover %s's tests", harnessNodePackage)
 	}
 	unhashed, err := harnessReachesUnhashed(".")
 	if err != nil {
