@@ -243,12 +243,10 @@
 //     handled late), while WireGuard's rekeys under steady use come only
 //     a fraction of a second over 120 s apart (TP-245: 120.3 and 120.6 s
 //     on the trace below, 120.3 and 120.7 s on a loaded lab, where one
-//     step was timed 0.34 s before its handshake). The lab's matrix once
-//     passed reality for want of them: a loaded lab and a step timed
-//     early, or a late answer read as two steps, break the chain. Traffic
-//     that isn't one for one moves it: TCP inside the tunnel, segments
-//     against fewer, delayed acknowledgements, steps the level by its own
-//     amounts, and a rekey under it is missed by this signal.
+//     step was timed 0.34 s before its handshake). Traffic that isn't
+//     one for one moves it: TCP inside the tunnel, segments against
+//     fewer, delayed acknowledgements, steps the level by its own amounts,
+//     and a rekey under it is missed by this signal.
 //   - burst: the same handshake seen whole, as a burst of records each
 //     within 10 ms of the one before, either way, with one record more one
 //     way than the other and at least one each way (a rekey under a ping:
