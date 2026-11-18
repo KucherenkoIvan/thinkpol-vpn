@@ -1294,8 +1294,9 @@ func TestWGRhythmCountsRecords(t *testing.T) {
 }
 
 // TestWGRhythmCountsQuietImbalance: a quiet connection that carries one
-// record nothing answers every 130 s, each acknowledged a second later by
-// a bare TCP segment, steps by one each time: the reading at the
+// record nothing answers every 130 s, of another size each time (no idle
+// run), each acknowledged a second later by a bare TCP segment, steps by
+// one each time: the reading at the
 // acknowledgement finds the move before its hold has passed, and the
 // next packet, the next record's, reads it again before counting that
 // record, so it is flagged at the fourth record (the third step), each
@@ -1303,8 +1304,8 @@ func TestWGRhythmCountsRecords(t *testing.T) {
 func TestWGRhythmCountsQuietImbalance(t *testing.T) {
 	s := time.Second
 	r := newWGRun(t, `{}`, 1400)
-	for at := 10 * s; at < 450*s; at += 130 * s {
-		r.carry([]wireRecord{{at, true, 300}})
+	for i, at := 0, 10*s; at < 450*s; i, at = i+1, at+130*s {
+		r.carry([]wireRecord{{at, true, 300 + 13*i}})
 		r.ack(at+s, false)
 	}
 	a, blocked := r.firstBlocked()
@@ -1571,7 +1572,11 @@ func TestWGRhythmRandomExchanges(t *testing.T) {
 	for _, rtt := range []struct {
 		name string
 		rtt  [2]time.Duration
-	}{{"0.2-5ms", [2]time.Duration{200 * time.Microsecond, 5 * ms}}, {"20-80ms", [2]time.Duration{20 * ms, 80 * ms}}} {
+	}{
+		{"0.2-5ms", [2]time.Duration{200 * time.Microsecond, 5 * ms}},
+		{"20-80ms", [2]time.Duration{20 * ms, 80 * ms}},
+		{"0.3-1.9s", [2]time.Duration{300 * ms, 1900 * ms}},
+	} {
 		for _, shape := range [][2]int{{1, 1}, {2, 3}, {3, 6}} {
 			for _, rate := range []float64{1.0 / 60, 1.0 / 10, 1, 10, 50} {
 				// Under a request a second a run is cheap: more seeds
