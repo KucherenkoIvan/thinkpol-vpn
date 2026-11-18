@@ -179,7 +179,9 @@
 // (180 s), REKEY_TIMEOUT (5 s) and KEEPALIVE_TIMEOUT (10 s), and the
 // persistent keepalive interval wg(8) suggests (25 s), never what a
 // transport was measured to do. Six numbers are the module's own
-// choices, no WireGuard timer: the 2 s an answer has, the 1 s an idle
+// choices, no WireGuard timer: the 2 s an answer has (also how long the
+// record count must stay off its level to have stepped, and how much
+// sooner than a rekey period a count step may come), the 1 s an idle
 // run's intervals may differ by, the three occurrences (rekeys, or idle
 // keepalives once the connection has carried an exchange) it needs, the
 // 300 ms of quiet after which it reads the record count, the 10 ms that
@@ -226,12 +228,24 @@
 //     against the response (the packet that triggered the rekey is
 //     answered, or not, as any data). The module counts each direction's
 //     records and reads their difference whenever the connection has
-//     carried no record for 300 ms. The rhythm shows when the difference
-//     steps by one amount three times in a row, each step (from the first
-//     record after the quiet before it) REKEY_AFTER_TIME to the rekey
-//     window above after the one before, with no other change in
-//     between: under traffic of one record each way per exchange (a
-//     ping, the path probes) the count is flat but for the rekeys. Traffic
+//     carried no record for 300 ms. A difference read off the level is a
+//     step once it has read off the level for 2 s, from the first record
+//     after the quiet before the reading that first found it off: an
+//     answer later than 300 ms but within 2 s leaves the level alone. The
+//     rhythm shows when the difference steps by one amount three times in
+//     a row, each step (timed by that first record) REKEY_AFTER_TIME less
+//     2 s to the rekey window above after the one before, with no other
+//     change in between: under traffic of one record each way per
+//     exchange (a ping, the path probes) the count is flat but for the
+//     rekeys. The 2 s below REKEY_AFTER_TIME are for the step's timing:
+//     its first record can come before the handshake's (a probe or ping
+//     with no 300 ms of quiet before the rekey, records the censor
+//     handled late), while WireGuard's rekeys under steady use come only
+//     a fraction of a second over 120 s apart (TP-245: 120.3 and 120.6 s
+//     on the trace below, 120.3 and 120.7 s on a loaded lab, where one
+//     step was timed 0.34 s before its handshake). The lab's matrix once
+//     passed reality for want of them: a loaded lab and a step timed
+//     early, or a late answer read as two steps, break the chain. Traffic
 //     that isn't one for one moves it: TCP inside the tunnel, segments
 //     against fewer, delayed acknowledgements, steps the level by its own
 //     amounts, and a rekey under it is missed by this signal.
@@ -281,9 +295,10 @@
 //
 // The count and burst signals have blind spots and risks of their own.
 // The count needs 300 ms of quiet to read a level and the level flat
-// between rekeys: where a round trip at the censor takes longer, requests
-// in flight make the level move, and records one way that nothing answers
-// (a server push, cover records) between rekeys break its chain. The
+// between rekeys: where a round trip at the censor takes over 2 s,
+// requests in flight make the level move, and records one way that
+// nothing answers (a server push, cover records) between rekeys break its
+// chain. The
 // burst needs a handshake's records within 10 ms of each other at the
 // censor (the lab's router; a censor beside the initiator sees the
 // response and its confirming keepalive back to back), with nothing else

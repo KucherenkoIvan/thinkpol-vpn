@@ -20,9 +20,9 @@ func init() {
 // REKEY_TIMEOUT and KEEPALIVE_TIMEOUT), and the persistent keepalive
 // interval wg(8) suggests, which thinkpol doesn't set
 // (internal/dataplane/wg). The thresholds below derive from them, but for
-// wgPairWindow, wgSteadyJitter, wgRekeys, wgCountSettle, wgBurstGap,
-// wgBurstMax and the keepalive count: those are the module's choices, no
-// WireGuard timer.
+// wgPairWindow, wgSteadyJitter, wgRekeys, wgCountSettle, wgCountHold,
+// wgCountSlack, wgBurstGap, wgBurstMax and the keepalive count: those are
+// the module's choices, no WireGuard timer.
 const (
 	wgRekeyAfterTime      = 120 * time.Second
 	wgRejectAfterTime     = 180 * time.Second
@@ -67,8 +67,8 @@ const (
 	// either way, for its record count each way to be read as a level: a
 	// choice, longer than a round trip and a WireGuard handshake in the
 	// lab, shorter than the gaps of a ping every 2 s or of thinkpol's path
-	// probes. Where a round trip takes longer, a request in flight makes
-	// the level move and the count signal misses.
+	// probes. Where a round trip takes longer, a request in flight is
+	// read off the level until its answer comes (wgCountHold).
 	wgCountSettle = 300 * time.Millisecond
 	// wgCountHold is how long a difference read off the level must keep
 	// reading the same before it is the level: an answer within
@@ -141,10 +141,12 @@ const (
 //     what triggered it is answered or not as any data), so with traffic
 //     even both ways the difference of the record counts each way, read
 //     whenever the connection carried no record for wgCountSettle, steps
-//     by the same amount at each rekey and stays flat in between. It
-//     shows the rhythm when the difference steps by one amount wgRekeys
-//     times in a row, each step starting a rekey period to the rekey
-//     window after the one before, with no other change in between.
+//     by the same amount at each rekey and stays flat in between. A
+//     difference read off the level is a step once it has stayed off for
+//     wgCountHold, so an answer that comes late is none. It shows the
+//     rhythm when the difference steps by one amount wgRekeys times in a
+//     row, each step starting a rekey period (less wgCountSlack) to the
+//     rekey window after the one before, with no other change in between.
 //   - burst: the same handshake seen whole, as a burst (records each
 //     within wgBurstGap of the one before, either way) with one record
 //     more one way than the other, at least one each way and at most
