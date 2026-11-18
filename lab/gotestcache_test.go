@@ -2,6 +2,7 @@ package lab
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -152,6 +153,51 @@ func TestEntryKeyCoversTheRun(t *testing.T) {
 	}
 }
 
+// The seccomp profile is hashed into the key before the run, but Compose
+// reads it only when the lab starts, after waiting for a slot: a profile
+// changed after the run started, even back to what it was, leaves the run
+// unrecorded, as a changed input does.
+func TestSeccompChangedDuringTheRunIsNotRecorded(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// keyed is written after the key was made, more than the clock
+		// slack before the start; during, in turn, after the start.
+		keyed  string
+		during []string
+	}{
+		{name: "changed", during: []string{"seccomp2"}},
+		{name: "changed and changed back", during: []string{"seccomp2", "seccomp1"}},
+		{name: "changed between the key and the start", keyed: "seccomp2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCacheFixture(t)
+			e := f.entry(t)
+			if tc.keyed != "" {
+				writeFileT(t, filepath.Join(f.root, seccompProfilePath), tc.keyed)
+			}
+			started := time.Now().Add(2*time.Second + time.Millisecond) // the clock slack
+			time.Sleep(time.Until(started))
+			if tc.keyed != "" {
+				started = time.Now().Add(2*time.Second + time.Millisecond)
+				time.Sleep(time.Until(started))
+			}
+			for _, c := range tc.during {
+				writeFileT(t, filepath.Join(f.root, seccompProfilePath), c)
+			}
+			// The run read no file of the checkout's: only the profile is
+			// checked.
+			err := f.cache.record(e, freshRun{testLog: []byte("# test log\n")}, started, TestTally{Passed: 2})
+			if !errors.Is(err, testcache.ErrInputChanged) {
+				t.Fatalf("record: %v, want ErrInputChanged", err)
+			}
+			if f.hit(t) {
+				t.Fatal("hit for a run whose seccomp profile changed under it")
+			}
+		})
+	}
+}
+
 // What decides whether a test skips without the code changing is in the
 // engine's key.
 func TestEngineKeyCoversSkipConditions(t *testing.T) {
@@ -165,6 +211,73 @@ func TestEngineKeyCoversSkipConditions(t *testing.T) {
 		if other == info.key(true) {
 			t.Errorf("%s: same engine key %q", name, other)
 		}
+	}
+}
+
+// The engine's key is read from docker info's JSON (field names as Docker
+// writes them), with br_netfilter looked up on this host only when the
+// engine runs on it, and the probe's exit status read as test -d's.
+func TestEngineInfo(t *testing.T) {
+	info, err := parseEngineInfo(`{"ID":"x","NCPU":8,"MemTotal":1,"Name":"node1","ServerVersion":"29.0.0","KernelVersion":"6.8.0","OperatingSystem":"Debian GNU/Linux 13","Architecture":"x86_64"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := engineInfo{ServerVersion: "29.0.0", KernelVersion: "6.8.0", OperatingSystem: "Debian GNU/Linux 13", Architecture: "x86_64", NCPU: 8, Name: "node1"}
+	if info != want {
+		t.Fatalf("parsed %+v, want %+v", info, want)
+	}
+	if _, err := parseEngineInfo("not json"); err == nil {
+		t.Fatal("parsed docker info that isn't JSON")
+	}
+	for _, tc := range []struct {
+		host, goos string
+		onHost     bool
+	}{
+		{"node1", "linux", true},
+		{"node2", "linux", false},  // a remote engine
+		{"node1", "darwin", false}, // Docker Desktop's VM
+		{"docker-desktop", "darwin", false},
+	} {
+		if got := engineOnThisHost(info, tc.host, tc.goos); got != tc.onHost {
+			t.Errorf("engine on this host (%s, %s): %v, want %v", tc.host, tc.goos, got, tc.onHost)
+		}
+	}
+	failed := errors.New("exit")
+	for _, tc := range []struct {
+		name  string
+		res   Result
+		err   error
+		found bool
+		fails bool
+	}{
+		{"found", Result{}, nil, true, false},
+		{"not found", Result{ExitCode: 1}, failed, false, false},
+		{"probe failed", Result{ExitCode: 125}, failed, false, true},
+	} {
+		found, err := bridgeProbeResult(tc.res, tc.err)
+		if found != tc.found || (err != nil) != tc.fails {
+			t.Errorf("%s: found %v, error %v; want found %v, failing %v", tc.name, found, err, tc.found, tc.fails)
+		}
+	}
+}
+
+// Asking the engine is done once per run, a failure too: every package
+// then runs uncached, saying why, without asking again.
+func TestEngineFailureIsAskedOnce(t *testing.T) {
+	f := newCacheFixture(t)
+	asked := 0
+	f.cache.engine = ""
+	f.cache.askEngine = func(context.Context, image) (string, error) {
+		asked++
+		return "", errors.New("docker info: exit 1: Cannot connect to the Docker daemon")
+	}
+	for range 3 {
+		if _, err := f.cache.entry(t.Context(), f.root, f.p, "pkg.test", f.pkg, f.env, f.args); err == nil || !strings.Contains(err.Error(), "Cannot connect") {
+			t.Fatalf("entry: %v, want the engine's error", err)
+		}
+	}
+	if asked != 1 {
+		t.Fatalf("asked the engine %d times for 3 packages, want once", asked)
 	}
 }
 

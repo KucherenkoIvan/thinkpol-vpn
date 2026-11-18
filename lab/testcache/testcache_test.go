@@ -219,9 +219,11 @@ func TestScratchPathsDontSplitTheInputs(t *testing.T) {
 
 // What changed in the checkout after the run started, the run may or may
 // not have seen: such a run is not recorded, whatever kind of input
-// changed. The lab's binary directory is the run's own and not watched.
-// The fixture's missing inputs are in lab/ and internal/pkg, so a change in
-// testdata or lab/maps is seen through the input itself.
+// changed, nor when a directory above an input changed. The lab's binary
+// directory is the run's own and not watched. The fixture's missing inputs
+// are in lab/ and internal/pkg, so a change in testdata or lab/maps is seen
+// through the input itself; the cases about directories above an input
+// read only lab/conf/v1/c.yaml, so that only its directories can see them.
 func TestInputChangedDuringTheRunIsNotRecorded(t *testing.T) {
 	golden := func(f *fixture) string { return filepath.Join(f.src, "internal/pkg/testdata/a.golden") }
 	maps := func(f *fixture) string { return filepath.Join(f.src, "lab/maps/m0.yaml") }
@@ -305,11 +307,43 @@ func TestInputChangedDuringTheRunIsNotRecorded(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{name: "directory above an input swapped for an old copy", before: func(t *testing.T, f *fixture) {
+			confOnly(t, f, old, "conf", "conf.old")
+		}, during: func(t *testing.T, f *fixture) {
+			if err := os.Rename(filepath.Join(f.src, "lab/conf"), filepath.Join(f.src, "lab/conf.new")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(filepath.Join(f.src, "lab/conf.old"), filepath.Join(f.src, "lab/conf")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "directory symlink above an input re-pointed", before: func(t *testing.T, f *fixture) {
+			confOnly(t, f, old, "conf.a", "conf.b")
+			if err := os.Symlink("conf.a", filepath.Join(f.src, "lab/conf")); err != nil {
+				t.Fatal(err)
+			}
+		}, during: func(t *testing.T, f *fixture) {
+			if err := os.Remove(filepath.Join(f.src, "lab/conf")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("conf.b", filepath.Join(f.src, "lab/conf")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "file added in a directory above an input", before: func(t *testing.T, f *fixture) {
+			confOnly(t, f, old, "conf")
+		}, during: func(t *testing.T, f *fixture) {
+			write(t, filepath.Join(f.src, "lab/new.txt"), "x")
+		}},
 		{name: "lab binary rebuilt", during: func(t *testing.T, f *fixture) {
 			write(t, filepath.Join(f.bin, "thinkpol"), "binary2")
 		}, recorded: true},
-		{name: "file the test never read", during: func(t *testing.T, f *fixture) {
-			write(t, filepath.Join(f.src, "internal/other.txt"), "x")
+		{name: "file the test never read", before: func(t *testing.T, f *fixture) {
+			if err := os.Mkdir(filepath.Join(f.src, "other"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, during: func(t *testing.T, f *fixture) {
+			write(t, filepath.Join(f.src, "other/x.txt"), "x")
 		}, recorded: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -341,6 +375,20 @@ func TestInputChangedDuringTheRunIsNotRecorded(t *testing.T) {
 				t.Fatal("hit for a run whose input changed under it")
 			}
 		})
+	}
+}
+
+// confOnly makes the fixture's test read only lab/conf/v1/c.yaml, and
+// writes it, with old times, under lab/<dir> for each of dirs.
+func confOnly(t *testing.T, f *fixture, old time.Time, dirs ...string) {
+	t.Helper()
+	f.log = []byte("# test log\nopen ../../lab/conf/v1/c.yaml\n")
+	for _, dir := range dirs {
+		name := filepath.Join(f.src, "lab", dir, "v1/c.yaml")
+		write(t, name, "conf")
+		if err := os.Chtimes(name, old, old); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -512,18 +560,18 @@ func TestParseTestLog(t *testing.T) {
 func TestMountResolver(t *testing.T) {
 	r := MountResolver(Mount{Node: "/src", Host: "/h/checkout", Watch: true}, Mount{Node: "/opt/thinkpol/bin", Host: "/h/bin"})
 	type resolved struct {
-		host  string
-		watch bool
+		host, root string
 	}
+	checkout := filepath.FromSlash("/h/checkout")
 	for in, want := range map[string]resolved{
-		"/src":                       {filepath.FromSlash("/h/checkout"), true},
-		"/src/a/b":                   {filepath.FromSlash("/h/checkout/a/b"), true},
+		"/src":                       {checkout, checkout},
+		"/src/a/b":                   {filepath.FromSlash("/h/checkout/a/b"), checkout},
 		"/srcx/a":                    {},
-		"/opt/thinkpol/bin/thinkpol": {filepath.FromSlash("/h/bin/thinkpol"), false},
+		"/opt/thinkpol/bin/thinkpol": {filepath.FromSlash("/h/bin/thinkpol"), ""},
 		"/tmp/x":                     {},
 	} {
-		if host, watch := r(in); host != want.host || watch != want.watch {
-			t.Errorf("%s resolves to %q (watch %v), want %q (watch %v)", in, host, watch, want.host, want.watch)
+		if host, root := r(in); host != want.host || root != want.root {
+			t.Errorf("%s resolves to %q (watch root %q), want %q (watch root %q)", in, host, root, want.host, want.root)
 		}
 	}
 }
