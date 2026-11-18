@@ -15,10 +15,13 @@
 //
 // A pass is not recorded when a watched input (one of the checkout's: a
 // file, a directory, or for a missing one the nearest directory above it
-// that exists) was modified or had its inode changed (mtime or ctime) since
-// the run started: what the run read may not be what is hashed now. The
-// ctime is what an old file copied or moved over an input (cp -p, mv,
-// rsync -t) can't carry back.
+// that exists), or a directory above it up to the checkout's root, was
+// modified or had its inode changed (mtime or ctime) since the run started:
+// what the run read may not be what is hashed now. The ctime is what an old
+// file copied or moved over an input (cp -p, mv, rsync -t) can't carry
+// back; the directories above are what a directory renamed or a directory
+// symlink re-pointed over the input's path changes. A file added or renamed
+// in one of them during the run keeps it from being recorded too.
 //
 // What a test reads without going through package os in the test process
 // (a subprocess, a raw syscall, an exec of an absolute path it never
@@ -97,9 +100,11 @@ type Tally struct {
 // Resolver maps a path in the node to the file on the host it reads, or ""
 // when it is none of the checkout's or the lab's binaries': the image's own
 // files and the node's scratch space (/tmp, /proc, ...), which the action
-// covers or which start fresh in every node. watch says a change to it
-// since the run started keeps the run from being recorded.
-type Resolver func(nodePath string) (hostPath string, watch bool)
+// covers or which start fresh in every node. A non-empty watchRoot is the
+// host directory of the watched mount it is under: a change since the run
+// started to it, or to a directory above it up to watchRoot, keeps the run
+// from being recorded.
+type Resolver func(nodePath string) (hostPath, watchRoot string)
 
 // Store is a directory of records.
 type Store struct {
@@ -187,25 +192,74 @@ func (s Store) Record(action Action, testLog []byte, resolve Resolver, started t
 }
 
 // passKey hashes the action with every input's content. A non-zero since
-// fails it when a watched input changed at or after then.
+// fails it when a watched input, or a directory above it up to its mount,
+// changed at or after then.
 func passKey(actionID string, inputs []string, resolve Resolver, since time.Time) (string, error) {
 	parts := []string{recordVersion, "pass", actionID}
+	checkedDirs := map[string]bool{}
 	for _, in := range inputs {
-		host, watch := resolve(in)
+		host, root := resolve(in)
 		if host == "" {
 			return "", fmt.Errorf("testcache: %s is under no mount", in)
 		}
 		var changedSince time.Time
-		if watch {
+		if root != "" {
 			changedSince = since
 		}
 		h, err := hashInput(host, changedSince)
 		if err != nil {
 			return "", err
 		}
+		if !changedSince.IsZero() {
+			if err := checkDirsUnchanged(host, root, changedSince, checkedDirs); err != nil {
+				return "", err
+			}
+		}
 		parts = append(parts, in, h)
 	}
 	return sum(parts...), nil
+}
+
+// checkDirsUnchanged fails when a directory above hostPath, up to root,
+// changed at or after since: one renamed or re-pointed over the input's path
+// leaves the input's own times old. checked holds the directories already
+// found unchanged, with every directory above them.
+func checkDirsUnchanged(hostPath, root string, since time.Time, checked map[string]bool) error {
+	root = filepath.Clean(root)
+	for dir := filepath.Dir(hostPath); !checked[dir]; dir = filepath.Dir(dir) {
+		if dir != root && !strings.HasPrefix(dir, root+string(filepath.Separator)) {
+			return nil
+		}
+		info, err := os.Stat(dir)
+		switch {
+		case errors.Is(err, fs.ErrNotExist): // above a missing input, or gone: its parent changed
+		case err != nil:
+			return err
+		default:
+			if err := checkUnchanged(dir, info, since); err != nil {
+				return err
+			}
+		}
+		checked[dir] = true
+		if dir == root {
+			return nil
+		}
+	}
+	return nil
+}
+
+// CheckUnchanged fails with ErrInputChanged when hostPath (symlinks
+// followed, and a symlink there itself) was modified or had its inode
+// changed at or after since, as a watched input is checked.
+func CheckUnchanged(hostPath string, since time.Time) error {
+	info, err := os.Stat(hostPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %s", ErrInputChanged, hostPath)
+	}
+	if err != nil {
+		return err
+	}
+	return checkUnchanged(hostPath, info, since)
 }
 
 // hashInput hashes what a test sees at hostPath: a regular file's content, a
@@ -340,15 +394,20 @@ type Mount struct {
 }
 
 // MountResolver resolves the node paths under each mount's node path to the
-// host directory mounted there; everything else is ignored.
+// host directory mounted there, the watch root being that directory on a
+// watched mount; everything else is ignored.
 func MountResolver(mounts ...Mount) Resolver {
-	return func(p string) (string, bool) {
+	return func(p string) (string, string) {
 		for _, m := range mounts {
 			if rel, ok := strings.CutPrefix(p, m.Node); ok && (rel == "" || rel[0] == '/') {
-				return filepath.Join(m.Host, filepath.FromSlash(rel)), m.Watch
+				var root string
+				if m.Watch {
+					root = filepath.Clean(m.Host)
+				}
+				return filepath.Join(m.Host, filepath.FromSlash(rel)), root
 			}
 		}
-		return "", false
+		return "", ""
 	}
 }
 

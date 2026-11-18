@@ -24,8 +24,13 @@ type GoTestCache struct {
 	// how a node is configured changes it.
 	Harness string
 
-	mu     sync.Mutex
-	engine string // once per process
+	// askEngine, when set, stands in for asking Docker for the engine's
+	// key (tests).
+	askEngine func(ctx context.Context, img image) (string, error)
+
+	mu        sync.Mutex
+	engine    string // once per process
+	engineErr error  // asking failed: not asked again
 }
 
 // Records not used for this long go, checked at most once per
@@ -68,6 +73,9 @@ func newGoTestCache(w io.Writer, storeDir, executable func() (string, error)) *G
 type goTestEntry struct {
 	action  testcache.Action
 	resolve testcache.Resolver
+	// The seccomp profile, hashed into the action before the run; Compose
+	// reads it only when the lab starts, which can be minutes later.
+	seccompPath, seccompHash string
 }
 
 // entry is the key of running the test binary name, in p's binary
@@ -79,7 +87,8 @@ func (c *GoTestCache) entry(ctx context.Context, root string, p preparedRun, nam
 	if err != nil {
 		return nil, err
 	}
-	seccomp, err := testcache.HashFile(filepath.Join(root, seccompProfilePath))
+	seccompPath := filepath.Join(root, seccompProfilePath)
+	seccomp, err := testcache.HashFile(seccompPath)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +111,8 @@ func (c *GoTestCache) entry(ctx context.Context, root string, p preparedRun, nam
 			testcache.Mount{Node: SrcDir, Host: root, Watch: true},
 			testcache.Mount{Node: BinDir, Host: p.bin.path},
 		),
+		seccompPath: seccompPath,
+		seccompHash: seccomp,
 	}, nil
 }
 
@@ -114,13 +125,22 @@ type freshRun struct {
 
 // record stores run as a pass of entry, if it is one. A run whose tests
 // failed or whose lab failed is never recorded (nil: nothing to record),
-// nor one whose test log couldn't be read back (an error).
+// nor one whose test log couldn't be read back, or whose seccomp profile
+// changed since it started, as its inputs are checked (an error).
 func (c *GoTestCache) record(entry *goTestEntry, run freshRun, started time.Time, t TestTally) error {
 	if run.labErr != nil || run.testErr != nil {
 		return nil
 	}
 	if run.logErr != nil {
 		return run.logErr
+	}
+	if err := testcache.CheckUnchanged(entry.seccompPath, started); err != nil {
+		return err
+	}
+	if h, err := testcache.HashFile(entry.seccompPath); err != nil {
+		return err
+	} else if h != entry.seccompHash {
+		return fmt.Errorf("%w: %s", testcache.ErrInputChanged, entry.seccompPath)
 	}
 	return c.Store.Record(entry.action, run.testLog, entry.resolve, started, testcache.Tally{Passed: t.Passed, Skipped: t.Skipped})
 }
@@ -142,27 +162,51 @@ func (e engineInfo) key(bridgeNetfilter bool) string {
 		e.ServerVersion, e.KernelVersion, e.OperatingSystem, e.Architecture, e.NCPU, bridgeNetfilter)
 }
 
-// engineKey returns the Docker engine's key, asking Docker once per process.
+// engineKey returns the Docker engine's key, asking Docker once per
+// process: a failure too is kept, so the packages after it run uncached
+// without each asking again (a probe container start per package).
 func (c *GoTestCache) engineKey(ctx context.Context, img image) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.engine != "" {
-		return c.engine, nil
+	if c.engine != "" || c.engineErr != nil {
+		return c.engine, c.engineErr
 	}
+	ask := c.askEngine
+	if ask == nil {
+		ask = askDockerEngine
+	}
+	key, err := ask(ctx, img)
+	if err != nil {
+		c.engineErr = fmt.Errorf("docker engine unknown, not asked again this run: %w", err)
+		return "", c.engineErr
+	}
+	c.engine = key
+	return c.engine, nil
+}
+
+func askDockerEngine(ctx context.Context, img image) (string, error) {
 	res, err := docker(ctx, "info", "--format", "{{json .}}")
 	if err != nil {
 		return "", err
 	}
-	var info engineInfo
-	if err := json.Unmarshal([]byte(res.Stdout), &info); err != nil {
-		return "", fmt.Errorf("lab: docker info: %w", err)
+	info, err := parseEngineInfo(res.Stdout)
+	if err != nil {
+		return "", err
 	}
 	bridge, err := bridgeNetfilter(ctx, info, img)
 	if err != nil {
 		return "", err
 	}
-	c.engine = info.key(bridge)
-	return c.engine, nil
+	return info.key(bridge), nil
+}
+
+// parseEngineInfo reads docker info's JSON.
+func parseEngineInfo(js string) (engineInfo, error) {
+	var info engineInfo
+	if err := json.Unmarshal([]byte(js), &info); err != nil {
+		return engineInfo{}, fmt.Errorf("lab: docker info: %w", err)
+	}
+	return info, nil
 }
 
 // bridgeNetfilter says whether the engine's kernel has br_netfilter, as a
@@ -170,11 +214,22 @@ func (c *GoTestCache) engineKey(ctx context.Context, img image) (string, error) 
 // engine runs on it, else in a container of the lab image (Docker
 // Desktop's VM), which is one container start per process.
 func bridgeNetfilter(ctx context.Context, info engineInfo, img image) (bool, error) {
-	if host, err := os.Hostname(); err == nil && runtime.GOOS == "linux" && host == info.Name {
+	if host, err := os.Hostname(); err == nil && engineOnThisHost(info, host, runtime.GOOS) {
 		_, err := os.Stat("/proc/sys/net/bridge")
 		return err == nil, nil
 	}
 	res, err := docker(ctx, "run", "--rm", "--network", "none", "--platform", img.platform, "--entrypoint", "test", img.ref, "-d", "/proc/sys/net/bridge")
+	return bridgeProbeResult(res, err)
+}
+
+// engineOnThisHost says whether the engine runs on this host, whose
+// kernel its nodes then share.
+func engineOnThisHost(info engineInfo, hostname, goos string) bool {
+	return goos == "linux" && hostname == info.Name
+}
+
+// bridgeProbeResult reads the probe's `test -d`: exit 0 found, 1 not.
+func bridgeProbeResult(res Result, err error) (bool, error) {
 	switch {
 	case err == nil:
 		return true, nil
