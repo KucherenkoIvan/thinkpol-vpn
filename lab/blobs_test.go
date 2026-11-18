@@ -30,7 +30,8 @@ const listSource = "5.3.0.0,5.3.255.255,RU\n" +
 // device rejects it and fetches the list from server-1, whose worker holds
 // it from the seed in server-1's state directory, then keeps it in its own
 // state directory. A tampered copy there is rejected at the next start and
-// fetched again.
+// fetched again. Its node logs "blob fetched" only once the blob is
+// stored, so the file is read right after the line.
 func TestBlobDistribution(t *testing.T) {
 	t.Parallel()
 	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Server2, lab.Internet))
@@ -131,10 +132,9 @@ EOF`)
 	upA = startUp(t, devA)
 	waitLog(t, upA, `msg="stored blob rejected: it doesn't match the map; fetching it again" .*blob=\S+ kind=geoip name=ru`)
 	waitLog(t, upA, `msg="blob fetched" .*blob=\S+ kind=geoip name=ru`)
-	lab.Eventually(t, 30*time.Second, func() error {
-		_, err := execRead(devA, pollTimeout, "sh", "-c", "sha256sum "+blobFile+" | grep -q ^"+hex.EncodeToString(sum[:]))
-		return err
-	})
+	if got := devA.MustExec(t, "sha256sum", blobFile); !strings.HasPrefix(got, hex.EncodeToString(sum[:])) {
+		t.Fatalf("device-a keeps %q after fetching it again", got)
+	}
 	t.Run("the blob port answers only peers through the tunnel", func(t *testing.T) {
 		m := regexp.MustCompile(`ipv6-network: "([^"]+)"`).FindSubmatch(file("keys/space.key"))
 		if m == nil {
