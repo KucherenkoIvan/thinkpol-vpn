@@ -44,10 +44,10 @@ BUF_BREAKING_AGAINST ?= rewrite
 # cgo is off unless a target turns it on (test-race).
 export CGO_ENABLED := 0
 
-.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-perf lab-gotest lab-down lab-seccomp lab-seccomp-check
+.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-test-default lab-test-long lab-streams lab-perf lab-gotest lab-down lab-seccomp lab-seccomp-check
 
 help: ## list targets
-	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
+	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-17s %s\n", $$1, $$2}'
 
 build: ## build bin/thinkpol for this machine
 	go build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/thinkpol ./cmd/thinkpol
@@ -130,35 +130,76 @@ LABCTL := go run ./lab/labctl
 LAB_TIMEOUT ?= 60m
 # Packages make lab-test runs in nodes at once. Fixed, not scaled by load:
 # tests must hold up under other runs' load anyway (lab/README.md). The
-# lab/ test phase and this phase run at the same time and draw from the
-# same lab slot cap.
+# lab/ test phase, this phase and the long stream run at the same time and
+# draw from the same lab slot cap.
 LAB_P ?= 4
+# The default stream's budget: wall time from the stream's start, lab
+# setup included (lab/README.md, "Streams"). A slower machine sets its own
+# in its environment.
+LAB_BUDGET ?= 15m
+# The lab/ tests the long stream runs: the censor matrix, whose held cells
+# are the long stream's (lab.StreamEnv; lab/README.md, "Streams").
+LAB_LONG_TESTS := ^TestCensorMatrix$$
 
 lab: lab-test ## the lab suite, ending in the censor matrix (lab/RESULTS.md)
 
 lab-up: ## start the standard topology for this checkout, for poking around
 	$(LABCTL) up
 
-lab-test: ## lab tests (each starts its own lab) and every package's tests inside a lab node, at once; tears down after (COUNT=n: node phase repeated, uncached)
-# Each phase writes its own exit status: sh has no pipefail. Both phases
-# share one run id (THINKPOL_LAB_RUN, in their labs' names), and the
-# clean-up removes that run's labs only: another run's from this checkout
-# (a lab-gotest beside it, another lab-test) stay.
-	@$(LABCTL) down -stale
-	@run=$$($(LABCTL) run-id) || exit 1; export THINKPOL_LAB_RUN=$$run; \
+lab-test: ## both streams at once, then tear down: the default stream (lab tests and every package's tests in a lab node, under LAB_BUDGET) and the long stream (COUNT=n: node phase repeated, uncached)
+	@$(MAKE) --no-print-directory lab-streams LAB_STREAMS='default long'
+
+lab-test-default: ## the default stream alone, under LAB_BUDGET (RESULTS.md needs both streams: make lab-test)
+	@$(MAKE) --no-print-directory lab-streams LAB_STREAMS=default
+
+lab-test-long: ## the long stream alone: the lab tests that wait minutes on real timers
+	@$(MAKE) --no-print-directory lab-streams LAB_STREAMS=long
+
+# lab-streams runs LAB_STREAMS (default, long or both) at once. Each phase
+# writes its own exit status: sh has no pipefail. Every phase shares one
+# run id (THINKPOL_LAB_RUN, in their labs' names), and the clean-up
+# removes that run's labs only: another run's from this checkout (a
+# lab-gotest beside it, another lab-test) stay. The lab/ phases run go test
+# -json through labctl testjson, which prints what go test would have
+# without it and keeps each test's time for the budget's report. RESULTS.md
+# is assembled from both streams' shares of the censor matrix once both
+# have ended, and a share missing fails the run.
+lab-streams:
+	@start=$$(date +%s); \
 	tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
-	status=0; \
-	( { go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) ./lab/...; echo $$? > "$$tmp/lab.status"; } 2>&1 | awk '{print "[lab]  " $$0; fflush()}' ) & \
-	( { $(LABCTL) gotest -p $(LAB_P) $(if $(COUNT),-count $(COUNT)) ./...; echo $$? > "$$tmp/node.status"; } 2>&1 | awk '{print "[node] " $$0; fflush()}' ) & \
+	labctl=$$tmp/labctl; go build -o "$$labctl" ./lab/labctl || exit 1; \
+	"$$labctl" down -stale || exit 1; \
+	run=$$("$$labctl" run-id) || exit 1; export THINKPOL_LAB_RUN=$$run THINKPOL_LAB_RESULTS_DIR=$$tmp; \
+	phases=; status=0; \
+	case " $(LAB_STREAMS) " in *" default "*) \
+		( { THINKPOL_LAB_STREAM=default go test -tags lab -json -count=1 -timeout $(LAB_TIMEOUT) ./lab/... 2>&1; echo $$? > "$$tmp/lab.status"; } | "$$labctl" testjson -times "$$tmp/lab.times" 2>&1 | awk '{print "[lab]  " $$0; fflush()}' ) & lab=$$!; \
+		( { "$$labctl" gotest -p $(LAB_P) -times "$$tmp/node.times" $(if $(COUNT),-count $(COUNT)) ./...; echo $$? > "$$tmp/node.status"; } 2>&1 | awk '{print "[node] " $$0; fflush()}' ) & node=$$!; \
+		phases="lab node";; \
+	esac; \
+	case " $(LAB_STREAMS) " in *" long "*) \
+		( { THINKPOL_LAB_STREAM=long go test -tags lab -json -count=1 -timeout $(LAB_TIMEOUT) -run '$(LAB_LONG_TESTS)' ./lab 2>&1; echo $$? > "$$tmp/long.status"; } | "$$labctl" testjson -times "$$tmp/long.times" 2>&1 | awk '{print "[long] " $$0; fflush()}' ) & \
+		phases="$$phases long";; \
+	esac; \
+	case "$$phases" in lab*) \
+		wait $$lab $$node; \
+		"$$labctl" budget -stream default -since $$start -budget $(LAB_BUDGET) "$$tmp/lab.times" "$$tmp/node.times" || status=1;; \
+	esac; \
 	wait; \
-	for f in lab node; do \
+	case "$$phases" in *long) "$$labctl" budget -stream long -since $$start "$$tmp/long.times" || status=1;; esac; \
+	for f in $$phases; do \
 		if [ -f "$$tmp/$$f.status" ]; then \
 			s=$$(cat "$$tmp/$$f.status"); [ "$$s" -eq 0 ] || status=1; \
 		else \
 			echo "lab-test: the $$f phase died without a status" >&2; status=1; \
 		fi; \
 	done; \
-	if [ -z "$$THINKPOL_LAB_KEEP" ] && ! $(LABCTL) down -run "$$run"; then status=1; fi; \
+	case "$$phases" in "lab node long") \
+		THINKPOL_LAB_STREAM= go test -tags lab -count=1 -run '^TestAssembleCensorMatrix$$' ./lab > "$$tmp/assemble.out" 2>&1 \
+			&& echo "lab-test: lab/RESULTS.md assembled from both streams" \
+			|| { cat "$$tmp/assemble.out"; echo "lab-test: lab/RESULTS.md not assembled" >&2; status=1; };; \
+	*) echo "lab-test: lab/RESULTS.md not written: the censor matrix needs both streams (make lab-test)";; \
+	esac; \
+	if [ -z "$$THINKPOL_LAB_KEEP" ] && ! "$$labctl" down -run "$$run"; then status=1; fi; \
 	exit $$status
 
 # Performance gates: tests that check THINKPOL_LAB_PERF and are named
@@ -169,10 +210,16 @@ LAB_PERF_RUN ?= Throughput$$
 lab-perf: ## performance gates, alone on the host: waits for every other lab run, then measures (THINKPOL_LAB_PERF=1)
 	$(LABCTL) gotest -perf -v -p 1 -run '$(LAB_PERF_RUN)' $(LAB_PERF_PKGS)
 
+# lab-gotest's test binaries' -timeout: LAB_TIMEOUT when the environment
+# or the command line sets it; otherwise 60m with COUNT=n, and labctl's
+# defaults without (lab.DefaultTestTimeout in a node, 60m on the host).
+LAB_GOTEST_TIMEOUT = $(if $(filter file,$(origin LAB_TIMEOUT)),$(if $(COUNT),60m),$(LAB_TIMEOUT))
+
 lab-gotest: export LAB_RUN = $(RUN)
-lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1, its lab-tagged tests on the host; fails if all skip (PKG=./internal/... required, RUN=regexp COUNT=n)
+lab-gotest: export LAB_SKIP = $(SKIP)
+lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1, its lab-tagged tests on the host; fails if all skip (PKG=./internal/... required, RUN=regexp SKIP=regexp COUNT=n LAB_TIMEOUT=d)
 	$(if $(PKG),,$(error lab-gotest needs PKG, e.g. PKG=./internal/dataplane/netcfg/...; make lab-test runs every package))
-	$(LABCTL) gotest -v -tagged -fail-skipped -run "$$LAB_RUN" $(if $(COUNT),-count $(COUNT) -timeout 60m) $(PKG)
+	$(LABCTL) gotest -v -tagged -fail-skipped -run "$$LAB_RUN" -skip "$$LAB_SKIP" $(if $(COUNT),-count $(COUNT)) $(if $(LAB_GOTEST_TIMEOUT),-timeout $(LAB_GOTEST_TIMEOUT)) $(PKG)
 
 lab-seccomp: ## regenerate lab/seccomp.json from the moby/profiles/seccomp lab/seccompgen pins (needs the network once)
 	cd lab/seccompgen && go run . -o ../seccomp.json

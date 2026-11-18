@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -27,9 +28,13 @@ const usage = `usage: labctl <command>
                                       only the labs tests started; -run: only those the run id
                                       started; -stale: instead, every lab whose checkout is gone,
                                       and no binaries)
-  gotest [-v] [-run re] [-count n] [-timeout d] [-p n] [-perf] [-tagged] [-fail-skipped] pkgs...
+  gotest [-v] [-run re] [-skip re] [-count n] [-timeout d] [-p n] [-perf] [-tagged] [-fail-skipped]
+         [-times file] pkgs...
                                       run each package's tests in a fresh lab node with THINKPOL_LAB=1
-                                      (-count, -timeout: the test binary's; repeat runs for stability)
+                                      (-run, -skip, -count, -timeout: the test binary's; -count repeats
+                                      runs for stability)
+                                      (-times: write how long each package took, lab setup included,
+                                      for labctl budget)
                                       (-perf: alone on the host, with THINKPOL_LAB_PERF=1: make lab-perf)
                                       (-tagged: then run packages with lab-tagged tests on the host,
                                       go test -tags lab, as make lab-test's lab phase does)
@@ -40,6 +45,12 @@ const usage = `usage: labctl <command>
                                       every package and record nothing)
   project                             print this checkout's project prefix
   run-id                              print a fresh run id, for ` + lab.RunEnv + `
+  testjson -times file                read go test -json on stdin, print what go test without -v would
+                                      have, write how long each test took to file
+  budget -stream name -since unix [-budget d] [-top n] files...
+                                      say how long a stream has taken since its start (unix seconds)
+                                      and, with -budget, fail when it took longer, listing the slowest
+                                      tests in the -times files (make lab-test's LAB_BUDGET)
 `
 
 func main() {
@@ -70,6 +81,10 @@ func run(ctx context.Context, args []string) error {
 		return down(ctx, root, args[1:])
 	case "gotest":
 		return runGotest(ctx, root, args[1:])
+	case "testjson":
+		return testJSON(os.Stdin, os.Stdout, args[1:])
+	case "budget":
+		return budget(os.Stdout, time.Now(), args[1:])
 	case "project":
 		checkout, err := lab.CheckoutProject(root)
 		if err != nil {
@@ -140,6 +155,7 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 	defer func() { err = errors.Join(err, lab.RemoveRunBinaries(context.WithoutCancel(ctx))) }()
 	fs := flag.NewFlagSet("gotest", flag.ContinueOnError)
 	runRe := fs.String("run", "", "run only tests matching the regexp")
+	skipRe := fs.String("skip", "", "skip tests matching the regexp")
 	count := fs.Int("count", 0, "run each test n times (the test binary's -test.count)")
 	timeout := fs.String("timeout", "", "the test binary's -test.timeout (default "+lab.DefaultTestTimeout+" in a node, "+lab.DefaultLabTestTimeout+" on the host with -tagged)")
 	verbose := fs.Bool("v", false, "verbose test output")
@@ -147,10 +163,15 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 	perf := fs.Bool("perf", false, "a perf run: wait until no other lab runs, keep others from starting, set "+lab.PerfEnv+"=1")
 	tagged := fs.Bool("tagged", false, "also run packages with lab-tagged tests on the host (go test -tags lab)")
 	failSkipped := fs.Bool("fail-skipped", false, "fail a package whose tests all skipped, and a run in which no test ran (implies -v)")
+	times := fs.String("times", "", "write how long each package took to this file (labctl budget)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Minute)
+	runFor, err := gotestRunFor(*timeout)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, runFor)
 	defer cancel()
 	var env []string
 	if *perf {
@@ -169,17 +190,35 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 	if *runRe != "" {
 		testArgs = append(testArgs, "-test.run", *runRe)
 	}
+	if *skipRe != "" {
+		testArgs = append(testArgs, "-test.skip", *skipRe)
+	}
 	if *count > 0 {
 		testArgs = append(testArgs, fmt.Sprintf("-test.count=%d", *count))
 	}
 	if *timeout != "" {
 		testArgs = append(testArgs, "-test.timeout="+*timeout)
 	}
-	opt := gotestOptions{parallel: *parallel, tagged: *tagged, failSkipped: *failSkipped}
+	opt := gotestOptions{parallel: *parallel, tagged: *tagged, failSkipped: *failSkipped, times: *times}
 	if useCache(*count, *perf) {
 		opt.cache = lab.NewGoTestCache(os.Stdout)
 	}
 	return gotest(ctx, root, opt, env, testArgs, fs.Args())
+}
+
+// gotestRunFor bounds a whole gotest run: an hour, or longer when the
+// test binaries' own -timeout asks for more (make lab-gotest's LAB_TIMEOUT),
+// so the run's bound never cuts a test short of its own.
+func gotestRunFor(timeout string) (time.Duration, error) {
+	const atLeast, beyondTests = 60 * time.Minute, 15 * time.Minute
+	if timeout == "" {
+		return atLeast, nil
+	}
+	d, err := time.ParseDuration(timeout)
+	if err != nil {
+		return 0, fmt.Errorf("gotest: -timeout: %w", err)
+	}
+	return max(atLeast, d+beyondTests), nil
 }
 
 // useCache says whether a gotest run may serve packages from the results
@@ -224,6 +263,7 @@ func up(ctx context.Context, root string) error {
 type gotestOptions struct {
 	parallel            int
 	tagged, failSkipped bool
+	times               string           // the file to write each package's time to; "": none
 	cache               *lab.GoTestCache // nil: run every package
 }
 
@@ -262,7 +302,68 @@ func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patt
 		}
 		results = append(results, res)
 	}
+	if opt.times != "" {
+		var times []lab.TestTime
+		for _, r := range results {
+			if !r.Cached {
+				times = append(times, lab.TestTime{Name: r.ImportPath, Elapsed: r.Elapsed})
+			}
+		}
+		if err := lab.WriteTestTimes(opt.times, times); err != nil {
+			return errors.Join(gotestVerdict(results, opt.failSkipped), err)
+		}
+	}
 	return gotestVerdict(results, opt.failSkipped)
+}
+
+// testJSON filters go test -json from r into what go test would have
+// printed without -v, and writes each test's time to -times.
+func testJSON(r io.Reader, w io.Writer, args []string) error {
+	fs := flag.NewFlagSet("testjson", flag.ContinueOnError)
+	times := fs.String("times", "", "write how long each test took to this file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *times == "" || fs.NArg() > 0 {
+		return errors.New("testjson: want -times file and no arguments")
+	}
+	got, err := lab.FilterTestJSON(r, w)
+	// Whatever was read is written: a time file missing makes the budget's
+	// report miss tests, not pass.
+	return errors.Join(err, lab.WriteTestTimes(*times, got))
+}
+
+// budget reports how long a stream took, from its start to now, and fails
+// it when that is over its budget.
+func budget(w io.Writer, now time.Time, args []string) error {
+	fs := flag.NewFlagSet("budget", flag.ContinueOnError)
+	stream := fs.String("stream", "", "the stream's name, for the report")
+	since := fs.Int64("since", 0, "the stream's start, in unix seconds")
+	limit := fs.Duration("budget", 0, "fail when the stream took longer (0: only report)")
+	top := fs.Int("top", 10, "slowest tests listed when over budget")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *stream == "" || *since <= 0 {
+		return errors.New("budget: want -stream and -since")
+	}
+	var times []lab.TestTime
+	var errs []error
+	for _, f := range fs.Args() {
+		t, err := lab.ReadTestTimes(f)
+		if err != nil {
+			// A phase that died writes none: its stream fails on its own
+			// status, and the report says what it is missing.
+			errs = append(errs, err)
+			continue
+		}
+		times = append(times, t...)
+	}
+	err := lab.CheckBudget(w, *stream, now.Sub(time.Unix(*since, 0)), *limit, times, *top)
+	if err != nil && len(errs) > 0 {
+		err = errors.Join(err, fmt.Errorf("budget: the report misses tests: %w", errors.Join(errs...)))
+	}
+	return err
 }
 
 // gotestVerdict is the run's outcome: the packages that failed and, with
