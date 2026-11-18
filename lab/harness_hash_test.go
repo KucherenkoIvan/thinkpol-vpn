@@ -23,10 +23,10 @@ const harnessTestFiles = "harness*_test.go"
 // change and weaken the test without rerunning it. This follows the
 // declarations the TestHarness tests, TestMain and test files' init
 // functions name, through package lab and its external tests, and fails on
-// any declared in a test file the hash leaves out. It over-approximates
-// (a method is matched by name alone, a local shadowing a package-level
-// name counts as that name): a false hit moves a declaration into a
-// hashed file, which only reruns the harness more often.
+// any declared in a test file the hash leaves out. A type reached brings
+// all its methods, wherever declared. It over-approximates (a local
+// shadowing a package-level name counts as that name): a false hit moves a
+// declaration into a hashed file, which only reruns the harness more often.
 func TestTheHarnessHashCoversWhatItsTestsReach(t *testing.T) {
 	makefile, err := os.ReadFile("../Makefile")
 	if err != nil {
@@ -44,8 +44,8 @@ func TestTheHarnessHashCoversWhatItsTestsReach(t *testing.T) {
 	}
 }
 
-// declKey names a package-level declaration of package pkg: a method as
-// "." plus its name.
+// declKey names a package-level declaration of package pkg; a method is
+// filed under its receiver's type.
 type declKey struct{ pkg, name string }
 
 // harnessReachesUnhashed lists the declarations in dir's test files outside
@@ -75,7 +75,7 @@ func harnessReachesUnhashed(dir string) ([]string, error) {
 			switch d := d.(type) {
 			case *ast.FuncDecl:
 				if d.Recv != nil {
-					add("."+d.Name.Name, d)
+					add(receiverType(d.Recv.List[0].Type), d)
 					continue
 				}
 				add(d.Name.Name, d)
@@ -117,7 +117,11 @@ func harnessReachesUnhashed(dir string) ([]string, error) {
 		}
 		for _, d := range decls[k] {
 			if hashed, _ := filepath.Match(harnessTestFiles, d.file); strings.HasSuffix(d.file, "_test.go") && !hashed {
-				unhashed = append(unhashed, fmt.Sprintf("%s (%s) is reached by %s", strings.TrimPrefix(k.name, "."), d.file, harnessPath(from, k)))
+				name := k.name
+				if f, ok := d.node.(*ast.FuncDecl); ok && f.Recv != nil {
+					name += "." + f.Name.Name
+				}
+				unhashed = append(unhashed, fmt.Sprintf("%s (%s) is reached by %s", name, d.file, harnessPath(from, k)))
 			}
 			var inspect func(n ast.Node) bool
 			inspect = func(n ast.Node) bool {
@@ -127,10 +131,7 @@ func harnessReachesUnhashed(dir string) ([]string, error) {
 						reach(declKey{"lab", n.Sel.Name})
 						return false
 					}
-					reach(declKey{k.pkg, "." + n.Sel.Name})
-					if k.pkg == "lab_test" {
-						reach(declKey{"lab", "." + n.Sel.Name})
-					}
+					// A method or field: reached with its type.
 					ast.Inspect(n.X, inspect)
 					return false
 				case *ast.Ident:
@@ -150,15 +151,35 @@ func harnessReachesUnhashed(dir string) ([]string, error) {
 
 // harnessPath is the chain of declarations from a root to k.
 func harnessPath(from map[declKey]declKey, k declKey) string {
-	chain := []string{strings.TrimPrefix(k.name, ".")}
+	chain := []string{k.name}
 	for {
 		p, ok := from[k]
 		if !ok {
 			break
 		}
-		chain = append(chain, strings.TrimPrefix(p.name, "."))
+		chain = append(chain, p.name)
 		k = p
 	}
 	slices.Reverse(chain)
 	return strings.Join(chain, " → ")
+}
+
+// receiverType is the name of a method receiver's type: T of T, *T, T[P].
+func receiverType(e ast.Expr) string {
+	for {
+		switch x := e.(type) {
+		case *ast.StarExpr:
+			e = x.X
+		case *ast.IndexExpr:
+			e = x.X
+		case *ast.IndexListExpr:
+			e = x.X
+		case *ast.ParenExpr:
+			e = x.X
+		case *ast.Ident:
+			return x.Name
+		default:
+			return ""
+		}
+	}
 }
