@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/bits"
+	"net/netip"
+	"time"
 )
 
 func init() {
@@ -15,13 +17,44 @@ func init() {
 // encrypted traffic (Wu et al., "How the Great Firewall of China Detects
 // and Blocks Fully Encrypted Traffic", USENIX Security 2023): the first
 // data a connection's client sends is blocked unless one of five
-// exemptions says it isn't random-looking. Wu et al. saw it on TCP; the
-// lab applies it to UDP's first datagram too.
+// exemptions says it isn't random-looking, and then, as residual
+// censorship, every packet its client sends to the server's address and
+// port for a while. Wu et al. saw it on TCP; the lab applies it to UDP's
+// first datagram too.
 type fullyEncrypted struct {
 	block blocking
 	// tagOnly: tag what it would block and let it through, for an active
 	// module (the prober) to judge.
 	tagOnly bool
+	// residual holds the 3-tuples blocked connections left blocked.
+	residual map[residualKey]residualBlock
+	// exempt holds the client flows an exemption passed, which the module
+	// keeps seeing for residual censorship. Keyed by the Flow itself: a
+	// connection that starts over on the same ports is judged afresh.
+	exempt map[*Flow]bool
+}
+
+// residualCensorship is how long a blocked connection's 3-tuple stays
+// blocked: Wu et al. (section 4.4) saw 120 or 180 seconds, the timer not
+// reset by the packets it drops.
+const residualCensorship = 180 * time.Second
+
+// residualKey is Wu et al.'s 3-tuple, the client's address and the
+// server's address and port, per protocol: the lab judges UDP too.
+type residualKey struct {
+	proto  Proto
+	client netip.Addr
+	server netip.AddrPort
+}
+
+func residualKeyOf(k FlowKey) residualKey {
+	return residualKey{proto: k.Proto, client: k.Src, server: netip.AddrPortFrom(k.Dst, k.DstPort)}
+}
+
+type residualBlock struct {
+	until time.Time
+	// why names the connection blocked and why.
+	why string
 }
 
 // newFullyEncrypted builds the module from its settings:
@@ -41,14 +74,26 @@ func newFullyEncrypted(settings json.RawMessage) (Passive, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &fullyEncrypted{block: b, tagOnly: s.TagOnly}, nil
+	return &fullyEncrypted{block: b, tagOnly: s.TagOnly, residual: map[residualKey]residualBlock{}, exempt: map[*Flow]bool{}}, nil
 }
 
 func (m *fullyEncrypted) Name() string { return "fully-encrypted" }
 
+// Inspect judges a client flow's first data once, and drops its packets
+// while a blocked connection's 3-tuple is under residual censorship: a
+// connection that opens on it (its SYN, its first datagram) and one an
+// exemption passed earlier alike, as the Great Firewall drops every
+// packet of the 3-tuple. A tagging module blocks nothing, so it leaves no
+// residual censorship either.
 func (m *fullyEncrypted) Inspect(_ *Packet, f *Flow) Decision {
 	if !f.Initiator() {
 		return retired
+	}
+	if d, ok := m.residualDrop(f); ok {
+		return d
+	}
+	if m.exempt[f] {
+		return Decision{Verdict: Accept}
 	}
 	first := f.Payload()
 	if len(first) == 0 {
@@ -56,7 +101,11 @@ func (m *fullyEncrypted) Inspect(_ *Packet, f *Flow) Decision {
 	}
 	why := looksFullyEncrypted(first)
 	if why == "" {
-		return retired
+		if m.tagOnly {
+			return retired
+		}
+		m.exempt[f] = true
+		return Decision{Verdict: Accept}
 	}
 	tag := "fully encrypted: " + why
 	if m.tagOnly {
@@ -64,7 +113,29 @@ func (m *fullyEncrypted) Inspect(_ *Packet, f *Flow) Decision {
 	}
 	d := m.block.decide(tag)
 	d.Tag = tag
+	m.residual[residualKeyOf(f.Key)] = residualBlock{
+		until: f.Last.Add(residualCensorship),
+		why:   fmt.Sprintf("%s was blocked (%s)", f.Key, tag),
+	}
 	return d
+}
+
+// residualDrop is the blocking decision for a packet of a client flow
+// whose 3-tuple is under residual censorship, not pinned: once the time
+// is up the flow is judged as any other. f.Last is the engine's clock at
+// the packet, but for one with a bad checksum, which its receiver
+// discards anyway.
+func (m *fullyEncrypted) residualDrop(f *Flow) (Decision, bool) {
+	k := residualKeyOf(f.Key)
+	b, ok := m.residual[k]
+	if !ok {
+		return Decision{}, false
+	}
+	if !f.Last.Before(b.until) {
+		delete(m.residual, k)
+		return Decision{}, false
+	}
+	return m.block.decidePacket(fmt.Sprintf("residual censorship for %v: %s", residualCensorship, b.why)), true
 }
 
 // Wu et al.'s thresholds: random bytes average 4 set bits per byte.

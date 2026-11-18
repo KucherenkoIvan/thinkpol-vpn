@@ -75,14 +75,6 @@ func TestCensorMatrix(t *testing.T) {
 			}
 			record(*cell)
 		})
-		// DEBUG TP-236: the verdict log, summaries included (censord has
-		// stopped by now).
-		if tr.name == rowUDP && cc.name == "fully-encrypted" {
-			t.Cleanup(func() {
-				out, err := execRead(row.lab.Node(lab.Router), pollTimeout, "cat", censorLogPath)
-				t.Logf("DEBUG TP-236 verdict log (%v):\n%s", err, out)
-			})
-		}
 
 		l := row.lab
 		target, err := tr.setup(t, l)
@@ -735,11 +727,15 @@ var censorCases = []censorCase{
 	// idle tell (TP-223's Notes).
 	rhythmCase("wireguard-rhythm", false),
 	// M2 gate checks (docs/design/milestones.md). Wu et al.'s exemptions
-	// on each connection's first data, UDP's first datagram too: thinkpol's
-	// udp sends random bytes first (exempt by chance about once in 400
-	// tunnels: six printable bytes first); OpenVPN's first packet is mostly
-	// zeros, and HTTPS starts with a TLS record. A WireGuard initiation
-	// ends in 16 zero bytes, and is exempt about one time in four.
+	// on each connection's first data, UDP's first datagram too, and
+	// residual censorship after a block: thinkpol's udp sends random bytes
+	// first (exempt by chance: six printable bytes first, about once in
+	// 400 tunnels, or more than half printable, about once in 175 short
+	// datagrams, which residual censorship leaves only a link's first
+	// connection over each underlay family); OpenVPN's first packet is
+	// mostly zeros, and HTTPS starts with a TLS record. A WireGuard
+	// initiation ends in 16 zero bytes, and is exempt about one time in
+	// four.
 	{name: "fully-encrypted", expect: map[string]string{rowUDP: "fail", rowRandomTCP: "fail"},
 		varies: map[string]string{rowWireGuard: "a WireGuard initiation (mac2's 16 zero bytes) averages about 3.47 set bits per byte, " +
 			"and Wu et al.'s first exemption (3.4 or fewer) passes about one in four, its tunnel with it"},

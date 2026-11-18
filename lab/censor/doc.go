@@ -394,17 +394,31 @@
 // such connections, to some address ranges; the lab blocks every one. A
 // client that sends a first segment an exemption passes (six printable
 // bytes, say) and the rest later passes too, as it does past the Great
-// Firewall. With tagOnly it tags instead of blocking, for the prober.
-// Random bytes are exempt only by chance, their first six bytes printable,
-// about one stream in 383. thinkpol's udp starts every datagram with its
-// connection id, fixed for a link's direction and hour and the same over
-// IPv4 and IPv6 (it doesn't depend on the address), so its chance is per
-// link and hour, not per datagram: the matrix, which expects udp to fail
-// fully-encrypted, shows an exempt hour as a failed run, never as a wrong
-// score. A WireGuard initiation, ending in 16 zero bytes
-// (mac2, without a cookie), averages about 3.47 set bits per byte and is
-// exempt about one in four, its tunnel with it, since a flow is judged
-// once.
+// Firewall. Once it blocks a connection, it drops every packet the client
+// sends to the server's address and port, of that protocol, for 180 s
+// (residual censorship, Wu et al. section 4.4: the 3-tuple, client to
+// server only, the time not extended by what it drops): a new
+// connection's SYN or first datagram, whatever it looks like, and a
+// connection an exemption passed before. The server's packets, and the
+// client's to other ports or addresses, are judged as before. With
+// tagOnly it tags instead of blocking, for the prober, and leaves no
+// residual censorship. Random bytes are exempt only by chance: their
+// first six bytes printable, about one stream in 383, or more than half
+// of them printable, which only a short one is likely to be. thinkpol's
+// udp starts every datagram with its connection id, fixed for a link's
+// direction and hour and the same over IPv4 and IPv6 (it doesn't depend
+// on the address), so the first chance is per link and hour; the second
+// is per datagram, about one in 175 for an 84-byte one (a redial's first
+// in the lab), and a redial from a new port is a new connection, judged
+// afresh but for residual censorship: without it a link that redials a
+// few times while blocked crossed in about one cell of the matrix in 50
+// (TP-236). What is left is a connection's first judgement on each
+// 3-tuple, one per underlay family a link dials: the matrix, which
+// expects udp to fail fully-encrypted, shows an exempt one as a failed
+// run, never as a wrong score. A WireGuard initiation, ending in 16 zero
+// bytes (mac2, without a cookie), averages about 3.47 set bits per byte
+// and is exempt about one in four, its tunnel with it, since a flow is
+// judged once.
 //
 // prober is the active prober: given a suspect TCP connection, it probes
 // the connection's server, once per server address and port, from the

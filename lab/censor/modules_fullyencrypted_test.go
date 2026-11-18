@@ -3,8 +3,10 @@ package censor
 import (
 	"bytes"
 	"math/rand/v2"
+	"net/netip"
 	"strings"
 	"testing"
+	"time"
 )
 
 // randomBytes is what a Shadowsocks-like client sends first: bytes no one
@@ -168,12 +170,23 @@ func TestFullyEncryptedTagOnly(t *testing.T) {
 // WireGuard cell varies: an initiation is 128 random bytes behind a type
 // and three zero bytes, with mac2's 16 zero bytes at its end (no cookie),
 // about 3.47 set bits per byte, so the first exemption (at most 3.4)
-// passes about one in four. thinkpol's udp sends no zero runs: its first
-// datagram, all random, is exempt only when its first six bytes happen to
-// be printable, about one in 400.
+// passes about one in four. thinkpol's udp sends no zero runs: a datagram
+// that size, all random, is exempt almost never but by its first six
+// bytes (its connection id, fixed for the link's hour), while a short one
+// (84 bytes, a redial's first in the lab) is more than half printable by
+// chance about one in 175, each a fresh draw: TP-236's partial cell, which
+// residual censorship closes.
 func TestFullyEncryptedWireGuardInitiationByChance(t *testing.T) {
 	const n = 2000
-	exempt, udpExempt := 0, 0
+	exempt, udpExempt, shortExempt := 0, 0, 0
+	for seed := uint64(0); seed < 10*n; seed++ {
+		if looksFullyEncrypted(append(filler(8), randomBytes(seed+2*n, 76)...)) == "" {
+			shortExempt++
+		}
+	}
+	if shortExempt < n/100 || shortExempt > n/5 {
+		t.Errorf("%d of %d short random datagrams exempt, want about one in 175", shortExempt, 10*n)
+	}
 	for seed := uint64(0); seed < n; seed++ {
 		init := randomBytes(seed, wgInitiation)
 		copy(init, []byte{wgTypeInitiation, 0, 0, 0})
@@ -191,5 +204,72 @@ func TestFullyEncryptedWireGuardInitiationByChance(t *testing.T) {
 	if udpExempt > n/100 {
 		t.Errorf("%d of %d random datagrams exempt, want almost none", udpExempt, n)
 	}
-	t.Logf("exempt: %d of %d WireGuard initiations, %d of %d random datagrams", exempt, n, udpExempt, n)
+	t.Logf("exempt: %d of %d WireGuard initiations, %d of %d random datagrams, %d of %d short ones", exempt, n, udpExempt, n, shortExempt, 10*n)
+}
+
+// redialDatagram is shaped like thinkpol's udp datagram that crossed in
+// TP-236: 84 bytes, a connection id then random-looking bytes, exempt
+// only because more than half of it happens to be printable (4 set bits
+// per byte, no printable start, no long printable run).
+func redialDatagram() []byte {
+	return append(filler(8), bytes.Repeat([]byte{0xf0, 'c', 'e'}, 26)[:76]...)
+}
+
+// TestFullyEncryptedResidualCensorship: once it blocks a connection, every
+// packet its client sends to the server's address and port is dropped for
+// residualCensorship, whatever it looks like: a redial from a new port
+// whose first datagram an exemption passes (TP-236's partial cell), a new
+// TCP connection's SYN, a connection exempt before the block. The
+// server's packets, other clients, other ports and the other protocol
+// are judged as before, and the time runs from the block, not from the
+// drops.
+func TestFullyEncryptedResidualCensorship(t *testing.T) {
+	blocked, exempt := randomBytes(5, 84), redialDatagram()
+	if looksFullyEncrypted(blocked) == "" || looksFullyEncrypted(exempt) != "" {
+		t.Fatal("the test's datagrams are not what they say")
+	}
+	m, err := newFullyEncrypted(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := NewEngine([]Passive{m}, nil, nil)
+	start := time.Unix(1000, 0)
+	clock := start
+	eng.now = func() time.Time { return clock }
+	other := netip.MustParseAddr("192.0.2.2")
+	expect := func(what string, p *Packet, want Verdict) {
+		t.Helper()
+		if a := eng.Handle(p); a.Verdict != want {
+			t.Errorf("%s: %+v, want %s", what, a, want)
+		}
+	}
+
+	expect("an exempt flow before the block", udpPacket(clientAddr, serverAddr, 4999, 4500, exempt), Accept)
+	expect("the blocked flow", udpPacket(clientAddr, serverAddr, 5000, 4500, blocked), Drop)
+	clock = clock.Add(time.Second)
+	expect("the exempt flow after the block", udpPacket(clientAddr, serverAddr, 4999, 4500, exempt), Drop)
+	expect("a redial an exemption passes", udpPacket(clientAddr, serverAddr, 5001, 4500, exempt), Drop)
+	expect("the server's reply to it", udpPacket(serverAddr, clientAddr, 4500, 5001, blocked), Accept)
+	expect("another client", udpPacket(other, serverAddr, 5001, 4500, exempt), Accept)
+	expect("another server port", udpPacket(clientAddr, serverAddr, 5002, 4501, exempt), Accept)
+	expect("TCP to the same port", tcpPacket(clientAddr, serverAddr, 40000, 4500, 1000, 0, Syn, nil), Accept)
+
+	clock = start.Add(residualCensorship - time.Millisecond)
+	expect("a redial just before the time is up", udpPacket(clientAddr, serverAddr, 5003, 4500, exempt), Drop)
+	clock = start.Add(residualCensorship)
+	expect("a redial once the time is up", udpPacket(clientAddr, serverAddr, 5004, 4500, exempt), Accept)
+	expect("the earlier redial, judged on its first datagram", udpPacket(clientAddr, serverAddr, 5001, 4500, exempt), Accept)
+	expect("the blocked flow", udpPacket(clientAddr, serverAddr, 5000, 4500, exempt), Drop)
+
+	seq := handshake(eng)
+	expect("a blocked TCP connection", tcpPacket(clientAddr, serverAddr, 40000, 443, seq, 5001, Ack|Psh, blocked), Drop)
+	expect("a new connection's SYN", tcpPacket(clientAddr, serverAddr, 40001, 443, 7000, 0, Syn, nil), Drop)
+
+	tagger, err := newFullyEncrypted([]byte(`{"tagOnly": true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng = NewEngine([]Passive{tagger}, nil, nil)
+	expect("a tagged flow", udpPacket(clientAddr, serverAddr, 5000, 4500, blocked), Accept)
+	expect("a redial after a tag", udpPacket(clientAddr, serverAddr, 5001, 4500, exempt), Accept)
 }
