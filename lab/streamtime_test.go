@@ -282,21 +282,21 @@ func TestParseBudget(t *testing.T) {
 	}
 }
 
-// TestMakefileTimesLabBinary: every test2json the Makefile runs a test
-// binary under has -t: without timestamps it leaves Elapsed out of its
+// TestMakefileTimesLabBinary: every test2json a Makefile recipe runs a
+// test binary under has -t: without timestamps it leaves Elapsed out of its
 // events, and the budget's report would miss those tests.
 func TestMakefileTimesLabBinary(t *testing.T) {
 	mk, err := os.ReadFile(filepath.Join("..", "Makefile"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	runs := regexp.MustCompile(`go tool test2json[^|;)]*`).FindAll(mk, -1)
+	runs := regexp.MustCompile(`(?m)^\t.*(go tool test2json[^|;)]*)`).FindAllSubmatch(mk, -1)
 	if len(runs) == 0 {
 		t.Fatal("the Makefile runs no test2json")
 	}
 	for _, r := range runs {
-		if !regexp.MustCompile(` -t( |$)`).Match(r) {
-			t.Errorf("test2json without -t: %s", r)
+		if !regexp.MustCompile(` -t( |$)`).Match(r[1]) {
+			t.Errorf("test2json without -t: %s", r[1])
 		}
 	}
 }
