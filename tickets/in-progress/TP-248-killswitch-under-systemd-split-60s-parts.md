@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-241]
 refs: []
-owner: ""
-branch: ""
+owner: agent-tp-248
+branch: tp-248-killswitch-test-split
 ---
 
 ## Goal
@@ -29,3 +29,4 @@ The 3 s refusal limit's flake: TP-246.
 
 ## Log
 - 2026-11-19 created in backlog (lab-speed follow-ups)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-248
