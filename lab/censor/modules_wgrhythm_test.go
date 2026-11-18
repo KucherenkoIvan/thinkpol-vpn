@@ -1198,20 +1198,35 @@ func unanswered(first, every, d time.Duration) []wgMessage {
 // record padded to 512 bytes so no exchange ever stands out, seen with a
 // 20 ms round trip so no burst holds a handshake whole: the count of
 // records each way steps by one at each rekey and is flat in between, and
-// is flagged on the first record after the third step's quiet. Over UDP,
-// sizes and all, it is caught as well. It isn't when the steps come
-// sooner than a rekey period or later than the rekey window, differ in
-// size, or the count moves in between.
+// is flagged on the first reading of the count wgCountHold after the third
+// step (the next ping's, 2 s later). Over UDP, sizes and all, it is caught
+// as well, and so it is when an answer comes 400 ms late between rekeys
+// (the count read off its level until it came: no step) or the steps
+// come a second sooner than a rekey period (timed by records just before
+// the handshake). It isn't when the steps come 3 s sooner than a rekey
+// period or later than the rekey window, differ in size, or the count
+// moves in between.
 func TestWGRhythmCountsRecords(t *testing.T) {
 	s, rtt := time.Second, 20*time.Millisecond
 	rekeys := []time.Duration{121*s + 500*time.Millisecond, 121 * s, 121 * s}
 	floor := floorOf(512)
-	r := newWGRun(t, `{}`, 1400)
-	r.carry(eachInRecord(wgPingTimeline(400*s, rtt, rekeys), floor))
-	a, blocked := r.firstBlocked()
 	third := 363*s + 500*time.Millisecond
-	if !blocked || a.at < third || a.at > third+2*s || !strings.Contains(a.Reason, "rekey by record count: the difference each way stepped 3 times by +1, the last 2m1s apart") {
-		t.Errorf("rekeys a period apart, padded: first blocked %+v (blocked %v), want a drop by record count within 2 s of the third rekey at %s", a, blocked, third)
+	lateAnswer := wgPingTimeline(400*s, rtt, rekeys, wgMessage{180 * s, true, 300}, wgMessage{180*s + 400*time.Millisecond, false, 300})
+	for _, c := range []struct {
+		name  string
+		msgs  []wgMessage
+		third time.Duration
+	}{
+		{"rekeys a period apart, padded", wgPingTimeline(400*s, rtt, rekeys), third},
+		{"an answer 400 ms late", lateAnswer, third},
+		{"steps 119 s apart", wgPingTimeline(400*s, rtt, []time.Duration{121*s + 500*time.Millisecond, 119 * s, 119 * s}), 359*s + 500*time.Millisecond},
+	} {
+		r := newWGRun(t, `{}`, 1400)
+		r.carry(eachInRecord(c.msgs, floor))
+		a, blocked := r.firstBlocked()
+		if !blocked || a.at < c.third+wgCountHold || a.at > c.third+wgCountHold+2*s || !strings.Contains(a.Reason, "rekey by record count: the difference each way stepped 3 times by +1") {
+			t.Errorf("%s: first blocked %+v (blocked %v), want a drop by record count within %s of the third rekey at %s", c.name, a, blocked, wgCountHold+2*s, c.third)
+		}
 	}
 
 	u := newWGUDPRun(t, `{}`)
@@ -1226,6 +1241,7 @@ func TestWGRhythmCountsRecords(t *testing.T) {
 		msgs []wgMessage
 	}{
 		{"steps 60 s apart", wgPingTimeline(400*s, rtt, []time.Duration{60 * s, 60 * s, 60 * s, 60 * s, 60 * s})},
+		{"steps 117 s apart", wgPingTimeline(400*s, rtt, []time.Duration{121*s + 500*time.Millisecond, 117 * s, 117 * s})},
 		{"steps 240 s apart", wgPingTimeline(800*s, rtt, []time.Duration{240 * s, 240 * s, 240 * s})},
 		{"steps of +1, +2, +1", twoKeepalives},
 		{"the count moves in between", wgPingTimeline(400*s, rtt, rekeys, unanswered(30*s, 60*s, 400*s)...)},
