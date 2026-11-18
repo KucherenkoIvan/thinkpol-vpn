@@ -177,9 +177,7 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 	}
 	opt := gotestOptions{parallel: *parallel, tagged: *tagged, failSkipped: *failSkipped}
 	if useCache(*count, *perf) {
-		if opt.cache, err = lab.NewGoTestCache(); err != nil {
-			return err
-		}
+		opt.cache = lab.NewGoTestCache(os.Stdout)
 	}
 	return gotest(ctx, root, opt, env, testArgs, fs.Args())
 }

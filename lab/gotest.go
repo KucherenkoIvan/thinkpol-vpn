@@ -77,20 +77,28 @@ func (n *Node) goTest(ctx context.Context, w io.Writer, pkg GoPackage, env, args
 	if err != nil || !built {
 		return err // !built: no tests for linux
 	}
-	if !slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(strings.TrimLeft(a, "-"), "test.timeout") }) {
-		args = append([]string{"-test.timeout=" + DefaultTestTimeout}, args...)
-	}
 	dockerArgs := []string{"exec", "-w", path.Join(SrcDir, pkg.Dir), "-e", "THINKPOL_LAB=1"}
 	for _, e := range env {
 		dockerArgs = append(dockerArgs, "-e", e)
 	}
 	dockerArgs = append(dockerArgs, n.Container, path.Join(BinDir, "tests", name))
-	cmd := exec.CommandContext(ctx, "docker", append(dockerArgs, args...)...)
+	cmd := exec.CommandContext(ctx, "docker", append(dockerArgs, testBinaryArgs(args)...)...)
 	cmd.Stdout, cmd.Stderr = w, w
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s: tests in %s: %w", n.Name, pkg.ImportPath, err)
 	}
 	return nil
+}
+
+// testBinaryArgs is what a test binary run as go test runs it gets: args,
+// the default timeout unless args has one, and -test.paniconexit0, so a
+// test calling os.Exit(0) fails the run instead of ending it green with the
+// rest of the tests unrun.
+func testBinaryArgs(args []string) []string {
+	if !slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(strings.TrimLeft(a, "-"), "test.timeout") }) {
+		args = append([]string{"-test.timeout=" + DefaultTestTimeout}, args...)
+	}
+	return append([]string{"-test.paniconexit0"}, args...)
 }
 
 // buildPackageTests builds a package's tests for the lab's platform into
@@ -263,27 +271,18 @@ func goTestPackage(ctx context.Context, root, project string, pkg GoPackage, out
 		runArgs = append(slices.Clone(args), "-test.testlogfile="+goTestLogFile)
 	}
 	start := out.Len()
-	var testLog []byte
-	labErr, testErr := goTestFresh(ctx, root, project, pkg, out, env, runArgs, func(n *Node) {
-		if entry != nil {
-			testLog, entry.logErr = n.readFile(ctx, goTestLogFile)
-		}
-	})
-	res.Failed = testErr != nil
+	run := goTestFresh(ctx, root, project, pkg, out, env, runArgs, entry != nil)
+	res.Failed = run.testErr != nil
 	res.Tests = TallyTests(out.Bytes()[start:])
-	if testErr != nil {
-		fmt.Fprintln(out, testErr)
+	if run.testErr != nil {
+		fmt.Fprintln(out, run.testErr)
 	}
-	if entry != nil && labErr == nil && testErr == nil {
-		err := entry.logErr
-		if err == nil {
-			err = cache.Store.Record(entry.action, testLog, entry.resolve, started, testcache.Tally{Passed: res.Tests.Passed, Skipped: res.Tests.Skipped})
-		}
-		if err != nil {
+	if entry != nil {
+		if err := cache.record(entry, run, started, res.Tests); err != nil {
 			fmt.Fprintf(out, "lab: results cache: pass not recorded: %v\n", err)
 		}
 	}
-	return res, labErr
+	return res, run.labErr
 }
 
 // goTestLogFile is where, in a gotest node, the test binary writes its
@@ -305,26 +304,27 @@ func (n *Node) readFile(ctx context.Context, name string) ([]byte, error) {
 	return []byte(res.Stdout), nil
 }
 
-// goTestFresh runs a package's tests in a fresh lab, then, while the lab is
-// still up, after (if any) with its node.
-func goTestFresh(ctx context.Context, root, project string, pkg GoPackage, w io.Writer, env, args []string, after func(*Node)) (labErr, testErr error) {
+// goTestFresh runs a package's tests in a fresh lab and, with readLog and
+// the tests passed, reads their -test.testlogfile back before the lab goes.
+func goTestFresh(ctx context.Context, root, project string, pkg GoPackage, w io.Writer, env, args []string, readLog bool) (run freshRun) {
 	l, err := up(ctx, root, project, GoTestTopology(), "", runInputs)
 	if l != nil {
 		defer func() {
-			if err := l.Down(context.WithoutCancel(ctx)); err != nil && labErr == nil {
-				labErr = err
+			if err := l.Down(context.WithoutCancel(ctx)); err != nil && run.labErr == nil {
+				run.labErr = err
 			}
 		}()
 	}
 	if err != nil {
-		return err, nil
+		run.labErr = err
+		return run
 	}
 	n := l.Node("gotest")
-	testErr = n.goTest(ctx, w, pkg, env, args)
-	if after != nil && testErr == nil {
-		after(n)
+	run.testErr = n.goTest(ctx, w, pkg, env, args)
+	if readLog && run.testErr == nil {
+		run.testLog, run.logErr = n.readFile(ctx, goTestLogFile)
 	}
-	return nil, testErr
+	return run
 }
 
 // GoTestTopology is the lab GoTest runs packages in when no topology is

@@ -9,7 +9,16 @@
 // the test binary itself opened or stat'ed (its -test.testlogfile), each
 // hashed by content as it is now. The action record lists the inputs' names;
 // the pass record, keyed by the action and the inputs' hashes, holds the
-// tallies of the run that passed. Only passes are recorded.
+// tallies of the run that passed and when it was recorded. Only passes are
+// recorded, and a pass serves for MaxPassAge from then, however often it is
+// used.
+//
+// A pass is not recorded when a watched input (one of the checkout's: a
+// file, a directory, or for a missing one the nearest directory above it
+// that exists) was modified or had its inode changed (mtime or ctime) since
+// the run started: what the run read may not be what is hashed now. The
+// ctime is what an old file copied or moved over an input (cp -p, mv,
+// rsync -t) can't carry back.
 //
 // What a test reads without going through package os in the test process
 // (a subprocess, a raw syscall, an exec of an absolute path it never
@@ -45,7 +54,18 @@ const NoCacheEnv = "LAB_NOCACHE"
 
 // recordVersion changes whenever what a key covers does: older records then
 // never match.
-const recordVersion = "testcache-v1"
+const recordVersion = "testcache-v2"
+
+// MaxPassAge is how long a recorded pass serves: a test that depends on the
+// date (a certificate in testdata that expires) runs again at least this
+// often.
+const MaxPassAge = 7 * 24 * time.Hour
+
+// clockSlack widens "since the run started": file times come from a
+// coarser clock than time.Now (the kernel's tick, or a file system that
+// keeps seconds), so a change just after the start can carry a time just
+// before it.
+const clockSlack = 2 * time.Second
 
 // Action is what a package's tests were run as. Every field is part of the
 // key.
@@ -77,8 +97,9 @@ type Tally struct {
 // Resolver maps a path in the node to the file on the host it reads, or ""
 // when it is none of the checkout's or the lab's binaries': the image's own
 // files and the node's scratch space (/tmp, /proc, ...), which the action
-// covers or which start fresh in every node.
-type Resolver func(nodePath string) string
+// covers or which start fresh in every node. watch says a change to it
+// since the run started keeps the run from being recorded.
+type Resolver func(nodePath string) (hostPath string, watch bool)
 
 // Store is a directory of records.
 type Store struct {
@@ -101,14 +122,16 @@ type actionRecord struct {
 }
 
 type passRecord struct {
-	Version string
-	Key     string
-	Tally   Tally
+	Version  string
+	Key      string
+	Tally    Tally
+	Recorded time.Time
 }
 
 // Lookup returns the tally of a recorded pass of action whose inputs, read
 // through resolve, hash as they do now. ok is false on a miss: no record, a
-// record that doesn't decode or names another key, or an input that changed.
+// record that doesn't decode or names another key, an input that changed,
+// or a pass recorded more than MaxPassAge ago (or in the future).
 func (s Store) Lookup(action Action, resolve Resolver) (t Tally, ok bool) {
 	id := action.ID()
 	var a actionRecord
@@ -123,15 +146,18 @@ func (s Store) Lookup(action Action, resolve Resolver) (t Tally, ok bool) {
 	if !s.read(key, "p", &p) {
 		return Tally{}, false
 	}
-	// Recently used records survive Trim.
 	now := time.Now()
+	if age := now.Sub(p.Recorded); age < -clockSlack || age > MaxPassAge {
+		return Tally{}, false
+	}
+	// Recently used records survive Trim.
 	_ = os.Chtimes(s.path(id, "a"), now, now)
 	_ = os.Chtimes(s.path(key, "p"), now, now)
 	return p.Tally, true
 }
 
-// ErrInputChanged is Record's error when an input changed after the run
-// started: what the run read may not be what is there now.
+// ErrInputChanged is Record's error when a watched input changed after the
+// run started: what the run read may not be what is there now.
 var ErrInputChanged = errors.New("testcache: an input changed during the run")
 
 // Record stores a pass of action, started at started, that read the inputs
@@ -145,7 +171,7 @@ func (s Store) Record(action Action, testLog []byte, resolve Resolver, started t
 	// would make every run's list another, and the action record keeps one.
 	var inputs []string
 	for _, in := range read {
-		if resolve(in) != "" {
+		if host, _ := resolve(in); host != "" {
 			inputs = append(inputs, in)
 		}
 	}
@@ -157,15 +183,23 @@ func (s Store) Record(action Action, testLog []byte, resolve Resolver, started t
 	if err := s.write(id, "a", actionRecord{Version: recordVersion, Key: id, Inputs: inputs}); err != nil {
 		return err
 	}
-	return s.write(key, "p", passRecord{Version: recordVersion, Key: key, Tally: t})
+	return s.write(key, "p", passRecord{Version: recordVersion, Key: key, Tally: t, Recorded: time.Now()})
 }
 
-// passKey hashes the action with every input's content. A non-zero
-// changedAfter fails it when an input file was modified at or after then.
-func passKey(actionID string, inputs []string, resolve Resolver, changedAfter time.Time) (string, error) {
+// passKey hashes the action with every input's content. A non-zero since
+// fails it when a watched input changed at or after then.
+func passKey(actionID string, inputs []string, resolve Resolver, since time.Time) (string, error) {
 	parts := []string{recordVersion, "pass", actionID}
 	for _, in := range inputs {
-		h, err := hashInput(resolve(in), changedAfter)
+		host, watch := resolve(in)
+		if host == "" {
+			return "", fmt.Errorf("testcache: %s is under no mount", in)
+		}
+		var changedSince time.Time
+		if watch {
+			changedSince = since
+		}
+		h, err := hashInput(host, changedSince)
 		if err != nil {
 			return "", err
 		}
@@ -176,17 +210,26 @@ func passKey(actionID string, inputs []string, resolve Resolver, changedAfter ti
 
 // hashInput hashes what a test sees at hostPath: a regular file's content, a
 // directory's entries' names and types, or that it is missing. Stat follows
-// symlinks, as the test's open and stat did.
-func hashInput(hostPath string, changedAfter time.Time) (string, error) {
-	if hostPath == "" {
-		return "ignored", nil // an action record from an older Record
-	}
+// symlinks, as the test's open and stat did. A non-zero since fails it when
+// the input, or for a missing one the nearest directory above it that
+// exists, changed at or after then.
+func hashInput(hostPath string, since time.Time) (string, error) {
 	info, err := os.Stat(hostPath)
 	if errors.Is(err, fs.ErrNotExist) {
+		if !since.IsZero() {
+			if err := checkMissingUnchanged(hostPath, since); err != nil {
+				return "", err
+			}
+		}
 		return "missing", nil
 	}
 	if err != nil {
 		return "", err
+	}
+	if !since.IsZero() {
+		if err := checkUnchanged(hostPath, info, since); err != nil {
+			return "", err
+		}
 	}
 	switch {
 	case info.IsDir():
@@ -200,11 +243,6 @@ func hashInput(hostPath string, changedAfter time.Time) (string, error) {
 		}
 		return "dir:" + hex.EncodeToString(h.Sum(nil)), nil
 	case info.Mode().IsRegular():
-		// A directory's time changes with any entry, a run's own lab/bin
-		// included; its listing is hashed anyway.
-		if !changedAfter.IsZero() && !info.ModTime().Before(changedAfter) {
-			return "", fmt.Errorf("%w: %s", ErrInputChanged, hostPath)
-		}
 		h, err := HashFile(hostPath)
 		if err != nil {
 			return "", err
@@ -212,6 +250,42 @@ func hashInput(hostPath string, changedAfter time.Time) (string, error) {
 		return "file:" + h, nil
 	default:
 		return "mode:" + info.Mode().Type().String(), nil
+	}
+}
+
+// checkUnchanged fails when info (hostPath's, symlinks followed), or a
+// symlink at hostPath itself, was modified or had its inode changed at or
+// after since, less the clock slack.
+func checkUnchanged(hostPath string, info fs.FileInfo, since time.Time) error {
+	cutoff := since.Add(-clockSlack)
+	changed := func(fi fs.FileInfo) bool {
+		ctime, ok := changeTime(fi)
+		return !fi.ModTime().Before(cutoff) || ok && !ctime.Before(cutoff)
+	}
+	if changed(info) {
+		return fmt.Errorf("%w: %s", ErrInputChanged, hostPath)
+	}
+	if link, err := os.Lstat(hostPath); err == nil && link.Mode()&fs.ModeSymlink != 0 && changed(link) {
+		return fmt.Errorf("%w: %s", ErrInputChanged, hostPath)
+	}
+	return nil
+}
+
+// checkMissingUnchanged fails when the nearest directory above the missing
+// hostPath that exists changed at or after since: the input may have been
+// there when the run looked.
+func checkMissingUnchanged(hostPath string, since time.Time) error {
+	for dir := filepath.Dir(hostPath); ; dir = filepath.Dir(dir) {
+		info, err := os.Stat(dir)
+		if err == nil {
+			return checkUnchanged(dir, info, since)
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		if dir == filepath.Dir(dir) {
+			return err
+		}
 	}
 }
 
@@ -257,16 +331,24 @@ func ParseTestLog(log []byte, dir string) ([]string, error) {
 	return out, nil
 }
 
-// MountResolver resolves the node paths under each mount point (a node
-// path) to the host directory mounted there; everything else is ignored.
-func MountResolver(mounts map[string]string) Resolver {
-	return func(p string) string {
-		for at, host := range mounts {
-			if rel, ok := strings.CutPrefix(p, at); ok && (rel == "" || rel[0] == '/') {
-				return filepath.Join(host, filepath.FromSlash(rel))
+// Mount is a host directory mounted in the node.
+type Mount struct {
+	Node, Host string
+	// Watch: the run doesn't write here, so a change since it started is
+	// someone else's (the checkout, not the run's own binary directory).
+	Watch bool
+}
+
+// MountResolver resolves the node paths under each mount's node path to the
+// host directory mounted there; everything else is ignored.
+func MountResolver(mounts ...Mount) Resolver {
+	return func(p string) (string, bool) {
+		for _, m := range mounts {
+			if rel, ok := strings.CutPrefix(p, m.Node); ok && (rel == "" || rel[0] == '/') {
+				return filepath.Join(m.Host, filepath.FromSlash(rel)), m.Watch
 			}
 		}
-		return ""
+		return "", false
 	}
 }
 

@@ -75,7 +75,10 @@ func buildTools(ctx context.Context, root string, t target, dir string) error {
 		{"labdns", "./lab/labdns"},   // a stand-in for resolvers out in the world
 		{"censord", "./lab/censord"}, // the lab's censor, run in the router
 	} {
-		if _, err := goBuild(ctx, root, t, filepath.Join(dir, tool.name), "build", "-trimpath", tool.pkg); err != nil {
+		// Without the VCS stamp, a commit that changes none of a tool's
+		// code leaves its binary, an input of the tests that stat it, as
+		// it was.
+		if _, err := goBuild(ctx, root, t, filepath.Join(dir, tool.name), "build", "-trimpath", "-buildvcs=false", tool.pkg); err != nil {
 			return err
 		}
 	}
@@ -114,7 +117,7 @@ func (t target) env() []string {
 
 // buildImage tags the image with a hash of the Dockerfile and the platform,
 // so checkouts with the same Dockerfile share it and a changed one gets its
-// own.
+// own, and returns it by its ID.
 func buildImage(ctx context.Context, root string, t target) (image, error) {
 	dockerfile, err := os.ReadFile(filepath.Join(root, "lab", "Dockerfile"))
 	if err != nil {
@@ -136,14 +139,20 @@ func buildImage(ctx context.Context, root string, t target) (image, error) {
 		return image{}, err
 	}
 	defer unlock()
-	if _, err := docker(ctx, "image", "inspect", "--format", "{{.Id}}", img.ref); err == nil {
-		return img, nil
+	if _, err := docker(ctx, "image", "inspect", "--format", "{{.Id}}", img.ref); err != nil {
+		// The Dockerfile comes on stdin: no build context, nothing from the
+		// checkout ends up in the image.
+		if _, err := run(ctx, bytes.NewReader(dockerfile), nil, "docker", "build", "-q", "--platform", t.platform, "-t", img.ref, "-"); err != nil {
+			return image{}, fmt.Errorf("lab: build image: %w", err)
+		}
 	}
-	// The Dockerfile comes on stdin: no build context, nothing from the
-	// checkout ends up in the image.
-	if _, err := run(ctx, bytes.NewReader(dockerfile), nil, "docker", "build", "-q", "--platform", t.platform, "-t", img.ref, "-"); err != nil {
-		return image{}, fmt.Errorf("lab: build image: %w", err)
+	// Labs run the image by its ID, the one the results cache keys on: a
+	// tag rebuilt after this would otherwise run another image.
+	res, err := docker(ctx, "image", "inspect", "--format", "{{.Id}}", img.ref)
+	if err != nil {
+		return image{}, err
 	}
+	img.ref = strings.TrimSpace(res.Stdout)
 	return img, nil
 }
 

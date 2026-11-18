@@ -1,6 +1,7 @@
 package testcache
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -47,12 +48,14 @@ func newFixture(t *testing.T) *fixture {
 			"open testdata\n" +
 			"stat /opt/thinkpol/bin/thinkpol\n" +
 			"open /etc/os-release\n" +
-			"stat testdata/absent\n"),
+			"stat testdata/absent\n" +
+			"stat ../../lab/maps/m1.yaml\n" +
+			"stat ../../lab/gone/x\n"),
 	}
 	write(t, filepath.Join(f.src, "internal/pkg/testdata/a.golden"), "golden")
 	write(t, filepath.Join(f.src, "lab/maps/m0.yaml"), "map")
 	write(t, filepath.Join(f.bin, "thinkpol"), "binary")
-	f.resolve = MountResolver(map[string]string{"/src": f.src, "/opt/thinkpol/bin": f.bin})
+	f.resolve = MountResolver(Mount{Node: "/src", Host: f.src, Watch: true}, Mount{Node: "/opt/thinkpol/bin", Host: f.bin})
 	return f
 }
 
@@ -66,10 +69,15 @@ func write(t *testing.T, name, content string) {
 	}
 }
 
-// record stores a pass that started a second ago.
+// afterWrites is a run's start after every file written so far, the clock
+// slack included: the inputs are older than the run.
+func afterWrites() time.Time { return time.Now().Add(clockSlack + time.Millisecond) }
+
+// record stores a pass of a run that started after the fixture's files were
+// written.
 func (f *fixture) record(t *testing.T) {
 	t.Helper()
-	if err := f.store.Record(f.action, f.log, f.resolve, time.Now().Add(time.Second), Tally{Passed: 3, Skipped: 1}); err != nil {
+	if err := f.store.Record(f.action, f.log, f.resolve, afterWrites(), Tally{Passed: 3, Skipped: 1}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -209,19 +217,138 @@ func TestScratchPathsDontSplitTheInputs(t *testing.T) {
 	}
 }
 
+// What changed in the checkout after the run started, the run may or may
+// not have seen: such a run is not recorded, whatever kind of input
+// changed. The lab's binary directory is the run's own and not watched.
 func TestInputChangedDuringTheRunIsNotRecorded(t *testing.T) {
-	f := newFixture(t)
-	started := time.Now()
-	later := started.Add(time.Second)
-	if err := os.Chtimes(filepath.Join(f.src, "internal/pkg/testdata/a.golden"), later, later); err != nil {
-		t.Fatal(err)
+	golden := func(f *fixture) string { return filepath.Join(f.src, "internal/pkg/testdata/a.golden") }
+	maps := func(f *fixture) string { return filepath.Join(f.src, "lab/maps/m0.yaml") }
+	old := time.Now().Add(-24 * time.Hour)
+	for _, tc := range []struct {
+		name string
+		// before runs before the run starts, during after it.
+		before, during func(t *testing.T, f *fixture)
+		recorded       bool
+	}{
+		{name: "file rewritten", during: func(t *testing.T, f *fixture) {
+			write(t, golden(f), "golden2")
+		}},
+		{name: "file touched", during: func(t *testing.T, f *fixture) {
+			later := time.Now().Add(time.Hour)
+			if err := os.Chtimes(golden(f), later, later); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "file added to an opened directory", during: func(t *testing.T, f *fixture) {
+			write(t, filepath.Join(f.src, "internal/pkg/testdata/b.golden"), "b")
+		}},
+		{name: "input removed", during: func(t *testing.T, f *fixture) {
+			if err := os.Remove(maps(f)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "missing input created and removed", during: func(t *testing.T, f *fixture) {
+			absent := filepath.Join(f.src, "lab/maps/m1.yaml")
+			write(t, absent, "")
+			if err := os.Remove(absent); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "missing input's directory created and removed", during: func(t *testing.T, f *fixture) {
+			write(t, filepath.Join(f.src, "lab/gone/x"), "")
+			if err := os.RemoveAll(filepath.Join(f.src, "lab/gone")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "old file moved over an input", before: func(t *testing.T, f *fixture) {
+			write(t, filepath.Join(f.src, "m0.old"), "map0")
+			if err := os.Chtimes(filepath.Join(f.src, "m0.old"), old, old); err != nil {
+				t.Fatal(err)
+			}
+		}, during: func(t *testing.T, f *fixture) {
+			if err := os.Rename(filepath.Join(f.src, "m0.old"), maps(f)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "old times copied onto an input", during: func(t *testing.T, f *fixture) {
+			write(t, maps(f), "map0")
+			if err := os.Chtimes(maps(f), old, old); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "lab binary rebuilt", during: func(t *testing.T, f *fixture) {
+			write(t, filepath.Join(f.bin, "thinkpol"), "binary2")
+		}, recorded: true},
+		{name: "file the test never read", during: func(t *testing.T, f *fixture) {
+			write(t, filepath.Join(f.src, "internal/pkg/other.txt"), "x")
+		}, recorded: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			if tc.before != nil {
+				tc.before(t, f)
+			}
+			started := afterWrites()
+			time.Sleep(time.Until(started))
+			tc.during(t, f)
+			err := f.store.Record(f.action, f.log, f.resolve, started, Tally{Passed: 3, Skipped: 1})
+			if tc.recorded {
+				if err != nil {
+					t.Fatalf("Record: %v", err)
+				}
+				if !f.hit(t) {
+					t.Fatal("miss after recording")
+				}
+				return
+			}
+			if !errors.Is(err, ErrInputChanged) {
+				t.Fatalf("Record: %v, want ErrInputChanged", err)
+			}
+			if f.hit(t) {
+				t.Fatal("hit for a run whose input changed under it")
+			}
+		})
 	}
-	err := f.store.Record(f.action, f.log, f.resolve, started, Tally{Passed: 3, Skipped: 1})
-	if !errors.Is(err, ErrInputChanged) {
-		t.Fatalf("Record: %v, want ErrInputChanged", err)
-	}
-	if f.hit(t) {
-		t.Fatal("hit for a run whose input changed under it")
+}
+
+// A pass serves for MaxPassAge from when it was recorded, however often it
+// is used in between.
+func TestOldPassIsAMiss(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		age  time.Duration
+		hit  bool
+	}{
+		{"a day old", 24 * time.Hour, true},
+		{"just within", MaxPassAge - time.Hour, true},
+		{"too old", MaxPassAge + time.Hour, false},
+		{"from the future", -time.Hour, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.record(t)
+			if !f.hit(t) { // a hit renews the record's file, not its age
+				t.Fatal("miss")
+			}
+			pass := records(t, f.store)[1]
+			b, err := os.ReadFile(pass)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal(b, &rec); err != nil {
+				t.Fatal(err)
+			}
+			rec["Recorded"] = time.Now().Add(-tc.age)
+			if b, err = json.Marshal(rec); err != nil {
+				t.Fatal(err)
+			}
+			write(t, pass, string(b))
+			if got := f.hit(t); got != tc.hit {
+				t.Fatalf("hit %v, want %v", got, tc.hit)
+			}
+		})
 	}
 }
 
@@ -303,7 +430,7 @@ func TestConcurrentRunsShareTheStore(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			if err := f.store.Record(f.action, f.log, f.resolve, time.Now().Add(time.Second), Tally{Passed: 3, Skipped: 1}); err != nil {
+			if err := f.store.Record(f.action, f.log, f.resolve, afterWrites(), Tally{Passed: 3, Skipped: 1}); err != nil {
 				errs <- err
 			}
 		}()
@@ -351,16 +478,20 @@ func TestParseTestLog(t *testing.T) {
 }
 
 func TestMountResolver(t *testing.T) {
-	r := MountResolver(map[string]string{"/src": "/h/checkout", "/opt/thinkpol/bin": "/h/bin"})
-	for in, want := range map[string]string{
-		"/src":                       filepath.FromSlash("/h/checkout"),
-		"/src/a/b":                   filepath.FromSlash("/h/checkout/a/b"),
-		"/srcx/a":                    "",
-		"/opt/thinkpol/bin/thinkpol": filepath.FromSlash("/h/bin/thinkpol"),
-		"/tmp/x":                     "",
+	r := MountResolver(Mount{Node: "/src", Host: "/h/checkout", Watch: true}, Mount{Node: "/opt/thinkpol/bin", Host: "/h/bin"})
+	type resolved struct {
+		host  string
+		watch bool
+	}
+	for in, want := range map[string]resolved{
+		"/src":                       {filepath.FromSlash("/h/checkout"), true},
+		"/src/a/b":                   {filepath.FromSlash("/h/checkout/a/b"), true},
+		"/srcx/a":                    {},
+		"/opt/thinkpol/bin/thinkpol": {filepath.FromSlash("/h/bin/thinkpol"), false},
+		"/tmp/x":                     {},
 	} {
-		if got := r(in); got != want {
-			t.Errorf("%s resolves to %q, want %q", in, got, want)
+		if host, watch := r(in); host != want.host || watch != want.watch {
+			t.Errorf("%s resolves to %q (watch %v), want %q (watch %v)", in, host, watch, want.host, want.watch)
 		}
 	}
 }

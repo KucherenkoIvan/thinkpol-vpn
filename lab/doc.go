@@ -43,7 +43,8 @@
 // still holds (lab/testcache: the binary, the image, the engine, the
 // harness, the args and env, and the files the binary read through package
 // os, which it lists in its -test.testlogfile, read back from the node
-// before the lab goes down). Only passes are recorded.
+// before the lab goes down). Only passes are recorded, for a week, and not
+// when a checkout input changed during the run.
 //
 // The helpers build without tags so lint and unit tests cover them; the tests
 // that need Docker carry the lab build tag and run on the host through make
