@@ -21,10 +21,10 @@ In a full lab (TP-223's run, 2026-11-16) the censor-matrix cell `udp × fully-en
 ## Out of scope
 
 ## Acceptance
-- [ ] The root cause named in Notes, with evidence.
-- [ ] A fix.
+- [x] The root cause named in Notes, with evidence.
+- [x] A fix.
 - [ ] 20 runs of the cell under load pass, and a mutation that brings the cause back fails.
-- [ ] No retries and no longer timeouts without a cause.
+- [x] No retries and no longer timeouts without a cause.
 
 ## Notes
 - First seen in TP-223's full lab at 17b3b1f1 (its Log, 2026-11-16).
@@ -37,6 +37,7 @@ In a full lab (TP-223's run, 2026-11-16) the censor-matrix cell `udp × fully-en
 - Fix: residual censorship, as Wu et al. section 4.4 saw it. Once fully-encrypted blocks a connection, it drops every packet the client sends to the server's address and port, of that protocol, for 180 s, whatever it looks like (a redial's first datagram, a new SYN, a connection exempt before the block), client to server only, and the time is not extended by what it drops. tagOnly arms nothing. Docs: lab/censor/doc.go, lab/README.md, the matrix's comment.
 - Other modules, checked for the same gap (a later connection getting a fresh chance): none has one. The prober blocks a found-out server for every later connection. The fingerprint, blocklist and server-hello modules decide by content that a redial repeats. wireguard-rhythm judges timing, and its held cells score what it blocked during the hold.
 - What is left: the first judgement on each 3-tuple. That is the IPv4 link's 240-byte datagram (only the six-printable start, per link and hour, about 1 in 383) and the first IPv6 redial (84 bytes, about 1 in 175 by its printable bytes). So the cell still scores wrong about once in 120 runs, down from about once in 50, and the GFW would let the same connections through. Closing it is the transport's job (a link's first datagram long enough that half of it being printable is negligible), or the matrix's (scoring the chance); both are out of this ticket's scope.
+- Seen after the fix (2026-11-18, aa9ddd36, the 22nd run of the cell): partial, only IPv6 crossed. Residual censorship held on IPv4: after the first link was blocked, the device's redial to endpoint 0 failed ("no answer within 6s"). The device then dialed its first IPv6 flow (endpoint 1), a new 3-tuple, which came up in 2 ms. That is the chance left above, not a fix that didn't hold. Deciding between the transport's fix and the matrix's is the owner's call.
 
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate fixes)
@@ -44,3 +45,6 @@ In a full lab (TP-223's run, 2026-11-16) the censor-matrix cell `udp × fully-en
 - 2026-11-18 backlog → in-progress, owner: agent-tp-236
 - 2026-11-18 takeover after a network drop: the debug runs on b5f009bd (23 cells) give the root cause in Notes; fix on 09c2d667, debug dump removed
 - 2026-11-18 mutations (each fails TestFullyEncryptedResidualCensorship, restored): no residual check; the 3-tuple without the protocol; exempt flows retired; residual never expiring; a tag arming residual; drops extending the time
+- 2026-11-18 make lint, make test green on 09c2d667 (aa9ddd36 changes only this ticket)
+- 2026-11-18 the cell under load (other full labs running), lab-gotest RUN='TestCensorMatrix/^udp/^(off|fully-encrypted)': 09c2d667 COUNT=10, 10 of 10 fail as wanted (2563 s); aa9ddd36 COUNT=10, 9 of 9 fail, the 10th killed by the package's 60 min test timeout while its lab came up (3601 s); aa9ddd36 COUNT=3, 2 fail and 1 partial (only IPv6), the first IPv6 flow's chance (Notes). 21 of 22 right: the 20-runs box stays unticked
+- 2026-11-18 out of scope: lab-gotest's 60 min timeout covers all of COUNT's iterations, and under load one iteration of this row took up to 6 min
