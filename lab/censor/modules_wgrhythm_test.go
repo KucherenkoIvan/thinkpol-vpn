@@ -1324,10 +1324,13 @@ func readRecordTrace(t *testing.T, name string) []wireRecord {
 // device and two from the server, at 120.7 s, 241.0 s and 361.6 s, and the
 // count steps by one there: caught by the burst at the third. Seen with
 // the server's records 20 ms later, no burst holds a rekey and the count
-// catches it; with a record from the server every 30 s besides, the count
-// moves and the burst catches it; with both, neither does (each signal's
-// blind spot, lab/censor's package doc). reality held idle is never
-// flagged: one passive keepalive is one step.
+// catches it, also when load at the censor (TP-245) leaves one answer
+// 400 ms late (a level read before it came) or puts records just before a
+// rekey with no quiet between (its step timed 0.75 s early, 119.9 s after
+// the one before); with a record from the server every 30 s besides, the
+// count moves and the burst catches it; with both, neither does (each
+// signal's blind spot, lab/censor's package doc). reality held idle is
+// never flagged: one passive keepalive is one step.
 func TestWGRhythmRealityTrace(t *testing.T) {
 	s := time.Second
 	inUse := readRecordTrace(t, "reality-held-in-use.txt")
@@ -1337,6 +1340,33 @@ func TestWGRhythmRealityTrace(t *testing.T) {
 			if !out[i].toServer {
 				out[i].at += 20 * time.Millisecond
 			}
+		}
+		slices.SortStableFunc(out, func(a, b wireRecord) int { return int(a.at - b.at) })
+		return out
+	}
+	// lateAnswer holds the server's first record from 180 s on back
+	// 400 ms: an answer later than the count's 300 ms of quiet, as on a
+	// loaded lab.
+	lateAnswer := func(recs []wireRecord) []wireRecord {
+		out := slices.Clone(recs)
+		for i := range out {
+			if !out[i].toServer && out[i].at >= 180*s {
+				out[i].at += 400 * time.Millisecond
+				break
+			}
+		}
+		slices.SortStableFunc(out, func(a, b wireRecord) int { return int(a.at - b.at) })
+		return out
+	}
+	// probesBefore adds three exchanges 250 ms apart right before the
+	// third rekey at 361.6 s: records with no 300 ms of quiet between them
+	// and the handshake, so the count's step starts 0.75 s before it,
+	// 119.9 s after the second.
+	probesBefore := func(recs []wireRecord) []wireRecord {
+		out := slices.Clone(recs)
+		for i := 1; i <= 3; i++ {
+			at := 361609*time.Millisecond - time.Duration(i)*250*time.Millisecond
+			out = append(out, wireRecord{at, true, 507}, wireRecord{at + 500*time.Microsecond, false, 507})
 		}
 		slices.SortStableFunc(out, func(a, b wireRecord) int { return int(a.at - b.at) })
 		return out
@@ -1356,6 +1386,8 @@ func TestWGRhythmRealityTrace(t *testing.T) {
 	}{
 		{"as held", inUse, "rekey by burst: 3 records one way and 2 the other"},
 		{"the server's records 20 ms later", later(inUse), "rekey by record count: the difference each way stepped 3 times by +1"},
+		{"20 ms later, an answer 400 ms late", lateAnswer(later(inUse)), "rekey by record count: the difference each way stepped 3 times by +1"},
+		{"20 ms later, probes right before the third rekey", probesBefore(later(inUse)), "rekey by record count: the difference each way stepped 3 times by +1"},
 		{"a server record every 30 s", pushed(inUse), "rekey by burst: 3 records one way and 2 the other"},
 		{"both", pushed(later(inUse)), ""},
 		{"held idle", readRecordTrace(t, "reality-held-idle.txt"), ""},

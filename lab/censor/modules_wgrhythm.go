@@ -70,6 +70,22 @@ const (
 	// probes. Where a round trip takes longer, a request in flight makes
 	// the level move and the count signal misses.
 	wgCountSettle = 300 * time.Millisecond
+	// wgCountHold is how long a difference read off the level must keep
+	// reading the same before it is the level: an answer within
+	// wgPairWindow is part of its exchange, so a request whose answer is
+	// later than wgCountSettle (a loaded path or censor) moves the count
+	// for no longer than that, and is no step.
+	wgCountHold = wgPairWindow
+	// wgCountSlack is how much sooner than a rekey period after the step
+	// before a count step may come and still chain: a step is timed by
+	// the first record after the quiet before it, which can precede the
+	// handshake's records (a probe or ping just before it, records the
+	// censor handled late under load), while WireGuard's rekeys under
+	// steady use come only a fraction of a second over REKEY_AFTER_TIME
+	// apart (measured, lab/censor/doc.go). A choice, the time an answer
+	// has; the burst signal times a burst by its own first record and
+	// needs none.
+	wgCountSlack = wgPairWindow
 	// wgBurstGap is how close a record must end to the one before, either
 	// way, to be in its burst: a choice, a few ms, room for a handshake
 	// where the censor sees it start to end within a few ms (the lab's
@@ -186,14 +202,16 @@ type wgConn struct {
 }
 
 // wgCount is the count signal's state: records each way, the difference
-// last read as a level, when the records since that reading began, and
-// the chain of the level's steps.
+// last held as a level, when the records since the latest reading began,
+// when the records that took the difference off the level began (zero
+// while it reads the level), and the chain of the level's steps.
 type wgCount struct {
 	n       [2]int
 	level   int
 	leveled bool // a level has been read
-	settled bool // the level has been read since the latest record
+	settled bool // the difference has been read since the latest record
 	since   time.Time
+	moved   time.Time
 	chain   wgChain
 }
 
@@ -214,11 +232,11 @@ type wgChain struct {
 	delta int
 }
 
-// next counts an occurrence at at into the chain: one a rekey period to
-// window after the latest continues it, any other starts it over.
-func (ch *wgChain) next(at time.Time, rekey, window time.Duration) {
+// next counts an occurrence at at into the chain: one least to window
+// after the latest continues it, any other starts it over.
+func (ch *wgChain) next(at time.Time, least, window time.Duration) {
 	gap := at.Sub(ch.at)
-	if ch.n > 0 && gap >= rekey && gap <= window {
+	if ch.n > 0 && gap >= least && gap <= window {
 		ch.n, ch.gap = ch.n+1, gap
 	} else {
 		ch.n, ch.gap = 1, 0
@@ -546,7 +564,7 @@ func (m *wgRhythm) settle(c *wgConn, f *Flow, now time.Time) {
 		m.closeBurst(c)
 	}
 	if !c.last.IsZero() && now.Sub(c.last) >= wgCountSettle && !c.count.settled {
-		m.readCount(c)
+		m.readCount(c, now)
 	}
 	if c.flagged != "" {
 		// The flag's own line: no record, the packet it came on.
@@ -623,27 +641,39 @@ func (m *wgRhythm) window() time.Duration {
 	return m.rekey*time.Duration(wgRejectAfterTime/time.Second)/time.Duration(wgRekeyAfterTime/time.Second) + wgRekeySlack
 }
 
-// readCount reads the difference of the record counts each way as a
-// level, the connection having carried no record for wgCountSettle, and
-// flags the connection when it has stepped by one amount wgRekeys times
-// in a row, a rekey period apart, with no other change.
-func (m *wgRhythm) readCount(c *wgConn) {
+// readCount reads the difference of the record counts each way, the
+// connection having carried no record for wgCountSettle, at now. A
+// difference off the level is a step once it has read off the level at
+// every reading for wgCountHold from the first record of the reading that
+// first found it off (another difference off the level meanwhile is the
+// same move); one back on the level before then was a request whose
+// answer came late, no step. A step is timed by that first record, which
+// can come before the records that moved the count (wgCountSlack). It
+// flags the connection when the level has stepped by one amount wgRekeys
+// times in a row, a rekey period apart, with no other change.
+func (m *wgRhythm) readCount(c *wgConn, now time.Time) {
 	k := &c.count
 	k.settled = true
 	d := k.n[0] - k.n[1]
-	if !k.leveled {
+	switch {
+	case !k.leveled:
 		k.level, k.leveled = d, true
 		return
+	case d == k.level:
+		k.moved = time.Time{}
+		return
+	case k.moved.IsZero():
+		k.moved = k.since
 	}
-	step := d - k.level
-	if step == 0 {
+	if now.Sub(k.moved) < wgCountHold {
 		return
 	}
-	k.level = d
+	step, from := d-k.level, k.moved
+	k.level, k.moved = d, time.Time{}
 	if step != k.chain.delta {
 		k.chain = wgChain{delta: step}
 	}
-	k.chain.next(k.since, m.rekey, m.window())
+	k.chain.next(from, m.rekey-wgCountSlack, m.window())
 	if k.chain.n >= wgRekeys {
 		c.flagged = fmt.Sprintf(WGRhythmByCount+": the difference each way stepped %d times by %+d, the last %s apart, flat in between",
 			k.chain.n, step, k.chain.gap.Round(time.Second))
