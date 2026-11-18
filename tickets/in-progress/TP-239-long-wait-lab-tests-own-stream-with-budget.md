@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-238, TP-223]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-239"
+branch: "tp-239-long-wait-stream"
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ The owner (2026-11-16): a full lab must take at most ~15 minutes on the remote r
 
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority)
+- 2026-11-18 backlog → in-progress, owner: agent-tp-239
