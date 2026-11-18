@@ -70,11 +70,11 @@ const (
 	// probes. Where a round trip takes longer, a request in flight is
 	// read off the level until its answer comes (wgCountHold).
 	wgCountSettle = 300 * time.Millisecond
-	// wgCountHold is how long a difference read off the level must keep
-	// reading the same before it is the level: an answer within
-	// wgPairWindow is part of its exchange, so a request whose answer is
-	// later than wgCountSettle (a loaded path or censor) moves the count
-	// for no longer than that, and is no step.
+	// wgCountHold is how long the difference must read off the level
+	// before it is a step: a choice, the time an answer has. A request
+	// whose answer comes later than wgCountSettle (a loaded path or
+	// censor) but within wgPairWindow takes the count off its level for
+	// no longer than that, and is no step.
 	wgCountHold = wgPairWindow
 	// wgCountSlack is how much sooner than a rekey period after the step
 	// before a count step may come and still chain: a step is timed by
