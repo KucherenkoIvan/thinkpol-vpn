@@ -40,7 +40,7 @@ func TestKillSwitchDirectTimeout(t *testing.T) {
 		t.Error("the same timeout again rebuilds the table")
 	}
 	// nftables reads a negative timeout as unsigned: about 2^64 ms.
-	wrapped := 855 * time.Hour
+	wrapped := 855000 * time.Hour
 	wrapped *= 3
 	for _, d := range []time.Duration{-time.Second, wrapped, 0} {
 		k.SetDirectTimeout(d)

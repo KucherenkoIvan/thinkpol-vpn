@@ -83,22 +83,7 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
 			return 0
 		}
 		id := *a.PacketID
-		defer eng.Handled(id)
-		ip := *a.Payload
-		if isFragment(ip) {
-			log.Printf("censor: a fragment escaped reassembly, dropping it")
-			setVerdict(nf, id, Drop)
-			return 0
-		}
-		p, ok := decodePacket(ip)
-		if !ok {
-			// Malformed: nothing for a module to judge, and the
-			// receiver's stack discards it anyway.
-			setVerdict(nf, id, Accept)
-			return 0
-		}
-		setVerdictFor := func(v Verdict) { setVerdict(nf, id, v) }
-		decide(eng, rst, &p, setVerdictFor)
+		handlePacket(eng, rst, id, *a.Payload, func(v Verdict) { setVerdict(nf, id, v) })
 		return 0
 	}, failed)
 	if err != nil {
@@ -110,6 +95,26 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
 	err = applyErr
 	applyMu.Unlock()
 	return err
+}
+
+// handlePacket decides the queued packet id, then tells the engine it is
+// handled: the verdict log's watermark covering id must come after the
+// packet's entries.
+func handlePacket(eng *Engine, rst *rstSender, id uint32, ip []byte, setVerdict func(Verdict)) {
+	defer eng.Handled(id)
+	if isFragment(ip) {
+		log.Printf("censor: a fragment escaped reassembly, dropping it")
+		setVerdict(Drop)
+		return
+	}
+	p, ok := decodePacket(ip)
+	if !ok {
+		// Malformed: nothing for a module to judge, and the receiver's
+		// stack discards it anyway.
+		setVerdict(Accept)
+		return
+	}
+	decide(eng, rst, &p, setVerdict)
 }
 
 // decide applies the engine's action: a verdict for the kernel, after

@@ -473,9 +473,11 @@ func TestKillSwitchLetsOutOnlyEntriesWhileDown(t *testing.T) {
 // The direct destinations expire DirectTimeout after the last Apply (here
 // a shorter timeout, SetDirectTimeout): a dead agent's kill switch lets
 // out only the entries; an Apply in time renews them, which the set
-// element's expiry shows starting over.
+// element's expiry shows starting over. Renewed halfway, it is checked
+// 200 ms past the first deadline, leaving most of half a timeout (2.8 s)
+// before the renewed one for an nft read and a ping on a loaded host.
 func TestKillSwitchDirectDestinationsExpireWithoutTheAgent(t *testing.T) {
-	const timeout = 3 * time.Second
+	const timeout = 6 * time.Second
 	p := ksPair(t)
 	k := p.killSwitch(t)
 	k.SetDirectTimeout(timeout)
@@ -498,7 +500,7 @@ func TestKillSwitchDirectDestinationsExpireWithoutTheAgent(t *testing.T) {
 		if !ok {
 			t.Fatalf("a renewed direct destination expired %v after the first Apply", time.Since(first))
 		}
-		return time.Since(first) > timeout+timeout/4
+		return time.Since(first) > timeout+200*time.Millisecond
 	})
 	if !p.ping(t, domestic6) {
 		t.Fatal("a renewed direct destination stopped answering")

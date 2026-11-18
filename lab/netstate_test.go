@@ -184,17 +184,23 @@ func untilAnswer(within time.Duration, attempt func() (bool, error)) (bool, erro
 }
 
 // untilAnswerOr is untilAnswer that also says no at once after an
-// attempt that said no once stop (unless nil) says so.
-func untilAnswerOr(within time.Duration, stop func() bool, attempt func() (bool, error)) (bool, error) {
+// attempt that said no if watch (unless nil) says that attempt was
+// blocked: watch is called just before each attempt, and what it returns
+// just after one that said no.
+func untilAnswerOr(within time.Duration, watch func() (blocked func() bool), attempt func() (bool, error)) (bool, error) {
 	deadline := time.Now().Add(within)
 	giveUp := deadline.Add(30 * time.Second)
 	for {
+		var blocked func() bool
+		if watch != nil {
+			blocked = watch()
+		}
 		yes, err := attempt()
 		switch {
 		case err == nil && yes:
 			return true, nil
 		case err == nil:
-			if time.Now().After(deadline) || stop != nil && stop() {
+			if time.Now().After(deadline) || blocked != nil && blocked() {
 				return false, nil
 			}
 		case time.Now().After(giveUp):

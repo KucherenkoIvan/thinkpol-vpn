@@ -5,6 +5,7 @@ package lab_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -70,9 +71,10 @@ func setupReality(t *testing.T, l *lab.Lab) (probeTarget, error) {
 }
 
 // realityUp starts device-a's agent once per lab and waits for its link,
-// for a minute, or, with the budget's blocked, until the censor blocked
-// it: a cell that should not cross doesn't wait out the minute. The
-// first caller's budget decides.
+// for a minute, or, with the budget's watch, until the censor blocked a
+// 2 s wait of it (its redials are new flows): a cell that should not
+// cross doesn't wait out the minute. The first caller's budget decides:
+// a cell's warm-up probe passes the cell's watch on.
 func realityUp(t *testing.T, l *lab.Lab, b probeBudget) error {
 	v, ok := realityLabs.Load(l)
 	if !ok {
@@ -83,14 +85,25 @@ func realityUp(t *testing.T, l *lab.Lab, b probeBudget) error {
 		dev := l.Node(lab.DeviceA)
 		startUp(t, dev)
 		deadline := time.Now().Add(60 * time.Second)
-		for {
-			// One link, over either family (oneUnderlay): blocked(false)
+		var watch func() func() bool
+		if b.watch != nil {
+			// One link, over either family (oneUnderlay): the watch
 			// counts both.
+			watch = b.watch.attempts(false)
+		}
+		for {
+			var blocked func() bool
+			if watch != nil {
+				blocked = watch()
+			}
 			_, err := statusWithin(dev, 2*time.Second, nil, linkUp)
 			switch {
 			case err == nil:
 				return
-			case b.blocked != nil && b.blocked(false):
+			case errors.Is(err, errSchemaVersion):
+				d.err = err
+				return
+			case blocked != nil && blocked():
 				d.err = fmt.Errorf("the censor blocked device-a's link: %w", err)
 				return
 			case time.Now().After(deadline):

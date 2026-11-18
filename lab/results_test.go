@@ -93,6 +93,10 @@ func TestCensorMatrix(t *testing.T) {
 		}
 
 		want := cc.want(tr.name)
+		budget := probeBudget{pass: want == "pass"}
+		if want == "fail" && c != nil {
+			budget.watch = c.watchBlocked(t, l, cc.blocker, tr.oneUnderlay)
+		}
 		held := cc.hold > 0 && tr.hold != nil
 		if held {
 			tr.hold(t, l, target, cc.hold, cc.idle)
@@ -100,16 +104,14 @@ func TestCensorMatrix(t *testing.T) {
 		if cc.settle {
 			// An active module judges a connection after it has crossed:
 			// the first probe shows it the transport, the cell is the
-			// probe after its verdicts.
-			tr.probe(t, l, target, probeBudget{})
+			// probe after its verdicts. A cell that should not cross
+			// may stop on the censor's verdict here too (realityUp's
+			// once keeps the first budget).
+			tr.probe(t, l, target, probeBudget{watch: budget.watch})
 			if err := c.settled(t, l); err != nil {
 				cell.result, cell.detail = "error", "the active modules didn't settle"
 				t.Fatal(err)
 			}
-		}
-		budget := probeBudget{pass: want == "pass"}
-		if want == "fail" {
-			budget.blocked = func(v6 bool) bool { return c.blocked(t, l, cc.blocker, v6, tr.oneUnderlay) }
 		}
 		got := tr.probe(t, l, target, budget)
 		cell.result, cell.detail = score(got)
@@ -963,22 +965,27 @@ var transports = []transport{
 }
 
 // probeWindow is how long a probe retries a family that should cross; one
-// that should not gets blockedWindow, unless its budget's blocked says
-// sooner that the censor blocked it.
+// that should not gets blockedWindow, unless its budget's watch says
+// sooner that the censor blocked an attempt.
 const probeWindow, blockedWindow = 30 * time.Second, 8 * time.Second
 
 // probeBudget is how a probe retries each family: for probeWindow when
-// the cell should cross (pass), else for blockedWindow, or, with blocked,
-// until an attempt failed after the censor blocked the family.
+// the cell should cross (pass), else for blockedWindow, or, with watch,
+// until an attempt failed that the censor blocked.
 type probeBudget struct {
-	pass bool
-	// blocked says whether the verdict log, caught up with the queue,
-	// shows the cell's blocker dropping or resetting traffic of the
-	// family the probe tries (v6): a cell that should not cross stops
-	// there. A tunnel's family is its underlay's (its overlay addresses
-	// may all be IPv4); a row whose tunnels share one underlay family
-	// counts either (transport.oneUnderlay).
-	blocked func(v6 bool) bool
+	pass  bool
+	watch *blockWatch
+}
+
+// blockWatch tells whether the censor blocked one attempt of a probe, by
+// the verdict log's lines written while it ran.
+type blockWatch struct {
+	// read is the verdict log caught up with the queue (censorRun.caughtUp):
+	// every packet queued before the call has its decisions in it.
+	read func() string
+	// blocked says whether one attempt's lines show its family (v6)
+	// blocked (attemptBlocked).
+	blocked func(lines string, v6 bool) bool
 }
 
 // retry runs attempt for one family (v6) until it says yes or the budget
@@ -988,28 +995,92 @@ func (b probeBudget) retry(v6 bool, attempt func() (bool, error)) (bool, error) 
 	if b.pass {
 		within = probeWindow
 	}
-	var stop func() bool
-	if b.blocked != nil {
-		stop = func() bool { return b.blocked(v6) }
+	if b.watch == nil {
+		return untilAnswerOr(within, nil, attempt)
 	}
-	return untilAnswerOr(within, stop, attempt)
+	return untilAnswerOr(within, b.watch.attempts(v6), attempt)
 }
 
-// blocked says whether the verdict log, caught up with the queue, has
-// blocker's drop or reset of traffic to or from server-1's address of one
-// family (v6), or either with oneUnderlay. A failed read fails the test.
-func (c *censorRun) blocked(t *testing.T, l *lab.Lab, blocker string, v6, oneUnderlay bool) bool {
-	t.Helper()
-	server := l.Node(lab.Server1)
-	addrs := []netip.Addr{server.IPv4(lab.NetServers)}
-	switch {
-	case oneUnderlay:
-		addrs = append(addrs, server.IPv6(lab.NetServers))
-	case v6:
-		addrs = []netip.Addr{server.IPv6(lab.NetServers)}
+// attempts is untilAnswerOr's watch for one family (v6): before each
+// attempt it marks the caught-up log's end (the last attempt's read when
+// that ran just before), after a failed one it reads the log caught up
+// again and judges only the lines past the mark: decisions on packets
+// queued while the attempt ran. What an earlier attempt, the settle
+// probe or a hold left in the log doesn't count.
+func (w *blockWatch) attempts(v6 bool) func() func() bool {
+	mark, fresh := 0, false
+	return func() func() bool {
+		if !fresh {
+			mark = len(w.read())
+		}
+		fresh = false
+		return func() bool {
+			log := w.read()
+			var lines string
+			if len(log) >= mark { // shorter: cleared, nothing to judge
+				lines = log[mark:]
+			}
+			mark, fresh = len(log), true
+			return w.blocked(lines, v6)
+		}
 	}
-	drop, reset := blames(blocker, censor.Drop, addrs), blames(blocker, censor.Reset, addrs)
-	return c.logged(t, func(e verdictLine) bool { return drop(e) || reset(e) })
+}
+
+// watchBlocked is the watch of a cell that should not cross: blocker's
+// verdicts on server-1's address of the family a probe tries, or of
+// either family on a row whose tunnels share one underlay
+// (transport.oneUnderlay), where the cell claims the transport blocked
+// whichever family carries it. A failed read fails the test.
+func (c *censorRun) watchBlocked(t *testing.T, l *lab.Lab, blocker string, oneUnderlay bool) *blockWatch {
+	server := l.Node(lab.Server1)
+	v4, v6 := server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)
+	return &blockWatch{
+		read: func() string {
+			log, err := c.caughtUp()
+			if err != nil {
+				t.Fatal(err)
+			}
+			return log
+		},
+		blocked: func(lines string, isV6 bool) bool {
+			addrs := []netip.Addr{v4}
+			switch {
+			case oneUnderlay:
+				addrs = append(addrs, v6)
+			case isV6:
+				addrs = []netip.Addr{v6}
+			}
+			blocked, err := attemptBlocked(lines, blocker, addrs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return blocked
+		},
+	}
+}
+
+// attemptBlocked says whether one attempt's verdict log lines show it
+// blocked: a decision of blocker's dropping or resetting a flow to or
+// from addrs, with no accept on that flow after it. The log has one
+// decision per flow, verdict and module, so a censor that drops a flow's
+// first packet and lets the rest through shows its accept; one that
+// accepts, drops, then accepts again shows no second accept, and looks
+// blocked.
+func attemptBlocked(lines, blocker string, addrs []netip.Addr) (bool, error) {
+	blocked := map[censor.FlowKey]bool{}
+	_, err := matchVerdicts(lines, func(e verdictLine) bool {
+		if e.Event != censor.EventDecision || !slices.Contains(addrs, e.Key.Dst) && !slices.Contains(addrs, e.Key.Src) {
+			return false
+		}
+		switch {
+		case e.Module == blocker && (e.Verdict == censor.Drop || e.Verdict == censor.Reset):
+			blocked[e.Key] = true
+		case e.Verdict == censor.Accept:
+			delete(blocked, e.Key)
+		}
+		return false
+	})
+	return len(blocked) > 0, err
 }
 
 func setupPlainTCP(t *testing.T, l *lab.Lab) (probeTarget, error) {
@@ -1177,6 +1248,83 @@ func TestBlames(t *testing.T) {
 	}
 	if blames("prober", censor.Drop, []netip.Addr{v4})(e) || blames("fully-encrypted", censor.Reset, []netip.Addr{v4})(e) {
 		t.Error("blamed another module or verdict")
+	}
+}
+
+// TestProbeStopsOnItsOwnBlockOnly: a probe that should not cross stops
+// early only after a failed attempt whose own packets the blocker dropped
+// or reset and didn't accept after; what the log had before the attempt,
+// another module's drop or the other family's don't stop it, and it goes
+// on to the attempt that crosses.
+func TestProbeStopsOnItsOwnBlockOnly(t *testing.T) {
+	server4, server6 := netip.MustParseAddr("192.0.2.9"), netip.MustParseAddr("2001:db8::9")
+	line := func(sport uint16, dst netip.Addr, module string, v censor.Verdict) string {
+		src := netip.MustParseAddr("192.0.2.1")
+		if dst.Is6() {
+			src = netip.MustParseAddr("2001:db8::1")
+		}
+		key := censor.FlowKey{Proto: censor.ProtoTCP, Src: src, SrcPort: sport, Dst: dst, DstPort: 443}
+		b, err := json.Marshal(censor.LogEntry{Event: censor.EventDecision, Flow: key.String(), Module: module, Verdict: v})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b) + "\n"
+	}
+	drop := func(sport uint16) string { return line(sport, server4, "ip-blocklist", censor.Drop) }
+	for _, c := range []struct {
+		name string
+		// before is the log before the probe; attempts what each attempt
+		// adds to it, the last one crossing (if crosses).
+		before   string
+		attempts []string
+		crosses  bool
+		// tries is how many attempts ran, 0 for "until the window ran
+		// out"; failing is the one attempt (1-based) that fails to run.
+		tries, failing int
+	}{
+		{"the blocker dropped the flow's first packet before the probe", drop(1), []string{"", ""}, true, 2, 0},
+		{"its packet dropped, then accepted", "", []string{drop(2) + line(2, server4, "", censor.Accept), ""}, true, 2, 0},
+		{"its packet dropped", "", []string{drop(3)}, false, 1, 0},
+		{"its packet reset", "", []string{line(4, server4, "ip-blocklist", censor.Reset)}, false, 1, 0},
+		{"another module's drop", "", []string{line(5, server4, "sni-blocklist", censor.Drop)}, false, 0, 0},
+		{"the other family's drop", "", []string{line(6, server6, "ip-blocklist", censor.Drop)}, false, 0, 0},
+		{"a drop in an attempt that failed to run", "", []string{drop(7), "", ""}, true, 3, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			log, tries := c.before, 0
+			w := &blockWatch{
+				read: func() string { return log },
+				blocked: func(lines string, v6 bool) bool {
+					if v6 {
+						t.Fatal("asked for IPv6")
+					}
+					blocked, err := attemptBlocked(lines, "ip-blocklist", []netip.Addr{server4})
+					if err != nil {
+						t.Fatal(err)
+					}
+					return blocked
+				},
+			}
+			crossed, err := untilAnswerOr(time.Second, w.attempts(false), func() (bool, error) {
+				tries++
+				i := min(tries, len(c.attempts)) - 1
+				log += c.attempts[i]
+				if tries == c.failing {
+					return false, errors.New("docker exec failed")
+				}
+				return c.crosses && tries == len(c.attempts), nil
+			})
+			switch {
+			case err != nil:
+				t.Fatal(err)
+			case crossed != c.crosses:
+				t.Errorf("crossed %v after %d attempts, want %v", crossed, tries, c.crosses)
+			case c.tries > 0 && tries != c.tries:
+				t.Errorf("%d attempts, want %d", tries, c.tries)
+			case c.tries == 0 && tries < 3:
+				t.Errorf("stopped after %d attempts, before the window ran out", tries)
+			}
+		})
 	}
 }
 
@@ -1355,7 +1503,13 @@ const caughtUpWithin = 30 * time.Second
 // caughtUp reads the queue's id_sequence, then the verdict log until its
 // watermark (censor.EventWatermark) reaches it, and returns the log's
 // whole lines: every packet queued before the call has its decisions in
-// them. A failed read is retried until the bound.
+// them. A failed read is retried until the bound. A packet netlink fails
+// to deliver takes an id censord never sees, so once the kernel's drop
+// counts rose it fails at once with them, rather than wait out the
+// bound. The watermark only grows: the kernel numbers packets as it
+// queues them and delivers them in that order on censord's one socket,
+// whose callback decides them one at a time, so no lower id comes after
+// a higher one is handled.
 func (c *censorRun) caughtUp() (string, error) {
 	deadline := time.Now().Add(caughtUpWithin)
 	var queued censor.QueueStats
@@ -1379,6 +1533,12 @@ func (c *censorRun) caughtUp() (string, error) {
 			}
 		}
 		lastErr = err
+		if now, err := c.stats(); err == nil {
+			if before, after := queued.QueueDropped+queued.UserDropped, now.QueueDropped+now.UserDropped; after > before {
+				return "", fmt.Errorf("the kernel dropped %d packets on the way to censord while the verdict log caught up (queue full %d, netlink %d in all), which it can't have the decisions of",
+					after-before, now.QueueDropped, now.UserDropped)
+			}
+		}
 		if time.Now().After(deadline) {
 			now, serr := c.stats()
 			return "", fmt.Errorf("the verdict log's watermark is at packet %d after %s, the kernel had queued %d (now %+v, %v; the last read: %v; censord:\n%s)",

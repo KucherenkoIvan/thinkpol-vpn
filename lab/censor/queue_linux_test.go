@@ -152,7 +152,8 @@ table inet %s {
 
 	// Once the log's watermark reaches the kernel's id_sequence, every
 	// packet queued so far has its decision in the lines before it: a
-	// reader needs no grace period to say a decision isn't there.
+	// reader needs no grace period to say a decision isn't there. Only
+	// the lines before that watermark are read.
 	t.Run("watermarks what it decided", func(t *testing.T) {
 		const queue = 204
 		logPath := startCensor(t, "censor-test-watermark", queue, `{"destinations": ["127.0.0.2"]}`)
@@ -199,12 +200,15 @@ table inet %s {
 			if err != nil {
 				t.Fatal(err)
 			}
-			whole = string(b[:bytes.LastIndexByte(b, '\n')+1])
-			for _, line := range strings.Split(whole, "\n") {
+			whole = ""
+			for line := range strings.Lines(string(b[:bytes.LastIndexByte(b, '\n')+1])) {
 				var e LogEntry
-				if line != "" && json.Unmarshal([]byte(line), &e) == nil && e.Event == EventWatermark {
-					through = max(through, e.Through)
+				if json.Unmarshal([]byte(line), &e) == nil && e.Event == EventWatermark {
+					if through = max(through, e.Through); through >= stats.Sequence {
+						break
+					}
 				}
+				whole += line
 			}
 		}
 		dropped := map[string]bool{}

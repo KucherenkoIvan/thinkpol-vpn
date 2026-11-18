@@ -62,8 +62,8 @@ func newRouteTable(log *slog.Logger, guard routetable.Guard) (agent.RouteEnforce
 // to under the agent's default of a third of firewall.DirectTimeout,
 // which the lab's kill-switch test sets to run the re-apply tick, and the
 // agent the direct destinations' expiry with it, in seconds. Zero, the
-// defaults, anywhere else and for any other value. The bound divides, as
-// three times a duration of about 854 h or more wraps negative.
+// defaults, anywhere else and for any other value. The bound divides:
+// three times a duration of about 854,000 h or more wraps negative.
 func labKillSwitchReapply(getenv func(string) string) time.Duration {
 	if getenv("THINKPOL_LAB") != "1" {
 		return 0

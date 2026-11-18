@@ -60,10 +60,10 @@ http {
 
 // proberSettings points the prober at the camouflage site, server-1's
 // connections its suspects, and fully-encrypted's tags too. Its probes
-// time out after 1 s, not the module's 2 s: every lab server answers a
-// probe within milliseconds or not at all, and a probe the server and the
-// site both leave open waits the whole timeout, seven or eight of them a
-// server.
+// time out after the module's 2 s: a lab server answers a probe within
+// milliseconds or not at all, but a loaded host holds a node up for
+// hundreds of milliseconds (lab/README.md), and the site answering a
+// probe after the timeout reads as a reaction unlike the server's.
 func proberSettings(t *testing.T, l *lab.Lab, camouflage []netip.AddrPort) json.RawMessage {
 	t.Helper()
 	server := l.Node(lab.Server1)
@@ -73,7 +73,6 @@ func proberSettings(t *testing.T, l *lab.Lab, camouflage []netip.AddrPort) json.
 			"addresses": []string{camouflage[0].String(), camouflage[1].String()},
 		},
 		"destinations": []string{server.IPv4(lab.NetServers).String(), server.IPv6(lab.NetServers).String()},
-		"timeout":      "1s",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -177,8 +176,7 @@ func TestFullyEncryptedRandomNotHTTPS(t *testing.T) {
 	startNginx(t, server, "/tmp/site", httpsName, 443, serverAddrs(server))
 	c := startCensor(t, l, []censor.ModuleConfig{{Name: "fully-encrypted"}})
 
-	blocked := func(v6 bool) bool { return c.blocked(t, l, "fully-encrypted", v6, false) }
-	if got := probeRandom(t, l, to, probeBudget{blocked: blocked}); got.v4 || got.v6 {
+	if got := probeRandom(t, l, to, probeBudget{watch: c.watchBlocked(t, l, "fully-encrypted", false)}); got.v4 || got.v6 {
 		t.Errorf("the random stream crossed: %+v", got)
 	}
 	if got := probeHTTPSOn(443)(t, l, to, probeBudget{pass: true}); !got.v4 || !got.v6 {
@@ -311,7 +309,7 @@ func TestServerHelloAgainstTheSite(t *testing.T) {
 }
 
 // settleWithin bounds settled and judged: the prober takes up to about
-// 10 s a server with the lab's 1 s probe timeout (proberSettings).
+// 20 s a server (proberSettings).
 const settleWithin = 2 * time.Minute
 
 // isServer1 says whether a is one of server-1's addresses.

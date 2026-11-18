@@ -370,21 +370,27 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 	wantTable("everything, connected", true, true)
 
 	// The live agent renews the direct destinations well within their
-	// timeout: their expiry starts over at its re-apply ticks, and one
-	// bound to eth0 still answers past a whole timeout.
-	start, renewals, last := time.Now(), 0, time.Duration(-1)
-	lab.Eventually(t, 4*directTimeout, func() error {
+	// timeout: their expiry moves later at its re-apply ticks, and one
+	// bound to eth0 still answers past a whole timeout. A read's expiry
+	// lies between the times before and after its docker exec plus what
+	// nft said was left: a renewal counts only when the earliest the
+	// expiry can now be is past the latest it could have been, so a slow
+	// exec neither hides one for good nor makes one up.
+	start, renewals, latest := time.Now(), 0, time.Time{}
+	lab.Eventually(t, 8*directTimeout, func() error {
+		before := time.Now()
 		left, ok, err := directExpires()
+		after := time.Now()
 		if err != nil {
 			return err
 		}
 		if !ok {
 			t.Fatalf("everything, connected: the direct destinations expired %v in, renewed %d times", time.Since(start), renewals)
 		}
-		if last >= 0 && left > last {
+		if !latest.IsZero() && before.Add(left).After(latest) {
 			renewals++
 		}
-		last = left
+		latest = after.Add(left)
 		if renewals < 2 || time.Since(start) <= directTimeout {
 			return fmt.Errorf("everything, connected: the direct destinations renewed %d times in %v, expiring in %v", renewals, time.Since(start), left)
 		}
