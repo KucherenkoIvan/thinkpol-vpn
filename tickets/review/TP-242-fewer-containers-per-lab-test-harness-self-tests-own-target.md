@@ -45,16 +45,16 @@ Each lab has only the nodes its test drives. The owner wants a full lab to take 
 
 ## Review findings
 Review round 1, accepted by the orchestrator: the 31 trimmed tests are sound; the problems are in the harness phase's hash and the start budget.
-- [ ] R1.1 (should-fix) The harness hash covers only files holding `func TestHarness`, but the harness tests reach helpers elsewhere (netstate_test.go, main_lab_test.go, harness_test.go) and go.mod/go.sum aren't hashed: harness tests and every helper they reach go into hashed files, go.mod and go.sum are hashed, and a guard test (go/parser, go/ast) fails if a TestHarness test reaches, transitively within package lab, a declaration in a file the hash doesn't cover.
-- [ ] R1.2 (should-fix) The stamp is written whenever go test exits 0, even when a harness test skipped (TestHarnessLabStartsOverlapOnDistinctSubnets skips under -parallel < 4): don't stamp a run in which any harness test skipped, and say so.
-- [ ] R1.3 (should-fix) Worst case 10 + 10 + 45 + 10 = 75 min, past LAB_TIMEOUT's 60: one bound for everything before the slot, the slot wait bounded by the test's deadline minus the start budget; the oracle checks the real sum; the comment and README say exactly what holds.
-- [ ] R1.4 (should-fix) Timeouts don't say which bound expired (slot wait, before-slot preparation, start after the slot): wrap each with its bound; test at least one.
-- [ ] R1.5 (nit) `|| exit 1` inside `{ … } | git hash-object` runs in the pipe's subshell, so a failed read still hashes partial input and exits 0: check the files before the pipe and fail on any read error.
-- [ ] R1.6 (should-fix) The hash keys only the Go and Docker server versions: add the Docker host's kernel version and the Compose version.
-- [ ] R1.7 (nit) harness_test.go: `time.Sleep(5 * time.Millisecond)` in a unit test: use a fixed or injected time.
-- [ ] R1.8 (nit) TestOnlyKeepsTheNamedNodesAndTheirNetworks checks names and networks only: check that the kept nodes' specs are unchanged.
-- [ ] R1.9 (ticket) Scope says 8 harness tests and 25 trimmed, Notes 9 and 31; box 2's "any change under lab/ non-test files" overstates what the hash covers; drop the "ev1" label from Notes.
-- [ ] R1.10 (check) `labctl up` now gets 10 minutes for its build where it had 15: restore it if that wasn't intended; say so in the Log.
+- [x] R1.1 (should-fix) The harness hash covers only files holding `func TestHarness`, but the harness tests reach helpers elsewhere (netstate_test.go, main_lab_test.go, harness_test.go) and go.mod/go.sum aren't hashed: harness tests and every helper they reach go into hashed files, go.mod and go.sum are hashed, and a guard test (go/parser, go/ast) fails if a TestHarness test reaches, transitively within package lab, a declaration in a file the hash doesn't cover.
+- [x] R1.2 (should-fix) The stamp is written whenever go test exits 0, even when a harness test skipped (TestHarnessLabStartsOverlapOnDistinctSubnets skips under -parallel < 4): don't stamp a run in which any harness test skipped, and say so.
+- [x] R1.3 (should-fix) Worst case 10 + 10 + 45 + 10 = 75 min, past LAB_TIMEOUT's 60: one bound for everything before the slot, the slot wait bounded by the test's deadline minus the start budget; the oracle checks the real sum; the comment and README say exactly what holds.
+- [x] R1.4 (should-fix) Timeouts don't say which bound expired (slot wait, before-slot preparation, start after the slot): wrap each with its bound; test at least one.
+- [x] R1.5 (nit) `|| exit 1` inside `{ … } | git hash-object` runs in the pipe's subshell, so a failed read still hashes partial input and exits 0: check the files before the pipe and fail on any read error.
+- [x] R1.6 (should-fix) The hash keys only the Go and Docker server versions: add the Docker host's kernel version and the Compose version.
+- [x] R1.7 (nit) harness_test.go: `time.Sleep(5 * time.Millisecond)` in a unit test: use a fixed or injected time.
+- [x] R1.8 (nit) TestOnlyKeepsTheNamedNodesAndTheirNetworks checks names and networks only: check that the kept nodes' specs are unchanged.
+- [x] R1.9 (ticket) Scope says 8 harness tests and 25 trimmed, Notes 9 and 31; box 2's "any change under lab/ non-test files" overstates what the hash covers; drop the "ev1" label from Notes.
+- [x] R1.10 (check) `labctl up` now gets 10 minutes for its build where it had 15: restore it if that wasn't intended; say so in the Log.
 
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority; from the lab-speed audit)
@@ -69,3 +69,16 @@ Review round 1, accepted by the orchestrator: the 31 trimmed tests are sound; th
 - 2026-11-18 not verified: the wall-time gain on a quiet runner (every run here shared it with other tickets' labs); out of scope: the censor matrix rows start all 7 upstream nodes, some of which a row may not need (TP-236's cells)
 - 2026-11-18 in-progress → review
 - 2026-11-18 review round 1: fix R1.1–R1.10
+- 2026-11-18 R1.1: the harness tests and every helper they reach are in lab/harness*_test.go (smoke's three harness tests to harness_smoke_lab_test.go; bindir, subnets, teardown and main renamed harness_*; execTimeout, pollTimeout, execResult, execRead, pingNoReply, pingNoReplyOrRoute, pingAnswers, noPing to harness_exec_lab_test.go); LAB_HARNESS_FILES hashes that glob, go.mod and go.sum; guard TestTheHarnessHashCoversWhatItsTestsReach (go/parser, go/ast; roots TestHarness*, TestMain, test inits; a type brings its methods) fails on a reached declaration in another test file and on a Makefile glob not its own; sweepBinRoot's local type endedRun renamed endedDir, which shadowed a test helper
+- 2026-11-18 R1.2: lab-harness-cached runs the harness with -v and writes no stamp when a test skipped (or none ran), saying so
+- 2026-11-18 R1.3: labBudget has one bound before the slot (15 min from the start's beginning, shared by startAs's prepare and up's beforeSlot), 45 for the slot wait, 10 for the start from the slot; with a test deadline none runs past it less 2 min of tear-down and the slot wait ends 10 min before that (startClock); oracle TestLabStartEndsBeforeTheTestDeadline walks a lab begun at every minute of LAB_TIMEOUT; lab.go comment and README say this
+- 2026-11-18 R1.4: an expired bound names itself ("no lab slot within …", "start not done … after the slot", "not ready for a lab slot within …", ", cut short by the test's deadline"); TestLabStartSaysWhichBoundExpired
+- 2026-11-18 R1.5: the hash input goes to a temp file, a failed read exits the recipe (no pipe); R1.6: the hash keys the Docker kernel and Compose versions too
+- 2026-11-18 R1.7: TestStartBudgetCountsFromTheSlot runs on an injected clock, no sleep; R1.8: TestOnly checks each kept node's spec unchanged (reflect.DeepEqual)
+- 2026-11-18 R1.9: Scope, box 2 and Notes re-counted from the code: 30 Standard/Upstream tests (29 call sites, TestM0 twice) and 5 hand-written, 33 trimmed (not 31: the earlier 26 was short), 9 harness tests; box 2 says what the hash covers; "ev1" dropped
+- 2026-11-18 R1.10: labctl up's build lost 5 min unintentionally (it shared the 10-min before-slot bound): the before-slot bound is now 15 min, labctl up keeps its own 15-min overall bound, so its build has the 15 it had; test labs get 15 for prepare where the whole start had 10 before this branch
+- 2026-11-18 mutations, each killed then restored (never pushed): harness_exec_lab_test.go renamed out of the glob (guard names execRead, execResult, execTimeout); guard's Makefile glob changed; no deadline caps, the 15+45+10 sum (lab begun at 0 ends 12 min past the deadline less tear-down); slot wait without the start's reserve; before-slot bound restarting per part; start counted from the beginning; slot wait bounded by the start bound; expired bounds not named; a cancelled caller blamed on a bound; Only dropping Forward and Gateway
+- 2026-11-18 runs at 250fda62: go test ./lab, make lint, make test green; make lab-harness ok 325 s; lab-harness-cached ran (ok 299 s, stamped ce3eb1ca), then skipped; a comment on noPing changed the hash (50514daa) and reran it (ok 655 s); a comment in netstate_test.go left ce3eb1ca, skipped; TestHarnessLabStartsOverlapOnDistinctSubnets under -parallel 2: SKIP, "not remembered", no stamp; an unreadable file in LAB_HARNESS_FILES: lab-harness-hash and lab-harness-cached fail (rc 2)
+- 2026-11-18 merged origin/rewrite (TP-243): Makefile keeps COUNT on the node phase beside -skip and the harness phase; TP-243's goTestFresh calls up with the clock
+- 2026-11-18 runs at ff28b853 (the merge): go test ./lab, make lint, make test green; lab-harness-cached ran (harness 03e61178, ok 417 s), then skipped; no new full lab: the trimmed tests didn't change
+- 2026-11-18 has-errors → review
