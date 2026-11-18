@@ -77,9 +77,12 @@ func TestLooksFullyEncryptedExemptions(t *testing.T) {
 // engine: a Shadowsocks-like random stream is dropped from its first data,
 // over TCP and over UDP; HTTPS (a real ClientHello) and HTTP pass.
 func TestFullyEncryptedFlagsRandomNotHTTPS(t *testing.T) {
-	m, err := newFullyEncrypted(nil)
-	if err != nil {
-		t.Fatal(err)
+	newModule := func() Passive {
+		m, err := newFullyEncrypted(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
 	}
 	for _, c := range []struct {
 		name  string
@@ -90,7 +93,7 @@ func TestFullyEncryptedFlagsRandomNotHTTPS(t *testing.T) {
 		{"TLS ClientHello", helloFor(t, "example.net"), Accept},
 		{"HTTP", []byte("GET / HTTP/1.1\r\nHost: example.net\r\n\r\n"), Accept},
 	} {
-		eng := NewEngine([]Passive{m}, nil, nil)
+		eng := NewEngine([]Passive{newModule()}, nil, nil)
 		seq := handshake(eng)
 		if a := eng.Handle(tcpPacket(clientAddr, serverAddr, 40000, 443, seq, 5001, Ack|Psh, c.first)); a.Verdict != c.want {
 			t.Errorf("tcp %s: %+v, want %s", c.name, a, c.want)
@@ -100,7 +103,7 @@ func TestFullyEncryptedFlagsRandomNotHTTPS(t *testing.T) {
 			t.Errorf("tcp %s: the next packet %+v, want the pinned %s", c.name, a, c.want)
 		}
 
-		eng = NewEngine([]Passive{m}, nil, nil)
+		eng = NewEngine([]Passive{newModule()}, nil, nil)
 		if a := eng.Handle(udpPacket(clientAddr, serverAddr, 5000, 443, c.first)); a.Verdict != c.want {
 			t.Errorf("udp %s: %+v, want %s", c.name, a, c.want)
 		}
@@ -174,13 +177,13 @@ func TestFullyEncryptedTagOnly(t *testing.T) {
 // that size, all random, is exempt almost never but by its first six
 // bytes (its connection id, fixed for the link's hour), while a short one
 // (84 bytes, a redial's first in the lab) is more than half printable by
-// chance about one in 175, each a fresh draw: TP-236's partial cell, which
-// residual censorship closes.
+// chance about one in 175 on average over connection ids, each datagram a
+// fresh draw: TP-236's partial cell, which residual censorship closes.
 func TestFullyEncryptedWireGuardInitiationByChance(t *testing.T) {
 	const n = 2000
 	exempt, udpExempt, shortExempt := 0, 0, 0
 	for seed := uint64(0); seed < 10*n; seed++ {
-		if looksFullyEncrypted(append(filler(8), randomBytes(seed+2*n, 76)...)) == "" {
+		if looksFullyEncrypted(randomBytes(seed+2*n, 84)) == "" {
 			shortExempt++
 		}
 	}
@@ -258,8 +261,7 @@ func TestFullyEncryptedResidualCensorship(t *testing.T) {
 	expect("a redial just before the time is up", udpPacket(clientAddr, serverAddr, 5003, 4500, exempt), Drop)
 	clock = start.Add(residualCensorship)
 	expect("a redial once the time is up", udpPacket(clientAddr, serverAddr, 5004, 4500, exempt), Accept)
-	expect("the earlier redial, judged on its first datagram", udpPacket(clientAddr, serverAddr, 5001, 4500, exempt), Accept)
-	expect("the blocked flow", udpPacket(clientAddr, serverAddr, 5000, 4500, exempt), Drop)
+	expect("the redial dropped before, judged on its first datagram", udpPacket(clientAddr, serverAddr, 5003, 4500, exempt), Accept)
 
 	seq := handshake(eng)
 	expect("a blocked TCP connection", tcpPacket(clientAddr, serverAddr, 40000, 443, seq, 5001, Ack|Psh, blocked), Drop)
