@@ -143,7 +143,7 @@ func (t Topology) Only(names ...string) Topology {
 		}
 	}
 	for _, net := range t.Networks {
-		if used[net] {
+		if used[net.Name] {
 			out.Networks = append(out.Networks, net)
 		}
 	}
