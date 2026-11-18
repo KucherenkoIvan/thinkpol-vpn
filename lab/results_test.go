@@ -23,7 +23,7 @@ import (
 
 // TestCensorMatrix scores every transport against every censor module
 // (PRD C4, success metric 1) and regenerates lab/RESULTS.md. Each
-// transport's row runs in one lab of its own (lab.Upstream, holding its
+// transport's row runs in one lab of its own (matrixRowNodes, holding its
 // own lab slot, lab.StartOwnSlot), the rows in parallel and a row's cells
 // one after another: a transport passes when its data crossed the censor
 // in the lab router over IPv4 and over IPv6, fails when it crossed over
@@ -1123,7 +1123,7 @@ func sawPlainTCP(t *testing.T, l *lab.Lab, c *censorRun) error {
 
 func setupUDP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
-	space := newM0Space(t, l.Node(lab.Internet), server)
+	space := newM0Space(t, l.Node(lab.Router), server)
 	envelope, version := space.build(t)
 	space.install(t, dev, "device-a", envelope)
 	space.install(t, server, "server-1", envelope)
