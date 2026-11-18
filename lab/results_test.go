@@ -101,13 +101,17 @@ func TestCensorMatrix(t *testing.T) {
 			// An active module judges a connection after it has crossed:
 			// the first probe shows it the transport, the cell is the
 			// probe after its verdicts.
-			tr.probe(t, l, target, false)
+			tr.probe(t, l, target, probeBudget{})
 			if err := c.settled(t, l); err != nil {
 				cell.result, cell.detail = "error", "the active modules didn't settle"
 				t.Fatal(err)
 			}
 		}
-		got := tr.probe(t, l, target, want == "pass")
+		budget := probeBudget{pass: want == "pass"}
+		if want == "fail" {
+			budget.blocked = func(v6 bool) bool { return c.blocked(t, l, cc.blocker, v6, tr.oneUnderlay) }
+		}
+		got := tr.probe(t, l, target, budget)
 		cell.result, cell.detail = score(got)
 		if held {
 			// The probe after the hold crosses on a redialled connection
@@ -839,9 +843,9 @@ type probeTarget struct{ v4, v6 netip.Addr }
 type transport struct {
 	name  string
 	setup func(t *testing.T, l *lab.Lab) (probeTarget, error)
-	// probe reports whether data crossed over each family; wantPass gives
-	// it time to retry, otherwise it settles a blocked family quickly.
-	probe func(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed
+	// probe reports whether data crossed over each family, retrying each
+	// as its budget says.
+	probe func(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed
 	// sawFlows checks the verdict log has the probe's flows on the
 	// underlay: the censor saw what it judged.
 	sawFlows func(t *testing.T, l *lab.Lab, c *censorRun) error
@@ -959,14 +963,53 @@ var transports = []transport{
 }
 
 // probeWindow is how long a probe retries a family that should cross; one
-// that should not gets blockedWindow.
+// that should not gets blockedWindow, unless its budget's blocked says
+// sooner that the censor blocked it.
 const probeWindow, blockedWindow = 30 * time.Second, 8 * time.Second
 
-func window(wantPass bool) time.Duration {
-	if wantPass {
-		return probeWindow
+// probeBudget is how a probe retries each family: for probeWindow when
+// the cell should cross (pass), else for blockedWindow, or, with blocked,
+// until an attempt failed after the censor blocked the family.
+type probeBudget struct {
+	pass bool
+	// blocked says whether the verdict log, caught up with the queue,
+	// shows the cell's blocker dropping or resetting traffic of the
+	// family the probe tries (v6): a cell that should not cross stops
+	// there. A tunnel's family is its underlay's (its overlay addresses
+	// may all be IPv4); a row whose tunnels share one underlay family
+	// counts either (transport.oneUnderlay).
+	blocked func(v6 bool) bool
+}
+
+// retry runs attempt for one family (v6) until it says yes or the budget
+// says no (untilAnswerOr).
+func (b probeBudget) retry(v6 bool, attempt func() (bool, error)) (bool, error) {
+	within := blockedWindow
+	if b.pass {
+		within = probeWindow
 	}
-	return blockedWindow
+	var stop func() bool
+	if b.blocked != nil {
+		stop = func() bool { return b.blocked(v6) }
+	}
+	return untilAnswerOr(within, stop, attempt)
+}
+
+// blocked says whether the verdict log, caught up with the queue, has
+// blocker's drop or reset of traffic to or from server-1's address of one
+// family (v6), or either with oneUnderlay. A failed read fails the test.
+func (c *censorRun) blocked(t *testing.T, l *lab.Lab, blocker string, v6, oneUnderlay bool) bool {
+	t.Helper()
+	server := l.Node(lab.Server1)
+	addrs := []netip.Addr{server.IPv4(lab.NetServers)}
+	switch {
+	case oneUnderlay:
+		addrs = append(addrs, server.IPv6(lab.NetServers))
+	case v6:
+		addrs = []netip.Addr{server.IPv6(lab.NetServers)}
+	}
+	drop, reset := blames(blocker, censor.Drop, addrs), blames(blocker, censor.Reset, addrs)
+	return c.logged(t, func(e verdictLine) bool { return drop(e) || reset(e) })
 }
 
 func setupPlainTCP(t *testing.T, l *lab.Lab) (probeTarget, error) {
@@ -975,11 +1018,14 @@ func setupPlainTCP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	return probeTarget{server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)}, nil
 }
 
-func probePlainTCP(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
+func probePlainTCP(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
 	dev := l.Node(lab.DeviceA)
+	connects := func(a netip.Addr) func() (bool, error) {
+		return func() (bool, error) { return tcpReaches(dev, a, tcpProbePort, 2) }
+	}
 	return crossed{
-		v4: mustProbe(t)(tcpCrosses(dev, to.v4, window(wantPass))),
-		v6: mustProbe(t)(tcpCrosses(dev, to.v6, window(wantPass))),
+		v4: mustProbe(t)(b.retry(false, connects(to.v4))),
+		v6: mustProbe(t)(b.retry(true, connects(to.v6))),
 	}
 }
 
@@ -1016,11 +1062,11 @@ func setupUDP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 
 // probeUDP pings server-1's overlay addresses, IPv4 and IPv6, through the
 // tunnel.
-func probeUDP(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
+func probeUDP(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
 	dev := l.Node(lab.DeviceA)
 	return crossed{
-		v4: mustProbe(t)(pingCrosses(dev, to.v4, window(wantPass), pingNoReply)),
-		v6: mustProbe(t)(pingCrosses(dev, to.v6, window(wantPass), pingNoReply)),
+		v4: mustProbe(t)(b.retry(false, pingOnce(dev, to.v4, pingNoReply))),
+		v6: mustProbe(t)(b.retry(true, pingOnce(dev, to.v6, pingNoReply))),
 	}
 }
 
@@ -1134,11 +1180,11 @@ func TestBlames(t *testing.T) {
 	}
 }
 
-// pingCrosses pings until a reply comes or within runs out (untilAnswer):
-// "doesn't cross" is a failed ping noReply accepts (pingNoReply: only
-// ping's own "no reply"), any other failure an error.
-func pingCrosses(from *lab.Node, to netip.Addr, within time.Duration, noReply func(lab.Result) bool) (bool, error) {
-	return untilAnswer(within, func() (bool, error) {
+// pingOnce is one ping attempt for a probe's budget: "doesn't cross" is
+// a failed ping noReply accepts (pingNoReply: only ping's own "no
+// reply"), any other failure an error.
+func pingOnce(from *lab.Node, to netip.Addr, noReply func(lab.Result) bool) func() (bool, error) {
+	return func() (bool, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		res, err := from.Exec(ctx, "ping", "-c", "1", "-W", "1", to.String())
@@ -1149,7 +1195,7 @@ func pingCrosses(from *lab.Node, to netip.Addr, within time.Duration, noReply fu
 			return false, nil
 		}
 		return false, fmt.Errorf("ping %s from %s: %w\n%s", to, from.Name, err, res.Stdout)
-	})
+	}
 }
 
 // mustProbe passes a probe's answer on and fails the cell (an "error"
@@ -1253,12 +1299,14 @@ type verdictLine struct {
 	Key censor.FlowKey
 }
 
-// logged reports whether a verdict log entry matches, waiting briefly for
-// the log to catch up. A failed read is retried; "no" comes only from a
-// read that succeeded after the deadline, and the test fails if none
-// does. A whole line that doesn't parse fails the test (censord writes
-// whole lines); the part after the last newline is a write in progress,
-// left for the next read.
+// logged reports whether a verdict log entry matches once the log has
+// caught up with every packet the kernel queued so far (caughtUp): a
+// passive module's decisions, and the flags already written. A read that
+// fails is retried; the test fails if none succeeds within the bound. A
+// whole line that doesn't parse fails the test (censord writes whole
+// lines); the part after the last newline is a write in progress, left
+// for the next read. An active module's flag comes on its own time: wait
+// for it (flagged).
 func (c *censorRun) logged(t *testing.T, match func(verdictLine) bool) bool {
 	t.Helper()
 	found, err := c.pollLog(match)
@@ -1268,26 +1316,92 @@ func (c *censorRun) logged(t *testing.T, match func(verdictLine) bool) bool {
 	return found
 }
 
-func (c *censorRun) pollLog(match func(verdictLine) bool) (bool, error) {
-	deadline := time.Now().Add(3 * time.Second)
-	giveUp := deadline.Add(30 * time.Second)
-	for {
-		log, err := execRead(c.router, pollTimeout, "cat", censorLogPath)
-		if err == nil {
-			found, err := matchVerdicts(completeLines(log), match)
-			switch {
-			case err != nil:
-				return false, err // a whole line: not transient
-			case found:
-				return true, nil
-			case time.Now().After(deadline):
-				return false, nil
+// flagged waits for an entry, an active module's flag, within.
+func (c *censorRun) flagged(t *testing.T, within time.Duration, what string, match func(verdictLine) bool) verdictLine {
+	t.Helper()
+	var got verdictLine
+	lab.Eventually(t, within, func() error {
+		found, err := c.pollLog(func(e verdictLine) bool {
+			if match(e) {
+				got = e
+				return true
 			}
-		} else if time.Now().After(giveUp) {
-			return false, fmt.Errorf("reading the verdict log: %w", err)
+			return false
+		})
+		switch {
+		case err != nil:
+			return err
+		case !found:
+			return fmt.Errorf("no %s in the verdict log yet", what)
+		}
+		return nil
+	})
+	return got
+}
+
+func (c *censorRun) pollLog(match func(verdictLine) bool) (bool, error) {
+	log, err := c.caughtUp()
+	if err != nil {
+		return false, err
+	}
+	return matchVerdicts(log, match)
+}
+
+// caughtUpWithin bounds caughtUp: censord decides a packet in
+// microseconds and flushes every 100 ms, so only a stalled censord takes
+// seconds.
+const caughtUpWithin = 30 * time.Second
+
+// caughtUp reads the queue's id_sequence, then the verdict log until its
+// watermark (censor.EventWatermark) reaches it, and returns the log's
+// whole lines: every packet queued before the call has its decisions in
+// them. A failed read is retried until the bound.
+func (c *censorRun) caughtUp() (string, error) {
+	deadline := time.Now().Add(caughtUpWithin)
+	var queued censor.QueueStats
+	for {
+		var err error
+		if queued, err = c.stats(); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			return "", fmt.Errorf("the queue's stats: %w", err)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	var through uint64
+	var lastErr error
+	for {
+		log, err := execRead(c.router, pollTimeout, "cat", censorLogPath)
+		if err == nil {
+			log = completeLines(log)
+			if through = watermark(log); through >= queued.Sequence {
+				return log, nil
+			}
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			now, serr := c.stats()
+			return "", fmt.Errorf("the verdict log's watermark is at packet %d after %s, the kernel had queued %d (now %+v, %v; the last read: %v; censord:\n%s)",
+				through, caughtUpWithin, queued.Sequence, now, serr, lastErr, c.proc.Output())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// watermark is the highest packet id the log's watermarks cover, 0 for
+// none.
+func watermark(log string) uint64 {
+	var through uint64
+	for line := range strings.Lines(log) {
+		if !strings.Contains(line, `"event":"`+censor.EventWatermark+`"`) {
+			continue
+		}
+		var e censor.LogEntry
+		if json.Unmarshal([]byte(line), &e) == nil && e.Event == censor.EventWatermark {
+			through = max(through, e.Through)
+		}
+	}
+	return through
 }
 
 // completeLines is s up to its last newline: what a reader racing the

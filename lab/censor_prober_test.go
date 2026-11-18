@@ -59,7 +59,11 @@ http {
 }
 
 // proberSettings points the prober at the camouflage site, server-1's
-// connections its suspects, and fully-encrypted's tags too.
+// connections its suspects, and fully-encrypted's tags too. Its probes
+// time out after 1 s, not the module's 2 s: every lab server answers a
+// probe within milliseconds or not at all, and a probe the server and the
+// site both leave open waits the whole timeout, seven or eight of them a
+// server.
 func proberSettings(t *testing.T, l *lab.Lab, camouflage []netip.AddrPort) json.RawMessage {
 	t.Helper()
 	server := l.Node(lab.Server1)
@@ -69,6 +73,7 @@ func proberSettings(t *testing.T, l *lab.Lab, camouflage []netip.AddrPort) json.
 			"addresses": []string{camouflage[0].String(), camouflage[1].String()},
 		},
 		"destinations": []string{server.IPv4(lab.NetServers).String(), server.IPv6(lab.NetServers).String()},
+		"timeout":      "1s",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -130,11 +135,11 @@ func setupRandom(t *testing.T, l *lab.Lab) (probeTarget, error) {
 
 // probeRandom sends the random payload to the echo server over each
 // family and checks it comes back whole.
-func probeRandom(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
+func probeRandom(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
 	dev := l.Node(lab.DeviceA)
 	return crossed{
-		v4: mustProbe(t)(untilAnswer(window(wantPass), func() (bool, error) { return randomEchoes(dev, to.v4) })),
-		v6: mustProbe(t)(untilAnswer(window(wantPass), func() (bool, error) { return randomEchoes(dev, to.v6) })),
+		v4: mustProbe(t)(b.retry(false, func() (bool, error) { return randomEchoes(dev, to.v4) })),
+		v6: mustProbe(t)(b.retry(true, func() (bool, error) { return randomEchoes(dev, to.v6) })),
 	}
 }
 
@@ -172,10 +177,11 @@ func TestFullyEncryptedRandomNotHTTPS(t *testing.T) {
 	startNginx(t, server, "/tmp/site", httpsName, 443, serverAddrs(server))
 	c := startCensor(t, l, []censor.ModuleConfig{{Name: "fully-encrypted"}})
 
-	if got := probeRandom(t, l, to, false); got.v4 || got.v6 {
+	blocked := func(v6 bool) bool { return c.blocked(t, l, "fully-encrypted", v6, false) }
+	if got := probeRandom(t, l, to, probeBudget{blocked: blocked}); got.v4 || got.v6 {
 		t.Errorf("the random stream crossed: %+v", got)
 	}
-	if got := probeHTTPSOn(443)(t, l, to, true); !got.v4 || !got.v6 {
+	if got := probeHTTPSOn(443)(t, l, to, probeBudget{pass: true}); !got.v4 || !got.v6 {
 		t.Errorf("HTTPS didn't cross: %+v", got)
 	}
 	if _, err := blockedBy(t, l, c, "fully-encrypted", crossed{}, false); err != nil {
@@ -195,24 +201,9 @@ func TestFullyEncryptedRandomNotHTTPS(t *testing.T) {
 // and returns it.
 func proberVerdict(t *testing.T, c *censorRun, port uint16, family func(netip.Addr) bool) verdictLine {
 	t.Helper()
-	var got verdictLine
-	lab.Eventually(t, 60*time.Second, func() error {
-		found, err := c.pollLog(func(e verdictLine) bool {
-			if e.Event == censor.EventFlag && e.Module == "prober" && e.Key.DstPort == port && family(e.Key.Dst) {
-				got = e
-				return true
-			}
-			return false
-		})
-		switch {
-		case err != nil:
-			return err
-		case !found:
-			return fmt.Errorf("no prober flag of a flow to port %d yet", port)
-		}
-		return nil
+	return c.flagged(t, 60*time.Second, fmt.Sprintf("prober flag of a flow to port %d", port), func(e verdictLine) bool {
+		return e.Event == censor.EventFlag && e.Module == "prober" && e.Key.DstPort == port && family(e.Key.Dst)
 	})
-	return got
 }
 
 // TestProberTellsEchoFromNginx is the ticket's second and third checks
@@ -308,12 +299,10 @@ func TestServerHelloAgainstTheSite(t *testing.T) {
 			verdict censor.Verdict
 			says    string
 		}{{443, censor.Accept, "server hello matches the site"}, {oldPort, censor.Drop, "server hello unlike the site"}} {
-			if !c.logged(t, func(e verdictLine) bool {
+			c.flagged(t, 30*time.Second, fmt.Sprintf("%s flag %q of %s:%d", cs.verdict, cs.says, a, cs.port), func(e verdictLine) bool {
 				return e.Event == censor.EventFlag && e.Module == "server-hello" && e.Key.Src == a && e.Key.SrcPort == cs.port &&
 					e.Verdict == cs.verdict && strings.Contains(e.Reason, cs.says)
-			}) {
-				t.Errorf("no %s flag %q of %s:%d in the verdict log", cs.verdict, cs.says, a, cs.port)
-			}
+			})
 		}
 	}
 	if err := c.healthy(t); err != nil {
@@ -321,9 +310,9 @@ func TestServerHelloAgainstTheSite(t *testing.T) {
 	}
 }
 
-// How long settled waits: for a first tag, then for every tagged flow's
-// flag (the prober takes up to about 20 s a server).
-const settleQuiet, settleWithin = 5 * time.Second, 2 * time.Minute
+// settleWithin bounds settled and judged: the prober takes up to about
+// 10 s a server with the lab's 1 s probe timeout (proberSettings).
+const settleWithin = 2 * time.Minute
 
 // isServer1 says whether a is one of server-1's addresses.
 func isServer1(l *lab.Lab) func(netip.Addr) bool {
@@ -333,45 +322,46 @@ func isServer1(l *lab.Lab) func(netip.Addr) bool {
 
 // settled waits until every flow of server-1 a passive module tagged has
 // an active module's flag: the active modules have judged what they were
-// shown. With no tag within settleQuiet, nothing was suspect.
+// shown. A passive module tags as it decides a packet, so with no tag in
+// the log once it has caught up with the queue (caughtUp), nothing was
+// suspect.
 func (c *censorRun) settled(t *testing.T, l *lab.Lab) error {
 	t.Helper()
 	isServer := isServer1(l)
 	start := time.Now()
 	for {
-		log, err := execRead(c.router, pollTimeout, "cat", censorLogPath)
-		if err == nil {
-			tagged, flagged := map[string]bool{}, map[string]bool{}
-			if _, err := matchVerdicts(completeLines(log), func(e verdictLine) bool {
-				if isServer(e.Key.Src) || isServer(e.Key.Dst) {
-					tagged[e.Flow] = tagged[e.Flow] || e.Event == censor.EventTag
-					flagged[e.Flow] = flagged[e.Flow] || e.Event == censor.EventFlag
-				}
-				return false
-			}); err != nil {
-				return err
-			}
-			waiting, tags := 0, 0
-			for f, tag := range tagged {
-				if tag {
-					tags++
-					if !flagged[f] {
-						waiting++
-					}
-				}
-			}
-			switch {
-			case tags > 0 && waiting == 0:
-				t.Logf("settled after %s: %d tagged flows of server-1, all flagged", time.Since(start).Round(time.Second), tags)
-				return nil
-			case tags == 0 && time.Since(start) > settleQuiet:
-				t.Logf("settled after %s: no module tagged a flow of server-1", time.Since(start).Round(time.Second))
-				return nil
-			case time.Since(start) > settleWithin:
-				return fmt.Errorf("%d of %d flows of server-1 a module tagged have no flag after %s", waiting, tags, settleWithin)
-			}
-		} else if time.Since(start) > settleWithin {
+		log, err := c.caughtUp()
+		if err != nil {
 			return err
+		}
+		tagged, flagged := map[string]bool{}, map[string]bool{}
+		if _, err := matchVerdicts(log, func(e verdictLine) bool {
+			if isServer(e.Key.Src) || isServer(e.Key.Dst) {
+				tagged[e.Flow] = tagged[e.Flow] || e.Event == censor.EventTag
+				flagged[e.Flow] = flagged[e.Flow] || e.Event == censor.EventFlag
+			}
+			return false
+		}); err != nil {
+			return err
+		}
+		waiting, tags := 0, 0
+		for f, tag := range tagged {
+			if tag {
+				tags++
+				if !flagged[f] {
+					waiting++
+				}
+			}
+		}
+		switch {
+		case tags == 0:
+			t.Logf("settled after %s: no module tagged a flow of server-1", time.Since(start).Round(time.Millisecond))
+			return nil
+		case waiting == 0:
+			t.Logf("settled after %s: %d tagged flows of server-1, all flagged", time.Since(start).Round(time.Millisecond), tags)
+			return nil
+		case time.Since(start) > settleWithin:
+			return fmt.Errorf("%d of %d flows of server-1 a module tagged have no flag after %s", waiting, tags, settleWithin)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -382,21 +372,16 @@ func (c *censorRun) settled(t *testing.T, l *lab.Lab) error {
 // prober's probes cause too), read once every such flow a module tagged
 // has its flag: the scored probe's flows included, whose comparisons may
 // end seconds after the probe does (server-hello's site dial can take its
-// whole timeout).
+// whole timeout). Each read has caught up with the queue, so the scored
+// probe's tags are in the first.
 func (c *censorRun) judged(l *lab.Lab, module string) ([]judgment, error) {
 	isServer, dev := isServer1(l), l.Node(lab.DeviceA)
 	isDevice := func(a netip.Addr) bool { return a == dev.IPv4(lab.NetDevices) || a == dev.IPv6(lab.NetDevices) }
 	between := func(k censor.FlowKey) bool {
 		return isServer(k.Src) && isDevice(k.Dst) || isDevice(k.Src) && isServer(k.Dst)
 	}
-	// The censor flushes its log every 100 ms: a tag of the scored
-	// probe's last connection is in the file well within judgedAfter.
-	time.Sleep(judgedAfter)
-	read := func() (string, error) { return execRead(c.router, pollTimeout, "cat", censorLogPath) }
-	return awaitJudgments(read, module, between, settleWithin)
+	return awaitJudgments(c.caughtUp, module, between, settleWithin)
 }
-
-const judgedAfter = time.Second
 
 // awaitJudgments reads the verdict log until every flow between the
 // device and the server (between) a module tagged has a flag, then

@@ -256,6 +256,12 @@ func curlFrom(n *lab.Node, maxTime time.Duration, args ...string) (bool, string,
 // is retried too, and returned once no attempt has answered for 30s past
 // within.
 func untilAnswer(within time.Duration, attempt func() (bool, error)) (bool, error) {
+	return untilAnswerOr(within, nil, attempt)
+}
+
+// untilAnswerOr is untilAnswer that also says no at once after an
+// attempt that said no once stop (unless nil) says so.
+func untilAnswerOr(within time.Duration, stop func() bool, attempt func() (bool, error)) (bool, error) {
 	deadline := time.Now().Add(within)
 	giveUp := deadline.Add(30 * time.Second)
 	for {
@@ -264,7 +270,7 @@ func untilAnswer(within time.Duration, attempt func() (bool, error)) (bool, erro
 		case err == nil && yes:
 			return true, nil
 		case err == nil:
-			if time.Now().After(deadline) {
+			if time.Now().After(deadline) || stop != nil && stop() {
 				return false, nil
 			}
 		case time.Now().After(giveUp):

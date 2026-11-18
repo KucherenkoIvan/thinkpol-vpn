@@ -320,6 +320,17 @@ func reverseThrottle(r rule) rule {
 	return r
 }
 
+// Handled tells the verdict log the queue's packet id is decided (a
+// verdict set, whether Handle decided it or the queue did without it):
+// the log's next watermark covers it ([EventWatermark]). The queue's
+// callback calls it after every packet, in the order the kernel numbered
+// them.
+func (e *Engine) Handled(id uint32) {
+	if e.log != nil {
+		e.log.handled(uint64(id))
+	}
+}
+
 func (e *Engine) logEntry(entry LogEntry) {
 	if e.log != nil {
 		e.log.write(entry)

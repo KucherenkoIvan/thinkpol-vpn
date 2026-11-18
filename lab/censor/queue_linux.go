@@ -83,6 +83,7 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
 			return 0
 		}
 		id := *a.PacketID
+		defer eng.Handled(id)
 		ip := *a.Payload
 		if isFragment(ip) {
 			log.Printf("censor: a fragment escaped reassembly, dropping it")

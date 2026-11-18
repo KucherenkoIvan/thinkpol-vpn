@@ -15,6 +15,10 @@ type QueueStats struct {
 	QueueDropped uint64
 	// UserDropped counts packets netlink failed to deliver to censord.
 	UserDropped uint64
+	// Sequence is the id of the last packet the kernel queued for
+	// censord (id_sequence): what the verdict log's watermark
+	// ([EventWatermark]) is compared with.
+	Sequence uint64
 }
 
 // ParseQueueStats finds queue's line in the contents of
@@ -24,18 +28,18 @@ type QueueStats struct {
 func ParseQueueStats(proc string, queue uint16) (QueueStats, error) {
 	for _, line := range strings.Split(proc, "\n") {
 		f := strings.Fields(line)
-		if len(f) < 7 || f[0] != strconv.Itoa(int(queue)) {
+		if len(f) < 8 || f[0] != strconv.Itoa(int(queue)) {
 			continue
 		}
-		var n [3]uint64
-		for i, col := range []int{2, 5, 6} {
+		var n [4]uint64
+		for i, col := range []int{2, 5, 6, 7} {
 			v, err := strconv.ParseUint(f[col], 10, 64)
 			if err != nil {
 				return QueueStats{}, fmt.Errorf("nfnetlink_queue line %q: %w", line, err)
 			}
 			n[i] = v
 		}
-		return QueueStats{Waiting: n[0], QueueDropped: n[1], UserDropped: n[2]}, nil
+		return QueueStats{Waiting: n[0], QueueDropped: n[1], UserDropped: n[2], Sequence: n[3]}, nil
 	}
 	return QueueStats{}, fmt.Errorf("queue %d not in nfnetlink_queue", queue)
 }

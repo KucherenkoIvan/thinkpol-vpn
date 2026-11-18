@@ -69,8 +69,11 @@ func setupReality(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	return probeTarget{o4, o6}, nil
 }
 
-// realityUp starts device-a's agent once per lab and waits for its link.
-func realityUp(t *testing.T, l *lab.Lab) error {
+// realityUp starts device-a's agent once per lab and waits for its link,
+// for a minute, or, with the budget's blocked, until the censor blocked
+// it: a cell that should not cross doesn't wait out the minute. The
+// first caller's budget decides.
+func realityUp(t *testing.T, l *lab.Lab, b probeBudget) error {
 	v, ok := realityLabs.Load(l)
 	if !ok {
 		return fmt.Errorf("the reality row wasn't set up in this lab")
@@ -79,21 +82,36 @@ func realityUp(t *testing.T, l *lab.Lab) error {
 	d.once.Do(func() {
 		dev := l.Node(lab.DeviceA)
 		startUp(t, dev)
-		_, d.err = statusWithin(dev, 60*time.Second, nil, linkUp)
+		deadline := time.Now().Add(60 * time.Second)
+		for {
+			// One link, over either family (oneUnderlay): blocked(false)
+			// counts both.
+			_, err := statusWithin(dev, 2*time.Second, nil, linkUp)
+			switch {
+			case err == nil:
+				return
+			case b.blocked != nil && b.blocked(false):
+				d.err = fmt.Errorf("the censor blocked device-a's link: %w", err)
+				return
+			case time.Now().After(deadline):
+				d.err = err
+				return
+			}
+		}
 	})
 	return d.err
 }
 
-func probeReality(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
-	if err := realityUp(t, l); err != nil && wantPass {
+func probeReality(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
+	if err := realityUp(t, l, b); err != nil && b.pass {
 		t.Fatal(err)
 	}
-	return probeUDP(t, l, to, wantPass)
+	return probeUDP(t, l, to, b)
 }
 
 // holdReality brings device-a's link up and holds it (holdTunnel).
 func holdReality(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool) {
-	if err := realityUp(t, l); err != nil {
+	if err := realityUp(t, l, probeBudget{pass: true}); err != nil {
 		t.Fatal(err)
 	}
 	holdTunnel(t, l, to, d, idle)
