@@ -1205,13 +1205,14 @@ func unanswered(first, every, d time.Duration) []wgMessage {
 	return out
 }
 
-// leadIn is an exchange every 250 ms for lead before each of rekeys: no
-// 300 ms of quiet between them and the handshake, so the step's records
-// start lead before its handshake's.
+// leadIn is an exchange every 250 ms, the latest 125 ms before each of
+// rekeys, for lead: no 300 ms of quiet between them and the handshake, so
+// the step's records start lead before its handshake's. The 125 ms keep
+// them off wgPingTimeline's pings, which come on whole seconds.
 func leadIn(lead time.Duration, rekeys ...time.Duration) []wgMessage {
 	var out []wgMessage
 	for _, at := range rekeys {
-		for t := at - lead; t < at; t += 250 * time.Millisecond {
+		for t := at - lead + 125*time.Millisecond; t < at; t += 250 * time.Millisecond {
 			out = append(out, wgMessage{t, true, 300}, wgMessage{t + time.Millisecond, false, 300})
 		}
 	}
