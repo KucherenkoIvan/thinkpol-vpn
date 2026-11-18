@@ -218,7 +218,8 @@ lab-test lab-test-default lab-test-long:
 	labpkg=$$(go list -tags lab ./lab) && others=$$(go list -tags lab ./lab/... | grep -vx "$$labpkg") || exit 1; \
 	"$$labctl" down -stale || exit 1; \
 	run=$$("$$labctl" run-id) || { run=; exit 1; }; export THINKPOL_LAB_RUN=$$run THINKPOL_LAB_RESULTS_DIR=$$tmp; \
-	phases=; failed=; \
+	phases=; failed=; both=; \
+	case " $(LAB_STREAMS) " in *" default "*) case " $(LAB_STREAMS) " in *" long "*) both=1;; esac;; esac; \
 	case " $(LAB_STREAMS) " in *" default "*) \
 		( { ( cd lab && THINKPOL_LAB_STREAM=default exec go tool test2json -t -p "$$labpkg" "$$tmp/lab.test" -test.v=test2json -test.paniconexit0 -test.count=1 -test.timeout=$(LAB_TIMEOUT) -test.skip='$(LAB_HARNESS_RUN)' ) 2>&1; echo $$? > "$$tmp/lab.status"; } | "$$labctl" testjson -times "$$tmp/lab.times" 2>&1 | awk '{print "[lab]  " $$0; fflush()}' ) & lab=$$!; \
 		( { THINKPOL_LAB_STREAM=default go test -tags lab -json -count=1 -timeout $(LAB_TIMEOUT) -skip '$(LAB_HARNESS_RUN)' $$others 2>&1; echo $$? > "$$tmp/labpkgs.status"; } | "$$labctl" testjson -times "$$tmp/labpkgs.times" 2>&1 | awk '{print "[lab]  " $$0; fflush()}' ) & labpkgs=$$!; \
@@ -244,7 +245,7 @@ lab-test lab-test-default lab-test-long:
 			echo "lab-test: the $$f phase died without a status" >&2; failed="$$failed $$f"; \
 		fi; \
 	done; \
-	case " $(LAB_STREAMS) " in *" default "*" long "*|*" long "*" default "*) \
+	case "$$both" in 1) \
 		if ( cd lab && THINKPOL_LAB_STREAM= exec "$$tmp/lab.test" -test.v -test.count=1 -test.run='^TestAssembleCensorMatrix$$' ) > "$$tmp/assemble.out" 2>&1 \
 		&& grep -q '^--- PASS: TestAssembleCensorMatrix ' "$$tmp/assemble.out"; then \
 			echo "lab-test: lab/RESULTS.md assembled from both streams"; \
