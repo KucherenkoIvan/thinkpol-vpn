@@ -155,16 +155,23 @@ func holdTunnel(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle 
 		}
 		return
 	}
-	interval := strconv.FormatFloat(rhythmPing(wgTimerScale).Seconds(), 'f', -1, 64)
-	res, err := dev.Exec(ctx, "ping", "-q", "-i", interval, "-w", fmt.Sprint(int(d/time.Second)), to.v4.String())
+	interval := rhythmPing(wgTimerScale)
+	res, err := dev.Exec(ctx, "ping", "-q", "-i", strconv.FormatFloat(interval.Seconds(), 'f', -1, 64),
+		"-w", fmt.Sprint(int(d/time.Second)), to.v4.String())
 	sent, got, perr := pingReceived(res.Stdout)
-	// A censor's block of the held connection costs the redial a few
-	// pings, so 4 may be lost however short the hold; else 10%.
-	if allowed := max(4, sent/10); perr != nil || sent == 0 || sent-got > allowed {
+	// 10% may be lost, at least 4, and the pings of one redial: a block of
+	// the held connection costs its redial up to 7 s at any timer scale
+	// (thinkpol's path gives up on a link 6 s after its probes go
+	// unanswered, at real time), 3 pings at real time, 17 at a factor of
+	// 10.
+	if allowed := max(4, sent/10) + int(holdRedial/interval); perr != nil || sent == 0 || sent-got > allowed {
 		t.Fatalf("the hold's pings didn't cross: %d of %d came back, want all but %d (%v): %v", got, sent, allowed, perr, err)
 	}
 	t.Logf("the hold's pings: %d of %d came back", got, sent)
 }
+
+// holdRedial is the longest a held tunnel's redial after a block takes.
+const holdRedial = 7 * time.Second
 
 // pingReceived reads how many pings were sent and how many came back from
 // iputils ping's summary line.
