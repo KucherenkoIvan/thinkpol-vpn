@@ -213,6 +213,18 @@ func checkInPlaceRenewal(t *testing.T, path string, r *resolvConf, told <-chan [
 // settle the cap cuts short is measured from its start, not from the
 // last change.
 
+// pollOnly gives the watch no change events, as on a bind mount, whose
+// events go to the source file's directory, or where there are none: a
+// change only the poll sees must keep the settle going on its own.
+func pollOnly(t *testing.T) {
+	t.Helper()
+	watch := watchResolvConf
+	t.Cleanup(func() { watchResolvConf = watch })
+	watchResolvConf = func(string) (func(int) <-chan bool, func()) {
+		return func(int) <-chan bool { return nil }, func() {}
+	}
+}
+
 // steppedTiming is the timing of a test that steps its writer, the watch
 // polling every check.
 func steppedTiming(check time.Duration) resolvConfTiming {
@@ -290,6 +302,7 @@ func TestResolvConfAnInPlaceWriterSettlesBeforeItIsRead(t *testing.T) {
 // is the only sign the write goes on (a bind mount). Each part is read
 // before the next is written, starts the settle over, and none is taken.
 func TestResolvConfAPollThatReadsAnInPlaceWriteEmptyWaits(t *testing.T) {
+	pollOnly(t)
 	path, r, told := startInPlace(t, steppedTiming(20*time.Millisecond))
 	writeInPlaceStepped(t, r, path)
 	settleSoon(t, r)
@@ -744,6 +757,8 @@ func TestResolvConfAFileCreatedAtThePathSettles(t *testing.T) {
 			if tc.events {
 				hasChangeEvents(t)
 				check = time.Hour
+			} else {
+				pollOnly(t)
 			}
 			path, r, told := startInPlace(t, steppedTiming(check))
 			if err := os.Remove(path); err != nil {
