@@ -156,6 +156,19 @@ table inet %s {
 	t.Run("watermarks what it decided", func(t *testing.T) {
 		const queue = 204
 		logPath := startCensor(t, "censor-test-watermark", queue, `{"destinations": ["127.0.0.2"]}`)
+		// startCensor returns before the censor has bound the queue, and a
+		// packet the rule queues to no one is dropped without an id.
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			proc, err := os.ReadFile("/proc/net/netfilter/nfnetlink_queue")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ParseQueueStats(string(proc), queue); err == nil {
+				break
+			} else if time.Now().After(deadline) {
+				t.Fatalf("the censor didn't bind queue %d within 10 s: %v", queue, err)
+			}
+		}
 		const flows = 20
 		for range flows {
 			c, err := net.DialUDP("udp", nil, udpAddr)
