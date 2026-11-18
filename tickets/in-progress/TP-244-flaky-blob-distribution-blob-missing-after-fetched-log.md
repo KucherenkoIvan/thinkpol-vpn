@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-244"
+branch: "tp-244-blob-distribution-flake"
 ---
 
 ## Goal
@@ -30,3 +30,4 @@ In two or three lab runs (TP-229's and TP-238's, 2026-11-17) TestBlobDistributio
 
 ## Log
 - 2026-11-18 created in backlog (seen in lab runs 2026-11-17)
+- 2026-11-18 backlog → in-progress, owner: agent-tp-244
