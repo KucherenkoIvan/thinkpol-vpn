@@ -15,6 +15,13 @@
 // silently censor less), and writes what it decided to a verdict log the
 // tests read (see "The verdict log").
 //
+// A censor that stops deletes its table, but the conntrack entries of the
+// flows it saw stay (its rule's ct match keeps conntrack on), and a
+// censord killed leaves its table too: censord -reset ([ClearRouter])
+// deletes both, so the next censor in the same router starts from a fresh
+// router's state. The censor matrix runs it between the cells of a row,
+// which share one lab.
+//
 // # Flows and streams
 //
 // A [Flow] is one direction of a connection ([FlowKey]); the engine links
@@ -517,7 +524,8 @@
 // and report whether data crossed over IPv4 and over IPv6. A cell passes
 // only when both did and fails only when neither did: one family alone is
 // partial, which fails the run unless the row varies (below), so a
-// blocking censor one family slips past is caught. A transport's cell without a censor runs first, and its
+// blocking censor one family slips past is caught. Each row runs in one lab, a cell at a time, the lab
+// reset to its first state after each cell. A transport's cell without a censor runs first, and its
 // censored cells are judged only once that one passed. Every cell is
 // probed, and one whose censor can't be trusted (censord died, the kernel
 // dropped queued packets ([QueueStats]), the verdict log lacks the probe's

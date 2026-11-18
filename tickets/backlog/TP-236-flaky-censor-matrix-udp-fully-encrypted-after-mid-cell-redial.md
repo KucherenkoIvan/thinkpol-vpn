@@ -28,6 +28,8 @@ In a full lab (TP-223's run, 2026-11-16) the censor-matrix cell `udp × fully-en
 
 ## Notes
 - First seen in TP-223's full lab at 17b3b1f1 (its Log, 2026-11-16).
+- Seen again in TP-240's per-row matrix run on 7d37478b (2026-11-17): in the cell `udp against fully-encrypted` the server's udp link came up 0.3 s before censord was ready, closed after 6 s (its probes dropped), and a new link then crossed over IPv6, so the cell scored partial, want fail. Every reset held. Candidates to check: the cell's transport starting before the censor is ready; the fully-encrypted module and IPv6 flows that start after a redial.
 
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate fixes)
+- 2026-11-18 Notes: evidence from TP-240's matrix run
