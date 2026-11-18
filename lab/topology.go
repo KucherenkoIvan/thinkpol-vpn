@@ -121,6 +121,35 @@ func (t Topology) With(nodes ...NodeSpec) Topology {
 	return out
 }
 
+// Only returns a copy of the topology with just the named nodes, and the
+// networks they are on: a test declares the nodes it drives, since each
+// node is a container to start. A node's gateway must be among them
+// (Validate). It panics on a name the topology doesn't have, which would
+// otherwise drop a node silently.
+func (t Topology) Only(names ...string) Topology {
+	for _, name := range names {
+		if t.nodeIndex(name) < 0 {
+			panic(fmt.Sprintf("lab topology: Only(%q): no such node", name))
+		}
+	}
+	var out Topology
+	used := map[string]bool{}
+	for _, n := range t.Nodes {
+		if slices.Contains(names, n.Name) {
+			out.Nodes = append(out.Nodes, n)
+			for _, net := range n.Networks {
+				used[net] = true
+			}
+		}
+	}
+	for _, net := range t.Networks {
+		if used[net.Name] {
+			out.Networks = append(out.Networks, net)
+		}
+	}
+	return out
+}
+
 // WithNetworks returns a copy of the topology with networks added.
 func (t Topology) WithNetworks(networks ...Network) Topology {
 	out := Topology{Networks: slices.Clone(t.Networks), Nodes: slices.Clone(t.Nodes)}

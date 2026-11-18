@@ -19,7 +19,7 @@ import (
 // A network removed by someone else between the list and the inspect
 // doesn't fail allocation: two throwaway networks of the test's own, one of
 // them removed right after `docker network ls`.
-func TestUsedSubnetsSurvivesANetworkRemovedMidway(t *testing.T) {
+func TestHarnessUsedSubnetsSurvivesANetworkRemovedMidway(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	suffix := make([]byte, 4)
@@ -75,7 +75,7 @@ func TestUsedSubnetsSurvivesANetworkRemovedMidway(t *testing.T) {
 // Labs starting at once run their docker compose up side by side, not one
 // after another under the subnet allocation lock, and still get subnets of
 // their own: four labs of one test (one lab slot), all up together.
-func TestLabStartsOverlapOnDistinctSubnets(t *testing.T) {
+func TestHarnessLabStartsOverlapOnDistinctSubnets(t *testing.T) {
 	t.Parallel()
 	const labs = 4
 	// The labs' subtests wait on each other, each holding a -parallel slot:

@@ -34,7 +34,7 @@ const listSource = "5.3.0.0,5.3.255.255,RU\n" +
 // stored, so the file is read right after the line.
 func TestBlobDistribution(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
+	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Server2, lab.Internet))
 	builder := l.Node(lab.Internet)
 	server1, server2, devA := l.Node(lab.Server1), l.Node(lab.Server2), l.Node(lab.DeviceA)
 
