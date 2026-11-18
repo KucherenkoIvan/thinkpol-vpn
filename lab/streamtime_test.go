@@ -135,8 +135,8 @@ func TestFilterTestJSONFailingCellKept(t *testing.T) {
 
 // TestFilterTestJSONUnended: tests that never ended are printed whole,
 // however long (a timeout's goroutine dump), in name order, before their
-// package's verdict; one whose binary died with no verdict when the input
-// ends.
+// package's verdict, and untimed; so is one test2json failed for its
+// binary dying; one whose binary died with no verdict when the input ends.
 func TestFilterTestJSONUnended(t *testing.T) {
 	dump := "goroutine 1 [running]:\n" + strings.Repeat("\tframe\n", 3*testLogKeep/7) + "END OF DUMP\n"
 	names := []string{"TestH", "TestC", "TestF", "TestA", "TestG", "TestB", "TestE", "TestD"}
@@ -145,8 +145,12 @@ func TestFilterTestJSONUnended(t *testing.T) {
 		evs = append(evs, outEvent(n, n+" started\n"))
 	}
 	evs = append(evs, outEvent("TestD", dump), outEvent("", "FAIL\tx/lab\t5.000s\n"), endEvent("fail", "", 5))
+	// test2json running the binary itself fails the test that was running
+	// when it died, with no "--- FAIL" line from the testing package.
+	evs = append(evs, outEvent("TestKilled", "TestKilled started\n"), outEvent("TestKilled", dump), endEvent("fail", "TestKilled", 0))
 	var w bytes.Buffer
-	if _, err := FilterTestJSON(strings.NewReader(events(t, evs...)), &w, false); err != nil {
+	times, err := FilterTestJSON(strings.NewReader(events(t, evs...)), &w, false)
+	if err != nil {
 		t.Fatal(err)
 	}
 	s := w.String()
@@ -161,8 +165,15 @@ func TestFilterTestJSONUnended(t *testing.T) {
 		}
 		last = i
 	}
-	if !strings.HasSuffix(s, "FAIL\tx/lab\t5.000s\n") {
-		t.Error("the package's verdict is not last")
+	verdict := strings.Index(s, "FAIL\tx/lab\t5.000s\n")
+	if verdict < last {
+		t.Error("the package's verdict came before its unended tests")
+	}
+	if !strings.HasSuffix(s, "TestKilled started\n"+dump) {
+		t.Errorf("a test failed by test2json, not by its own --- FAIL line, was not printed whole (%d bytes printed)", len(s))
+	}
+	if len(times) != 0 {
+		t.Errorf("tests that never ended were timed: %v", times)
 	}
 
 	w.Reset()

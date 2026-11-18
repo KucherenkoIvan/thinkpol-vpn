@@ -49,10 +49,12 @@ type testEvent struct {
 // of those that passed, without the === RUN, PAUSE, CONT and NAME lines,
 // and cut to its first and last testLogKeep bytes. A test that never ended
 // (a panic, a timeout's goroutine dump) goes out whole, before its
-// package's verdict. It returns how long each test that ended took:
-// top-level tests and their direct subtests.
+// package's verdict: test2json fails such a test without the testing
+// package's "--- FAIL" line when its binary dies, or leaves it open. It
+// returns how long each test that ended took: top-level tests and their
+// direct subtests.
 func FilterTestJSON(r io.Reader, w io.Writer, verbose bool) ([]TestTime, error) {
-	f := testFilter{w: w, verbose: verbose, logs: map[string]*testLog{}}
+	f := testFilter{w: w, verbose: verbose, logs: map[string]*testLog{}, reported: map[string]bool{}}
 	defer f.close()
 	br := bufio.NewReaderSize(r, 64<<10)
 	for {
@@ -82,7 +84,9 @@ type testFilter struct {
 	w       io.Writer
 	verbose bool
 	logs    map[string]*testLog // by package and full test name
-	times   []TestTime
+	// The tests whose own "--- PASS/FAIL/SKIP" line came: they ended.
+	reported map[string]bool
+	times    []TestTime
 }
 
 func testKey(pkg, test string) string { return pkg + "\x00" + test }
@@ -100,7 +104,16 @@ func (f *testFilter) event(ev testEvent) error {
 		_, err := io.WriteString(f.w, ev.Output)
 		return err
 	}
-	ended := ev.Action == "pass" || ev.Action == "fail"
+	key := testKey(ev.Package, ev.Test)
+	if strings.HasPrefix(ev.Output, "--- ") {
+		f.reported[key] = true
+	}
+	// test2json fails, without the line, a test still running when its
+	// binary died; it never passes one.
+	ended := ev.Action == "pass" || (ev.Action == "fail" && f.reported[key])
+	if ev.Action == "pass" || ev.Action == "fail" || ev.Action == "skip" {
+		defer delete(f.reported, key)
+	}
 	if ended && strings.Count(ev.Test, "/") <= 1 {
 		f.times = append(f.times, TestTime{
 			Name:    path.Base(ev.Package) + " " + ev.Test,
@@ -111,7 +124,6 @@ func (f *testFilter) event(ev testEvent) error {
 		_, err := io.WriteString(f.w, ev.Output)
 		return err
 	}
-	key := testKey(ev.Package, ev.Test)
 	if ev.Output != "" && !isFraming(ev.Output) {
 		l := f.logs[key]
 		if l == nil {
@@ -134,7 +146,7 @@ func (f *testFilter) event(ev testEvent) error {
 		defer l.close()
 		parent, _, sub := cutLast(ev.Test, "/")
 		if !sub {
-			return l.writeTo(f.w, false)
+			return l.writeTo(f.w, !ended)
 		}
 		pk := testKey(ev.Package, parent)
 		p := f.logs[pk]
