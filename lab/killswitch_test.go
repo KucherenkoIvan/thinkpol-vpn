@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -168,22 +169,28 @@ func killSwitchLiveAgent(k *killSwitchLab) {
 	// reapply apart. Removed again just after a re-apply put it back, it
 	// must be back within one and a half periods, not skip a tick. (The
 	// table alone, not `nft flush ruleset`, which would take the
-	// container's own rules with it.)
-	backIn := func() time.Duration {
-		t.Helper()
-		k.dev.MustExec(t, "nft", "delete", "table", "inet", "thinkpol-killswitch")
-		start := time.Now()
-		for p, _ := k.table(); !p; p, _ = k.table() {
-			if time.Since(start) > 30*time.Second {
-				t.Fatal("the kill switch's table removed from outside isn't back within 30 s")
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		return time.Since(start)
+	// container's own rules with it.) The four removals and waits run in
+	// one exec, timed by the node's clock: a loaded host's docker exec
+	// would stretch the wait and the gap before the next removal alike.
+	out := k.dev.MustExec(t, "sh", "-ec", `for i in 0 1 2 3; do
+	nft delete table inet thinkpol-killswitch
+	start=$(date +%s%N)
+	until nft list table inet thinkpol-killswitch >/dev/null 2>&1; do
+		[ $(($(date +%s%N) - start)) -lt 30000000000 ] || { echo never; exit 0; }
+		sleep 0.1
+	done
+	echo $(($(date +%s%N) - start))
+done`)
+	backIn := strings.Fields(out)
+	if slices.Contains(backIn, "never") || len(backIn) != 4 {
+		t.Fatalf("the kill switch's table removed from outside isn't back within 30 s: %q", out)
 	}
-	backIn()
-	for i := range 3 {
-		if d := backIn(); d > killSwitchReapply*3/2 {
+	for i, ns := range backIn[1:] {
+		n, err := strconv.ParseInt(ns, 10, 64)
+		if err != nil {
+			t.Fatalf("the table's time back %q: %v", ns, err)
+		}
+		if d := time.Duration(n); d > killSwitchReapply*3/2 {
 			t.Errorf("everything, connected: the table removed from outside (%d) was back after %v, want within %v", i, d, killSwitchReapply*3/2)
 		}
 	}
