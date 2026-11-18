@@ -46,3 +46,6 @@ In TP-243's second full lab at 3d2f04d8 (2026-11-18) the cell TestCensorMatrix/r
 - 2026-11-18 make lint and make test pass at 87aa62e1 (TestWGRhythmRandomExchanges' pinned counts unchanged)
 - 2026-11-19 10 lab-gotest runs at 2851a0ed of udp and reality × off and wireguard-rhythm under load: reality's expected fail 10 of 10 (9 burst, 1 count), udp caught 10 of 10; Notes
 - 2026-11-19 not done: the full make lab-test (dropped by the orchestrator, 2026-11-18: concurrent full labs starve each other; targeted runs instead); 20 runs (the brief asked for 10, so the third box stays open); not verified: which of the two ways broke the count in TP-243's run (its trace wasn't kept); the hold needs no change
+- 2026-11-19 merged origin/rewrite (8a3b8850; TP-242's lab changes); at e9d5fbd0: make lint and make test pass; lab-gotest of udp and reality × off and wireguard-rhythm (other labs beside it): udp caught, reality's expected fail (burst), both off cells pass, 603 s
+- 2026-11-19 handoff: nothing left running on the test machine; the run directories are outside the repo
+- 2026-11-19 in-progress → review
