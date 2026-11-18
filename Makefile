@@ -44,7 +44,7 @@ BUF_BREAKING_AGAINST ?= rewrite
 # cgo is off unless a target turns it on (test-race).
 export CGO_ENABLED := 0
 
-.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-harness lab-harness-cached lab-perf lab-gotest lab-down lab-seccomp lab-seccomp-check
+.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-harness lab-harness-hash lab-harness-cached lab-perf lab-gotest lab-down lab-seccomp lab-seccomp-check
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -143,8 +143,8 @@ LAB_P ?= 4
 # checkouts: the hash names the content, not the checkout).
 LAB_HARNESS_RUN := ^TestHarness
 LAB_HARNESS_CACHE ?= $(HOME)/.cache/thinkpol-lab/harness
-LAB_HARNESS_HASH = { go version && docker version --format '{{.Server.Version}}' && \
-	for f in $$(LC_ALL=C ls lab/*.go lab/labctl/*.go | grep -v '_test\.go$$') $$(LC_ALL=C grep -l '^func TestHarness' lab/*_test.go) lab/Dockerfile lab/seccomp.json; do \
+LAB_HARNESS_HASH = versions=$$(go version && docker version --format '{{.Server.Version}}') || exit 1; \
+	{ echo "$$versions"; for f in $$(LC_ALL=C ls lab/*.go lab/labctl/*.go | grep -v '_test\.go$$') $$(LC_ALL=C grep -l '^func TestHarness' lab/*_test.go) lab/Dockerfile lab/seccomp.json; do \
 		echo "== $$f" && cat "$$f" || exit 1; \
 	done; } | git hash-object --stdin
 
@@ -178,6 +178,10 @@ lab-test: ## lab tests (each starts its own lab), every package's tests inside a
 
 lab-harness: ## the lab harness's own tests (TestHarness…: isolation, sealing, ownership, subnets), each starting labs
 	go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) -run '$(LAB_HARNESS_RUN)' ./lab
+
+# The hash lab-harness-cached keys its stamp by.
+lab-harness-hash:
+	@$(LAB_HARNESS_HASH)
 
 # lab-harness unless it passed before on the same harness (make lab-test's
 # third phase).
