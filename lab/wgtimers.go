@@ -10,11 +10,13 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // WGTimerScaleEnv sets the factor the lab's thinkpol binary divides
@@ -24,10 +26,11 @@ const WGTimerScaleEnv = "THINKPOL_LAB_WG_TIMER_SCALE"
 // DefaultWGTimerScale is the factor without WGTimerScaleEnv.
 const DefaultWGTimerScale = 10
 
-// maxWGTimerScale keeps REKEY_AFTER_TIME (120 s) well above what the
-// network and the censor's real-time windows need (wireguard-rhythm takes
-// a rekey period over 2 s), and RekeyTimeoutJitterMaxMs (334) above zero.
-const maxWGTimerScale = 20
+// maxWGTimerScale keeps the rhythm cells' traffic in the same order
+// against the scaled timers as at real time: their hold pings every 0.4
+// KEEPALIVE_TIMEOUT (scaled), which must stay above wireguard-rhythm's
+// 300 ms count settle, a real-time choice; past 13 it doesn't.
+const maxWGTimerScale = 10
 
 // WGTimerScale is the factor WireGuard's timers run sped up by in the lab:
 // WGTimerScaleEnv, or DefaultWGTimerScale.
@@ -96,12 +99,12 @@ func wgTimerModFile(ctx context.Context, root, dir string, scale int) (string, e
 	if err != nil {
 		return "", fmt.Errorf("lab: copy %s with its timers scaled: %w", wireGuardModule, err)
 	}
+	if err := noWireGuardReplace(ctx, root); err != nil {
+		return "", err
+	}
 	gomod, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {
 		return "", err
-	}
-	if bytes.Contains(gomod, []byte("replace "+wireGuardModule)) || bytes.Contains(gomod, []byte("\t"+wireGuardModule+" =>")) {
-		return "", fmt.Errorf("lab: go.mod replaces %s already: the lab can't scale its timers", wireGuardModule)
 	}
 	gomod = fmt.Appendf(gomod, "\nreplace %s => %s\n", wireGuardModule, copyDir)
 	gosum, err := os.ReadFile(filepath.Join(root, "go.sum"))
@@ -115,10 +118,33 @@ func wgTimerModFile(ctx context.Context, root, dir string, scale int) (string, e
 	return modfile, os.WriteFile(filepath.Join(dir, "go.sum"), gosum, 0o644)
 }
 
+// noWireGuardReplace fails when the checkout's go.mod replaces
+// wireguard-go itself: the lab's replace would fight it.
+func noWireGuardReplace(ctx context.Context, root string) error {
+	res, err := run(ctx, nil, nil, "go", "-C", root, "mod", "edit", "-json")
+	if err != nil {
+		return fmt.Errorf("lab: read go.mod: %w", err)
+	}
+	var mod struct {
+		Replace []struct{ Old struct{ Path string } }
+	}
+	if err := json.Unmarshal([]byte(res.Stdout), &mod); err != nil {
+		return fmt.Errorf("lab: read go.mod: %w", err)
+	}
+	for _, r := range mod.Replace {
+		if r.Old.Path == wireGuardModule {
+			return fmt.Errorf("lab: go.mod replaces %s already: the lab can't scale its timers", wireGuardModule)
+		}
+	}
+	return nil
+}
+
 // scaledWireGuardCopy copies the module in modDir, with constants in place
 // of its device/constants.go, to a directory of the user's cache named by
-// the version and the constants, unless it is there already, and returns
-// that directory.
+// the version and the constants, unless it is there already with the
+// same content, and returns that directory. A copy whose content differs
+// (edited, or broken) is made again, and copies a killed build left
+// unfinished are removed.
 func scaledWireGuardCopy(modDir, version string, constants []byte) (string, error) {
 	cache, err := os.UserCacheDir()
 	if err != nil {
@@ -127,13 +153,23 @@ func scaledWireGuardCopy(modDir, version string, constants []byte) (string, erro
 	sum := sha256.Sum256(constants)
 	parent := filepath.Join(cache, "thinkpol-lab", "wgtimers")
 	dst := filepath.Join(parent, version+"-"+hex.EncodeToString(sum[:6]))
+	want, err := wgTreeHash(os.DirFS(modDir), constants)
+	if err != nil {
+		return "", err
+	}
 	if _, err := os.Stat(filepath.Join(dst, "go.mod")); err == nil {
-		return dst, nil
+		if got, err := wgTreeHash(os.DirFS(dst), nil); err == nil && got == want {
+			return dst, nil
+		}
+		if err := os.RemoveAll(dst); err != nil {
+			return "", err
+		}
 	}
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return "", err
 	}
-	tmp, err := os.MkdirTemp(parent, ".copy-")
+	removeStaleCopies(parent)
+	tmp, err := os.MkdirTemp(parent, wgCopyPrefix)
 	if err != nil {
 		return "", err
 	}
@@ -147,11 +183,54 @@ func scaledWireGuardCopy(modDir, version string, constants []byte) (string, erro
 	// Another process may have made the same copy meanwhile: either is
 	// the same content.
 	if err := os.Rename(tmp, dst); err != nil {
-		if _, serr := os.Stat(filepath.Join(dst, "go.mod")); serr != nil {
+		if got, herr := wgTreeHash(os.DirFS(dst), nil); herr != nil || got != want {
 			return "", err
 		}
 	}
 	return dst, nil
+}
+
+// wgCopyPrefix names a copy still being made.
+const wgCopyPrefix = ".copy-"
+
+// removeStaleCopies removes the copies in parent a build left unfinished
+// (killed before it renamed its copy) over an hour ago: a running build
+// makes its copy in seconds.
+func removeStaleCopies(parent string) {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), wgCopyPrefix) {
+			continue
+		}
+		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > time.Hour {
+			_ = os.RemoveAll(filepath.Join(parent, e.Name()))
+		}
+	}
+}
+
+// wgTreeHash hashes every file of fsys, its path and its content, with
+// constants (if not nil) in place of device/constants.go's.
+func wgTreeHash(fsys fs.FS, constants []byte) (string, error) {
+	h := sha256.New()
+	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return err
+		}
+		if constants != nil && path == "device/constants.go" {
+			b = constants
+		}
+		fmt.Fprintf(h, "%s\x00%d\x00", path, len(b))
+		h.Write(b)
+		return nil
+	})
+	return hex.EncodeToString(h.Sum(nil)), err
 }
 
 // scaleWGConstants rewrites wireguard-go's device/constants.go with every
