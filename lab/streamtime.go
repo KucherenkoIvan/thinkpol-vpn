@@ -118,6 +118,10 @@ func filterEvent(ev testEvent, w io.Writer, logs map[string]*testLog, flush func
 		}
 		l.write(ev.Output)
 	}
+	if ev.Action == "skip" && ev.Test == top {
+		delete(logs, key)
+		return nil
+	}
 	if ev.Action != "pass" && ev.Action != "fail" {
 		return nil
 	}

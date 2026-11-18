@@ -38,7 +38,7 @@ func end(action, test string, secs float64) testEvent {
 // TestFilterTestJSON: the filter prints what go test without -v would:
 // lines outside tests as they come, a failed test's output whole, a test
 // that never ended before its package's verdict, nothing of a test that
-// passed, interleaved parallel tests kept apart; and it times top-level
+// passed or skipped, interleaved parallel tests kept apart; and it times top-level
 // tests and their direct subtests that ended.
 func TestFilterTestJSON(t *testing.T) {
 	in := "go: downloading example.net/m v1.0.0\n" + events(t,
@@ -57,6 +57,9 @@ func TestFilterTestJSON(t *testing.T) {
 		out("TestFail", "--- FAIL: TestFail (3.00s)\n"),
 		end("fail", "TestFail", 3),
 		end("pass", "TestPar", 4),
+		out("TestSkip", "=== RUN   TestSkip\n"),
+		out("TestSkip", "    skip_test.go:2: needs the lab\n"),
+		out("TestSkip", "--- SKIP: TestSkip (0.00s)\n"),
 		end("skip", "TestSkip", 0),
 		out("TestHung", "=== RUN   TestHung\n"),
 		out("TestHung", "panic: test timed out\n"),
