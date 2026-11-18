@@ -34,3 +34,8 @@ In two or three lab runs (TP-229's and TP-238's, 2026-11-17) TestBlobDistributio
 ## Log
 - 2026-11-18 created in backlog (seen in lab runs 2026-11-17)
 - 2026-11-18 backlog → in-progress, owner: agent-tp-244
+- 2026-11-18 root cause: "blob fetched" was logged before `Store.Save` (product bug); fix: save, then log (blobs/service.go), package doc says so; lab test reads the file right after the line, its 30 s poll on the second check removed
+- 2026-11-18 unit test TestAFetchedBlobIsInTheStoreWhenItsFetchIsLogged: passes 50 runs with -race; mutation: service.go's old order (log before save) restored, fails 5 of 5
+- 2026-11-18 lab repro: old order plus a 3 s sleep at the top of `diskBlobs.Save` fails TestBlobDistribution at the first sha256sum, "No such file or directory", as in the full lab; the fix with the same sleep passes (345 s); neither change committed
+- 2026-11-18 20 runs of TestBlobDistribution under load (other tickets' labs running) at f127d7ed: 20 pass, 0 fail; the COUNT=20 run was killed at its 60 min budget after 16 passes (runs took 42–409 s under load), the remaining 4 in a COUNT=4 run
+- 2026-11-18 make lint, make test green at f127d7ed
