@@ -1535,14 +1535,20 @@ func (r *wgRun) carryRandomExchanges(rng *rand.Rand, perSecond float64, d time.D
 // signal); at the lab's vantage, so do bursts of 2 records against 1 or 1
 // against 2 (the burst signal).
 var wgRandomFlags = map[string]int{
-	"0.2-5ms 1:1 0.0167/s": 2,
-	"0.2-5ms 2:3 0.0167/s": 4,
-	"0.2-5ms 2:3 0.1/s":    4,
-	"0.2-5ms 3:6 0.0167/s": 2,
-	"0.2-5ms 3:6 0.1/s":    4,
-	"20-80ms 1:1 0.0167/s": 2,
-	"20-80ms 2:3 0.0167/s": 2,
-	"20-80ms 3:6 0.0167/s": 2,
+	"0.2-5ms 1:1 0.0167/s":  2,
+	"0.2-5ms 2:3 0.0167/s":  4,
+	"0.2-5ms 2:3 0.1/s":     4,
+	"0.2-5ms 3:6 0.0167/s":  2,
+	"0.2-5ms 3:6 0.1/s":     4,
+	"20-80ms 1:1 0.0167/s":  2,
+	"20-80ms 2:3 0.0167/s":  2,
+	"20-80ms 3:6 0.0167/s":  2,
+	"0.3-1.9s 1:1 0.0167/s": 2,
+	"0.3-1.9s 1:1 1/s":      1,
+	"0.3-1.9s 2:3 0.0167/s": 2,
+	"0.3-1.9s 2:3 1/s":      1,
+	"0.3-1.9s 3:6 0.0167/s": 2,
+	"0.3-1.9s 3:6 1/s":      1,
 }
 
 // TestWGRhythmRandomExchanges pins the detector's false positives on
