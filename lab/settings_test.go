@@ -23,12 +23,11 @@ func TestTheNodeFileSetsUp(t *testing.T) {
 			{Name: lab.Router, Networks: []string{lab.NetDevices, lab.NetServers}, Forward: true},
 			{Name: lab.DeviceA, Networks: []string{lab.NetDevices}, Gateway: lab.Router},
 			{Name: lab.Server1, Networks: []string{lab.NetServers}, Gateway: lab.Router, Forward: true},
-			{Name: lab.Internet, Networks: []string{lab.NetServers}, Gateway: lab.Router},
 		},
 	}
 	l := lab.Start(t, topo)
 	server, dev := l.Node(lab.Server1), l.Node(lab.DeviceA)
-	space := newM0Space(t, l.Node(lab.Internet), server)
+	space := newM0Space(t, l.Node(lab.Router), server)
 	envelope, _ := space.build(t)
 	space.install(t, server, "server-1", envelope)
 	space.install(t, dev, "device-a", envelope)

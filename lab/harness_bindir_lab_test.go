@@ -3,26 +3,29 @@
 package lab
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/lab/testcache"
 )
 
 // A second run from this checkout (labctl gotest, its own process) builds
 // and runs the same package's tests while this run's lab has them built:
 // both pass, this run's test binary is the one it built, and the other
 // run leaves no binaries behind.
-func TestAnotherRunFromTheCheckoutBuildsItsOwnBinaries(t *testing.T) {
+func TestHarnessAnotherRunFromTheCheckoutBuildsItsOwnBinaries(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	root, err := Root()
 	if err != nil {
 		t.Fatal(err)
 	}
-	const pkgPattern = "./lab/ip"
+	const pkgPattern = "./" + harnessNodePackage
 	pkgs, err := ListGoPackages(ctx, root, pkgPattern)
 	if err != nil || len(pkgs) != 1 {
 		t.Fatalf("packages %v: %v", pkgs, err)
@@ -54,11 +57,16 @@ func TestAnotherRunFromTheCheckoutBuildsItsOwnBinaries(t *testing.T) {
 	// A checkout name of its own: under make lab-test the child inherits
 	// THINKPOL_LAB_RUN and would join this run (its lab's name differs only
 	// by the process hash); the override keeps its lab out of this run's
-	// names and clean-up, like a run from another checkout.
-	other := exec.CommandContext(ctx, "go", "-C", root, "run", "./lab/labctl", "gotest", pkgPattern)
-	other.Env = append(os.Environ(), fmt.Sprintf("%s=bindir-%d", ProjectEnv, os.Getpid()))
-	if out, err := other.CombinedOutput(); err != nil {
+	// names and clean-up, like a run from another checkout. Uncached: a
+	// recorded pass of the package would start no lab and build nothing.
+	other := exec.CommandContext(ctx, "go", "-C", root, "run", "./lab/labctl", "gotest", "-v", pkgPattern)
+	other.Env = append(os.Environ(), fmt.Sprintf("%s=bindir-%d", ProjectEnv, os.Getpid()), testcache.NoCacheEnv+"=1")
+	out, err := other.CombinedOutput()
+	if err != nil {
 		t.Fatalf("the other run: %v\n%s", err, out)
+	}
+	if bytes.Contains(out, []byte("(cached")) || !bytes.Contains(out, []byte("--- PASS: ")) {
+		t.Fatalf("the other run didn't run %s's tests:\n%s", pkgPattern, out)
 	}
 
 	after, err := os.Stat(bin)

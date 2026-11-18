@@ -23,7 +23,7 @@ import (
 // and stopping puts the OS's configuration back, after a crash too.
 func TestDNSFollowsTheRules(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
+	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.DeviceB, lab.Server1, lab.Internet))
 	server, devA, devB, inet := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.DeviceB), l.Node(lab.Internet)
 	inetIP := inet.IPv4(lab.NetServers)
 	domestic, foreign := startResolvers(t, inet)
@@ -172,7 +172,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 // nothing; the domestic resolver is never asked a tunnel or overlay name.
 func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
+	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Internet))
 	server, devA, inet := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Internet)
 	inetIP := inet.IPv4(lab.NetServers)
 	domestic, foreign := startResolvers(t, inet)

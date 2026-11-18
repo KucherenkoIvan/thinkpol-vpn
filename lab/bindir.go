@@ -181,12 +181,12 @@ func sweepBinRoot(ctx context.Context, root string, labsUp labLister) error {
 	if err != nil {
 		return fmt.Errorf("lab: %w", err)
 	}
-	type endedRun struct {
+	type endedDir struct {
 		path string
 		kept []string
 	}
 	var (
-		ended   []endedRun
+		ended   []endedDir
 		anyKept bool
 		errs    []error
 	)
@@ -208,7 +208,7 @@ func sweepBinRoot(ctx context.Context, root string, labsUp labLister) error {
 			errs = append(errs, err)
 			continue
 		}
-		ended = append(ended, endedRun{path, kept})
+		ended = append(ended, endedDir{path, kept})
 		anyKept = anyKept || len(kept) > 0
 	}
 	keepAll := labsUp == nil
