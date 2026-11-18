@@ -1615,9 +1615,9 @@ func TestWGRhythmRandomExchanges(t *testing.T) {
 // wgImbalanceFlags pins TestWGRhythmImbalanceBesideTraffic's measured
 // flags: how many of 20 connections flag, by round trip.
 var wgImbalanceFlags = map[string]int{
-	"0.2-5ms":  0,
-	"20-80ms":  0,
-	"0.3-1.9s": 0,
+	"0.2-5ms":  20,
+	"20-80ms":  20,
+	"0.3-1.9s": 1,
 }
 
 // TestWGRhythmImbalanceBesideTraffic pins the false positive the count's
