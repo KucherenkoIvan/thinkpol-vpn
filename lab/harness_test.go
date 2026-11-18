@@ -2,14 +2,17 @@ package lab
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -60,6 +63,138 @@ func TestWithReplacesAndAddsWithoutTouchingTheOriginal(t *testing.T) {
 	if std.Nodes[std.nodeIndex(Server1)].Command != nil {
 		t.Error("With changed the original topology")
 	}
+}
+
+// A lab start's bounds: the part before the slot counts from the start's
+// beginning, across prepare and beforeSlot; the slot wait has its own,
+// longer bound; and the start counts from when the slot is held, so a wait
+// longer than the whole start bound leaves the start all of it.
+func TestStartBudgetCountsFromTheSlot(t *testing.T) {
+	base := time.Now()
+	now := base
+	b := startBudget{before: time.Minute, wait: time.Hour, start: time.Minute, teardown: time.Minute}
+	c := b.clock(func() time.Time { return now }, time.Time{})
+
+	now = base.Add(40 * time.Second)
+	if dl, cut := c.deadline(phaseBeforeSlot); !dl.Equal(base.Add(b.before)) || cut {
+		t.Errorf("before the slot: deadline %v after the start began, want %v", dl.Sub(base), b.before)
+	}
+	now = base.Add(b.before)
+	if dl, cut := c.deadline(phaseSlotWait); !dl.Equal(now.Add(b.wait)) || cut {
+		t.Errorf("the slot wait: deadline %v after it began, want %v", dl.Sub(now), b.wait)
+	}
+	now = now.Add(50 * time.Minute)
+	if dl, cut := c.deadline(phaseAfterSlot); !dl.Equal(now.Add(b.start)) || cut {
+		t.Errorf("the start: deadline %v after the slot, want %v", dl.Sub(now), b.start)
+	}
+}
+
+// Under make lab-test's LAB_TIMEOUT (60m), a lab beginning at any minute of
+// the run, each phase taking all the time it is given, ends before the
+// test binary's deadline with the tear-down's time to spare, and its slot
+// wait leaves the start its whole bound: a lab still waiting fails with
+// what it waited for, not in the timeout's panic.
+func TestLabStartEndsBeforeTheTestDeadline(t *testing.T) {
+	const labTimeout = 60 * time.Minute
+	base := time.Now()
+	deadline := base.Add(labTimeout)
+	end := deadline.Add(-labBudget.teardown)
+	for offset := time.Duration(0); offset < labTimeout; offset += time.Minute {
+		now := base.Add(offset)
+		c := labBudget.clock(func() time.Time { return now }, deadline)
+		now, _ = c.deadline(phaseBeforeSlot)
+		waitEnd, _ := c.deadline(phaseSlotWait)
+		if waitEnd.After(end.Add(-labBudget.start)) {
+			t.Errorf("a lab begun at %v: its slot wait ends %v before the deadline, leaving the start less than %v", offset, deadline.Sub(waitEnd), labBudget.start)
+		}
+		if waitEnd.After(now) {
+			now = waitEnd
+		}
+		now, _ = c.deadline(phaseAfterSlot)
+		if now.After(end) {
+			t.Errorf("a lab begun at %v ends %v after the deadline less the tear-down", offset, now.Sub(end))
+		}
+		if offset == 0 && !waitEnd.After(c.began.Add(labBudget.before)) {
+			t.Errorf("a lab begun with the run has no time to wait for a slot")
+		}
+	}
+	if labBudget.wait <= labBudget.start {
+		t.Errorf("lab budget %+v: the slot wait must be longer than the start", labBudget)
+	}
+}
+
+// A phase that runs out of time says which bound it was; an error with
+// time left, or after the caller gave up, is the phase's own.
+func TestLabStartSaysWhichBoundExpired(t *testing.T) {
+	b := startBudget{before: time.Minute, wait: 20 * time.Millisecond, start: time.Minute, teardown: time.Minute}
+	waitDone := func(ctx context.Context) error {
+		<-ctx.Done()
+		return fmt.Errorf("lab: waiting for a free lab slot: %w", ctx.Err())
+	}
+
+	err := b.clock(time.Now, time.Time{}).run(t.Context(), "tplab-x", phaseSlotWait, waitDone)
+	if want := "lab tplab-x: no lab slot within 20ms: lab: waiting for a free lab slot: context deadline exceeded"; err == nil || err.Error() != want {
+		t.Errorf("slot wait: %v, want %q", err, want)
+	}
+	past := b.clock(time.Now, time.Now().Add(-time.Hour))
+	err = past.run(t.Context(), "tplab-x", phaseAfterSlot, waitDone)
+	if want := "lab tplab-x: start not done 0s after the slot, cut short by the test's deadline"; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("start: %v, want %q", err, want)
+	}
+	err = past.run(t.Context(), "tplab-x", phaseBeforeSlot, waitDone)
+	if want := "lab tplab-x: not ready for a lab slot within 0s"; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("before the slot: %v, want %q", err, want)
+	}
+
+	refused := errors.New("refused")
+	if err := b.clock(time.Now, time.Time{}).run(t.Context(), "tplab-x", phaseAfterSlot, func(context.Context) error { return refused }); err != refused {
+		t.Errorf("an error with time left: %v, want it as is", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := b.clock(time.Now, time.Time{}).run(ctx, "tplab-x", phaseSlotWait, waitDone); err == nil || strings.Contains(err.Error(), "within") {
+		t.Errorf("a cancelled wait: %v, want no bound named", err)
+	}
+}
+
+func TestOnlyKeepsTheNamedNodesAndTheirNetworks(t *testing.T) {
+	topo := Upstream().Only(Router, Server1, Camouflage)
+	var nodes, nets []string
+	for _, n := range topo.Nodes {
+		nodes = append(nodes, n.Name)
+	}
+	for _, n := range topo.Networks {
+		nets = append(nets, n.Name)
+	}
+	if want := []string{Router, Server1, Camouflage}; !slices.Equal(nodes, want) {
+		t.Errorf("nodes %v, want %v", nodes, want)
+	}
+	// Every kept node is the topology's own, settings and all.
+	upstream := Upstream()
+	for _, n := range topo.Nodes {
+		if want := upstream.Nodes[upstream.nodeIndex(n.Name)]; !reflect.DeepEqual(n, want) {
+			t.Errorf("Only changed %s: %+v, want %+v", n.Name, n, want)
+		}
+	}
+	// The router is still on the devices network, so it stays.
+	if want := []string{NetDevices, NetServers, NetWorld}; !slices.Equal(nets, want) {
+		t.Errorf("networks %v, want %v", nets, want)
+	}
+	if err := topo.Validate(); err != nil {
+		t.Error(err)
+	}
+	if got := Standard().Only(Server1, Internet).With(NodeSpec{Name: Router, Networks: []string{NetServers}}).Networks; len(got) != 1 || got[0].Name != NetServers {
+		t.Errorf("networks of server-side nodes: %v, want servers only", got)
+	}
+	if err := Standard().Only(DeviceA, Server1).Validate(); err == nil {
+		t.Error("a topology without the nodes' gateway is valid")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("Only of a node the topology doesn't have didn't panic")
+		}
+	}()
+	Standard().Only(Router, "server-3")
 }
 
 func TestRenderCompose(t *testing.T) {
@@ -370,7 +505,7 @@ func TestPrintOwnProjects(t *testing.T) {
 // longestOverride, longestRunID and longestTestProject make the longest
 // project names the harness can give: the longest override and run id, a
 // test name past the slug's cap, and claimProject's number. Docker
-// accepting them is TestDownRunRemovesOnlyItsRun (a lab test).
+// accepting them is TestHarnessDownRunRemovesOnlyItsRun (a lab test).
 var (
 	longestOverride = strings.Repeat("a", 40)
 	longestRunID    = strings.Repeat("9", 8)
