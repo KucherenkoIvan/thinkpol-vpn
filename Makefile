@@ -44,7 +44,7 @@ BUF_BREAKING_AGAINST ?= rewrite
 # cgo is off unless a target turns it on (test-race).
 export CGO_ENABLED := 0
 
-.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-perf lab-gotest lab-down lab-seccomp lab-seccomp-check
+.PHONY: help build test test-race lint vulncheck nocgo proto-check fmt proto tools lab lab-up lab-test lab-harness lab-harness-cached lab-perf lab-gotest lab-down lab-seccomp lab-seccomp-check
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -134,6 +134,20 @@ LAB_TIMEOUT ?= 60m
 # same lab slot cap.
 LAB_P ?= 4
 
+# The harness's own lab tests (named TestHarness…) check the lab itself
+# (isolation, sealing, ownership, subnets, binaries), not the product.
+# make lab-test runs them only when what they check changed: a pass is
+# remembered under the hash of the harness's non-test Go files (lab/*.go,
+# lab/labctl), the image, the seccomp profile, the harness tests' own files
+# and the Go and Docker versions, in LAB_HARNESS_CACHE (shared by
+# checkouts: the hash names the content, not the checkout).
+LAB_HARNESS_RUN := ^TestHarness
+LAB_HARNESS_CACHE ?= $(HOME)/.cache/thinkpol-lab/harness
+LAB_HARNESS_HASH = { go version && docker version --format '{{.Server.Version}}' && \
+	for f in $$(LC_ALL=C ls lab/*.go lab/labctl/*.go | grep -v '_test\.go$$') $$(LC_ALL=C grep -l '^func TestHarness' lab/*_test.go) lab/Dockerfile lab/seccomp.json; do \
+		echo "== $$f" && cat "$$f" || exit 1; \
+	done; } | git hash-object --stdin
+
 lab: lab-test ## the lab suite, ending in the censor matrix (lab/RESULTS.md)
 
 lab-up: ## start the standard topology for this checkout, for poking around
@@ -148,10 +162,11 @@ lab-test: ## lab tests (each starts its own lab) and every package's tests insid
 	@run=$$($(LABCTL) run-id) || exit 1; export THINKPOL_LAB_RUN=$$run; \
 	tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
 	status=0; \
-	( { go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) ./lab/...; echo $$? > "$$tmp/lab.status"; } 2>&1 | awk '{print "[lab]  " $$0; fflush()}' ) & \
+	( { go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) -skip '$(LAB_HARNESS_RUN)' ./lab/...; echo $$? > "$$tmp/lab.status"; } 2>&1 | awk '{print "[lab]  " $$0; fflush()}' ) & \
 	( { $(LABCTL) gotest -p $(LAB_P) ./...; echo $$? > "$$tmp/node.status"; } 2>&1 | awk '{print "[node] " $$0; fflush()}' ) & \
+	( { $(MAKE) --no-print-directory lab-harness-cached; echo $$? > "$$tmp/harness.status"; } 2>&1 | awk '{print "[harness] " $$0; fflush()}' ) & \
 	wait; \
-	for f in lab node; do \
+	for f in lab node harness; do \
 		if [ -f "$$tmp/$$f.status" ]; then \
 			s=$$(cat "$$tmp/$$f.status"); [ "$$s" -eq 0 ] || status=1; \
 		else \
@@ -160,6 +175,18 @@ lab-test: ## lab tests (each starts its own lab) and every package's tests insid
 	done; \
 	if [ -z "$$THINKPOL_LAB_KEEP" ] && ! $(LABCTL) down -run "$$run"; then status=1; fi; \
 	exit $$status
+
+lab-harness: ## the lab harness's own tests (TestHarness…: isolation, sealing, ownership, subnets), each starting labs
+	go test -tags lab -count=1 -timeout $(LAB_TIMEOUT) -run '$(LAB_HARNESS_RUN)' ./lab
+
+# lab-harness unless it passed before on the same harness (make lab-test's
+# third phase).
+lab-harness-cached:
+	@hash=$$($(LAB_HARNESS_HASH)) && [ -n "$$hash" ] || { echo "lab-harness: can't hash the harness" >&2; exit 1; }; \
+	stamp="$(LAB_HARNESS_CACHE)/$$hash"; \
+	if [ -e "$$stamp" ]; then echo "lab-harness: passed before on harness $$hash, not run again"; exit 0; fi; \
+	echo "lab-harness: harness $$hash not passed before, running it"; \
+	$(MAKE) --no-print-directory lab-harness && mkdir -p "$(LAB_HARNESS_CACHE)" && touch "$$stamp"
 
 # Performance gates: tests that check THINKPOL_LAB_PERF and are named
 # Test…Throughput, in these packages (a new one adds its package here).

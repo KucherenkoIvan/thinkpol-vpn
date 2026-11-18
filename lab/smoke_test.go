@@ -18,7 +18,7 @@ import (
 // router over IPv4 and IPv6, the router sees it, and nothing else routes.
 func TestSmoke(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
+	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Internet))
 	device, router, internet := l.Node(lab.DeviceA), l.Node(lab.Router), l.Node(lab.Internet)
 
 	for _, family := range []struct {
@@ -249,7 +249,7 @@ func TestSmoke(t *testing.T) {
 
 // Two labs started side by side share nothing: separate containers and
 // networks, no route between them, and tearing one down leaves the other.
-func TestLabsAreIsolated(t *testing.T) {
+func TestHarnessLabsAreIsolated(t *testing.T) {
 	t.Parallel()
 	topo := lab.Topology{
 		Networks: []lab.Network{{Name: "net"}},
@@ -273,7 +273,7 @@ func TestLabsAreIsolated(t *testing.T) {
 }
 
 // An IPv4Only network gives its nodes no IPv6 address and no IPv6 route.
-func TestIPv4OnlyNetwork(t *testing.T) {
+func TestHarnessIPv4OnlyNetwork(t *testing.T) {
 	t.Parallel()
 	l := lab.Start(t, lab.Topology{
 		Networks: []lab.Network{{Name: "v4", IPv4Only: true}},
@@ -292,7 +292,7 @@ func TestIPv4OnlyNetwork(t *testing.T) {
 }
 
 // A node's own Command starts only once the node is sealed into the lab.
-func TestCommandStartsSealed(t *testing.T) {
+func TestHarnessCommandStartsSealed(t *testing.T) {
 	t.Parallel()
 	// Written aside and renamed, so the poll below never reads a partial file.
 	record := `{ cat /etc/resolv.conf; ip -4 route show default; nft list tables; } > /tmp/at-start.tmp && mv /tmp/at-start.tmp /tmp/at-start; sleep infinity`

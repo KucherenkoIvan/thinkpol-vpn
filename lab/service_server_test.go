@@ -45,11 +45,10 @@ func TestServiceUninstallAfterAServerCrash(t *testing.T) {
 			{Name: lab.Router, Networks: []string{lab.NetDevices, lab.NetServers}, Forward: true},
 			{Name: lab.DeviceA, Networks: []string{lab.NetDevices}, Gateway: lab.Router},
 			{Name: lab.Server1, Networks: []string{lab.NetServers}, Gateway: lab.Router, Systemd: true},
-			{Name: lab.Internet, Networks: []string{lab.NetServers}, Gateway: lab.Router},
 		},
 	}
 	l := lab.Start(t, topo)
-	server, dev, inet := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Internet)
+	server, dev, builder := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Router)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	if err := server.WaitBooted(ctx); err != nil {
@@ -72,8 +71,8 @@ func TestServiceUninstallAfterAServerCrash(t *testing.T) {
 	server.MustExec(t, "ip", "-6", "addr", "add", "2001:db8:132::2/64", "dev", uplink, "nodad")
 	server.MustExec(t, "sysctl", "-qw", acceptRA+"=1")
 
-	space := newM0Space(t, inet, server)
-	inet.WriteFile(t, "/tmp/m0/server-egress.yaml", []byte(serverEgressSpec))
+	space := newM0Space(t, builder, server)
+	builder.WriteFile(t, "/tmp/m0/server-egress.yaml", []byte(serverEgressSpec))
 	space.spec = "/tmp/m0/server-egress.yaml"
 	envelope, _ := space.build(t)
 	space.install(t, server, "server-1", envelope)

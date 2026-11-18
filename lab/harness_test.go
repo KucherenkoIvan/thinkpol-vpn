@@ -2,8 +2,10 @@ package lab
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/netip"
@@ -60,6 +62,73 @@ func TestWithReplacesAndAddsWithoutTouchingTheOriginal(t *testing.T) {
 	if std.Nodes[std.nodeIndex(Server1)].Command != nil {
 		t.Error("With changed the original topology")
 	}
+}
+
+// A lab's start budget counts from when it holds its slot: a slot wait
+// longer than the whole start budget leaves the start all of it, and the
+// wait has its own, longer bound.
+func TestStartBudgetCountsFromTheSlot(t *testing.T) {
+	b := startBudget{wait: time.Hour, start: time.Minute}
+	var waited time.Time
+	ctx, cancel, err := b.waitThenStart(t.Context(), func(ctx context.Context) error {
+		dl, ok := ctx.Deadline()
+		if !ok || time.Until(dl) <= b.start {
+			t.Errorf("the slot wait has %v left, want its own bound, %v", time.Until(dl), b.wait)
+		}
+		// Time passes while waiting: a start deadline set before the wait
+		// would end before waited plus b.start.
+		time.Sleep(5 * time.Millisecond)
+		waited = time.Now()
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if dl, ok := ctx.Deadline(); !ok || dl.Before(waited.Add(b.start)) || dl.After(time.Now().Add(b.start)) {
+		t.Errorf("the start's deadline is %v after the wait ended, want %v", dl.Sub(waited), b.start)
+	}
+
+	refused := errors.New("no slot")
+	if _, _, err := b.waitThenStart(t.Context(), func(context.Context) error { return refused }); !errors.Is(err, refused) {
+		t.Errorf("a failed wait gave %v", err)
+	}
+	if labBudget.wait <= labBudget.start || labBudget.wait+labBudget.start > 60*time.Minute {
+		t.Errorf("lab budget %+v: the wait must be longer than the start and both within LAB_TIMEOUT's 60m", labBudget)
+	}
+}
+
+func TestOnlyKeepsTheNamedNodesAndTheirNetworks(t *testing.T) {
+	topo := Upstream().Only(Router, Server1, Camouflage)
+	var nodes, nets []string
+	for _, n := range topo.Nodes {
+		nodes = append(nodes, n.Name)
+	}
+	for _, n := range topo.Networks {
+		nets = append(nets, n.Name)
+	}
+	if want := []string{Router, Server1, Camouflage}; !slices.Equal(nodes, want) {
+		t.Errorf("nodes %v, want %v", nodes, want)
+	}
+	// The router is still on the devices network, so it stays.
+	if want := []string{NetDevices, NetServers, NetWorld}; !slices.Equal(nets, want) {
+		t.Errorf("networks %v, want %v", nets, want)
+	}
+	if err := topo.Validate(); err != nil {
+		t.Error(err)
+	}
+	if got := Standard().Only(Server1, Internet).With(NodeSpec{Name: Router, Networks: []string{NetServers}}).Networks; len(got) != 1 || got[0].Name != NetServers {
+		t.Errorf("networks of server-side nodes: %v, want servers only", got)
+	}
+	if err := Standard().Only(DeviceA, Server1).Validate(); err == nil {
+		t.Error("a topology without the nodes' gateway is valid")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("Only of a node the topology doesn't have didn't panic")
+		}
+	}()
+	Standard().Only(Router, "server-3")
 }
 
 func TestRenderCompose(t *testing.T) {
@@ -370,7 +439,7 @@ func TestPrintOwnProjects(t *testing.T) {
 // longestOverride, longestRunID and longestTestProject make the longest
 // project names the harness can give: the longest override and run id, a
 // test name past the slug's cap, and claimProject's number. Docker
-// accepting them is TestDownRunRemovesOnlyItsRun (a lab test).
+// accepting them is TestHarnessDownRunRemovesOnlyItsRun (a lab test).
 var (
 	longestOverride = strings.Repeat("a", 40)
 	longestRunID    = strings.Repeat("9", 8)

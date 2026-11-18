@@ -90,10 +90,8 @@ func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 	}
 	cwd, _ := os.Getwd()
 	project := claimProject(ownTestProject(checkout, run, cwd, t.Name()))
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
 	// The run's directory, for .kept; up gets the same one.
-	p, err := prepare(ctx, root)
+	p, err := prepareWithin(labBudget.start, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +107,7 @@ func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 			t.Fatal(err)
 		}
 	}
-	l, err := up(ctx, root, project, topo, slotKey, runInputs)
+	l, err := up(context.Background(), root, project, topo, slotKey, runInputs)
 	if l != nil {
 		t.Cleanup(func() { l.cleanup(t, p.bin, keep) })
 	}
@@ -168,6 +166,37 @@ func UpDetached(ctx context.Context, root, project string, topo Topology) (*Lab,
 	return up(ctx, root, project, topo, "", detachedInputs)
 }
 
+func prepareWithin(d time.Duration, root string) (preparedRun, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	return prepare(ctx, root)
+}
+
+// labBudget bounds a lab's start: the wait for a lab slot on its own, and
+// the start itself (before the slot and from when it is held), so a lab
+// queued behind others for a slot under load doesn't fail its start
+// before it began. The wait's bound stays under make lab-test's
+// LAB_TIMEOUT, so a test still waiting fails with what it waited for.
+var labBudget = startBudget{wait: 45 * time.Minute, start: 10 * time.Minute}
+
+type startBudget struct {
+	wait  time.Duration // for a lab slot
+	start time.Duration // for each part of the start: before the slot, and once it is held
+}
+
+// waitThenStart runs wait under b.wait, then returns the context the
+// start runs under: its b.start counts from when wait returned.
+func (b startBudget) waitThenStart(ctx context.Context, wait func(context.Context) error) (context.Context, context.CancelFunc, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, b.wait)
+	err := wait(waitCtx)
+	cancel()
+	if err != nil {
+		return nil, nil, err
+	}
+	startCtx, cancel := context.WithTimeout(ctx, b.start)
+	return startCtx, cancel, nil
+}
+
 // labInputs builds the image and the binaries a lab runs, and returns the
 // directory it mounts at BinDir; stateDir is the lab's lab/.run/<project>.
 type labInputs func(ctx context.Context, root, stateDir string) (image, string, error)
@@ -196,7 +225,7 @@ func detachedInputs(ctx context.Context, root, stateDir string) (image, string, 
 // start with ProjectPrefix), and returns once every node is running and
 // sealed into the lab. A lab of this checkout left over under the same name
 // is removed first; another checkout's lab under that name is an error. On
-// error the returned Lab, if any, still needs Down.
+// error the returned Lab, if any, still needs Down. labBudget bounds it.
 func up(ctx context.Context, root, project string, topo Topology, slotKey string, inputs labInputs) (*Lab, error) {
 	if !strings.HasPrefix(project, ProjectPrefix) {
 		return nil, fmt.Errorf("lab: project %q doesn't start with %q", project, ProjectPrefix)
@@ -204,23 +233,20 @@ func up(ctx context.Context, root, project string, topo Topology, slotKey string
 	if err := topo.Validate(); err != nil {
 		return nil, err
 	}
-	if err := downProject(ctx, project, root); err != nil {
+	stateDir := filepath.Join(root, "lab", ".run", project)
+	img, binDir, err := beforeSlot(ctx, root, project, stateDir, inputs)
+	if err != nil {
 		return nil, err
 	}
-	// Until the lab is created nothing of it is up: on error its state
-	// directory goes, a detached lab's binaries with it.
-	stateDir := filepath.Join(root, "lab", ".run", project)
-	img, binDir, err := inputs(ctx, root, stateDir)
+	var release func()
+	ctx, cancel, err := labBudget.waitThenStart(ctx, func(ctx context.Context) (err error) {
+		release, err = acquireSlot(ctx, slotKey)
+		return err
+	})
 	if err != nil {
 		return nil, errors.Join(err, os.RemoveAll(stateDir))
 	}
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		return nil, errors.Join(fmt.Errorf("lab: %w", err), os.RemoveAll(stateDir))
-	}
-	release, err := acquireSlot(ctx, slotKey)
-	if err != nil {
-		return nil, errors.Join(err, os.RemoveAll(stateDir))
-	}
+	defer cancel()
 	l := &Lab{
 		Project:  project,
 		Topology: topo,
@@ -243,6 +269,25 @@ func up(ctx context.Context, root, project string, topo Topology, slotKey string
 		return l, err
 	}
 	return l, nil
+}
+
+// beforeSlot removes a leftover lab of the name and gets the lab's inputs,
+// under the start's budget. Until the lab is created nothing of it is up:
+// on error its state directory goes, a detached lab's binaries with it.
+func beforeSlot(ctx context.Context, root, project, stateDir string, inputs labInputs) (image, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, labBudget.start)
+	defer cancel()
+	if err := downProject(ctx, project, root); err != nil {
+		return image{}, "", err
+	}
+	img, binDir, err := inputs(ctx, root, stateDir)
+	if err != nil {
+		return image{}, "", errors.Join(err, os.RemoveAll(stateDir))
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return image{}, "", errors.Join(fmt.Errorf("lab: %w", err), os.RemoveAll(stateDir))
+	}
+	return img, binDir, nil
 }
 
 // create reserves the lab's subnets and starts it. Only the reservation is

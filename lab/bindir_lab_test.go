@@ -15,7 +15,7 @@ import (
 // and runs the same package's tests while this run's lab has them built:
 // both pass, this run's test binary is the one it built, and the other
 // run leaves no binaries behind.
-func TestAnotherRunFromTheCheckoutBuildsItsOwnBinaries(t *testing.T) {
+func TestHarnessAnotherRunFromTheCheckoutBuildsItsOwnBinaries(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	root, err := Root()

@@ -163,7 +163,7 @@ func sawRandom(t *testing.T, l *lab.Lab, c *censorRun) error {
 // fully-encrypted, over both families; HTTPS to nginx crosses.
 func TestFullyEncryptedRandomNotHTTPS(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
+	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1))
 	server := l.Node(lab.Server1)
 	to, err := setupRandom(t, l)
 	if err != nil {
@@ -223,7 +223,7 @@ func proberVerdict(t *testing.T, c *censorRun, port uint16, family func(netip.Ad
 // upstream tell, since its connection to the site crosses the censor.
 func TestProberTellsEchoFromNginx(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Upstream())
+	l := lab.Start(t, lab.Upstream().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Camouflage))
 	server, dev := l.Node(lab.Server1), l.Node(lab.DeviceA)
 	camouflage := lab.StartCamouflage(t, l)
 	startNginx(t, server, "/tmp/entry", lab.CamouflageName, 443, serverAddrs(server))
@@ -275,7 +275,7 @@ func TestProberTellsEchoFromNginx(t *testing.T) {
 // held to TLS 1.2 doesn't, and its connection is dropped.
 func TestServerHelloAgainstTheSite(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Upstream())
+	l := lab.Start(t, lab.Upstream().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Camouflage))
 	server, dev := l.Node(lab.Server1), l.Node(lab.DeviceA)
 	camouflage := lab.StartCamouflage(t, l)
 	startNginx(t, server, "/tmp/entry", lab.CamouflageName, 443, serverAddrs(server))

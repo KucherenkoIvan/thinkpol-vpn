@@ -14,7 +14,7 @@ import (
 // Tear-down never touches what isn't the lab's: a project with the lab's
 // prefix but without its label, and a lab that someone else's container
 // joined, are both refused, and both survive.
-func TestDownRefusesUnlabelledResources(t *testing.T) {
+func TestHarnessDownRefusesUnlabelledResources(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	root, err := Root()
@@ -84,7 +84,7 @@ func TestDownRefusesUnlabelledResources(t *testing.T) {
 // Two checkouts using the same THINKPOL_LAB_PROJECT get the same project
 // names, but neither can take down or replace the other's labs: ownership is
 // the exact checkout path in the labels, not the name.
-func TestLabsBelongToTheirCheckout(t *testing.T) {
+func TestHarnessLabsBelongToTheirCheckout(t *testing.T) {
 	t.Parallel()
 	l := startAs(t, GoTestTopology(), "test:"+t.Name(), "shared-"+shortHash(t.Name()+os.Getenv("HOME")))
 	ctx := t.Context()
@@ -107,7 +107,7 @@ func TestLabsBelongToTheirCheckout(t *testing.T) {
 // make lab-test's clean-up (DownRun) removes its run's labs and no other
 // run's: another run's lab from the same checkout keeps running. The run's
 // lab has the longest name the harness gives, which Docker must accept.
-func TestDownRunRemovesOnlyItsRun(t *testing.T) {
+func TestHarnessDownRunRemovesOnlyItsRun(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	root, err := Root()
