@@ -307,7 +307,7 @@ func (n *Node) readFile(ctx context.Context, name string) ([]byte, error) {
 // goTestFresh runs a package's tests in a fresh lab and, with readLog and
 // the tests passed, reads their -test.testlogfile back before the lab goes.
 func goTestFresh(ctx context.Context, root, project string, pkg GoPackage, w io.Writer, env, args []string, readLog bool) (run freshRun) {
-	l, err := up(ctx, root, project, GoTestTopology(), "", runInputs)
+	l, err := up(ctx, labBudget.begin(time.Time{}), root, project, GoTestTopology(), "", runInputs)
 	if l != nil {
 		defer func() {
 			if err := l.Down(context.WithoutCancel(ctx)); err != nil && run.labErr == nil {

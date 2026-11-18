@@ -21,9 +21,9 @@ import (
 // comes up.
 func TestHealthWithNoLinkUp(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
+	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1))
 	server, dev := l.Node(lab.Server1), l.Node(lab.DeviceA)
-	space := newM0Space(t, l.Node(lab.Internet), server)
+	space := newM0Space(t, l.Node(lab.Router), server)
 	envelope, _ := space.build(t)
 	space.install(t, server, "server-1", envelope)
 	space.install(t, dev, "device-a", envelope)
@@ -69,7 +69,7 @@ func TestHealthWithNoLinkUp(t *testing.T) {
 // health is ok again once the exit answers.
 func TestHealthWithAnExitThatNeverHandshakes(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
+	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Server2, lab.Internet))
 	s1, s2, devA, inet := l.Node(lab.Server1), l.Node(lab.Server2), l.Node(lab.DeviceA), l.Node(lab.Internet)
 	inet4, exit4 := inet.IPv4(lab.NetServers), s2.IPv4(lab.NetServers)
 	space := &m0Space{builder: inet, spec: "/src/lab/maps/egress.yaml", flags: []string{"-insecure-secrets-seed", "egress-lab"}, env: []string{
