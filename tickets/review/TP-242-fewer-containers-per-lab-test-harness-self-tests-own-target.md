@@ -56,10 +56,10 @@ Review round 1, accepted by the orchestrator: the 31 trimmed tests are sound; th
 - [x] R1.9 (ticket) Scope says 8 harness tests and 25 trimmed, Notes 9 and 31; box 2's "any change under lab/ non-test files" overstates what the hash covers; drop the "ev1" label from Notes.
 - [x] R1.10 (check) `labctl up` now gets 10 minutes for its build where it had 15: restore it if that wasn't intended; say so in the Log.
 Review round 2 (delta check), accepted by the orchestrator:
-- [ ] R2.1 (should-fix) TestHarnessAnotherRun…'s other run goes through TP-243's node-phase cache: once ./lab/ip's pass is recorded it starts no lab and runs no tests, so the test proves nothing. Run it with LAB_NOCACHE=1 and assert it really ran the tests.
-- [ ] R2.2 (doc) Under the 60m LAB_TIMEOUT a lab whose slot wait begins after about minute 48 fails at once ("no lab slot within 0s, cut short") instead of possibly getting a slot later: accepted (a clear failure beats the timeout's panic; TP-239 shrinks the phase), say so in lab/README.md next to the budget.
-- [ ] R2.3 (should-fix) The skip check greps the whole -v output, in-node -test.v output of ./lab/ip included: match only the harness tests' own SKIP lines. lab/ip's tests are hashed by no rule though TestHarnessAnotherRun…'s result depends on them: hash them, and the guard checks it.
-- [ ] R2.4 (should-fix) The hash is taken before the run and the lab binaries are built from the checkout during it: hash again after the run and stamp only if both match, saying so otherwise.
+- [x] R2.1 (should-fix) TestHarnessAnotherRun…'s other run goes through TP-243's node-phase cache: once ./lab/ip's pass is recorded it starts no lab and runs no tests, so the test proves nothing. Run it with LAB_NOCACHE=1 and assert it really ran the tests.
+- [x] R2.2 (doc) Under the 60m LAB_TIMEOUT a lab whose slot wait begins after about minute 48 fails at once ("no lab slot within 0s, cut short") instead of possibly getting a slot later: accepted (a clear failure beats the timeout's panic; TP-239 shrinks the phase), say so in lab/README.md next to the budget.
+- [x] R2.3 (should-fix) The skip check greps the whole -v output, in-node -test.v output of ./lab/ip included: match only the harness tests' own SKIP lines. lab/ip's tests are hashed by no rule though TestHarnessAnotherRun…'s result depends on them: hash them, and the guard checks it.
+- [x] R2.4 (should-fix) The hash is taken before the run and the lab binaries are built from the checkout during it: hash again after the run and stamp only if both match, saying so otherwise.
 
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority; from the lab-speed audit)
@@ -88,3 +88,8 @@ Review round 2 (delta check), accepted by the orchestrator:
 - 2026-11-18 runs at ff28b853 (the merge): go test ./lab, make lint, make test green; lab-harness-cached ran (harness 03e61178, ok 417 s), then skipped; no new full lab: the trimmed tests didn't change
 - 2026-11-18 has-errors → review
 - 2026-11-18 review round 2: fix R2.1–R2.4, merge
+- 2026-11-18 R2.1: the other run is `labctl gotest -v` with LAB_NOCACHE=1 and must print a `--- PASS: ` line and no "(cached"; mutation LAB_NOCACHE set empty: once its pass was recorded the other run printed "(cached: 4 passed, 0 skipped)" and the test failed, restored
+- 2026-11-18 R2.2: lab/README.md's lab-cap paragraph says a slot wait beginning after about minute 48 of the 60-minute LAB_TIMEOUT fails at once, and why that is accepted
+- 2026-11-18 R2.3: the stamp is blocked only by `^ *--- SKIP: TestHarness` lines and go test's own "no tests to run" warning (a stand-in harness printing an indented in-node `--- SKIP: TestDecode` stamped; one printing `    --- SKIP: TestHarnessX/sub` didn't); lab/ip's test files are in LAB_HARNESS_FILES (a line added to lab/ip/ip_test.go changed the hash) and the guard checks the Makefile hashes harnessNodePackage's tests (mutation: dropped from the Makefile, the guard fails), restored
+- 2026-11-18 R2.4: lab-harness-cached hashes again after the run and stamps only if unchanged (a stand-in harness that edits lab/doc.go: "the harness changed during the run", no stamp; without the edit: stamped), restored
+- 2026-11-18 runs at cc573766: go test ./lab, make lint, make test green; make lab-gotest PKG=./lab RUN=^TestHarnessAnotherRunFromTheCheckoutBuildsItsOwnBinaries$ ok; lab-harness-cached ran (harness 99213e38, 9 tests ok 107 s), then skipped
