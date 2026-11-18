@@ -271,7 +271,7 @@ func (c startClock) run(ctx context.Context, project string, p startPhase, f fun
 	var what string
 	switch p {
 	case phaseBeforeSlot:
-		what = fmt.Sprintf("not ready for a lab slot within %v (leftover lab removed, image and binaries built)", within)
+		what = fmt.Sprintf("not ready for a lab slot within %v (removing a leftover lab, building the image and binaries)", within)
 	case phaseSlotWait:
 		what = fmt.Sprintf("no lab slot within %v", within)
 	case phaseAfterSlot:
