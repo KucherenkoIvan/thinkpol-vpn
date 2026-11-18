@@ -12,10 +12,13 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/lab/testcache"
 )
 
 // GoPackage is a package whose tests GoTest can run in a lab node.
@@ -70,32 +73,48 @@ func (n *Node) GoTest(ctx context.Context, w io.Writer, pkg GoPackage, args ...s
 
 // goTest is GoTest with more environment (NAME=value) for the test binary.
 func (n *Node) goTest(ctx context.Context, w io.Writer, pkg GoPackage, env, args []string) error {
-	t, err := dockerTarget(ctx)
-	if err != nil {
-		return err
-	}
-	name := testBinaryName(pkg)
-	bin := filepath.Join(n.lab.binDir, "tests", name)
-	built, err := buildTestsOnce(bin, func() (bool, error) {
-		return goBuild(ctx, n.lab.root, t, bin, "test", "-c", "./"+pkg.Dir)
-	})
+	name, built, err := buildPackageTests(ctx, n.lab.root, n.lab.binDir, pkg)
 	if err != nil || !built {
 		return err // !built: no tests for linux
-	}
-	if !slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(strings.TrimLeft(a, "-"), "test.timeout") }) {
-		args = append([]string{"-test.timeout=" + DefaultTestTimeout}, args...)
 	}
 	dockerArgs := []string{"exec", "-w", path.Join(SrcDir, pkg.Dir), "-e", "THINKPOL_LAB=1"}
 	for _, e := range env {
 		dockerArgs = append(dockerArgs, "-e", e)
 	}
 	dockerArgs = append(dockerArgs, n.Container, path.Join(BinDir, "tests", name))
-	cmd := exec.CommandContext(ctx, "docker", append(dockerArgs, args...)...)
+	cmd := exec.CommandContext(ctx, "docker", append(dockerArgs, testBinaryArgs(args)...)...)
 	cmd.Stdout, cmd.Stderr = w, w
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s: tests in %s: %w", n.Name, pkg.ImportPath, err)
 	}
 	return nil
+}
+
+// testBinaryArgs is what a test binary run as go test runs it gets: args,
+// the default timeout unless args has one, and -test.paniconexit0, so a
+// test calling os.Exit(0) fails the run instead of ending it green with the
+// rest of the tests unrun.
+func testBinaryArgs(args []string) []string {
+	if !slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(strings.TrimLeft(a, "-"), "test.timeout") }) {
+		args = append([]string{"-test.timeout=" + DefaultTestTimeout}, args...)
+	}
+	return append([]string{"-test.paniconexit0"}, args...)
+}
+
+// buildPackageTests builds a package's tests for the lab's platform into
+// binDir's tests/, once per binary directory, and returns the binary's name
+// there; built is false when the package has no tests for linux.
+func buildPackageTests(ctx context.Context, root, binDir string, pkg GoPackage) (name string, built bool, err error) {
+	t, err := dockerTarget(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	name = testBinaryName(pkg)
+	bin := filepath.Join(binDir, "tests", name)
+	built, err = buildTestsOnce(bin, func() (bool, error) {
+		return goBuild(ctx, root, t, bin, "test", "-c", "./"+pkg.Dir)
+	})
+	return name, built, err
 }
 
 // builtTests holds, by output path, this process's builds of packages'
@@ -158,6 +177,7 @@ func (n *Node) RunGoTests(t testing.TB, pkgPattern string, args ...string) {
 type GoTestResult struct {
 	ImportPath string
 	Failed     bool
+	Cached     bool // not run: a recorded pass (GoTestCache)
 	Tests      TestTally
 }
 
@@ -165,11 +185,12 @@ type GoTestResult struct {
 // (GoTestTopology), up to parallel at a time, so no package sees what
 // another left behind. Each package's output goes to w in one piece, in the
 // order the packages finish. env (NAME=value) is added to the test
-// binaries' environment. It returns each package's result, sorted by import
-// path; err is for the lab itself failing. Its labs run this process's
-// binaries: the caller removes them with RemoveRunBinaries once GoTestEach
-// returns.
-func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int, w io.Writer, env []string, args ...string) (results []GoTestResult, err error) {
+// binaries' environment. With a cache, a package whose recorded pass still
+// holds starts no lab and is reported "(cached)", and a package that passes
+// is recorded. It returns each package's result, sorted by import path; err
+// is for the lab itself failing. Its labs run this process's binaries: the
+// caller removes them with RemoveRunBinaries once GoTestEach returns.
+func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int, w io.Writer, cache *GoTestCache, env []string, args ...string) (results []GoTestResult, err error) {
 	checkout, err := CheckoutProject(root)
 	if err != nil {
 		return nil, err
@@ -191,14 +212,9 @@ func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			var out bytes.Buffer
-			fmt.Fprintf(&out, "=== lab gotest %s\n", pkg.ImportPath)
-			labErr, testErr := goTestFresh(ctx, root, ownGoTestPackageProject(checkout, run, pkg.ImportPath), pkg, &out, env, args)
-			res := GoTestResult{ImportPath: pkg.ImportPath, Failed: testErr != nil, Tests: TallyTests(out.Bytes())}
+			res, labErr := goTestPackage(ctx, root, ownGoTestPackageProject(checkout, run, pkg.ImportPath), pkg, &out, cache, env, args)
 			mu.Lock()
 			defer mu.Unlock()
-			if testErr != nil {
-				fmt.Fprintln(&out, testErr)
-			}
 			if labErr != nil {
 				errs = append(errs, labErr)
 			}
@@ -211,19 +227,104 @@ func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int
 	return results, errors.Join(errs...)
 }
 
-func goTestFresh(ctx context.Context, root, project string, pkg GoPackage, w io.Writer, env, args []string) (labErr, testErr error) {
+// goTestPackage is one package of GoTestEach: served from the cache, or run
+// in a fresh lab, its output in out.
+func goTestPackage(ctx context.Context, root, project string, pkg GoPackage, out *bytes.Buffer, cache *GoTestCache, env, args []string) (res GoTestResult, labErr error) {
+	res = GoTestResult{ImportPath: pkg.ImportPath}
+	header := "=== lab gotest " + pkg.ImportPath
+	p, err := prepare(ctx, root)
+	if err != nil {
+		fmt.Fprintln(out, header)
+		return res, err
+	}
+	name, built, err := buildPackageTests(ctx, root, p.bin.path, pkg)
+	if err != nil || !built { // !built: no tests for linux, nothing to start a lab for
+		fmt.Fprintln(out, header)
+		if err != nil {
+			fmt.Fprintln(out, err)
+			res.Failed = true
+		}
+		return res, nil
+	}
+	var entry *goTestEntry
+	if cache != nil {
+		if entry, err = cache.entry(ctx, root, p, name, pkg, env, args); err != nil {
+			fmt.Fprintf(out, "%s\nlab: results cache: %v\n", header, err)
+			entry = nil
+		} else if t, ok := cache.Store.Lookup(entry.action, entry.resolve); ok {
+			res.Cached, res.Tests = true, TestTally{Passed: t.Passed, Skipped: t.Skipped}
+			if t == (testcache.Tally{}) { // not verbose: nothing was counted
+				fmt.Fprintf(out, "%s (cached)\n", header)
+			} else {
+				fmt.Fprintf(out, "%s (cached: %d passed, %d skipped)\n", header, t.Passed, t.Skipped)
+			}
+			return res, nil
+		} else {
+			fmt.Fprintln(out, header)
+		}
+	} else {
+		fmt.Fprintln(out, header)
+	}
+	started := time.Now()
+	runArgs := args
+	if entry != nil {
+		runArgs = append(slices.Clone(args), "-test.testlogfile="+goTestLogFile)
+	}
+	start := out.Len()
+	run := goTestFresh(ctx, root, project, pkg, out, env, runArgs, entry != nil)
+	res.Failed = run.testErr != nil
+	res.Tests = TallyTests(out.Bytes()[start:])
+	if run.testErr != nil {
+		fmt.Fprintln(out, run.testErr)
+	}
+	if entry != nil {
+		if err := cache.record(entry, run, started, res.Tests); err != nil {
+			fmt.Fprintf(out, "lab: results cache: pass not recorded: %v\n", err)
+		}
+	}
+	return res, run.labErr
+}
+
+// goTestLogFile is where, in a gotest node, the test binary writes its
+// -test.testlogfile: the files and environment it read.
+const goTestLogFile = "/tmp/thinkpol-gotest.testlog"
+
+// goTestLogLimit bounds the test log read back from a node.
+const goTestLogLimit = 16 << 20
+
+// readFile reads a file in the node, at most goTestLogLimit bytes of it.
+func (n *Node) readFile(ctx context.Context, name string) ([]byte, error) {
+	res, err := docker(ctx, "exec", n.Container, "head", "-c", strconv.Itoa(goTestLogLimit+1), name)
+	if err != nil {
+		return nil, err
+	}
+	if len(res.Stdout) > goTestLogLimit {
+		return nil, fmt.Errorf("%s in %s: over %d bytes", name, n.Name, goTestLogLimit)
+	}
+	return []byte(res.Stdout), nil
+}
+
+// goTestFresh runs a package's tests in a fresh lab and, with readLog and
+// the tests passed, reads their -test.testlogfile back before the lab goes.
+func goTestFresh(ctx context.Context, root, project string, pkg GoPackage, w io.Writer, env, args []string, readLog bool) (run freshRun) {
 	l, err := up(ctx, labBudget.begin(time.Time{}), root, project, GoTestTopology(), "", runInputs)
 	if l != nil {
 		defer func() {
-			if err := l.Down(context.WithoutCancel(ctx)); err != nil && labErr == nil {
-				labErr = err
+			if err := l.Down(context.WithoutCancel(ctx)); err != nil && run.labErr == nil {
+				run.labErr = err
 			}
 		}()
 	}
 	if err != nil {
-		return err, nil
+		run.labErr = err
+		return run
 	}
-	return nil, l.Node("gotest").goTest(ctx, w, pkg, env, args)
+	n := l.Node("gotest")
+	run.testErr = n.goTest(ctx, w, pkg, env, args)
+	if readLog && run.testErr == nil {
+		run.testLog, run.logErr = n.readFile(ctx, goTestLogFile)
+	}
+	return run
 }
 
 // GoTestTopology is the lab GoTest runs packages in when no topology is
