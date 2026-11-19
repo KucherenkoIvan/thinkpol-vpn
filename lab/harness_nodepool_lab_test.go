@@ -62,7 +62,7 @@ func TestHarnessNodePoolRetiresWhatALeftoverSpoils(t *testing.T) {
 		return project, found, w.String()
 	}
 	clean := func(n *Node) string {
-		return n.MustExec(t, "sh", "-c", "ip -o link show leftover0 2>/dev/null; ls /tmp/leftover 2>/dev/null; pgrep -f 'sleep 1000'; true")
+		return n.MustExec(t, "sh", "-c", "ip -o link show leftover0 2>/dev/null; ls /tmp/leftover 2>/dev/null; pgrep -f '^sleep 1000'; true")
 	}
 
 	first, _, out := use("example.net/leaves-what-the-reset-undoes", false, func(n *Node) string {
