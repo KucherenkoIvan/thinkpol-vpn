@@ -38,6 +38,15 @@ A full `make lab-test` runs as many labs at once as the machine's lab-slot cap a
 - After, run 2 (05fbcee9, node phase warm: 40 of 40 cached; harness stamped, not run; this run's labs held all 12 slots at its peak): 923 s wall, default stream 15m24s (24 s over the 15m budget), long 2m53s. All tests passed and RESULTS.md was assembled. Slot waits over 51 labs: median 4 s, mean 24 s, max 140 s, 9 over a minute. Slowest tests: TestCensorMatrix/openvpn-tcp_(reference) 7m22s, reality 7m4s, openvpn-udp_(reference) 6m42s, TestEgressThroughAnExit 6m2s, https_(control) 5m43s. Lowest available memory 2785 MB.
 - The queue moved from Go's `-parallel` to the slots. With the node phase uncached, the default stream fell from 34m12s to 28m49s, but slot waits make up much of every slow test's time. Run 1 also shared its slots with other runs, so it does not isolate this change from the load. With a warm node cache, the default stream is 15m24s, and the remaining time is the matrix rows (5–7 min each, all started at once). No lab ran this branch's code at the old concurrency, so before and after compare different matrix layouts (TP-247's split rows vs rewrite's one lab per row).
 
+## Review findings
+- [ ] R1.1 (should-fix) lab/gotest.go with the Makefile's lab-perf: `make lab-perf` passes -p 1 but no -build-p, and the build gate is released before the lab gate, so later packages compile while a perf test measures. Under -perf, keep builds from overlapping measurements (hold the build gate through the run, or build everything first).
+- [ ] R1.2 (should-fix) no test can fail for the gate split (swap the two ints at the GoTestEach call; delete doneBuilding(); take labs before builds: all pass). Move the gate ordering into a function taking prepare/build/run steps as parameters and test it without Docker: max concurrent per phase, the build token released before a lab token is taken, a cached package never takes a lab token, a failed build returns its token. Name the mutations.
+- [ ] R1.3 (should-fix) lab/lab.go: a slot wait that fails ("no lab slot within …") writes no timeline line: note it before the error check with ok/failed; lab/timeline_test.go's "unset" check can't fail (deleting the call in lab.go passes): make it real.
+- [ ] R1.4 (should-fix) Makefile with lab/harness_subnets_lab_test.go: the subnets harness test skips under -parallel < 4, so a slot cap of 2–3 silently skips it, writes no stamp, and reruns the harness every time: give the harness phase -parallel max(LAB_SLOTS, 4) (goroutines, not labs) and update the oracle (lab/concurrency_test.go).
+- [ ] R1.5 (nit) lab/gotest.go: the gates ignore ctx (after nodeFor expires, queued packages drain through up() one by one): select on ctx.Done().
+- [ ] R1.6 (nits) concurrency_test.go's regex `[^;|]*` crosses newlines: use `[^;|\n]*`; share the "15:04:05.000" stamp helper (timeline.go); labctl rejects -p/-build-p < 1 instead of clamping.
+- [ ] R1.7 (ticket) both "after" full labs exited on the budget (exit 3), not "green": say so; remove machine-specific details from the ticket (absolute free-memory MB, naming the machine's CPU-slot wrapper): say "memory stayed above the guard" and "the job's CPU weight".
+
 ## Log
 - 2026-11-19 created in backlog (lab-speed follow-ups)
 - 2026-11-19 backlog → in-progress, owner: agent-tp-254
@@ -46,3 +55,4 @@ A full `make lab-test` runs as many labs at once as the machine's lab-slot cap a
 - 2026-11-19 make lint, make test green on 05fbcee9; full make lab-test twice on 05fbcee9: 1729 s (default 28m49s, node uncached) and 923 s (default 15m24s, node cached), both all tests passed, over budget only (Notes).
 - 2026-11-19 out of scope: the slot cap is shared by every run on the machine and slots are taken by polling, not in order, so a run with many waiting labs takes most free slots; under the budget report, slow tests' times are mostly slot waits when runs overlap.
 - 2026-11-19 in-progress → review
+- 2026-11-19 review round 1: fix R1.1–R1.7
