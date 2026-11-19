@@ -52,6 +52,14 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine, queueRule func() e
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Created before the queue so that it closes after it: nf.Close waits
+	// for the callback, which may be sending a Reset's RSTs.
+	rst, err := newRSTSender()
+	if err != nil {
+		return err
+	}
+	defer rst.close()
+
 	nf, err := nfqueue.Open(&nfqueue.Config{
 		NfQueue:      cfg.Queue,
 		MaxPacketLen: 0xffff,
@@ -66,12 +74,6 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine, queueRule func() e
 	if err := nf.SetOption(netlink.NoENOBUFS, true); err != nil {
 		return fmt.Errorf("censor: netlink option: %w", err)
 	}
-
-	rst, err := newRSTSender()
-	if err != nil {
-		return err
-	}
-	defer rst.close()
 
 	var applyMu sync.Mutex
 	var applyErr error
@@ -91,7 +93,7 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine, queueRule func() e
 			return 0
 		}
 		id := *a.PacketID
-		handlePacket(eng, rst, id, *a.Payload, func(v Verdict) { setVerdict(nf, id, v) })
+		handlePacket(eng, rst, id, *a.Payload, func(v Verdict) { setVerdict(ctx, nf, id, v) })
 		return 0
 	}, failed)
 	if err != nil {
@@ -102,6 +104,9 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine, queueRule func() e
 	// message for each request's ack, and a packet queued meanwhile fails
 	// the start with "mismatched sequence in netlink reply".
 	if err := queueRule(); err != nil {
+		// Canceled first, so the closing queue's error isn't logged as a
+		// failure of its own.
+		cancel()
 		return err
 	}
 	log.Printf("censor ready: queue=%d", cfg.Queue)
@@ -147,12 +152,15 @@ func decide(eng *Engine, rst *rstSender, p *Packet, setVerdict func(Verdict)) {
 	setVerdict(a.Verdict)
 }
 
-func setVerdict(nf *nfqueue.Nfqueue, id uint32, v Verdict) {
+func setVerdict(ctx context.Context, nf *nfqueue.Nfqueue, id uint32, v Verdict) {
 	nfv := nfqueue.NfDrop
 	if v == Accept {
 		nfv = nfqueue.NfAccept
 	}
-	if err := nf.SetVerdict(id, nfv); err != nil {
+	// Once shutdown has begun the socket is closing ("netlink send: ...
+	// closed file"): harmless, since the censor's table goes too and the
+	// kernel drops what its closed queue still held, so it isn't logged.
+	if err := nf.SetVerdict(id, nfv); err != nil && ctx.Err() == nil {
 		log.Printf("censor: verdict for packet %d: %v", id, err)
 	}
 }

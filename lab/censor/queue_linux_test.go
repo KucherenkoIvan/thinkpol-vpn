@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -343,37 +344,46 @@ func TestRunStartsUnderTraffic(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		errc := make(chan error, 1)
 		go func() { errc <- run(ctx, Config{Queue: queue}, NewEngine(nil, nil, nil), "output") }()
+		// stopRun ends this start's run; bounded, so a wedged register
+		// fails the test instead of hanging it.
+		stopRun := func() error {
+			cancel()
+			select {
+			case err := <-errc:
+				return err
+			case <-time.After(10 * time.Second):
+				return errors.New("run did not return within 10 s of its cancel")
+			}
+		}
 		select {
 		case <-ready:
 		case err := <-errc:
 			cancel()
 			t.Fatalf("start %d of %d: %v", i+1, starts, err)
 		case <-time.After(10 * time.Second):
-			cancel()
-			t.Fatalf("start %d of %d: not ready within 10 s (%v)", i+1, starts, <-errc)
+			t.Fatalf("start %d of %d: not ready within 10 s (%v)", i+1, starts, stopRun())
 		}
 		// The flood must reach the queue, or the start proved nothing.
 		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 			proc, err := os.ReadFile("/proc/net/netfilter/nfnetlink_queue")
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("%v (stop: %v)", err, stopRun())
 			}
 			if stats, err := ParseQueueStats(string(proc), queue); err == nil && stats.Sequence > 0 {
 				break
 			} else if time.Now().After(deadline) {
-				cancel()
-				t.Fatalf("start %d of %d: the flood never reached queue %d (%+v, %v)", i+1, starts, queue, stats, err)
+				t.Fatalf("start %d of %d: the flood never reached queue %d (%+v, %v; stop: %v)", i+1, starts, queue, stats, err, stopRun())
 			}
 		}
-		cancel()
-		if err := <-errc; err != nil {
+		if err := stopRun(); err != nil {
 			t.Fatalf("start %d of %d: %v", i+1, starts, err)
 		}
 	}
 }
 
 // readyWriter is the log's output during a start: it closes ready at the
-// line censord's caller waits for, and passes every line on to stderr.
+// line censord's caller waits for, and passes every other line on to
+// stderr.
 type readyWriter struct {
 	once  sync.Once
 	ready chan struct{}
