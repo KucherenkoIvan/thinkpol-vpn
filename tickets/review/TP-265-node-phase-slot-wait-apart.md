@@ -33,10 +33,12 @@ The times file (`-times`, node.times) carries the four as a third tab-separated 
 
 The summed slot wait matches the timeline: the cold node-phase run on b886094f summed 3280 s from the lines and 3280 s from THINKPOL_LAB_TIMELINE's slot-wait lines. Packages run on the host (TP-266) show `took <t> (on the host)`.
 
+**Round 1: the run's own queue.** A package waiting for one of its own run's labs (`-p`, `LAB_P`'s labs: GoTestConcurrency.Labs; with `-perf`, for every build) waited in neither Elapsed nor the slot wait. `goTestGates.run` now hands `labRun` when the package began to queue, Elapsed counts from then, and LabPhases has a fifth phase, `queue`, first: `lab gotest …/internal/agent: took 16m33.4s (queue 5m39.2s, slot wait 8m59.3s, lab start 28s, tests 1m10.2s, teardown 16.6s)` (cold node phase, 275ed9d7). The times file carries five fields, and the budget's summed line starts with the queue. In that run 11 of 23 labs queued 3m38s to 5m39s behind the run's own 12, 3238 s summed against 8715 s of slot wait.
+
 **What it shows.** In that full lab, slot waits are 66% of the node packages' lab time and their tests 9%: nsthread took 14m30s for 0.3 s of tests, router 11m39s for 0.6 s. The node phase's speed is the slots' and the lab start's, not the tests'.
 
 ## Review findings
-- [ ] R1.6 (should-fix) the wait for the run's own lab gate (takeGate before inLab's start, lab/gotest.go) is in neither Elapsed nor SlotWait, so a node phase queued on its own gate shows "slot wait 0s": time it (in SlotWait or a "queue" column); a test that drops `clock.slotWait = &slotWait` must fail.
+- [x] R1.6 (should-fix) the wait for the run's own lab gate (takeGate before inLab's start, lab/gotest.go) is in neither Elapsed nor SlotWait, so a node phase queued on its own gate shows "slot wait 0s": time it (in SlotWait or a "queue" column); a test that drops `clock.slotWait = &slotWait` must fail.
 
 ## Log
 - 2026-11-19 created in backlog (TP-263)
@@ -47,3 +49,7 @@ The summed slot wait matches the timeline: the cold node-phase run on b886094f s
 - 2026-11-19 in-progress → review
 - 2026-11-19 review → has-errors
 - 2026-11-19 review round 1: fix R1.6
+- 2026-11-19 R1.6 fixed: LabPhases.Queue (lab/gotest.go), goTestGates.run passes the time a package began to queue for its lab, inLab's Elapsed counts from it, labTimer wires the slot wait into the start's clock; the times file and the budget carry the queue; TestGoTestGatesTimeTheLabQueue, TestLabTimerTimesTheSlotWait, TestLabPhases, TestTestTimesRoundTripPhases, TestCheckBudgetPhases
+- 2026-11-19 mutations, each killed: M20a the start's clock without `slotWait` (TestLabTimerTimesTheSlotWait), M20b the queue timed from the lab token (TestGoTestGatesTimeTheLabQueue), M20c no queue phase (TestLabPhases), M20d the queue left out of the times file (TestTestTimesRoundTripPhases)
+- 2026-11-19 runs: see TP-266's Log (same branch): cold node phase on 275ed9d7 shows the queue column; full make lab-test on 152d52ed passed, over budget only
+- 2026-11-19 has-errors → review
