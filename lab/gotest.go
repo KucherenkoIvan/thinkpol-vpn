@@ -328,85 +328,100 @@ func waitGate(ctx context.Context, what string, done <-chan struct{}) error {
 
 // goTestPackage is one package of GoTestEach: served from the cache, or run
 // in a fresh lab, its output in out.
-func goTestPackage(ctx context.Context, root, project string, pkg GoPackage, out *bytes.Buffer, cache *GoTestCache, gates *goTestGates, env, args []string) (res GoTestResult, labErr error) {
-	res = GoTestResult{ImportPath: pkg.ImportPath}
-	header := "=== lab gotest " + pkg.ImportPath
-	headed := false
-	head := func(suffix string) {
-		headed = true
-		fmt.Fprintln(out, header+suffix)
+func goTestPackage(ctx context.Context, root, project string, pkg GoPackage, out *bytes.Buffer, cache *GoTestCache, gates *goTestGates, env, args []string) (GoTestResult, error) {
+	r := &packageRun{ctx: ctx, root: root, project: project, pkg: pkg, out: out, cache: cache, env: env, args: args}
+	r.res = GoTestResult{ImportPath: pkg.ImportPath}
+	if err := gates.run(ctx, r.prepare, r.build, r.inLab); err != nil {
+		if !r.headed {
+			r.head("")
+		}
+		return r.res, fmt.Errorf("lab gotest %s: %w", pkg.ImportPath, err)
 	}
-	var (
-		p     preparedRun
-		name  string
-		entry *goTestEntry
-	)
-	prepareRun := func() (err error) {
-		p, err = prepare(ctx, root)
-		return err
-	}
-	build := func() (needsLab bool) {
-		var built bool
-		var err error
-		name, built, err = buildPackageTests(ctx, root, p.bin.path, pkg)
-		if err != nil || !built { // !built: no tests for linux, nothing to start a lab for
-			head("")
-			if err != nil {
-				fmt.Fprintln(out, err)
-				res.Failed = true
-			}
-			return false
-		}
-		if cache == nil {
-			head("")
-			return true
-		}
-		if entry, err = cache.entry(ctx, root, p, name, pkg, env, args); err != nil {
-			head("\nlab: results cache: " + err.Error())
-			entry = nil
-			return true
-		}
-		t, ok := cache.Store.Lookup(entry.action, entry.resolve)
-		if !ok {
-			head("")
-			return true
-		}
-		res.Cached, res.Tests = true, TestTally{Passed: t.Passed, Skipped: t.Skipped}
-		if t == (testcache.Tally{}) { // not verbose: nothing was counted
-			head(" (cached)")
-		} else {
-			head(fmt.Sprintf(" (cached: %d passed, %d skipped)", t.Passed, t.Skipped))
+	return r.res, r.labErr
+}
+
+// packageRun is one package's steps through goTestGates.run.
+type packageRun struct {
+	ctx           context.Context
+	root, project string
+	pkg           GoPackage
+	out           *bytes.Buffer
+	cache         *GoTestCache
+	env, args     []string
+
+	p      preparedRun
+	entry  *goTestEntry // nil: no cache, or none for this package
+	headed bool         // the package's header line is in out
+	res    GoTestResult
+	labErr error
+}
+
+func (r *packageRun) head(suffix string) {
+	r.headed = true
+	fmt.Fprintln(r.out, "=== lab gotest "+r.pkg.ImportPath+suffix)
+}
+
+func (r *packageRun) prepare() (err error) {
+	r.p, err = prepare(r.ctx, r.root)
+	return err
+}
+
+// build compiles the package's tests and looks for a recorded pass; it
+// says whether the package still needs a lab.
+func (r *packageRun) build() (needsLab bool) {
+	name, built, err := buildPackageTests(r.ctx, r.root, r.p.bin.path, r.pkg)
+	if err != nil || !built { // !built: no tests for linux, nothing to start a lab for
+		r.head("")
+		if err != nil {
+			fmt.Fprintln(r.out, err)
+			r.res.Failed = true
 		}
 		return false
 	}
-	labRun := func() {
-		started := time.Now()
-		runArgs := args
-		if entry != nil {
-			runArgs = append(slices.Clone(args), "-test.testlogfile="+goTestLogFile)
-		}
-		start := out.Len()
-		run := goTestFresh(ctx, root, project, pkg, out, env, runArgs, entry != nil)
-		res.Elapsed = time.Since(started)
-		res.Failed = run.testErr != nil
-		res.Tests = TallyTests(out.Bytes()[start:])
-		if run.testErr != nil {
-			fmt.Fprintln(out, run.testErr)
-		}
-		if entry != nil {
-			if err := cache.record(entry, run, started, res.Tests); err != nil {
-				fmt.Fprintf(out, "lab: results cache: pass not recorded: %v\n", err)
-			}
-		}
-		labErr = run.labErr
+	if r.cache == nil {
+		r.head("")
+		return true
 	}
-	if err := gates.run(ctx, prepareRun, build, labRun); err != nil {
-		if !headed {
-			head("")
-		}
-		return res, fmt.Errorf("lab gotest %s: %w", pkg.ImportPath, err)
+	if r.entry, err = r.cache.entry(r.ctx, r.root, r.p, name, r.pkg, r.env, r.args); err != nil {
+		r.head("\nlab: results cache: " + err.Error())
+		r.entry = nil
+		return true
 	}
-	return res, labErr
+	t, ok := r.cache.Store.Lookup(r.entry.action, r.entry.resolve)
+	if !ok {
+		r.head("")
+		return true
+	}
+	r.res.Cached, r.res.Tests = true, TestTally{Passed: t.Passed, Skipped: t.Skipped}
+	if t == (testcache.Tally{}) { // not verbose: nothing was counted
+		r.head(" (cached)")
+	} else {
+		r.head(fmt.Sprintf(" (cached: %d passed, %d skipped)", t.Passed, t.Skipped))
+	}
+	return false
+}
+
+// inLab runs the package's tests in a fresh lab and records a pass.
+func (r *packageRun) inLab() {
+	started := time.Now()
+	runArgs := r.args
+	if r.entry != nil {
+		runArgs = append(slices.Clone(r.args), "-test.testlogfile="+goTestLogFile)
+	}
+	start := r.out.Len()
+	run := goTestFresh(r.ctx, r.root, r.project, r.pkg, r.out, r.env, runArgs, r.entry != nil)
+	r.res.Elapsed = time.Since(started)
+	r.res.Failed = run.testErr != nil
+	r.res.Tests = TallyTests(r.out.Bytes()[start:])
+	if run.testErr != nil {
+		fmt.Fprintln(r.out, run.testErr)
+	}
+	if r.entry != nil {
+		if err := r.cache.record(r.entry, run, started, r.res.Tests); err != nil {
+			fmt.Fprintf(r.out, "lab: results cache: pass not recorded: %v\n", err)
+		}
+	}
+	r.labErr = run.labErr
 }
 
 // goTestLogFile is where, in a gotest node, the test binary writes its
