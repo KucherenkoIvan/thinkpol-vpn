@@ -23,9 +23,10 @@ import (
 
 // TestCensorMatrix scores every transport against every censor module (PRD
 // C4, success metric 1) and regenerates lab/RESULTS.md. Each transport's
-// row runs in one lab of its own (router, device-a, server-1 and
-// camouflage, holding its own lab slot, lab.StartOwnSlot), the rows in
-// parallel and a row's cells one after another: a transport passes when
+// row runs in a lab of its own, or a slow row's cells split across a few
+// (transport.labs, rowLabs), each lab with router, device-a, server-1 and
+// camouflage, holding its own lab slot (lab.StartOwnSlot), the labs in
+// parallel and a lab's cells one after another: a transport passes when
 // its data crossed the censor in the lab router over IPv4 and over IPv6,
 // fails when it crossed over neither, and is partial when only one family
 // crossed, which only a row that varies (censorCase.varies) may be. A cell
@@ -36,18 +37,20 @@ import (
 // compare what it must) is an error. RESULTS.md is written only by a
 // complete run with no error.
 //
-// Every cell sets its transport up afresh, and after it the row's lab is
+// Every cell sets its transport up afresh, and after it the cell's lab is
 // reset to the state it came up in (matrixRow.reset): the cell's
 // processes, censord with them, stopped, the links, addresses, routes,
 // policy rules, tables and files it left removed, the router's censor
-// table and conntrack cleared, the verdict log gone. A reset that didn't hold makes the cell
-// an error, and every later cell of its row.
+// table and conntrack cleared, the verdict log gone. A reset that didn't
+// hold makes the cell an error, and every later cell of its lab.
 //
-// A transport's off cell (no censor) runs first and the censored cells
-// read its result: a transport must pass without a censor before it is
-// judged against one. A censored cell without a passing off cell is an
-// error and fails fast, whether the off cell didn't run (a -run filter can
-// select the cell alone) or it failed.
+// A transport's off cell (no censor) runs first in each of its labs and
+// the lab's censored cells read its result: a transport must pass without
+// a censor before it is judged against one, in the lab that judges it.
+// The row's first lab records the off cell; in the others it is only the
+// gate. A censored cell without a passing off cell is an error and fails
+// fast, whether the off cell didn't run (a -run filter can select the cell
+// alone) or it failed.
 //
 // The held cells (heldCell: a row holding its tunnel for minutes on
 // WireGuard's real rekey timers) are the long stream's (lab.StreamLong),
@@ -1133,12 +1136,13 @@ func TestWithRowSettings(t *testing.T) {
 }
 
 // transports is the matrix's rows, longest first: go test starts parallel
-// rows in this order as slots free up, so the rows that hold their tunnel
-// 7.5 minutes for wireguard-rhythm (reality about 865 s, udp) never wait
-// behind short ones, and the matrix takes about as long as its longest row
-// (RESULTS.md sorts the rows by name). Under make lab-test the holds run
-// in the long stream, a lab per held row, and the default stream's rows
-// are all short.
+// labs in about this order as -parallel slots free up, so the rows that
+// hold their tunnel 7.5 minutes for wireguard-rhythm (reality about 865 s,
+// udp) never wait behind short ones (RESULTS.md sorts the rows by name).
+// Under make lab-test the holds run in the long stream, a lab per held
+// row, and the default stream's rows are all short; the slowest of those
+// split their cells across labs (labs), so no default-stream lab runs
+// much past its start and 1 to 1.5 minutes of cells.
 var transports = []transport{
 	realityRow,
 	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP, udp: true, oneUnderlay: true, hold: holdTunnel, labs: 2},
