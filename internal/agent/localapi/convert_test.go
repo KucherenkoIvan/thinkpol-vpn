@@ -16,6 +16,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/supervisor"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/packettest"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/router"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
@@ -217,6 +218,38 @@ func TestKillSwitchText(t *testing.T) {
 		got := KillSwitchText(statusProto(agent.Status{Mode: agent.ModeDevice, KillSwitch: c.k}).GetKillSwitch())
 		if got != c.want {
 			t.Errorf("%+v: %q, want %q", c.k, got, c.want)
+		}
+	}
+}
+
+// A neighbor's up time reaches the status as the engine's own instant
+// (`up_since`), not one derived from up_for; unset while down.
+func TestNeighborUpSinceReachesTheStatus(t *testing.T) {
+	since := time.Date(2026, 11, 19, 10, 0, 0, 123456789, time.UTC)
+	st := agent.Status{Mode: agent.ModeDevice, Connection: agent.Connected, DataPlane: &dataplane.Status{
+		Neighbors: []path.NeighborStatus{
+			{Node: path.NodeID{1}, Up: true, UpFor: 3 * time.Second, UpSince: since},
+			{Node: path.NodeID{2}},
+		},
+	}}
+	out := statusProto(st)
+	ns := out.GetDataPlane().GetNeighbors()
+	if len(ns) != 2 {
+		t.Fatalf("neighbors %v, want 2", ns)
+	}
+	if got := ns[0].GetUpSince(); got == nil || !got.AsTime().Equal(since) {
+		t.Errorf("up neighbor's up_since %v, want %v", got, since)
+	}
+	if got := ns[1].GetUpSince(); got != nil {
+		t.Errorf("down neighbor's up_since %v, want unset", got)
+	}
+	var b bytes.Buffer
+	if err := WriteJSON(&b, out); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"up_since": "2026-11-19T10:00:00.123456789Z"`, `"up_since": null`} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("status -json has no %s:\n%s", want, b.String())
 		}
 	}
 }

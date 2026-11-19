@@ -678,6 +678,10 @@ message Neighbor {
   // This node dials it.
   bool dialed = 5;
   repeated Link links = 6;
+  // When it came up (up_for before the status was taken), on the node's
+  // clock; unset while down. Compare it with other instants rather than
+  // subtracting up_for from a later clock reading.
+  google.protobuf.Timestamp up_since = 7;
 }
 
 message Link {
