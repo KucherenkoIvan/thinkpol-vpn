@@ -23,14 +23,15 @@ In TP-243's first full lab at 3d2f04d8 (2026-11-18) TestKillSwitchUnderSystemd f
 ## Acceptance
 - [x] The root cause named in Notes, with evidence.
 - [x] A fix.
-- [ ] 20 runs of the test under load pass, and a mutation that brings the cause back fails.
+- [x] 20 runs of the test under load pass, and a mutation that brings the cause back fails. (TP-248's Log, 2026-11-19.)
 - [x] No retries and no longer timeouts without a cause.
 
 ## Notes
 - Root cause (TP-241's Log, 2026-11-18): the 3 s limit timed the whole `docker exec` around the curl, and a loaded host stretches the exec, not the curl: a run at load 14 took 7.9 s around a curl that failed in 0 ms. What the limit means to prove is that the kill switch refuses the connection at once (a reject, not a drop the curl waits out), which is curl's own time.
 - The fix, TP-241's 3ad4cc95: the test reads curl's own time_total (`-w`) and bounds that at 3 s, a missing time_total failing the check. It adds no retry and keeps the 3 s limit and curl's 5 s bound.
-- Box 3 stays open: TP-241's Log shows TestKillSwitchUnderSystemd passing three times targeted, once more on its final code and in its full labs, not 20 runs under load, and logs no mutation that brings the exec-timed bound back.
+- Box 3 stayed open until TP-248's runs (Log, 2026-11-19): TP-241's Log shows TestKillSwitchUnderSystemd passing three times targeted, once more on its final code and in its full labs, not 20 runs under load, and logs no mutation that brings the exec-timed bound back.
 
 ## Log
 - 2026-11-18 created in backlog (seen in TP-243's full labs)
 - 2026-11-19 backlog → done: fixed by TP-241 (the test times a refused curl by curl's own clock, commit 3ad4cc95)
+- 2026-11-19 box 3 proven in TP-248 (lab runs and mutations in its Log): the refusal check passed in 27 runs (and in a 28th that ran only the `down` part) of TestKillSwitchUnderSystemd under load (1-minute load average 1.4 to 51), 12 refusals a run, none over 3 s by curl's clock; one of those runs failed elsewhere, in the table-repair check, which timed by the host's clock the same way and now times by the node's (TP-248, 1144c055). The cause brought back (the refusal timed by the docker exec's wall clock, the exec stretched 3.5 s) fails all 6 refusals of the `down` part; the fix under the same stretch passes
