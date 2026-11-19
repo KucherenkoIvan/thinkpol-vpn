@@ -35,6 +35,13 @@ func shareFile(dir, stream string) string {
 	return filepath.Join(dir, "censor-matrix-"+stream+".json")
 }
 
+// flakesFile lists the stream's known flakes (flakedCells), a line each,
+// for make lab-test's last line: written whether or not the stream's
+// matrix failed, and read whether or not RESULTS.md is assembled.
+func flakesFile(dir, stream string) string {
+	return filepath.Join(dir, "known-flakes-"+stream+".txt")
+}
+
 // matrixShareOf is the stream's own share of cells: in the long stream, a
 // held row's off cell is the default stream's, run again only as its held
 // cell's gate.
@@ -58,6 +65,13 @@ func writeMatrixShare(t *testing.T, stream string, cells []matrixCell) {
 	if dir == "" {
 		t.Logf("the %s stream's share of the matrix, without %s: RESULTS.md not written", stream, lab.ResultsDirEnv)
 		return
+	}
+	var flakes strings.Builder
+	for _, c := range flakedCells(cells) {
+		flakes.WriteString(c + "\n")
+	}
+	if err := os.WriteFile(flakesFile(dir, stream), []byte(flakes.String()), 0o644); err != nil {
+		t.Errorf("the %s stream's known flakes: %v", stream, err)
 	}
 	b, err := json.Marshal(matrixShareOf(stream, os.Getenv(lab.CommitEnv), wgTimerScale, t.Failed(), cells))
 	if err == nil {
@@ -294,5 +308,32 @@ func TestReadMatrixShares(t *testing.T) {
 	write(dir, lab.StreamLong, matrixShare{Stream: lab.StreamDefault, Commit: "abc"})
 	if _, err := readMatrixShares(dir, "abc"); err == nil || !strings.Contains(err.Error(), "says it is") {
 		t.Errorf("a share under another stream's file: %v", err)
+	}
+}
+
+// TestWriteMatrixShareFlakes: a stream lists its known flakes next to its
+// share, a line each, and an empty list when it had none, which make
+// lab-test's last line counts.
+func TestWriteMatrixShareFlakes(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(lab.ResultsDirEnv, dir)
+	t.Setenv(lab.CommitEnv, "c0ffee")
+	fe := censorCases[slices.IndexFunc(censorCases, func(cc censorCase) bool { return cc.name == "fully-encrypted" })]
+	flaked := matrixCell{rowUDP, fe.name, "partial", "only IPv4 crossed"}
+	if err := fe.verdict(&flaked, "fail"); err != nil {
+		t.Fatal(err)
+	}
+	for stream, c := range map[string]struct {
+		cells []matrixCell
+		want  string
+	}{
+		lab.StreamDefault: {[]matrixCell{{rowRandomTCP, fe.name, "fail", ""}, flaked}, "udp / fully-encrypted\n"},
+		lab.StreamLong:    {[]matrixCell{{rowUDP, "wireguard-rhythm", "fail", ""}}, ""},
+	} {
+		writeMatrixShare(t, stream, c.cells)
+		b, err := os.ReadFile(flakesFile(dir, stream))
+		if err != nil || string(b) != c.want {
+			t.Errorf("the %s stream's known flakes: %q, %v; want %q", stream, b, err, c.want)
+		}
 	}
 }
