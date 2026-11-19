@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-255"
+branch: "tp-255-prober-short-baseline"
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ In `lab/censor/modules_prober.go` (`upstreamTally.unattributable`, `shortBaselin
 
 ## Log
 - 2026-11-19 created in backlog (TP-247 review)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-255
