@@ -343,10 +343,10 @@ func joinSlotQueue(ctx context.Context, dir string) (*slotQueue, error) {
 // held only for a scan, so a longer wait means its holder was stopped
 // mid-scan, and waiting for it would stop every waiter's heartbeat too.
 func (q *slotQueue) lockQueue(ctx context.Context, exclusive bool) (func(), error) {
-	bounded, cancel := context.WithTimeout(ctx, q.timing.stale)
+	lockCtx, cancel := context.WithTimeout(ctx, q.timing.stale)
 	defer cancel()
-	unlock, err := pollLock(bounded, slotQueueLockRetry, exclusive, q.lock)
-	if err != nil && ctx.Err() == nil && bounded.Err() != nil {
+	unlock, err := pollLock(lockCtx, slotQueueLockRetry, exclusive, q.lock)
+	if err != nil && ctx.Err() == nil && lockCtx.Err() != nil {
 		return nil, fmt.Errorf("lab: %s held for over %v", q.lock, q.timing.stale)
 	}
 	return unlock, err
