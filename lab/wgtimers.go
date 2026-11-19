@@ -226,8 +226,9 @@ func wgTreeHash(fsys fs.FS, constants []byte) (string, error) {
 		if constants != nil && path == "device/constants.go" {
 			b = constants
 		}
-		fmt.Fprintf(h, "%s\x00%d\x00", path, len(b))
-		h.Write(b)
+		// A hash's Write never fails.
+		_, _ = fmt.Fprintf(h, "%s\x00%d\x00", path, len(b))
+		_, _ = h.Write(b)
 		return nil
 	})
 	return hex.EncodeToString(h.Sum(nil)), err
