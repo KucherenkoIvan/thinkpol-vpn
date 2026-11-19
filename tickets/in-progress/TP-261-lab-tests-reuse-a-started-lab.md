@@ -56,7 +56,7 @@ No `lab/` test outside the systemd ones disconnects a network, restarts, pauses 
 
 ### Measurements
 
-- **Before** (rewrite 35b02ca7, this branch's board commit cc9c380c, full `make lab-test` with `THINKPOL_LAB_TIMELINE`, cold node phase and harness, another ticket's full lab running at the same time): tests passed, over budget (default stream 47m52s, long stream 4m13s), wall 2872 s. Lab starts (`docker compose up` lines in the timeline): 111 in all, of which 58 by `lab/` tests (default and long stream: TestKillSwitchUnderSystemd 4, the censor matrix's rows 17, every other test 1, `lab/prototypes/reality` 2), 11 by the harness tests, 42 by the node phase.
+- **Before** (rewrite 35b02ca7, this branch's board commit cc9c380c, full `make lab-test` with `THINKPOL_LAB_TIMELINE`, cold node phase and harness, another ticket's full lab running at the same time): tests passed, over budget (default stream 47m52s, long stream 4m13s), wall 2872 s. Lab starts (`docker compose up` lines in the timeline): 111 in all, of which 57 by the lab tests of the two streams (`lab/` and `lab/prototypes/reality`: TestKillSwitchUnderSystemd 4, the censor matrix's rows 17, every other test 1), 12 by the harness tests, 42 by the node phase.
 - Targeted run of the 25 migrated tests (`make lab-gotest PKG=./lab RUN=…`, 7d13d6d4, under two other tickets' full labs): all passed, 798 s; 20 labs started for 28 tests, none retired; most labs went down idle after one test (a fixed 15 s idle grace), hence the grace now follows the lab's own start time.
 
 ## Log
