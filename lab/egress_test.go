@@ -27,7 +27,7 @@ import (
 // nothing, and leaves its host's network alone (TP-111).
 func TestEgressThroughAnExit(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Server2, lab.Internet))
+	l := standardPool.Acquire(t)
 	s1, s2, devA, inet := l.Node(lab.Server1), l.Node(lab.Server2), l.Node(lab.DeviceA), l.Node(lab.Internet)
 	inet4, exit4 := inet.IPv4(lab.NetServers), s2.IPv4(lab.NetServers)
 	// The lab's IPv6 is unique local, which is no internet to an exit:
@@ -80,10 +80,10 @@ func TestEgressThroughAnExit(t *testing.T) {
 		return out, err
 	}
 	// noFetch fails the test unless curl itself says it couldn't connect
-	// (curlFrom); it returns what curl printed.
-	noFetch := func(url string, timeout time.Duration) string {
+	// (curlFrom); it returns what curl printed. args go before the URL.
+	noFetch := func(url string, timeout time.Duration, args ...string) string {
 		t.Helper()
-		connected, out, err := curlFrom(devA, timeout, "-g", url)
+		connected, out, err := curlFrom(devA, timeout, append(append([]string{"-g"}, args...), url)...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -134,10 +134,11 @@ func TestEgressThroughAnExit(t *testing.T) {
 		}
 		return nil
 	})
-	start := time.Now()
-	out := noFetch(url6, 10*time.Second) // IPv6 through an exit without IPv6
-	if took := time.Since(start); took > 3*time.Second {
-		t.Errorf("IPv6 refused after %v, want at once: %s", took, out)
+	// IPv6 through an exit without IPv6, refused at once by curl's own
+	// clock: a loaded host's docker exec takes seconds of its own.
+	out := noFetch(url6, 10*time.Second, "-w", "time_total=%{time_total}\n")
+	if took, ok := curlTook(out); !ok || took > 3*time.Second {
+		t.Errorf("IPv6 refused after %v by curl's clock (read %v), want at once: %s", took, ok, out)
 	}
 	if out, err := fetch(url4, 5*time.Second); err != nil || strings.TrimSpace(out) != "egress-ok" {
 		t.Fatalf("IPv4 without the IPv6 uplink: %q, %v", out, err)

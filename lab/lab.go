@@ -76,23 +76,43 @@ func start(t testing.TB, topo Topology, slotKey string) *Lab {
 // startAs is start with override in ProjectEnv's place (checkoutProject).
 func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 	t.Helper()
-	if !mainInstalled.Load() {
-		t.Fatal("lab: this package's TestMain must call lab.Main(m), or the binaries its labs run are never removed")
+	if err := mainCalled(); err != nil {
+		t.Fatal(err)
+	}
+	l, bins, keep, err := launch(t, topo, func(string) string { return slotKey }, t.Name(), override)
+	if l != nil {
+		t.Cleanup(func() { l.cleanup(t, bins, keep, time.Time{}) })
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// launch brings up a lab for t, named after name, holding the slot
+// slotKey gives for its project, without tying its tear-down to t: Start
+// ties it to the test, a Pool keeps the lab for the tests after. It
+// returns the run's binaries the lab mounts and whether KeepEnv is set;
+// a lab returned with an error still needs its clean-up.
+func launch(t testing.TB, topo Topology, slotKey func(project string) string, name, override string) (*Lab, *runBinaries, bool, error) {
+	t.Helper()
+	if err := mainCalled(); err != nil {
+		return nil, nil, false, err
 	}
 	root, err := Root()
 	if err != nil {
-		t.Fatal(err)
+		return nil, nil, false, err
 	}
 	checkout, err := checkoutProject(root, override)
 	if err != nil {
-		t.Fatal(err)
+		return nil, nil, false, err
 	}
 	run, err := runID()
 	if err != nil {
-		t.Fatal(err)
+		return nil, nil, false, err
 	}
 	cwd, _ := os.Getwd()
-	project := claimProject(ownTestProject(checkout, run, cwd, t.Name()))
+	project := claimProject(ownTestProject(checkout, run, cwd, name))
 	clock := labBudget.begin(testDeadline(t))
 	// The run's directory, for .kept; up gets the same one, within the
 	// same bound.
@@ -102,7 +122,7 @@ func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 		return err
 	})
 	if err != nil {
-		t.Fatal(err)
+		return nil, nil, false, err
 	}
 	// With KeepEnv set, the lab may outlive the run (kept, or left up by a
 	// -timeout panic): .kept lists it before it starts, so its binaries stay
@@ -113,17 +133,19 @@ func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 	keep := os.Getenv(KeepEnv) != ""
 	if keep {
 		if err := p.bin.recordLab(project); err != nil {
-			t.Fatal(err)
+			return nil, nil, false, err
 		}
 	}
-	l, err := up(context.Background(), clock, root, project, topo, slotKey, runInputs)
-	if l != nil {
-		t.Cleanup(func() { l.cleanup(t, p.bin, keep) })
+	l, err := up(context.Background(), clock, root, project, topo, slotKey(project), runInputs)
+	return l, p.bin, keep, err
+}
+
+// mainCalled is an error unless the test binary runs through Main.
+func mainCalled() error {
+	if !mainInstalled.Load() {
+		return errors.New("lab: this package's TestMain must call lab.Main(m), or the binaries its labs run are never removed")
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	return l
+	return nil
 }
 
 var (
@@ -143,28 +165,41 @@ func claimProject(project string) string {
 }
 
 // cleanup tears the lab down, or with keep (KeepEnv) keeps a failed
-// test's lab and the run directory bins it mounts.
-func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool) {
+// test's lab and the run directory bins it mounts. A failed test's log
+// gets the containers' logs since since (all of them when zero: a lab
+// that served other tests before has theirs too).
+func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool, since time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), labBudget.teardown)
 	defer cancel()
 	if t.Failed() {
-		if res, err := runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "logs", "--no-color", "--timestamps"); err == nil {
+		logs := []string{"docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "logs", "--no-color", "--timestamps"}
+		if !since.IsZero() {
+			logs = append(logs, "--since", since.UTC().Format(time.RFC3339Nano))
+		}
+		if res, err := runEnv(ctx, nil, environWithoutCompose(), logs[0], logs[1:]...); err == nil {
 			t.Logf("lab %s logs:\n%s", l.Project, res.Stdout)
 		}
-		if keep {
-			err := bins.keep(l.Project)
-			if err == nil {
-				t.Logf("lab %s kept: docker compose -p %s exec <node> bash; make lab-down removes it", l.Project, l.Project)
-				l.releaseSubnets()
-				l.releaseSlot()
-				return
-			}
-			t.Errorf("lab %s: can't keep it, tearing it down: %v", l.Project, err)
+		if keep && l.keepRunning(t, bins) {
+			return
 		}
 	}
 	if err := l.Down(ctx); err != nil {
 		t.Errorf("lab %s: tear down: %v", l.Project, err)
 	}
+}
+
+// keepRunning keeps the lab up for inspection, and the run directory bins
+// it mounts (KeepEnv), letting go of its slot and subnets; false when it
+// couldn't, the lab still up for the caller to tear down.
+func (l *Lab) keepRunning(t testing.TB, bins *runBinaries) bool {
+	if err := bins.keep(l.Project); err != nil {
+		t.Errorf("lab %s: can't keep it, tearing it down: %v", l.Project, err)
+		return false
+	}
+	t.Logf("lab %s kept: docker compose -p %s exec <node> bash; make lab-down removes it", l.Project, l.Project)
+	l.releaseSubnets()
+	l.releaseSlot()
+	return true
 }
 
 // UpDetached brings up a topology, for a lab that outlives this process

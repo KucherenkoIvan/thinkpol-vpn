@@ -278,14 +278,15 @@ func removeStaleBinaries(ctx context.Context, root string, labsUp labLister) err
 // mainInstalled says the test binary runs its tests through Main.
 var mainInstalled atomic.Bool
 
-// Main runs a package's lab tests and then removes the binaries they
-// built. Every package with tests that start labs calls it from TestMain,
+// Main runs a package's lab tests, tears down the labs its pools still
+// hold, and then removes the binaries they built. Every package with tests that start labs calls it from TestMain,
 // as the last thing TestMain does: a lab started without it fails its
 // test. A run that dies first (interrupted, killed, a -timeout panic)
 // leaves its binaries to the next run's sweep, or to labctl down.
 func Main(m *testing.M) {
 	mainInstalled.Store(true)
 	m.Run() // TestMain may return; the test binary exits with m.Run's code
+	closePools(os.Stderr)
 	if err := RemoveRunBinaries(context.Background()); err != nil {
 		fmt.Fprintln(os.Stderr, "lab: remove binaries:", err)
 	}

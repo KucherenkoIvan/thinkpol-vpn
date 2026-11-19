@@ -468,7 +468,7 @@ func TestCleanupKeepsAFailedLabsBinaries(t *testing.T) {
 		}
 		l := &Lab{Project: "tplab-x-t-cleanup", stateDir: t.TempDir(), binDir: d.path}
 		tb := &cleanupTB{failed: c.failed}
-		l.cleanup(tb, d, c.keep)
+		l.cleanup(tb, d, c.keep, time.Time{})
 		if len(tb.errs) > 0 {
 			t.Fatalf("%+v: cleanup: %v", c, tb.errs)
 		}

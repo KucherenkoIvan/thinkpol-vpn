@@ -140,7 +140,7 @@ func workerApplied(version string) string {
 // by SIGHUP, and stops it, leaving nothing behind.
 func TestUpRunsTheM0Space(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.DeviceB, lab.Server1))
+	l := twoDevicePool.Acquire(t)
 	server, devA, devB := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.DeviceB)
 	space := newM0Space(t, l.Node(lab.Router), server)
 	envelope, v1 := space.build(t)

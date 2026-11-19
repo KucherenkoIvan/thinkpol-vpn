@@ -339,6 +339,30 @@ func joinSlotQueue(ctx context.Context, dir string) (*slotQueue, error) {
 	return q, nil
 }
 
+// slotWanted says whether a lab start of any run that shares the lock
+// directory waits for a slot now: a ticket in dir's slot queue refreshed
+// within the stale limit. A waiter that fell back to polling the slots
+// (unqueued) has no ticket and isn't seen; a queue that can't be read
+// counts as wanted.
+func slotWanted(dir string, now time.Time) bool {
+	entries, err := os.ReadDir(filepath.Join(dir, "slot-queue"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), slotQueueSuffix) {
+			continue
+		}
+		if info, err := e.Info(); err == nil && info.Mode().IsRegular() && now.Sub(info.ModTime()) < slotQueueTimes.stale {
+			return true
+		}
+	}
+	return false
+}
+
 // lockQueue takes slot-queue.lock, giving up after the stale limit: it is
 // held only for a scan, so a longer wait means its holder was stopped
 // mid-scan, and waiting for it would stop every waiter's heartbeat too.

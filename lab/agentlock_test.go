@@ -25,7 +25,7 @@ import (
 // one keeps working.
 func TestASecondAgentChangesNothing(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.DeviceB, lab.Server1, lab.Internet))
+	l := internetPool.Acquire(t)
 	server, devA, devB, inet := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.DeviceB), l.Node(lab.Internet)
 	inetIP := inet.IPv4(lab.NetServers)
 	waitLog(t, inet.Start(t, "labdns", "-listen", ":53", "-a", domesticA, "-aaaa", "2001:db8:d::53"), "listening on :53/udp")

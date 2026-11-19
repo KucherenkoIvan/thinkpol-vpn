@@ -48,7 +48,7 @@ func cli(t *testing.T, n *lab.Node, args []string) (lab.Result, error) {
 // else nothing. No status shows a public address or a key.
 func TestLocalAPI(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.DeviceB, lab.Server1))
+	l := twoDevicePool.Acquire(t)
 	server, devA, devB := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.DeviceB)
 	space := newM0Space(t, l.Node(lab.Router), server)
 	envelope, _ := space.build(t)
@@ -277,7 +277,7 @@ func TestLocalAPI(t *testing.T) {
 // carries on throughout.
 func TestDisconnectLeavesNothingBehind(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.DeviceB, lab.Server1, lab.Internet))
+	l := internetPool.Acquire(t)
 	server, devA, devB, inet := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.DeviceB), l.Node(lab.Internet)
 	inetIP := inet.IPv4(lab.NetServers)
 	startResolvers(t, inet)

@@ -45,10 +45,7 @@ const domesticList = "198.51.100.0,198.51.100.255,DM\n2001:db8:d0::,2001:db8:d0:
 // it; a stop leaves the routing as it was.
 func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().With(
-		lab.NodeSpec{Name: abroad, Networks: []string{lab.NetServers}, Gateway: lab.Router},
-		lab.NodeSpec{Name: router2, Networks: []string{lab.NetDevices, lab.NetServers}, Forward: true},
-	).Only(lab.Router, router2, lab.DeviceA, lab.Server1, lab.Internet, abroad))
+	l := abroadPool.Acquire(t)
 	server, dev, router, internet, far := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Router), l.Node(lab.Internet), l.Node(abroad)
 	for site, addrs := range map[*lab.Node][2]netip.Addr{internet: {domestic4, domestic6}, far: {foreign4, foreign6}} {
 		site.MustExec(t, "ip", "addr", "add", addrs[0].String()+"/32", "dev", "lo")

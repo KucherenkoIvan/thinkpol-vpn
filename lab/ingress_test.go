@@ -20,7 +20,7 @@ import (
 // spec asking a device to dial server-2 with ingress off doesn't build.
 func TestIngressOffAdmitsOnlyServers(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.DeviceB, lab.Server1, lab.Server2))
+	l := standardPool.Acquire(t)
 	s1, s2, devA, devB := l.Node(lab.Server1), l.Node(lab.Server2), l.Node(lab.DeviceA), l.Node(lab.DeviceB)
 	s1Addr, s2Addr := s1.IPv4(lab.NetServers).String(), s2.IPv4(lab.NetServers).String()
 	space := &m0Space{builder: l.Node(lab.Router), spec: "/src/lab/maps/ingress.yaml"}
