@@ -87,15 +87,24 @@ func TestPoolTake(t *testing.T) {
 // TestNewPool: one pool per topology, a positive size, and no systemd
 // node.
 func TestNewPool(t *testing.T) {
-	defer func(saved []*Pool) { pools = saved }(pools)
-	topo := Standard().Only(Router, DeviceA)
-	NewPool(topo, 1)
+	defer func(saved []*Pool) {
+		poolsMu.Lock()
+		pools = saved
+		poolsMu.Unlock()
+	}(pools)
+	// Topologies of this test's own: the lab tests' pools are in the
+	// same binary under the lab tag.
+	topo := func(node string, systemd bool) Topology {
+		return Topology{
+			Networks: []Network{{Name: "pool-test"}},
+			Nodes:    []NodeSpec{{Name: node, Networks: []string{"pool-test"}, Systemd: systemd}},
+		}
+	}
+	NewPool(topo("pool-test-a", false), 1)
 	for name, f := range map[string]func(){
-		"the same topology again": func() { NewPool(Standard().Only(Router, DeviceA), 2) },
-		"size 0":                  func() { NewPool(Standard().Only(Router, DeviceB), 0) },
-		"systemd": func() {
-			NewPool(Standard().Only(Router, DeviceB).With(NodeSpec{Name: DeviceB, Networks: []string{NetDevices}, Gateway: Router, Systemd: true}), 1)
-		},
+		"the same topology again": func() { NewPool(topo("pool-test-a", false), 2) },
+		"size 0":                  func() { NewPool(topo("pool-test-b", false), 0) },
+		"systemd":                 func() { NewPool(topo("pool-test-c", true), 1) },
 	} {
 		func() {
 			defer func() {
