@@ -80,8 +80,10 @@ func TestCensorMatrix(t *testing.T) {
 		cells = append(cells, cell)
 	}
 	t.Cleanup(func() {
-		if flakes := knownFlakes(cells); flakes != "" {
-			t.Log(flakes)
+		for _, n := range []string{knownFlakes(cells), notJudgedCount(cells)} {
+			if n != "" {
+				t.Log(n)
+			}
 		}
 		if stream == "" {
 			writeResults(t, cells, len(transports)*len(censorCases), wgTimerScale)
@@ -221,7 +223,7 @@ func TestCensorMatrix(t *testing.T) {
 				t.Fatalf("%s against %s: %v", tr.name, cc.name, err)
 			}
 			if why, ok := unjudged(flags); ok && cell.result == "pass" {
-				cell.result = "not judged"
+				cell.result = notJudged
 				if why != flags[0].why {
 					cell.detail += "; " + cc.report + ": " + why
 				}
@@ -1038,9 +1040,11 @@ func (k knownTell) covers(reasons []string) error {
 }
 
 // unjudged finds a flag that couldn't judge what its cell is for: the
-// prober's upstream tell, unattributable or seen over a baseline shorter
-// than the probing (whose length is a race between censord's start and
-// the first probe). Such a cell is "not judged", never a pass. Only an
+// prober's upstream tell, unattributable, or reported rather than flagged
+// (upstreamTell "report", the reality row's), over any baseline. A
+// reported tell is scored on the tell alone (owner, 2026-11-19: a): its
+// counts and times stay in the detail as evidence, but the cell is "not
+// judged", never a pass, so no baseline's length can make it one. Only an
 // accept counts: a tell that flags blocks with the same words, and a
 // block is judged.
 func unjudged(flags []judgment) (string, bool) {
@@ -1048,42 +1052,76 @@ func unjudged(flags []judgment) (string, bool) {
 		if !strings.HasPrefix(f.why, censor.Accept.String()+", ") {
 			continue
 		}
-		if strings.Contains(f.why, censor.UpstreamTellUnattributable) || strings.Contains(f.why, censor.UpstreamTellShortBaseline) {
+		if strings.Contains(f.why, censor.UpstreamTellUnattributable) || strings.Contains(f.why, censor.UpstreamTellReported) {
 			return f.why, true
 		}
 	}
 	return "", false
 }
 
-// TestUnjudged: a flag whose upstream tell is unattributable, or was seen
-// over a short baseline (the reality cell's pass in about 3 runs of 10
-// before TP-255), on either family, makes the cell not judged; a tell
-// shown over a long baseline, or absent, doesn't.
+// TestUnjudged: a flag whose upstream tell is unattributable, or reported
+// over any baseline (short: the reality cell's pass in about 3 runs of 10
+// before TP-255; long: a pass before TP-264), on either family, makes the
+// cell not judged; no tell, or a tell that flags, doesn't.
 func TestUnjudged(t *testing.T) {
 	const (
 		shown  = "accept, server 192.0.2.9:443 answers like the reference: upstream tell: a connection from 192.0.2.9 to the reference during every probe (7 of 7; 8 dials in 4s of probes, 1 in 30s outside them), reported, not flagged"
 		unsure = "accept, server [2001:db8::9]:443 answers like the reference: upstream tell: unattributable (8 dials in 4s of probes, 30 in 30s outside them, at least half the rate; a connection from 2001:db8::9 to the reference during 7 of 7 probes)"
 		short  = "accept, server 192.0.2.9:443 answers like the reference: upstream tell: a connection from 192.0.2.9 or another address of its host to the reference during every probe (7 of 7; 9 dials in 7.551s of probes, 7 in 4.399s outside them, a baseline shorter than the probing, too short to call the tell unattributable), reported, not flagged"
+		// TP-255's tightest run, 8 dials in 5.52 s of probes, with a
+		// baseline past about 11 s and no more dials in it: attributable.
+		long   = "accept, server 192.0.2.9:443 answers like the reference: upstream tell: a connection from 192.0.2.9 or another address of its host to the reference during every probe (7 of 7; 8 dials in 5.52s of probes, 8 in 12s outside them), reported, not flagged"
 		absent = "accept, server 192.0.2.9:443 answers like the reference: connections to the reference during 0 of 7 probes"
-		// A flag-mode tell over a short baseline blocks: judged.
+		// A flag-mode tell, over any baseline, blocks: judged.
 		blocked = "drop, server 192.0.2.9:443 unlike the reference: upstream tell: a connection from 192.0.2.9 to the reference during every probe (7 of 7; 9 dials in 7.551s of probes, 7 in 4.399s outside them, a baseline shorter than the probing, too short to call the tell unattributable)"
+		flagged = "drop, server 192.0.2.9:443 unlike the reference: upstream tell: a connection from 192.0.2.9 to the reference during every probe (7 of 7; 8 dials in 5.52s of probes, 8 in 12s outside them)"
 	)
 	for _, c := range []struct {
 		name  string
 		flags []judgment
 		want  string
 	}{
-		{"shown", []judgment{{true, shown}}, ""},
+		{"shown over a long baseline", []judgment{{true, shown}}, shown},
+		{"attributable over a baseline past 11 s", []judgment{{true, long}}, long},
+		{"attributable over a baseline past 11 s on IPv6", []judgment{{true, absent}, {false, long}}, long},
 		{"absent", []judgment{{true, absent}}, ""},
-		{"unattributable on IPv6", []judgment{{true, shown}, {false, unsure}}, unsure},
+		{"unattributable on IPv6", []judgment{{true, absent}, {false, unsure}}, unsure},
 		{"a short baseline", []judgment{{true, short}}, short},
-		{"a short baseline on IPv6", []judgment{{true, shown}, {false, short}}, short},
+		{"a short baseline on IPv6", []judgment{{true, absent}, {false, short}}, short},
 		{"no flag", nil, ""},
 		{"a flag-mode block over a short baseline", []judgment{{true, blocked}}, ""},
+		{"a flag-mode block over a long baseline", []judgment{{true, flagged}}, ""},
 	} {
 		if why, ok := unjudged(c.flags); ok != (c.want != "") || why != c.want {
 			t.Errorf("%s: %q, %v, want %q", c.name, why, ok, c.want)
 		}
+	}
+}
+
+// TestNotJudgedCounted: cells not judged are counted as known flakes are,
+// in RESULTS.md's header (after the flakes) and the test log's summary,
+// every one of them, sorted; a run without one says nothing.
+func TestNotJudgedCounted(t *testing.T) {
+	cells := []matrixCell{
+		{rowReality, "active prober", notJudged, "upstream tell: ..., reported, not flagged"},
+		{rowRelayTCP, "active prober", "fail", "upstream tell: ..."},
+		{rowHTTPS, "active prober", notJudged, "upstream tell: unattributable (...)"},
+		{rowUDP, "fully-encrypted", "partial", "KNOWN FLAKE (TP-236): chance; only IPv4 crossed"},
+		{rowReality, "off", "pass", ""},
+	}
+	want := "NOT JUDGED: 2 (" + rowHTTPS + " / active prober, " + rowReality + " / active prober)"
+	if got := notJudgedCount(cells); got != want {
+		t.Errorf("the summary: %q, want %q", got, want)
+	}
+	if got := notJudgedCount(cells[1:2]); got != "" {
+		t.Errorf("the summary of a run without a cell not judged: %q, want none", got)
+	}
+	md := resultsMarkdown(slices.Clone(cells), 1)
+	if !strings.Contains(md, "\nKNOWN FLAKES: 1 (udp / fully-encrypted).\n\n"+want+".\n\n| transport |") {
+		t.Errorf("RESULTS.md doesn't count both, flakes first, before the table:\n%s", md)
+	}
+	if md := resultsMarkdown(slices.Clone(cells[1:2]), 1); strings.Contains(md, "NOT JUDGED:") {
+		t.Errorf("RESULTS.md of a run without a cell not judged counts one:\n%s", md)
 	}
 }
 
@@ -1288,13 +1326,14 @@ var censorCases = []censorCase{
 	// 2026-11-09: REALITY's design can't avoid it), and its verdict must
 	// judge the tell: shown on every probe (n of n), or unattributable
 	// when server-1 dialed the site outside the probes at half their rate
-	// or more (device-a's own connections make it dial), or seen over a
-	// baseline shorter than the probing, which a race between censord's
-	// start and the first probe decides: either scores the cell not
-	// judged, never a pass. reality's target is one IPv4 address, so
-	// a link over IPv6 dials it from server-1's IPv4 address: the prober
-	// is told server-1's two addresses are one host, as a censor that
-	// knows them would (RR31), so the tell shows over either family.
+	// or more (device-a's own connections make it dial). Either scores the
+	// cell not judged, never a pass, over any baseline (owner, 2026-11-19:
+	// a): how long the prober watched before the first probe is a race
+	// between censord's start and the transport's setup. reality's target
+	// is one IPv4 address, so a link over IPv6 dials it from server-1's
+	// IPv4 address: the prober is told server-1's two addresses are one
+	// host, as a censor that knows them would (RR31), so the tell shows
+	// over either family.
 	{name: "active prober", expect: map[string]string{rowRandomTCP: "fail", rowOpenVPNTCP: "fail", rowRelayTCP: "fail"}, blocker: "prober",
 		settle: true, report: "prober",
 		verdictSays: map[string]string{rowHTTPS: "TLS: the server", rowRelayTCP: "upstream tell: a connection", rowReality: "upstream tell: "},
@@ -2496,12 +2535,16 @@ func TestRecordedTwice(t *testing.T) {
 	}
 }
 
-// flakedCells are the known flakes among cells, "<transport> / <censor>"
-// each, sorted.
-func flakedCells(cells []matrixCell) []string {
+// notJudged is a cell's result when it crossed but its module couldn't
+// judge what the cell is for (unjudged).
+const notJudged = "not judged"
+
+// cellsWhere are the cells that keep says, "<transport> / <censor>" each,
+// sorted.
+func cellsWhere(cells []matrixCell, keep func(matrixCell) bool) []string {
 	var which []string
 	for _, c := range cells {
-		if isKnownFlake(c) {
+		if keep(c) {
 			which = append(which, c.transport+" / "+c.censor)
 		}
 	}
@@ -2509,15 +2552,31 @@ func flakedCells(cells []matrixCell) []string {
 	return which
 }
 
-// knownFlakes is the summary of the known flakes among cells ("" when
-// none occurred), as make lab-test's last line says it too.
-func knownFlakes(cells []matrixCell) string {
-	which := flakedCells(cells)
+// counted is "<label>: <n> (<which>)", as make lab-test's last line says
+// it too (LAB_COUNT_CELLS), or "" when which is empty.
+func counted(label string, which []string) string {
 	if len(which) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("KNOWN FLAKES: %d (%s)", len(which), strings.Join(which, ", "))
+	return fmt.Sprintf("%s: %d (%s)", label, len(which), strings.Join(which, ", "))
 }
+
+// flakedCells are the known flakes among cells.
+func flakedCells(cells []matrixCell) []string { return cellsWhere(cells, isKnownFlake) }
+
+// knownFlakes is the summary of the known flakes among cells ("" when
+// none occurred).
+func knownFlakes(cells []matrixCell) string { return counted("KNOWN FLAKES", flakedCells(cells)) }
+
+// unjudgedCells are the cells not judged among cells.
+func unjudgedCells(cells []matrixCell) []string {
+	return cellsWhere(cells, func(c matrixCell) bool { return c.result == notJudged })
+}
+
+// notJudgedCount is the summary of the cells not judged ("" when there
+// were none), so a cell drifting to not judged shows beside the one that
+// is by design (reality against the active prober).
+func notJudgedCount(cells []matrixCell) string { return counted("NOT JUDGED", unjudgedCells(cells)) }
 
 // writeResults writes RESULTS.md from the matrix's cells, run with
 // WireGuard's timers sped up by scale.
@@ -2573,11 +2632,13 @@ func resultsMarkdown(cells []matrixCell, scale int) string {
 		"A cell whose detail says `varies` is chance by nature, and says why: it shows what this run got, and only a `(reference)` row may vary. " +
 		"A cell whose detail starts `KNOWN FLAKE` was expected to fail and let one family through by a known chance, which its ticket measured: it is reported, not a failure, and the run counts it. " +
 		"A cell `not judged` crossed, but its module couldn't judge what the cell is for: the prober's upstream tell, unattributable when server-1 dialed the site outside the probes at half their rate or more, " +
-		"or seen over a baseline (the time the prober watched server-1 outside its probes) shorter than the probing.\n\n")
+		"or reported rather than flagged (the reality row's), which is scored on the tell alone over any baseline, its counts and times kept as evidence (owner, 2026-11-19: a); the run counts these cells too.\n\n")
 	fmt.Fprintf(&b, "This run: %s (`%s`, lab/README.md \"WireGuard's timers\"); the `wireguard-rhythm` cells held their tunnels %v, a ping every %v, the module's rekey period %v.\n\n",
 		wgTimersHow(scale), lab.WGTimerScaleEnv, rhythmHold(scale), rhythmPing(scale), censor.WGRekeyAfterTime/time.Duration(scale))
-	if flakes := knownFlakes(cells); flakes != "" {
-		fmt.Fprintf(&b, "%s.\n\n", flakes)
+	for _, n := range []string{knownFlakes(cells), notJudgedCount(cells)} {
+		if n != "" {
+			fmt.Fprintf(&b, "%s.\n\n", n)
+		}
 	}
 	b.WriteString("| transport | censor | result | detail |\n|---|---|---|---|\n")
 	for _, c := range cells {

@@ -42,6 +42,12 @@ func flakesFile(dir, stream string) string {
 	return filepath.Join(dir, "known-flakes-"+stream+".txt")
 }
 
+// notJudgedFile lists the stream's cells not judged (unjudgedCells), as
+// flakesFile lists its known flakes.
+func notJudgedFile(dir, stream string) string {
+	return filepath.Join(dir, "not-judged-"+stream+".txt")
+}
+
 // matrixShareOf is the stream's own share of cells: in the long stream, a
 // held row's off cell is the default stream's, run again only as its held
 // cell's gate.
@@ -66,12 +72,20 @@ func writeMatrixShare(t *testing.T, stream string, cells []matrixCell) {
 		t.Logf("the %s stream's share of the matrix, without %s: RESULTS.md not written", stream, lab.ResultsDirEnv)
 		return
 	}
-	var flakes strings.Builder
-	for _, c := range flakedCells(cells) {
-		flakes.WriteString(c + "\n")
-	}
-	if err := os.WriteFile(flakesFile(dir, stream), []byte(flakes.String()), 0o644); err != nil {
-		t.Errorf("the %s stream's known flakes: %v", stream, err)
+	for _, l := range []struct {
+		what, file string
+		cells      []string
+	}{
+		{"known flakes", flakesFile(dir, stream), flakedCells(cells)},
+		{"cells not judged", notJudgedFile(dir, stream), unjudgedCells(cells)},
+	} {
+		var b strings.Builder
+		for _, c := range l.cells {
+			b.WriteString(c + "\n")
+		}
+		if err := os.WriteFile(l.file, []byte(b.String()), 0o644); err != nil {
+			t.Errorf("the %s stream's %s: %v", stream, l.what, err)
+		}
 	}
 	b, err := json.Marshal(matrixShareOf(stream, os.Getenv(lab.CommitEnv), wgTimerScale, t.Failed(), cells))
 	if err == nil {
@@ -311,9 +325,9 @@ func TestReadMatrixShares(t *testing.T) {
 	}
 }
 
-// TestWriteMatrixShareFlakes: a stream lists its known flakes next to its
-// share, a line each, and an empty list when it had none, which make
-// lab-test's last line counts.
+// TestWriteMatrixShareFlakes: a stream lists its known flakes and its
+// cells not judged next to its share, a line each, and an empty list when
+// it had none, which make lab-test's last line counts.
 func TestWriteMatrixShareFlakes(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(lab.ResultsDirEnv, dir)
@@ -323,17 +337,22 @@ func TestWriteMatrixShareFlakes(t *testing.T) {
 	if err := fe.verdict(&flaked, "fail"); err != nil {
 		t.Fatal(err)
 	}
+	unjudgedCell := matrixCell{rowReality, "active prober", notJudged, "upstream tell: ..., reported, not flagged"}
 	for stream, c := range map[string]struct {
-		cells []matrixCell
-		want  string
+		cells            []matrixCell
+		flakes, unjudged string
 	}{
-		lab.StreamDefault: {[]matrixCell{{rowRandomTCP, fe.name, "fail", ""}, flaked}, "udp / fully-encrypted\n"},
-		lab.StreamLong:    {[]matrixCell{{rowUDP, "wireguard-rhythm", "fail", ""}}, ""},
+		lab.StreamDefault: {[]matrixCell{{rowRandomTCP, fe.name, "fail", ""}, flaked, unjudgedCell}, "udp / fully-encrypted\n", rowReality + " / active prober\n"},
+		lab.StreamLong:    {[]matrixCell{{rowUDP, "wireguard-rhythm", "fail", ""}}, "", ""},
 	} {
 		writeMatrixShare(t, stream, c.cells)
 		b, err := os.ReadFile(flakesFile(dir, stream))
-		if err != nil || string(b) != c.want {
-			t.Errorf("the %s stream's known flakes: %q, %v; want %q", stream, b, err, c.want)
+		if err != nil || string(b) != c.flakes {
+			t.Errorf("the %s stream's known flakes: %q, %v; want %q", stream, b, err, c.flakes)
+		}
+		b, err = os.ReadFile(notJudgedFile(dir, stream))
+		if err != nil || string(b) != c.unjudged {
+			t.Errorf("the %s stream's cells not judged: %q, %v; want %q", stream, b, err, c.unjudged)
 		}
 	}
 }
