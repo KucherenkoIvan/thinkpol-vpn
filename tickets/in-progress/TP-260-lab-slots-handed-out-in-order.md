@@ -8,6 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
+owner: "agent-tp-260"
+branch: "tp-260-fair-lab-slots"
 ---
 
 ## Goal
@@ -30,3 +32,4 @@ Lab slots are taken by polling, not in order (lab/hostlock.go: every waiter trie
 
 ## Log
 - 2026-11-19 created in backlog (TP-254 review)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-260
