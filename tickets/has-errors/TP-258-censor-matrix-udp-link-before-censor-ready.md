@@ -34,6 +34,14 @@ setupUDP (lab/results_test.go ~:1407-1412) starts both agents and waits for link
 - Runs (targeted `make lab-gotest PKG=./lab`, under load: other tickets' labs and tests at once): the whole udp row (both labs, `RUN=TestCensorMatrix/^udp(_lab_[0-9]+)?$$/`) 5/5 at 400f6787 (before TP-247's split, one lab, `^udp$$/`, 2296 s), 5/5 at e9b627e2 (2119 s), 1/1 at the final merge 5ee708ed (232 s); the held cell's lab (`^udp$$/^(off|wireguard-rhythm)$$`) 5/5 (1467 s) and 10/10 (2706 s) at e9b627e2. With the final check that is 26 passing runs of the held udp × wireguard-rhythm cell and 11 of every other udp cell, each as expected: off, blocklists (elsewhere), sni-blocklist, wireguard-fingerprint, openvpn-fingerprint, active prober and server-hello pass; ip-blocklist, fully-encrypted and wireguard-rhythm fail. No known flake (TP-250's udp × fully-encrypted partial) showed. The reality row (three labs, deviceUp now shared) 1/1 at e9b627e2 (392 s).
 - Verdicts: the udp row's expected verdicts are unchanged (censorCases untouched) and every run matched them. The committed lab/RESULTS.md is older than the current matrix (no reality row; udp × wireguard-rhythm `pass`, which the matrix now expects to fail): its udp cells match these runs' but that one, which isn't this ticket's change. No full lab (the brief says none): RESULTS.md isn't regenerated here.
 
+## Review findings
+Two reviewers; the order fix, the reality refactor and the comparison's direction are right. Round 1:
+- [ ] R1.1 (should-fix) linkUpBy computes the link's up time as `date` after `status -json` less `up_for`, which internal/dataplane/path/node.go warns against (TP-212 R1.6 rejected it): upBy is always late by an exec and a `date`, hundreds of ms under load, so the check can accept a censor that joined late. Expose the engine's own NeighborStatus.UpSince in the local API status (`up_since` on localapi's Neighbor, set in convert.go), following the status schema's rule for an added field and the API docs that list status fields, with a unit test; the lab reads it.
+- [ ] R1.2 (should-fix) linkUpBy runs for every deferred-device cell (all reality and udp cells), once, with no retry: an exec timeout or a link drop right after linkUp fails a pass cell (new for reality). Read it only where needed (held udp cells), inside a bounded poll; a zero upBy errors clearly ("device-a's link-up time wasn't read"); the neighbor must be server-1 (node_id), not the first one up.
+- [ ] R1.3 (should-fix, suspected) for udp the block watch sees a drop only through a decision line, logged once per flow/verdict/module; the link's datagrams share one 5-tuple, so if the first drop is logged before the watch's mark, deviceUp waits the full 60 s and the scored probe waits blockedWindow per family. Measure deviceUp's wait in udp × ip-blocklist and udp × fully-encrypted; if it hits the 60 s, make the udp watch count the blocker's drops since startUp (mark taken before startUp).
+- [ ] R1.4 (ticket) TP-250's known-flake rate (udp × fully-encrypted ~1/120) was measured with the first datagram from an already-up link; now it's the link's own probe: say in the Log that the rate predates the new order; file nothing unless the 10+ runs show a change.
+- [ ] R1.5 (nits) checkMatrix rejects a held row without `tunnel` up front; TestSeenBeforeUp gets a case with two matching lines (first vs last); the Log's mutation count ("`!found` never true" fails two cases).
+
 ## Log
 - 2026-11-19 created in backlog (TP-252 review)
 - 2026-11-19 backlog → in-progress, owner: agent-tp-258
@@ -42,3 +50,5 @@ setupUDP (lab/results_test.go ~:1407-1412) starts both agents and waits for link
 - 2026-11-19 make lint, make test green at 5ee708ed; lab runs in Notes; no full lab (brief: none); not verified: the check's blind spot (a censor joining within the status call after the link came up)
 - 2026-11-19 out of scope: lab/RESULTS.md is stale against the matrix (no reality row, udp × wireguard-rhythm pass); the next full lab regenerates it
 - 2026-11-19 in-progress → review
+- 2026-11-19 review → has-errors
+- 2026-11-19 review round 1: fix R1.1–R1.5
