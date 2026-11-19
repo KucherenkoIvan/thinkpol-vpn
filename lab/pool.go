@@ -28,8 +28,11 @@ import (
 // has fewer, or waits for one to come back, first come first served. An
 // idle lab stays while no lab start waits for a slot, since the slot it
 // holds then costs nobody anything; once one waits, the idle lab goes when
-// it has waited as long as its start took (poolIdle). Main tears down what
-// the pools still hold.
+// it has waited as long as its start took (poolIdle). A pool whose users
+// are counted up front (the node phase's packages: countTakers) keeps no
+// more labs idle than users may still take one: the slot a surplus lab
+// holds is what lab starts elsewhere wait for. Main tears down what the
+// pools still hold.
 type Pool struct {
 	topo Topology
 	size int
@@ -42,6 +45,11 @@ type Pool struct {
 	stats   PoolStats
 	down    sync.WaitGroup // idle labs being torn down
 	closed  bool
+	// takersKnown: takers counts the users that may still take a lab
+	// (countTakers); without it, the pool can't tell.
+	takers      int
+	takersKnown bool
+	downErrs    []error // tear-downs of idle labs that failed
 
 	// slotWanted says whether a lab start waits for a slot; nil: one of
 	// any run sharing the lock directory (slotWanted).
@@ -220,6 +228,7 @@ func (p *Pool) take(deadline time.Time) (*pooledLab, error) {
 		p.mu.Unlock()
 		return nil, fmt.Errorf("lab: pool %s: closed", p.name)
 	}
+	p.takers--
 	if n := len(p.idle); n > 0 {
 		pl := p.idle[n-1]
 		p.idle = p.idle[:n-1]
@@ -294,7 +303,7 @@ func (p *Pool) giveBack(t labUser, pl *pooledLab, since time.Time) (back bool) {
 	before := slices.Clone(pl.users)
 	pl.users = append(pl.users, t.Name())
 	if t.Failed() {
-		p.retire(t, pl, "the test failed")
+		p.retire(t, pl, "it failed")
 		pl.ops.cleanup(t, since)
 		p.gone()
 		return false
@@ -306,7 +315,7 @@ func (p *Pool) giveBack(t labUser, pl *pooledLab, since time.Time) (back bool) {
 			if len(before) > 0 {
 				users = strings.Join(before, ", ")
 			}
-			t.Logf("lab %s: the reset after this test, the tests that had the lab before it: %s", pl.ops.name(), users)
+			t.Logf("lab %s: the reset after this test, the users that had the lab before it: %s", pl.ops.name(), users)
 		})
 		t.Logf(format, args...)
 	}
@@ -332,8 +341,43 @@ func (p *Pool) giveBack(t labUser, pl *pooledLab, since time.Time) (back bool) {
 		pl.since = time.Now()
 		pl.timer = time.AfterFunc(poolIdleCheck, func() { p.idleCheck(pl) })
 		p.idle = append(p.idle, pl)
+		p.trimIdle()
 	}
 	return true
+}
+
+// countTakers says that takers users may still take one of the pool's
+// labs; each take counts one out, and skip counts out one that won't take
+// any after all.
+func (p *Pool) countTakers(takers int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.takers, p.takersKnown = takers, true
+}
+
+// skip counts out a user countTakers counted that won't take a lab.
+func (p *Pool) skip() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.takers--
+	p.trimIdle()
+}
+
+// trimIdle tears down the idle labs beyond the users that may still take
+// one, the longest idle first. p.mu is held.
+func (p *Pool) trimIdle() {
+	for p.takersKnown && len(p.idle) > max(p.takers, 0) {
+		pl := p.idle[0]
+		p.idle = p.idle[1:]
+		pl.timer.Stop() // one that fired finds pl gone (idleCheck)
+		p.labs--
+		p.handOn(nil)
+		p.down.Add(1)
+		go func() {
+			defer p.down.Done()
+			p.teardown(pl, "no user left for it")
+		}()
+	}
 }
 
 func (p *Pool) retire(t labUser, pl *pooledLab, why string) {
@@ -403,7 +447,9 @@ func (p *Pool) teardown(pl *pooledLab, why string) {
 	ctx, cancel := context.WithTimeout(context.Background(), labBudget.teardown)
 	defer cancel()
 	if err := pl.ops.down(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "lab %s: tear down: %v\n", pl.ops.name(), err)
+		p.mu.Lock()
+		p.downErrs = append(p.downErrs, fmt.Errorf("lab %s: tear down: %w", pl.ops.name(), err))
+		p.mu.Unlock()
 	}
 }
 
@@ -428,17 +474,25 @@ func closePools(w io.Writer) {
 	wg.Wait()
 	for _, p := range all {
 		p.report(w, "tests")
+		p.mu.Lock()
+		for _, err := range p.downErrs {
+			_, _ = fmt.Fprintln(w, err)
+		}
+		p.mu.Unlock()
 	}
 }
 
 // close tears down the pool's idle labs, waits for those already going,
 // and writes its stats to w, counting its users as users: the pool takes
-// no lab back after.
-func (p *Pool) close(w io.Writer, users string) {
+// no lab back after. The error is its idle labs' tear-downs that failed.
+func (p *Pool) close(w io.Writer, users string) error {
 	var wg sync.WaitGroup
 	p.closeIdle(&wg)
 	wg.Wait()
 	p.report(w, users)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return errors.Join(p.downErrs...)
 }
 
 // closeIdle closes the pool and tears its idle labs down in wg.

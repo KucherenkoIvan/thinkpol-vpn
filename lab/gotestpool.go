@@ -17,12 +17,29 @@ import (
 type nodePool struct {
 	*Pool
 	project func(i int) string // the Compose project of the pool's i-th lab
-	started atomic.Int64
+	seq     atomic.Int64       // labs it began to start
 }
 
-// newNodePool is a pool of up to size labs.
-func newNodePool(size int, project func(i int) string) *nodePool {
-	return &nodePool{Pool: newPool(GoTestTopology(), size), project: project}
+// newNodePool is a pool of up to size labs for packages packages, each of
+// which goes through goTest or skip once.
+func newNodePool(size, packages int, project func(i int) string) *nodePool {
+	p := &nodePool{Pool: newPool(GoTestTopology(), size), project: project}
+	p.countTakers(packages)
+	return p
+}
+
+// nodePoolProject is the Compose project of GoTestEach's i-th pooled lab.
+func nodePoolProject(checkout, run string, i int) string {
+	return ownGoTestPackageProject(checkout, run, fmt.Sprintf("node pool lab %d", i))
+}
+
+// packagePool is where GoTestEach runs a package that has no FreshLabFile:
+// a nodePool, or a unit test's stand-in.
+type packagePool interface {
+	goTest(ctx context.Context, queued time.Time, root, user string, w io.Writer, verbose bool, run func(n *Node) labRun) labRun
+	// skip: the package won't take a lab (served from the cache, no
+	// tests to run, or it never got past the gates).
+	skip()
 }
 
 // goTest runs run in the node of one of the pool's labs, an idle one or
@@ -32,7 +49,7 @@ func newNodePool(size int, project func(i int) string) *nodePool {
 // undid), which go to w when verbose or when the reset didn't hold, and
 // w gets which lab it ran in. The phases are timed from queued
 // (LabPhases).
-func (p *nodePool) goTest(ctx context.Context, queued time.Time, root, user string, w io.Writer, verbose bool, run func(n *Node) freshRun) (res freshRun) {
+func (p *nodePool) goTest(ctx context.Context, queued time.Time, root, user string, w io.Writer, verbose bool, run func(n *Node) labRun) (res labRun) {
 	timer := labTimer{queued: queued, began: time.Now()}
 	deadline, ok := ctx.Deadline()
 	if !ok {
@@ -40,7 +57,7 @@ func (p *nodePool) goTest(ctx context.Context, queued time.Time, root, user stri
 	}
 	pl, err := p.acquire(deadline, func() (*pooledLab, error) {
 		begin := time.Now()
-		l, err := up(ctx, timer.startClock(), root, p.project(int(p.started.Add(1))), GoTestTopology(), "", runInputs)
+		l, err := up(ctx, timer.startClock(), root, p.project(int(p.seq.Add(1))), GoTestTopology(), "", runInputs)
 		return p.adopt(l, nodeLab{l}, begin, err)
 	})
 	timer.started = time.Now()
@@ -56,7 +73,7 @@ func (p *nodePool) goTest(ctx context.Context, queued time.Time, root, user stri
 	if back := p.giveBack(u, pl, timer.started); verbose || !back && !u.failed {
 		_, _ = w.Write(u.log.Bytes())
 	}
-	res.labErr = errors.Join(res.labErr, errors.Join(u.errs...))
+	res.labErr = errors.Join(u.errs...)
 	res.phases = timer.phases(time.Now())
 	return res
 }

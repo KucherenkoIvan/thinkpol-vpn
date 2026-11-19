@@ -276,8 +276,9 @@ type GoTestConcurrency struct {
 // The packages share labs, one after another, through a pool of as many
 // labs as run at once: after a package, its lab is reset and checked
 // (Lab.Reset), so no package sees what another left behind, and a lab
-// whose check failed, or whose package failed, is torn down; a package
-// with FreshLabFile gets a lab of its own. Builds, the CPU-bound part, run
+// whose check failed, or whose package failed, is torn down, as is one
+// no package left may take; a package with FreshLabFile gets a lab of its
+// own. Builds, the CPU-bound part, run
 // ahead of the labs, which mostly wait on containers (GoTestConcurrency).
 // The pool's count of labs started, packages and labs retired ends w.
 // Each package's output goes to w in one
@@ -285,7 +286,7 @@ type GoTestConcurrency struct {
 // test binaries' environment. With a cache, a package whose recorded pass
 // still holds starts no lab and is reported "(cached)", and a package that
 // passes is recorded. It returns each package's result, sorted by import
-// path; err is for the lab itself failing. Its labs run this process's
+// path; err is for the lab itself failing (a start or tear-down). Its labs run this process's
 // binaries: the caller removes them with RemoveRunBinaries once GoTestEach
 // returns.
 func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, c GoTestConcurrency, w io.Writer, cache *GoTestCache, env []string, args ...string) (results []GoTestResult, err error) {
@@ -300,14 +301,20 @@ func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, c GoTestConc
 	if err != nil {
 		return nil, err
 	}
+	pooled := 0
+	for _, pkg := range pkgs {
+		if !pkg.FreshLab {
+			pooled++
+		}
+	}
 	var (
 		mu    sync.Mutex
 		errs  []error
 		wg    sync.WaitGroup
 		gates = newGoTestGates(c, len(pkgs))
-		pool  = newNodePool(c.Labs, func(i int) string { return ownGoTestPackageProject(checkout, run, fmt.Sprintf("node pool lab %d", i)) })
+		pool  = newNodePool(c.Labs, pooled, func(i int) string { return nodePoolProject(checkout, run, i) })
 	)
-	defer pool.close(w, "packages")
+	defer func() { err = errors.Join(err, pool.close(w, "packages")) }()
 	for _, pkg := range pkgs {
 		wg.Add(1)
 		go func() {
@@ -354,13 +361,13 @@ func newGoTestGates(c GoTestConcurrency, packages int) *goTestGates {
 }
 
 // run takes one package through the gates: prepare and build under a build
-// token, then, when build says the package needs a lab, labRun under a lab
+// token, then, when build says the package needs a lab, inLab under a lab
 // token, taken only once the build token is given back (and, with
-// BuildAllFirst, once every package is built). labRun gets when the
+// BuildAllFirst, once every package is built). inLab gets when the
 // package began to queue for its lab token. The error is prepare's, or
-// ctx's when it ends while the package waits for a token; build and labRun
+// ctx's when it ends while the package waits for a token; build and inLab
 // report their own outcomes.
-func (g *goTestGates) run(ctx context.Context, prepare func() error, build func() (needsLab bool), labRun func(queued time.Time)) error {
+func (g *goTestGates) run(ctx context.Context, prepare func() error, build func() (needsLab bool), inLab func(queued time.Time)) error {
 	needsLab, err := g.build(ctx, prepare, build)
 	if err != nil || !needsLab {
 		return err
@@ -375,7 +382,7 @@ func (g *goTestGates) run(ctx context.Context, prepare func() error, build func(
 		return err
 	}
 	defer func() { <-g.labs }()
-	labRun(queued)
+	inLab(queued)
 	return nil
 }
 
@@ -418,10 +425,16 @@ func waitGate(ctx context.Context, what string, done <-chan struct{}) error {
 
 // goTestPackage is one package of GoTestEach: served from the cache, or run
 // in a lab of pool (in a fresh lab with FreshLab), its output in out.
-// project names its lab when fresh.
-func goTestPackage(ctx context.Context, root, project string, pkg GoPackage, out *bytes.Buffer, cache *GoTestCache, gates *goTestGates, pool *nodePool, env, args []string) (GoTestResult, error) {
-	r := &packageRun{ctx: ctx, root: root, project: project, pkg: pkg, out: out, cache: cache, pool: pool, env: env, args: args}
+// project names its lab when fresh. A package without FreshLab that
+// doesn't reach the pool is counted out of it (skip).
+func goTestPackage(ctx context.Context, root, project string, pkg GoPackage, out *bytes.Buffer, cache *GoTestCache, gates *goTestGates, pool packagePool, env, args []string) (GoTestResult, error) {
+	r := &packageRun{ctx: ctx, root: root, project: project, pkg: pkg, out: out, cache: cache, pool: pool, fresh: goTestFresh, env: env, args: args}
 	r.res = GoTestResult{ImportPath: pkg.ImportPath}
+	defer func() {
+		if !pkg.FreshLab && !r.pooled {
+			pool.skip()
+		}
+	}()
 	if err := gates.run(ctx, r.prepare, r.build, r.inLab); err != nil {
 		if !r.headed {
 			r.head("")
@@ -438,12 +451,14 @@ type packageRun struct {
 	pkg           GoPackage
 	out           *bytes.Buffer
 	cache         *GoTestCache
-	pool          *nodePool
+	pool          packagePool
+	fresh         func(ctx context.Context, queued time.Time, root, project string, pkg GoPackage, w io.Writer, env, args []string, readLog bool) labRun // goTestFresh
 	env, args     []string
 
 	p      preparedRun
 	entry  *goTestEntry // nil: no cache, or none for this package
 	headed bool         // the package's header line is in out
+	pooled bool         // it went to the pool
 	res    GoTestResult
 	labErr error
 }
@@ -502,11 +517,12 @@ func (r *packageRun) inLab(queued time.Time) {
 		runArgs = append(slices.Clone(r.args), "-test.testlogfile="+goTestLogFile)
 	}
 	start := r.out.Len()
-	var run freshRun
+	var run labRun
 	if r.pkg.FreshLab {
-		run = goTestFresh(r.ctx, queued, r.root, r.project, r.pkg, r.out, r.env, runArgs, r.entry != nil)
+		run = r.fresh(r.ctx, queued, r.root, r.project, r.pkg, r.out, r.env, runArgs, r.entry != nil)
 	} else {
-		run = r.pool.goTest(r.ctx, queued, r.root, r.pkg.ImportPath, r.out, testVerbose(r.args), func(n *Node) freshRun {
+		r.pooled = true
+		run = r.pool.goTest(r.ctx, queued, r.root, r.pkg.ImportPath, r.out, testVerbose(r.args), func(n *Node) labRun {
 			return runInNode(r.ctx, n, r.pkg, r.out, r.env, runArgs, r.entry != nil)
 		})
 	}
@@ -549,7 +565,7 @@ func (n *Node) readFile(ctx context.Context, name string) ([]byte, error) {
 // the tests passed, reads their -test.testlogfile back before the lab goes.
 // It times the run's phases (LabPhases), from queued, when the package
 // began to queue for its lab.
-func goTestFresh(ctx context.Context, queued time.Time, root, project string, pkg GoPackage, w io.Writer, env, args []string, readLog bool) (run freshRun) {
+func goTestFresh(ctx context.Context, queued time.Time, root, project string, pkg GoPackage, w io.Writer, env, args []string, readLog bool) (run labRun) {
 	timer := labTimer{queued: queued, began: time.Now()}
 	l, err := up(ctx, timer.startClock(), root, project, GoTestTopology(), "", runInputs)
 	timer.started = time.Now()
@@ -572,7 +588,7 @@ func goTestFresh(ctx context.Context, queued time.Time, root, project string, pk
 
 // runInNode runs a package's tests in n and, with readLog and the tests
 // passed, reads their -test.testlogfile back.
-func runInNode(ctx context.Context, n *Node, pkg GoPackage, w io.Writer, env, args []string, readLog bool) (run freshRun) {
+func runInNode(ctx context.Context, n *Node, pkg GoPackage, w io.Writer, env, args []string, readLog bool) (run labRun) {
 	run.testErr = n.goTest(ctx, w, pkg, env, args)
 	if readLog && run.testErr == nil {
 		run.testLog, run.logErr = n.readFile(ctx, goTestLogFile)

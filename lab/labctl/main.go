@@ -38,7 +38,8 @@ const usage = `usage: labctl <command>
                                       (-run, -skip, -count, -timeout: the test binary's; -count repeats
                                       runs for stability)
                                       (-times: write how long each package took, lab setup included,
-                                      for labctl budget)
+                                      for labctl budget: a lab's start only for the package that
+                                      started it, a reused lab's reset as the package's teardown)
                                       (-perf: alone on the host, with THINKPOL_LAB_PERF=1: make lab-perf)
                                       (-tagged: then run packages with lab-tagged tests on the host,
                                       go test -tags lab, as make lab-test's lab phase does)
