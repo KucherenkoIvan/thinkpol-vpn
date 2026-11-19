@@ -29,13 +29,11 @@ var harnessPool = lab.NewPool(lab.Standard().Only(lab.Router, lab.DeviceA), 1)
 // changed, a link's address changed, a link made again under its name.
 func TestHarnessPoolResetsOrRetires(t *testing.T) {
 	t.Parallel()
-	var first, mode, link, target, routerAddr string
-	// The pool outlives a run of the test (-count).
-	base := harnessPool.Stats()
-	since := func() (started int, retired []string) {
-		s := harnessPool.Stats()
-		return s.Started - base.Started, s.Retired[len(base.Retired):]
-	}
+	var first, third, mode, link, target, routerAddr string
+	// The pool outlives a run of the test (-count): a run may start with
+	// the last run's lab, clean.
+	base := len(harnessPool.Stats().Retired)
+	retired := func() []string { return harnessPool.Stats().Retired[base:] }
 	t.Run("leaves what the reset undoes", func(t *testing.T) {
 		l := harnessPool.Acquire(t)
 		first = l.Project
@@ -114,15 +112,19 @@ for i in $(seq 50); do ss -H -t state established | grep -q . && exit 0; sleep 0
 		if l.Project == first {
 			t.Fatalf("got lab %s again after it was left with %s pointed elsewhere", l.Project, link)
 		}
+		third = l.Project
 		if got := strings.TrimSpace(l.Node(lab.DeviceA).MustExec(t, "readlink", link)); got != target {
 			t.Errorf("%s points to %q, want %q", link, got, target)
 		}
-		if started, retired := since(); started != 2 || len(retired) != 1 || !strings.Contains(retired[0], "gets_the_lab_back") || !strings.Contains(retired[0], "reset didn't hold") {
-			t.Errorf("pool since the test began: %d labs started, retired %q: want 2, and the second user's retired for its reset", started, retired)
+		if r := retired(); len(r) != 1 || !strings.Contains(r[0], "gets_the_lab_back") || !strings.Contains(r[0], "reset didn't hold") {
+			t.Errorf("pool since the test began: retired %q, want the second user's lab, for its reset", r)
 		}
 	})
 	t.Run("the check fails on what the reset only reads", func(t *testing.T) {
 		l := harnessPool.Acquire(t)
+		if l.Project != third {
+			t.Fatalf("got lab %s, want the third user's, %s, back (retired since the test began: %q)", l.Project, third, retired())
+		}
 		dev := l.Node(lab.DeviceA)
 		eth := dev.Interface(lab.NetDevices)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -171,8 +173,8 @@ for i in $(seq 50); do ss -H -t state established | grep -q . && exit 0; sleep 0
 		if err := l.Reset(ctx, clean, t.Logf); err != nil {
 			t.Fatalf("the link made again removed: %v", err)
 		}
-		if started, retired := since(); started != 2 || len(retired) != 1 {
-			t.Errorf("pool since the test began: %d labs started, retired %q: want this user's lab the third user's, nothing retired since", started, retired)
+		if r := retired(); len(r) != 1 {
+			t.Errorf("pool since the test began: retired %q, want only the second user's lab", r)
 		}
 	})
 }
