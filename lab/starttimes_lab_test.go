@@ -3,10 +3,12 @@
 package lab
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -38,6 +40,7 @@ func TestLabStartTimes(t *testing.T) {
 	}
 	par, _ := strconv.Atoi(os.Getenv(StartTimesParallelEnv))
 	par = max(par, 1)
+	events := watchDockerEvents(t)
 	topos := []struct {
 		name string
 		topo Topology
@@ -55,7 +58,7 @@ func TestLabStartTimes(t *testing.T) {
 					for i := batch * par; i < min((batch+1)*par, n); i++ {
 						t.Run(fmt.Sprintf("start-%d", i), func(t *testing.T) {
 							t.Parallel()
-							s := measureStart(t, tc.topo)
+							s := measureStart(t, tc.topo, events)
 							t.Log(s)
 							mu.Lock()
 							all = append(all, s)
@@ -113,10 +116,73 @@ func medianSample(all []startSample) startSample {
 	}
 }
 
-// measureStart starts one lab of topo, reads Docker's events for its
-// docker compose up. Its tear-down, when the test ends, is in the
-// timeline (noteDown).
-func measureStart(t *testing.T, topo Topology) startSample {
+// dockerEvents is Docker's network and container create and start events
+// from when it began: the daemon keeps only its last thousand or so events,
+// fewer than a busy machine's execs make while one lab starts.
+type dockerEvents struct {
+	mu     sync.Mutex
+	events []dockerEvent
+}
+
+type dockerEvent struct {
+	what, name string // e.g. "container start", its name
+	at         time.Time
+}
+
+func watchDockerEvents(t *testing.T) *dockerEvents {
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, "docker", "events", "--format", "{{json .}}",
+		"--filter", "type=container", "--filter", "type=network", "--filter", "event=create", "--filter", "event=start")
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	d := &dockerEvents{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sc := bufio.NewScanner(out)
+		for sc.Scan() {
+			var e struct {
+				Type, Action string
+				Actor        struct{ Attributes map[string]string }
+				TimeNano     int64 `json:"timeNano"`
+			}
+			if json.Unmarshal(sc.Bytes(), &e) != nil {
+				continue
+			}
+			d.mu.Lock()
+			d.events = append(d.events, dockerEvent{e.Type + " " + e.Action, e.Actor.Attributes["name"], time.Unix(0, e.TimeNano)})
+			d.mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = cmd.Wait()
+		<-done
+	})
+	return d
+}
+
+// of is the events of a lab's networks and containers.
+func (d *dockerEvents) of(project string) []dockerEvent {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var out []dockerEvent
+	for _, e := range d.events {
+		if strings.HasPrefix(e.name, project+"_") || strings.HasPrefix(e.name, project+"-") {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// measureStart starts one lab of topo and reads its docker compose up's
+// events. Its tear-down, when the test ends, is in the timeline (noteDown).
+func measureStart(t *testing.T, topo Topology, events *dockerEvents) startSample {
 	l := StartOwnSlot(t, topo)
 	st := l.started
 	s := startSample{
@@ -126,34 +192,15 @@ func measureStart(t *testing.T, topo Topology) startSample {
 		bridged:   st.bridged.Sub(st.slot),
 		upDone:    l.upTo.Sub(l.upFrom),
 	}
-	stamp := func(at time.Time) string { return strconv.FormatFloat(float64(at.UnixNano())/1e9, 'f', 3, 64) }
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-	res, err := docker(ctx, "events", "--since", stamp(l.upFrom.Add(-time.Second)), "--until", stamp(l.upTo.Add(time.Second)), "--format", "{{json .}}")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
-		var e struct {
-			Type, Action string
-			Actor        struct{ Attributes map[string]string }
-			TimeNano     int64 `json:"timeNano"`
-		}
-		if line == "" || json.Unmarshal([]byte(line), &e) != nil {
-			continue
-		}
-		name := e.Actor.Attributes["name"]
-		if !strings.HasPrefix(name, l.Project+"_") && !strings.HasPrefix(name, l.Project+"-") {
-			continue
-		}
-		at := time.Unix(0, e.TimeNano).Sub(l.upFrom)
+	for _, e := range events.of(l.Project) {
+		at := e.at.Sub(l.upFrom)
 		first := func(d *time.Duration) {
 			if *d == 0 || at < *d {
 				*d = at
 			}
 		}
 		last := func(d *time.Duration) { *d = max(*d, at) }
-		switch e.Type + " " + e.Action {
+		switch e.what {
 		case "network create":
 			last(&s.netsCreated)
 		case "container create":
