@@ -287,7 +287,7 @@ func (r *matrixRow) eachNode(f func(n *lab.Node) error) error {
 // (the verdict log with /run/censor), then the routes and addresses left on
 // the links that remain, clears the router's censor table and conntrack
 // (censord -reset, clearRouter), and reads every node back.
-func (r *matrixRow) reset() error {
+func (r *matrixRow) reset(logf func(format string, args ...any)) error {
 	if r.broken != nil {
 		return r.broken
 	}
@@ -321,13 +321,9 @@ func (r *matrixRow) reset() error {
 		// either retransmits for minutes, each time the censor dropped
 		// it, and a retransmission after the router's flush makes a
 		// conntrack entry the check finds (reality's handshakes with its
-		// target, cut by ip-blocklist). The clean state has listeners
-		// only, so every other TCP socket goes; an RST from the abort
-		// makes no entry of its own.
-		err = r.eachNode(func(n *lab.Node) error {
-			_, err := execRead(n, pollTimeout, "ss", "-K", "-t", "state", "connected")
-			return err
-		})
+		// target, cut by ip-blocklist). An RST from the abort makes no
+		// entry of its own.
+		err = r.eachNode(func(n *lab.Node) error { return r.abortTCP(n, logf) })
 	}
 	if err == nil {
 		err = r.eachNode(func(n *lab.Node) error {
@@ -371,6 +367,78 @@ func (r *matrixRow) reset() error {
 	return err
 }
 
+// abortTCP aborts every TCP connection n has (ss -K: the clean state has
+// listeners only), logs the ones it aborted, and fails when one is left:
+// ss -K exits 0 and kills nothing on a kernel without INET_DIAG_DESTROY.
+func (r *matrixRow) abortTCP(n *lab.Node, logf func(format string, args ...any)) error {
+	aborted, err := execRead(n, pollTimeout, "ss", "-K", "-H", "-n", "-t", "state", "connected")
+	if err != nil {
+		return err
+	}
+	left, err := execRead(n, pollTimeout, "ss", "-H", "-n", "-t", "state", "connected", "exclude", "time-wait")
+	if err != nil {
+		return err
+	}
+	return tcpAborted(n.Name, aborted, left, logf)
+}
+
+// tcpAborted logs the TCP connections ss -K aborted on node, which a
+// transport that leaks them after its down shows there, and is an error
+// listing the ones left. TIME-WAIT is left out: it sends nothing unless a
+// FIN comes again, and its peer's end, the one that could, was aborted.
+func tcpAborted(node, aborted, left string, logf func(format string, args ...any)) error {
+	if a := strings.TrimSpace(aborted); a != "" {
+		logf("%s: the reset aborted %d TCP connections:\n%s", node, len(strings.Split(a, "\n")), a)
+	}
+	if l := strings.TrimSpace(left); l != "" {
+		return fmt.Errorf("%s: %d TCP connections outlived the reset's abort (ss -K):\n%s", node, len(strings.Split(l, "\n")), l)
+	}
+	return nil
+}
+
+// TestTCPAborted: what ss -K aborted is logged and passes; a connection
+// left after it, as on a kernel that can't destroy sockets, fails the
+// reset with the connections listed.
+func TestTCPAborted(t *testing.T) {
+	conn := "ESTAB 0 0 192.0.2.2:40000 192.0.2.3:443"
+	var logged []string
+	logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	if err := tcpAborted("server-1", conn+"\n", "", logf); err != nil {
+		t.Errorf("all aborted: %v", err)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], conn) || !strings.Contains(logged[0], "server-1: the reset aborted 1 TCP") {
+		t.Errorf("all aborted: logged %q, want the connection named", logged)
+	}
+	logged = nil
+	if err := tcpAborted("router", "\n", "", logf); err != nil || len(logged) != 0 {
+		t.Errorf("nothing to abort: %v, logged %q", err, logged)
+	}
+	err := tcpAborted("server-1", "", conn+"\n", logf)
+	if err == nil || !strings.Contains(err.Error(), conn) || !strings.Contains(err.Error(), "server-1: 1 TCP connections outlived") {
+		t.Errorf("one left: %v, want an error listing it", err)
+	}
+}
+
+// conntrackCount and conntrackEntries read the router's conntrack: how
+// many entries, and each (censord -conntrack).
+func (r *matrixRow) conntrackCount() (string, error) {
+	return execRead(r.lab.Node(lab.Router), pollTimeout, "cat", "/proc/sys/net/netfilter/nf_conntrack_count")
+}
+
+func (r *matrixRow) conntrackEntries() (string, error) {
+	return execRead(r.lab.Node(lab.Router), pollTimeout, "censord", "-conntrack")
+}
+
+// conntrackLeft is the error for n entries left in the router's
+// conntrack, listed by list.
+func conntrackLeft(n, how string, list func() (string, error)) error {
+	entries, err := list()
+	if err != nil {
+		entries = fmt.Sprintf("(couldn't list them: %v)", err)
+	}
+	return fmt.Errorf("router: %s conntrack entries %s:\n%s", n, how, strings.TrimSpace(entries))
+}
+
 // clearRouter clears the router's censor table and conntrack until no
 // entry comes back (clearUntilEmpty), within 30 s.
 func (r *matrixRow) clearRouter() error {
@@ -380,10 +448,8 @@ func (r *matrixRow) clearRouter() error {
 			_, err := execRead(router, pollTimeout, "censord", "-reset")
 			return err
 		},
-		func() (string, error) {
-			return execRead(router, pollTimeout, "cat", "/proc/sys/net/netfilter/nf_conntrack_count")
-		},
-		func() (string, error) { return execRead(router, pollTimeout, "censord", "-conntrack") },
+		r.conntrackCount,
+		r.conntrackEntries,
 		// A retransmission that would make a new entry is an absence no
 		// watcher can see: the settle is a window, once per cell.
 		time.Second, 30*time.Second)
@@ -410,11 +476,7 @@ func clearUntilEmpty(clear func() error, count, list func() (string, error), set
 			return nil
 		}
 		if time.Now().After(deadline) {
-			entries, err := list()
-			if err != nil {
-				entries = fmt.Sprintf("(couldn't list them: %v)", err)
-			}
-			return fmt.Errorf("router: %s conntrack entries came back after every flush for %v:\n%s", n, timeout, strings.TrimSpace(entries))
+			return conntrackLeft(n, fmt.Sprintf("came back after every flush for %v", timeout), list)
 		}
 	}
 }
@@ -489,15 +551,11 @@ func (r *matrixRow) check() error {
 	} else if queueStatement.MatchString(ruleset) {
 		errs = append(errs, fmt.Errorf("router: a queue rule outlived the reset:\n%s", ruleset))
 	}
-	count, err := execRead(router, pollTimeout, "cat", "/proc/sys/net/netfilter/nf_conntrack_count")
+	count, err := r.conntrackCount()
 	if err != nil {
 		errs = append(errs, err)
 	} else if n := strings.TrimSpace(count); n != "0" {
-		entries, err := execRead(router, pollTimeout, "censord", "-conntrack")
-		if err != nil {
-			entries = fmt.Sprintf("(couldn't list them: %v)", err)
-		}
-		errs = append(errs, fmt.Errorf("router: %s conntrack entries outlived the reset:\n%s", n, strings.TrimSpace(entries)))
+		errs = append(errs, conntrackLeft(n, "outlived the reset", r.conntrackEntries))
 	}
 	return errors.Join(errs...)
 }
