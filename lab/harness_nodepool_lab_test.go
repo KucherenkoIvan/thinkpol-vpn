@@ -4,7 +4,6 @@ package lab
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -21,8 +20,9 @@ import (
 // lab retired, and the next package a lab of its own, started afresh.
 func TestHarnessNodePoolRetiresWhatALeftoverSpoils(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Minute)
-	defer cancel()
+	// No bound of its own: a lab start waits for a slot as long as the
+	// lab's budget lets it (labBudget), within the test binary's deadline.
+	ctx := t.Context()
 	root, err := Root()
 	if err != nil {
 		t.Fatal(err)

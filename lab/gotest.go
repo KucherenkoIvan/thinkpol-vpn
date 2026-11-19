@@ -417,8 +417,8 @@ func waitGate(ctx context.Context, what string, done <-chan struct{}) error {
 }
 
 // goTestPackage is one package of GoTestEach: served from the cache, or run
-// in a lab of pool (in a fresh lab with FreshLab, or a nil pool), its
-// output in out. project names its lab when fresh.
+// in a lab of pool (in a fresh lab with FreshLab), its output in out.
+// project names its lab when fresh.
 func goTestPackage(ctx context.Context, root, project string, pkg GoPackage, out *bytes.Buffer, cache *GoTestCache, gates *goTestGates, pool *nodePool, env, args []string) (GoTestResult, error) {
 	r := &packageRun{ctx: ctx, root: root, project: project, pkg: pkg, out: out, cache: cache, pool: pool, env: env, args: args}
 	r.res = GoTestResult{ImportPath: pkg.ImportPath}
@@ -438,7 +438,7 @@ type packageRun struct {
 	pkg           GoPackage
 	out           *bytes.Buffer
 	cache         *GoTestCache
-	pool          *nodePool // nil: a fresh lab
+	pool          *nodePool
 	env, args     []string
 
 	p      preparedRun
@@ -503,7 +503,7 @@ func (r *packageRun) inLab(queued time.Time) {
 	}
 	start := r.out.Len()
 	var run freshRun
-	if r.pool == nil || r.pkg.FreshLab {
+	if r.pkg.FreshLab {
 		run = goTestFresh(r.ctx, queued, r.root, r.project, r.pkg, r.out, r.env, runArgs, r.entry != nil)
 	} else {
 		run = r.pool.goTest(r.ctx, queued, r.root, r.pkg.ImportPath, r.out, testVerbose(r.args), func(n *Node) freshRun {
