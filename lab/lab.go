@@ -330,6 +330,7 @@ func up(ctx context.Context, clock startClock, root, project string, topo Topolo
 		return nil, err
 	}
 	var release func()
+	slotWait := time.Now()
 	err = clock.run(ctx, project, phaseSlotWait, func(ctx context.Context) (err error) {
 		release, err = acquireSlot(ctx, slotKey)
 		return err
@@ -337,6 +338,7 @@ func up(ctx context.Context, clock startClock, root, project string, topo Topolo
 	if err != nil {
 		return nil, errors.Join(err, os.RemoveAll(stateDir))
 	}
+	noteSlotWait(project, slotWait, time.Now())
 	l := &Lab{
 		Project:  project,
 		Topology: topo,
