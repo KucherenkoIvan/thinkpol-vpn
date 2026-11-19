@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: L
 depends_on: [TP-260]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-261"
+branch: "tp-261-lab-reuse"
 ---
 
 ## Goal
@@ -29,3 +29,4 @@ Most lab tests start a fresh lab (4–7 containers) that lives seconds to a minu
 
 ## Log
 - 2026-11-19 created in backlog (full-lab measurement on rewrite cb0348d6)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-261
