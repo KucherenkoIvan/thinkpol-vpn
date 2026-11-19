@@ -32,10 +32,11 @@ import (
 // killed (SIGKILL, the restart held off) leaves it in place until the
 // restarted agent is connected again, and a stop leaves the down shape as
 // a crash would (crash-and-stop); the live agent renews the direct
-// destinations and repairs its table within a re-apply period, and
-// uninstall removes the switch (live-agent); with the switch off the
-// "everything" preset holds it across a crash (the crash posture), a
-// disconnect removes it, and node.json opts out of it (crash-posture).
+// destinations and repairs its table within a re-apply period
+// (live-agent); with the switch off the "everything" preset holds it
+// across a crash (the crash posture), a disconnect removes it, node.json
+// opts out of it, and uninstall removes the switch after all that
+// (crash-posture).
 func TestKillSwitchUnderSystemd(t *testing.T) {
 	t.Parallel()
 	for _, part := range []struct {
@@ -127,10 +128,12 @@ func killSwitchCrashAndStop(k *killSwitchLab) {
 // killSwitchLiveAgent: under "everything", connected, the live agent
 // renews the direct destinations well within their timeout and puts its
 // table back within a re-apply period when it is removed from outside.
-// Then uninstall removes the switch, turned on while connected: the state
-// this part leaves the agent in.
 func killSwitchLiveAgent(k *killSwitchLab) {
 	t := k.t
+	// A member's explicit off in the device file, as in the unsplit
+	// sequence, not the node's default: the "everything" posture must hold
+	// against it (internal/agent's package doc, "The kill switch").
+	k.thinkpol("kill-switch", "off")
 	k.thinkpol("rules", "preset", "everything")
 	k.thinkpol("connect")
 	ping(t, k.dev, k.s4)
@@ -173,8 +176,7 @@ func killSwitchLiveAgent(k *killSwitchLab) {
 	// one exec, timed by the node's clock: a loaded host's docker exec
 	// would stretch the wait and the gap before the next removal alike.
 	out := k.dev.MustExec(t, "sh", "-ec", `for i in 0 1 2 3; do
-	nft delete table inet thinkpol-killswitch
-	start=$(date +%s%N)
+	start=$(date +%s%N); nft delete table inet thinkpol-killswitch 2>&1
 	until nft list table inet thinkpol-killswitch >/dev/null 2>&1; do
 		[ $(($(date +%s%N) - start)) -lt 30000000000 ] || { echo never; exit 0; }
 		sleep 0.1
@@ -182,8 +184,11 @@ func killSwitchLiveAgent(k *killSwitchLab) {
 	echo $(($(date +%s%N) - start))
 done`)
 	backIn := strings.Fields(out)
-	if slices.Contains(backIn, "never") || len(backIn) != 4 {
+	if slices.Contains(backIn, "never") {
 		t.Fatalf("the kill switch's table removed from outside isn't back within 30 s: %q", out)
+	}
+	if len(backIn) != 4 {
+		t.Fatalf("the repair loop printed %q, want 4 durations", out)
 	}
 	for i, ns := range backIn[1:] {
 		n, err := strconv.ParseInt(ns, 10, 64)
@@ -195,20 +200,20 @@ done`)
 		}
 	}
 	k.wantTable("everything, re-applied", true, true)
-
-	k.thinkpol("kill-switch", "on")
-	k.wantTable("on before the uninstall", true, true)
-	k.dev.MustExec(t, "thinkpol", "service", "uninstall")
-	k.wantTable("uninstalled", false, false)
-	k.open("uninstalled")
 }
 
 // killSwitchCrashPosture: the switch off under "everything" is in place
 // while the tunnel is meant up, held across a crash until the restarted
 // agent is connected, and removed by a deliberate disconnect; node.json's
-// opt-out makes a crash leave traffic direct.
+// opt-out makes a crash leave traffic direct. Then uninstall removes the
+// switch, turned on, from an agent that has crashed and restarted.
 func killSwitchCrashPosture(k *killSwitchLab) {
 	t := k.t
+	// A member's explicit off in the device file, as in the unsplit
+	// sequence, not the node's default: the crash posture and the opt-out
+	// must hold against it (internal/agent's package doc, "The kill
+	// switch").
+	k.thinkpol("kill-switch", "off")
 	k.thinkpol("rules", "preset", "everything")
 	k.thinkpol("connect")
 	ping(t, k.dev, k.s4)
@@ -235,7 +240,14 @@ func killSwitchCrashPosture(k *killSwitchLab) {
 		k.open("opted out, crashed")
 	})
 	k.state("connected")
-	k.dev.MustExec(t, "rm", stateDir+"/node.json")
+
+	// Uninstall removes it, whatever left it: a crashed run's trace, locks
+	// and stale sockets too (internal/agent/service's package doc).
+	k.thinkpol("kill-switch", "on")
+	k.wantTable("on before the uninstall", true, true)
+	k.dev.MustExec(t, "thinkpol", "service", "uninstall")
+	k.wantTable("uninstalled", false, false)
+	k.open("uninstalled")
 }
 
 // The agent's kill-switch timers, sped up (cmd/thinkpol,

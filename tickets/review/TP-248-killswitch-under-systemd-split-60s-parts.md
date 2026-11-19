@@ -35,8 +35,9 @@ The 3 s refusal limit's flake: TP-246.
 - **The split.** `TestKillSwitchUnderSystemd` has four parallel subtests, each with a lab of its own (`lab.StartOwnSlot`) and an agent set up afresh by `startKillSwitchLab` (the original's setup, unchanged, ending in the "disconnected" state check):
   - `down`: off once installed; on in place with the tunnel down; allow-LAN on and off; connected, the TUN passes; a disconnect keeps the switch; off while connected removes it, and a disconnect leaves traffic direct.
   - `crash-and-stop`: switch on, a crash while connected holds the table, the direct destinations expire, the restarted agent connects; a stop leaves the down shape and a start comes back connected.
-  - `live-agent`: under "everything", the renewals and the table repairs, then the uninstall. The uninstall needs only a connected agent with the switch on, which is this part's end state, and this part had room for it (in the original order it came after the opt-out).
-  - `crash-posture`: under "everything", a crash holds the switch, a disconnect removes it, node.json's opt-out leaves traffic direct after a crash.
+  - `live-agent`: after a member's explicit `kill-switch off`, under "everything", the renewals and the table repairs.
+  - `crash-posture`: after a member's explicit `kill-switch off`, under "everything", a crash holds the switch, a disconnect removes it, node.json's opt-out leaves traffic direct after a crash; then the uninstall, on an agent that has crashed and restarted, as in the original order ("whatever left it": uninstall also cleans a crashed run's trace, locks and stale sockets).
+  `live-agent` and `crash-posture` start with an explicit `kill-switch off` because in the original they ran after `down`'s off: the device file's explicit false, not the node's default, is what the "everything" posture and the opt-out must hold against (internal/agent's package doc, "The kill switch").
   No two parts share a lab: none of them needs another's state, and any two together would come to over 60 s in use under load. The cost is 16 container starts instead of 4.
 - **Fewer serial execs.** On a loaded runner each `docker exec` costs up to seconds, and that, not the kill switch, is where a part's time goes. So `confined` and `open` run their probes at once (each probe is a flow of its own, which the kill switch judges alone, and each is timed inside the node: ping's -W, nc's -w, curl's own time_total); `diagShows` reads the chains and sets at once after `diag`; `crashHeld` writes and reloads the hold drop-in in one exec, and removes it, reloads and restarts in another. No bound changed: curl's 3 s (by time_total) and 5 s, ping's 2 s, nc's 3 s, the 1.5 re-apply periods, every `Eventually` deadline, the 2 s/6 s timers.
 - **The table repairs, timed by the node's clock.** In a 6-run batch on 82e78180, `live-agent` failed once: "the table removed from outside (2) was back after 4.07 s, want within 3 s". `backIn` deleted the table with one `docker exec` and polled `nft list table` with more, timing it all by the host's clock, so a loaded exec stretched the measured wait (TP-246's cause, in another check), and the gap before the next removal too, which made "removed again just after a re-apply" untrue. The four removals and waits now run in one exec, timed by `date +%s%N` in the node, and the bound is unchanged: the first back within 30 s, the other three within 1.5 re-apply periods (3 s).
@@ -50,13 +51,20 @@ The 3 s refusal limit's flake: TP-246.
   7. off while connected: no table, diag shows none; disconnect: traffic direct: `down` (was after the stop/start).
   8. crash while connected (SubState auto-restart with the restart held): table connected, the direct destinations expire, confined; restarted: connected, ping, table connected: `crash-and-stop`.
   9. stop: table present, not connected, confined; start: connected, ping, table connected: `crash-and-stop`.
-  10. "everything, connected": table connected: `live-agent` and `crash-posture`.
+  10. "everything, connected" (after a member's explicit off): table connected: `live-agent` and `crash-posture`.
   11. renewals: never expired, renewed at least twice and past a whole direct timeout; the direct destination bound to eth0 still answers: `live-agent`.
   12. the table removed from outside comes back within 30 s, three times more within 1.5 re-apply periods; then present and connected: `live-agent`.
-  13. crash under everything: table connected, expired, confined; restarted connected, ping; disconnect: no table, traffic direct: `crash-posture`.
-  14. opt-out: restart with node.json, "disconnected", connect, ping; crash: no table, traffic direct; restarted "connected": `crash-posture`.
-  15. uninstall with the switch on and connected: table connected before, no table after, traffic direct: `live-agent`.
+  13. crash under everything, the switch explicitly off in the device file: table connected, expired, confined; restarted connected, ping; disconnect: no table, traffic direct: `crash-posture`.
+  14. opt-out, the switch explicitly off in the device file: restart with node.json, "disconnected", connect, ping; crash: no table, traffic direct; restarted "connected": `crash-posture`.
+  15. uninstall with the switch on and connected, after the crashes and restarts: table connected before, no table after, traffic direct: `crash-posture`.
   16. on failure, the agent's log and the ruleset in the test log: every part.
+
+## Review findings
+- [ ] R1.1 (should-fix) the uninstall ran in `live-agent`, on an agent that never crashed; moved to the end of `crash-posture`, after its crashes and restarts ("whatever left it").
+- [ ] R1.2 (should-fix) `crash-posture` and `live-agent` started with kill_switch unset (the node's default), not a member's explicit false as in the original; each starts with `kill-switch off` again, Notes items 13/14 say so.
+- [ ] R1.3 (should-fix) the repair clock started after `nft delete` returned; it now starts before the delete.
+- [ ] R1.4 (nit) the `len(backIn) != 4` failure has a message of its own; the delete's stderr stays in the output.
+- [ ] R1.5 (nits) the pointless `rm node.json` dropped; lab/README.md keeps the general rule, without naming this test.
 
 ## Log
 - 2026-11-19 created in backlog (lab-speed follow-ups)
@@ -68,3 +76,4 @@ The 3 s refusal limit's flake: TP-246.
 - 2026-11-19 out of scope: under the shared load, lab starts waited up to 9 min for a lab slot, and a COUNT=10 batch lost its last two parts to the 60 min test deadline that way (lab slot cap, not this test)
 - 2026-11-19 final head 833dd47d: `make lab-gotest PKG=./lab RUN=TestKillSwitchUnderSystemd` passed (128 s, parts 25.4 to 32.5 s in use), `make lint` and `make test` green
 - 2026-11-19 in-progress → review
+- 2026-11-19 review round 1: fix R1.1–R1.5, merge
