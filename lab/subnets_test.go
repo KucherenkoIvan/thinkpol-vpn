@@ -361,3 +361,120 @@ func TestSharedReadJoinsARunningRead(t *testing.T) {
 		check("one asking after it ended", ask(time.Time{}), "172.16.3.0/24")
 	})
 }
+
+// One read's inspects in flight are capped, however many networks the
+// daemon has: a run's labs read together.
+func TestUsedSubnetsCapsInspectsAtOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const chunks = 4 * inspectsAtOnce
+		var mu sync.Mutex
+		inFlight, most, inspects := 0, 0, 0
+		var ids []string
+		for i := range chunks * inspectChunk {
+			ids = append(ids, fmt.Sprintf("net%03d", i))
+		}
+		run := func(_ context.Context, args ...string) (Result, error) {
+			if args[1] == "ls" {
+				return Result{Stdout: strings.Join(ids, "\n")}, nil
+			}
+			mu.Lock()
+			inFlight++
+			inspects++
+			most = max(most, inFlight)
+			mu.Unlock()
+			time.Sleep(time.Second) // the bubble's clock: every inspect not blocked is in flight
+			mu.Lock()
+			inFlight--
+			mu.Unlock()
+			return Result{Stdout: "172.16.1.0/24 "}, nil
+		}
+		if _, err := usedSubnetsVia(t.Context(), run); err != nil {
+			t.Fatal(err)
+		}
+		if inspects != chunks || most != inspectsAtOnce {
+			t.Errorf("%d inspects, at most %d at once; want %d, %d at once", inspects, most, chunks, inspectsAtOnce)
+		}
+	})
+}
+
+// A try after an overlap, and a first try that finds the pool full, read
+// the daemon afresh: the read before the slot is as old as the slot wait.
+func TestCreateTriesReadAfresh(t *testing.T) {
+	a, b := netip.MustParsePrefix("172.16.0.0/24"), netip.MustParsePrefix("172.16.1.0/24")
+	pool := netip.MustParsePrefix("172.16.0.0/23")
+	for name, tc := range map[string]struct {
+		stale, daemon []netip.Prefix // the read before the slot; the daemon now
+		wantUps       int
+	}{
+		// a was free when read, and someone took it since: the first try's
+		// up overlaps; b, used then, is free now.
+		"overlap": {stale: []netip.Prefix{b}, daemon: []netip.Prefix{a}, wantUps: 2},
+		// Both were used when read; b is free now.
+		"pool full": {stale: []netip.Prefix{a, b}, daemon: []netip.Prefix{a}, wantUps: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			nets := []Network{{Name: "n", IPv4Only: true}}
+			var (
+				r          *reservation
+				reads, ups int
+				overlapAt  time.Time
+				notBefores []time.Time
+			)
+			defer func() { r.release() }()
+			read := func(_ context.Context, notBefore time.Time) ([]netip.Prefix, error) {
+				reads++
+				notBefores = append(notBefores, notBefore)
+				return tc.daemon, nil
+			}
+			reserve := func(ctx context.Context, used func(context.Context) ([]netip.Prefix, error)) (err error) {
+				r.release()
+				r, err = reserveSubnets(ctx, dir, nets, pool, used)
+				return err
+			}
+			up := func(_ context.Context, attempt int) error {
+				ups++
+				if slices.Contains(tc.daemon, r.subnets["n"].v4) {
+					overlapAt = time.Now()
+					return errors.New("Error response from daemon: Pool overlaps with other one on this address space")
+				}
+				return nil
+			}
+			start := time.Now()
+			if err := createTries(t.Context(), tc.stale, read, reserve, up, func(context.Context) error { return nil }); err != nil {
+				t.Fatalf("%v (%d ups, %d reads)", err, ups, reads)
+			}
+			if got := r.subnets["n"].v4; got != b {
+				t.Errorf("got %v, want %v", got, b)
+			}
+			if ups != tc.wantUps || reads != 1 {
+				t.Errorf("%d ups, %d reads; want %d, 1", ups, reads, tc.wantUps)
+			}
+			after := start
+			if !overlapAt.IsZero() {
+				after = overlapAt
+			}
+			if len(notBefores) == 1 && notBefores[0].Before(after) {
+				t.Errorf("the fresh read may have begun at %v, before %v", notBefores[0], after)
+			}
+		})
+	}
+}
+
+func TestParseGateways(t *testing.T) {
+	const p = "tplab-x-1"
+	got, err := parseGateways(p, p+"_wan 172.16.4.1 fd12:3456::1 \n\n"+p+"_lan 172.16.5.1/24 \n"+p+"_bare \n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]netip.Addr{
+		"wan": {netip.MustParseAddr("172.16.4.1"), netip.MustParseAddr("fd12:3456::1")},
+		"lan": {netip.MustParseAddr("172.16.5.1")},
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if _, err := parseGateways(p, "tplab-y-1_wan 172.16.4.1\n"); err == nil {
+		t.Error("another lab's network: no error")
+	}
+}

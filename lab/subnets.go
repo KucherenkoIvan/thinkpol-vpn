@@ -113,6 +113,11 @@ type dockerFunc func(ctx context.Context, args ...string) (Result, error)
 // whatever network the daemon is creating or removing at the time.
 const inspectChunk = 4
 
+// inspectsAtOnce caps one read's inspects in flight: a run's labs read
+// together, each read starting a docker CLI per chunk, on a daemon whose
+// disk is already what every lab waits on.
+const inspectsAtOnce = 8
+
 // usedSubnetsVia is usedSubnets through run. Other daemon users remove
 // networks at any time, also between the list and the inspect: a network
 // that is gone by then no longer holds a subnet and is skipped. The CLI
@@ -133,8 +138,11 @@ func usedSubnetsVia(ctx context.Context, run dockerFunc) ([]netip.Prefix, error)
 	gone := make([]int, len(chunks))
 	errs := make([]error, len(chunks))
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, inspectsAtOnce)
 	for i, chunk := range chunks {
 		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			res, err := run(ctx, append([]string{"network", "inspect", "--format", "{{range .IPAM.Config}}{{.Subnet}} {{end}}"}, chunk...)...)
 			if err != nil {
 				n, ok := networksNotFound(res, err, chunk)
@@ -210,6 +218,9 @@ func isIDChar(c byte) bool {
 	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c == '-' || c == '_' || c == '.'
 }
 
+// errNoFreeSubnet is the pool, as allocateSubnets saw it, being full.
+var errNoFreeSubnet = errors.New("lab: no free /24 left")
+
 // allocateSubnets picks, for each network, a free /24 from pool and a /64
 // from a fresh random unique-local /48, avoiding used.
 func allocateSubnets(networks []Network, pool netip.Prefix, used []netip.Prefix) (map[string]netSubnets, error) {
@@ -247,7 +258,7 @@ func allocateSubnets(networks []Network, pool netip.Prefix, used []netip.Prefix)
 			candidates = candidates[1:]
 		}
 		if !s.v4.IsValid() {
-			return nil, errors.New("lab: no free /24 left in " + pool.String() + "; make lab-down in idle checkouts, or set " + SubnetPoolEnv)
+			return nil, fmt.Errorf("%w in %s; make lab-down in idle checkouts, or set %s", errNoFreeSubnet, pool, SubnetPoolEnv)
 		}
 		if !n.IPv4Only {
 			a := ula

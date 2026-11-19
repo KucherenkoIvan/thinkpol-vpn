@@ -126,6 +126,7 @@ type dockerEvents struct {
 
 type dockerEvent struct {
 	what, name string // e.g. "container start", its name
+	project    string // a container's Compose project label
 	at         time.Time
 }
 
@@ -155,7 +156,7 @@ func watchDockerEvents(t *testing.T) *dockerEvents {
 				continue
 			}
 			d.mu.Lock()
-			d.events = append(d.events, dockerEvent{e.Type + " " + e.Action, e.Actor.Attributes["name"], time.Unix(0, e.TimeNano)})
+			d.events = append(d.events, dockerEvent{e.Type + " " + e.Action, e.Actor.Attributes["name"], e.Actor.Attributes["com.docker.compose.project"], time.Unix(0, e.TimeNano)})
 			d.mu.Unlock()
 		}
 	}()
@@ -167,13 +168,18 @@ func watchDockerEvents(t *testing.T) *dockerEvents {
 	return d
 }
 
-// of is the events of a lab's networks and containers.
-func (d *dockerEvents) of(project string) []dockerEvent {
+// of is the events of a lab's networks, by their names (a network event
+// carries no labels), and containers, by their Compose project label.
+func (d *dockerEvents) of(l *Lab) []dockerEvent {
+	nets := map[string]bool{}
+	for _, n := range l.Topology.Networks {
+		nets[l.Project+"_"+n.Name] = true
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var out []dockerEvent
 	for _, e := range d.events {
-		if strings.HasPrefix(e.name, project+"_") || strings.HasPrefix(e.name, project+"-") {
+		if strings.HasPrefix(e.what, "network ") && nets[e.name] || strings.HasPrefix(e.what, "container ") && e.project == l.Project {
 			out = append(out, e)
 		}
 	}
@@ -192,7 +198,7 @@ func measureStart(t *testing.T, topo Topology, events *dockerEvents) startSample
 		bridged:   st.bridged.Sub(st.slot),
 		upDone:    l.upTo.Sub(l.upFrom),
 	}
-	for _, e := range events.of(l.Project) {
+	for _, e := range events.of(l) {
 		at := e.at.Sub(l.upFrom)
 		first := func(d *time.Duration) {
 			if *d == 0 || at < *d {

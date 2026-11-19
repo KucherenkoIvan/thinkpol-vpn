@@ -37,7 +37,9 @@ type Lab struct {
 	// The last docker compose up's start and end, and its attempt number.
 	upFrom, upTo time.Time
 	upAttempt    int
-	started      startTimes
+	// The last start's steps, kept only for TestLabStartTimes (the
+	// timeline has them too, as text).
+	started startTimes
 }
 
 // Bridge is Docker's own end of a lab network: the bridge in the Docker VM.
@@ -273,7 +275,7 @@ func (c startClock) run(ctx context.Context, project string, p startPhase, f fun
 	var what string
 	switch p {
 	case phaseBeforeSlot:
-		what = fmt.Sprintf("not ready for a lab slot within %v (removing a leftover lab, building the image and binaries)", within)
+		what = fmt.Sprintf("not ready for a lab slot within %v (removing a leftover lab, building the image and binaries, reading the daemon's subnets)", within)
 	case phaseSlotWait:
 		what = fmt.Sprintf("no lab slot within %v", within)
 	case phaseAfterSlot:
@@ -424,11 +426,7 @@ func beforeSlot(ctx context.Context, root, project, stateDir string, inputs labI
 
 // create reserves the lab's subnets and starts it. Only the reservation is
 // serialized host-wide (reserveSubnets); docker compose up runs outside the
-// allocation lock, beside other labs' start-ups. The first try avoids
-// onDaemon, the daemon's subnets as read before the slot, and the live
-// reservations, which cover every lab of the host's slots started since. A
-// subnet another daemon user took in the meantime means another try, on a
-// read of the daemon that began after the overlap.
+// allocation lock, beside other labs' start-ups.
 func (l *Lab) create(ctx context.Context, img image, onDaemon []netip.Prefix) error {
 	pool, err := subnetPool()
 	if err != nil {
@@ -438,27 +436,58 @@ func (l *Lab) create(ctx context.Context, img image, onDaemon []netip.Prefix) er
 	if err != nil {
 		return err
 	}
+	return createTries(ctx, onDaemon, daemonSubnets.get,
+		func(ctx context.Context, used func(context.Context) ([]netip.Prefix, error)) (err error) {
+			l.releaseSubnets()
+			l.subnets, err = reserveSubnets(ctx, dir, l.Topology.Networks, pool, used)
+			return err
+		},
+		func(ctx context.Context, attempt int) error {
+			if err := l.composeUp(ctx, img, l.subnets, attempt); err != nil {
+				return fmt.Errorf("lab %s: up: %w", l.Project, err)
+			}
+			return nil
+		},
+		func(ctx context.Context) error { return downProject(ctx, l.Project, l.root) })
+}
+
+// createTries is create's tries: reserve, then up. The first try avoids
+// onDaemon, the daemon's subnets as read before the slot, and the live
+// reservations, which cover every lab of the host's slots started since. A
+// subnet another daemon user took in the meantime (an overlap from up)
+// means another try after down, on a read that began after the overlap.
+// onDaemon is as old as the slot wait: a pool it shows full gets one more
+// try on a read that began after.
+func createTries(ctx context.Context, onDaemon []netip.Prefix,
+	read func(ctx context.Context, notBefore time.Time) ([]netip.Prefix, error),
+	reserve func(ctx context.Context, used func(context.Context) ([]netip.Prefix, error)) error,
+	up func(ctx context.Context, attempt int) error,
+	down func(context.Context) error,
+) error {
 	var notBefore time.Time
 	for attempt := 1; ; attempt++ {
-		l.releaseSubnets()
 		used := func(ctx context.Context) ([]netip.Prefix, error) {
 			if attempt == 1 {
 				return onDaemon, nil
 			}
-			return daemonSubnets.get(ctx, notBefore)
+			return read(ctx, notBefore)
 		}
-		if l.subnets, err = reserveSubnets(ctx, dir, l.Topology.Networks, pool, used); err != nil {
+		if err := reserve(ctx, used); err != nil {
+			if attempt == 1 && errors.Is(err, errNoFreeSubnet) {
+				notBefore = time.Now()
+				continue
+			}
 			return err
 		}
-		err := l.composeUp(ctx, img, l.subnets, attempt)
+		err := up(ctx, attempt)
 		if err == nil {
 			return nil
 		}
 		if !isOverlap(err) || attempt == 5 {
-			return fmt.Errorf("lab %s: up: %w", l.Project, err)
+			return err
 		}
 		notBefore = time.Now()
-		if err := downProject(ctx, l.Project, l.root); err != nil {
+		if err := down(ctx); err != nil {
 			return err
 		}
 	}
@@ -592,7 +621,6 @@ func (l *Lab) inspect(ctx context.Context) error {
 		}
 	}
 
-	l.gateways = map[string][]netip.Addr{}
 	args := []string{"network", "inspect", "--format", "{{.Name}} {{range .IPAM.Config}}{{.Gateway}} {{end}}"}
 	for _, net := range l.Topology.Networks {
 		args = append(args, l.Project+"_"+net.Name)
@@ -601,23 +629,31 @@ func (l *Lab) inspect(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, line := range strings.Split(res.Stdout, "\n") {
+	l.gateways, err = parseGateways(l.Project, res.Stdout)
+	return err
+}
+
+// parseGateways reads one docker network inspect of a lab's networks, a
+// line of name and gateways per network, into gateways by network.
+func parseGateways(project, out string) (map[string][]netip.Addr, error) {
+	gateways := map[string][]netip.Addr{}
+	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
 		if len(f) == 0 {
 			continue
 		}
-		network, ok := strings.CutPrefix(f[0], l.Project+"_")
+		network, ok := strings.CutPrefix(f[0], project+"_")
 		if !ok {
-			return fmt.Errorf("lab %s: docker network inspect: unexpected network %q", l.Project, f[0])
+			return nil, fmt.Errorf("lab %s: docker network inspect: unexpected network %q", project, f[0])
 		}
 		for _, s := range f[1:] {
 			s, _, _ = strings.Cut(s, "/")
 			if a, err := netip.ParseAddr(s); err == nil {
-				l.gateways[network] = append(l.gateways[network], a)
+				gateways[network] = append(gateways[network], a)
 			}
 		}
 	}
-	return nil
+	return gateways, nil
 }
 
 // learnBridges finds each network's bridge MAC from a node on it, before
