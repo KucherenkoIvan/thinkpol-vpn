@@ -347,6 +347,8 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// Not parallel: it counts the Applies of a burst against the 200 ms
+// debounce window, which a CPU shared with other tests stretches.
 func TestEnforcerAppliesChangesAndReappliesOnEvents(t *testing.T) {
 	survey := up()
 	survey.ForeignRules = []int{5210, 5270, 5400}
@@ -565,6 +567,7 @@ func TestGuardEventsDontPushTheRoutesRetryBack(t *testing.T) {
 // A kernel that can't hold the table at all stops the enforcer for good:
 // no retries, and the status says why.
 func TestEnforcerStopsOnAnUnsupportedKernel(t *testing.T) {
+	t.Parallel()
 	f := &fakeConfigurator{events: make(chan struct{}), fail: true, failErr: fmt.Errorf("netcfg: old kernel: %w", errors.ErrUnsupported)}
 	e := routetable.Open(f, nil)
 	defer func() { _ = e.Close() }()
