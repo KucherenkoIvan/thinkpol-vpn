@@ -1,0 +1,69 @@
+---
+id: TP-260
+title: "Lab slots are handed out in order"
+milestone: M2
+area: lab
+stream: verification
+repo: thinkpol-vpn
+size: S
+depends_on: []
+refs: []
+owner: "agent-tp-260"
+branch: "tp-260-fair-lab-slots"
+---
+
+## Goal
+Lab slots are taken by polling, not in order (lab/hostlock.go: every waiter tries the slot locks every 250 ms and takes the first free one). With TP-254 a full lab has up to ~72 waiters (6 phases or processes × 12) polling for 12 slots, so a run with many waiting labs takes most of the slots that free up and other runs' labs wait far longer: TP-254's run 1 had a slot wait of 18m49s. Under TP-242's budget a wait that starts late fails with "no lab slot within 0s". Hand slots out first come, first served (a ticket queue in the lock directory), fair across runs.
+
+## Scope
+- Slot waiters queue in arrival order in the lock directory, and a freed slot goes to the oldest waiter, whichever run it belongs to.
+- A waiter that dies (killed, its process gone) leaves the queue without holding up the ones behind it, and leaks no slot.
+- lab/README.md and lab/hostlock.go's docs say how slots are handed out.
+
+## Out of scope
+- The slot cap itself (`THINKPOL_LAB_MAX_LABS`, its default) and how many labs a run asks for at once (TP-254).
+
+## Acceptance
+- [x] Slots go to waiters in arrival order (test with concurrent waiters).
+- [x] Two concurrent full labs: max slot wait before/after in Notes.
+- [x] No slot leaks when a waiter dies (test).
+
+## Notes
+- How slots are handed out now: lab/hostlock.go (acquireSlotLock and the slot queue's doc comment) and lab/README.md, "A cap on labs". In short: each waiter takes a numbered ticket in the lock directory's `slot-queue/`, a file it holds flock'd while it waits (numbers assigned under `slot-queue.lock`); only the oldest waiter tries the slot locks (every 100 ms), each other waiter checks only the ticket just ahead of its own (one non-blocking flock and one fstat per 100 ms) and looks again when that one leaves.
+- Dead and stuck waiters: a killed waiter's flock goes with its process, and a ticket nobody holds locked is removed by the next scan that meets it; a waiter whose wait ends removes its own ticket. A ticket that is locked but not refreshed for 15 s (heartbeat every 1 s: a stopped process, a leaked lock, a machine that slept) is passed over but left in place; the head scans the queue again every heartbeat, so if that waiter comes back the one that passed it lines up behind it again.
+- Degrading safely: entries in `slot-queue/` that aren't tickets (other names, directories, files that can't be opened) are ignored; a ticket that can't be opened or locked is skipped with a warning on stderr; a queue that can't be used at all (`slot-queue` isn't a directory, a ticket can't be created, the sequence would overflow, `slot-queue.lock` held for over 15 s by a process stopped mid-scan) makes the waiter fall back to polling the slots in no order, as before, and note it in the timeline (`slot-wait unqueued: <reason>`). So nothing in the queue can keep a free slot from being taken. TP-242's bounds and messages are unchanged (`no lab slot within …`, `lab: waiting for a free lab slot (THINKPOL_LAB_MAX_LABS): …`), and so are TP-254's timeline lines. A wait with no time left still takes a free slot if no live waiter is ahead of it.
+- Until this is merged, runs from rewrite still poll the slots directly and ignore the queue: on a shared host they compete with queued waiters in no order.
+- Measurement: two concurrent full `make lab-test` runs per side, each with its own `THINKPOL_LAB_TIMELINE`, slot waits from the timeline's `slot-wait` lines. Before = rewrite 877b3931, after = 38175ccf (this branch with that rewrite merged). Other runs' labs shared the host and its slots in both cases.
+
+  | pair | node phase | lab starts per run | slot wait median | p90 | max | wall |
+  |---|---|---|---|---|---|---|
+  | before, 1 | 40 packages run | 97 | 182 s / 177 s | 694 s / 843 s | 1596 s / 1780 s | 2388 s / 2551 s |
+  | after, 1 | 40 packages run, harness phase too (its hash changed) | 111 | 413 s / 416 s | 951 s / 958 s | 1138 s / 1171 s | 3166 s / 3422 s |
+  | before, 2 | 40 of 40 cached | 57 | 104 s / 214 s | 446 s / 506 s | 1428 s / 1095 s | 2102 s / 2287 s |
+  | after, 2 | 40 of 40 cached | 57 | 245 s / 265 s | 322 s / 338 s | 382 s / 352 s | 2135 s / 2282 s |
+
+  The second pairs are the like-for-like comparison (the same 57 lab starts per run, nothing else in the default stream): the longest slot wait drops from 1428 s and 1095 s to 382 s and 352 s, about 3 to 4 times less, while the median rises (104 s and 214 s to 245 s and 265 s) and the mean stays about where it was (193 s and 257 s before, 221 s and 257 s after). First come, first served doesn't add slots, so it doesn't shorten a run (wall times unchanged); it takes the long tail off, which is what TP-242's deadline cut punishes. The first after-pair isn't comparable with the first before-pair: it also ran the harness phase (14 more lab starts, the harness taking 1255 s and 1535 s) and took longer, and 7 of after-1a's slot waits began after the test binary's deadline less TP-242's reserve, so they failed with `no lab slot within 0s, cut short by the test's deadline` (TP-242's documented price, not the queue: the run was 52m45s).
+- Full lab runs: all six full runs' tests passed except after-1a's 7 deadline-cut lab starts above; every run was over the 15-minute budget with the other runs beside it. The final run on 467683c5 (rewrite 3fc84882 merged; harness phase run, its hash changed; 3 node packages run, 37 cached): tests passed, wall 1374 s, over budget only (22m55s > 15m); 74 lab starts, slot wait median 78 s, max 238 s, none failed.
+
+## Review findings
+- [x] R1.1 (should-fix) lab/hostlock.go atHead: once a waiter becomes head it never looks back: a stopped (Ctrl-Z) or slept (machine sleep, clock jump > 15 s) predecessor is skipped as stale, then resumes and refreshes, and both are heads for good; after a sleep every waiter can become a head. Make heads rescan every heartbeat (if the ticket ahead is live again, go back to watching it). Done: a head scans the queue again every heartbeat (lab/hostlock.go `atHead`, the `scanned` check): finding a ticket ahead that is fresh again, it goes back to watching it; tested by TestHeadGoesBackBehindResumedWaiter.
+- [x] R1.2 (should-fix) nothing tests the heartbeat: deleting the Chtimes refresh passes every test, though real waits (median ~245 s) far exceed the 15 s stale limit, so every ticket would go stale and order collapse. Inject the clock or the stale threshold so a test keeps a waiter queued past the stale limit and asserts order (and that R1.1's rescan restores the order after a "resumed" predecessor). Done: the queue's timing is injectable (`slotQueueTiming`, `slotQueueTimes`, read once per ticket); TestQueueOrderOutlastsStaleLimit keeps six waiters queued for 3× a 1 s stale limit and needs arrival order; TestHeadGoesBackBehindResumedWaiter covers the resumed predecessor.
+- [x] R1.3 (should-fix) nothing tests the rescan when a mid-queue waiter leaves: the mutation "the one ahead left, so I'm head" (`return true, nil` instead of `scan(q.seq)`) passes all tests. Add: tickets 1 and 2 live, a newcomer 3; close 2; the newcomer must still wait (ticket 1 ahead) and its deadline expires. Done: TestNewcomerRescansWhenWaiterAheadLeaves (tickets 1 and 2 live, the newcomer 3; 2 dies; the newcomer runs out of time behind 1 with the slot free, and 2's ticket is cleared away).
+- [x] R1.4 (should-fix) the wait on slot-queue.lock is bounded only by the caller's context (up to 45 min): a process stopped while holding it (Ctrl-Z during the few-ms join scan) freezes every new waiter and stops their refreshes. Bound it (e.g. the stale limit) and fall back to unordered polling (the existing fallback) on timeout; write a timeline line "slot-wait unqueued: <reason>" whenever a waiter falls back. Done: `lockQueue` waits for slot-queue.lock at most the stale limit, joining and rescanning alike, then the waiter falls back to unordered polling; every fallback (this one, an unusable queue, a used-up sequence) writes `slot-wait unqueued: <reason>` to the timeline (`noteSlotUnqueued`, lab/timeline.go); tested by TestStoppedQueueLockHolderDoesNotStopWaiters (joining, looking again) and TestBrokenQueueDoesNotBlockSlots.
+- [x] R1.5 (nits) the "sequence used up" check can't trigger (scan only sees tickets below MaxUint64; its subtest tests nothing): fix or drop it honestly; a live ticket that fails to open or lock (EMFILE, ENOLCK) is skipped silently: at least log it; move the protocol comment from slotQueueLockRetry to the slotQueue type. Done: `scan` takes an inclusive bound, so the join sees a ticket numbered MaxUint64 and the used-up check can trigger; its subtest now needs the unqueued line saying so (and the queue-is-a-file one too, junk entries none); a ticket that fails to open (other than gone) or to lock is skipped with a warning on stderr (`warnSkippedTicket`); non-regular entries are filtered from the directory listing; the protocol comment is on the `slotQueue` type.
+
+## Log
+- 2026-11-19 created in backlog (TP-254 review)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-260
+- 2026-11-19 slot queue in lab/hostlock.go (tickets flock'd in slot-queue/, head-only slot polling, dead tickets removed, stale ones skipped, fallback to unordered polling); tests in lab/hostlock_test.go across goroutines and child processes; lab/README.md and lab.go's comment updated
+- 2026-11-19 mutations, each failing its test: every waiter at the head (TestSlotsGoInArrivalOrder, TestNewcomerWaitsBehindLiveWaiter); a dead ticket ahead counted as live (TestKilledWaiterLeavesNoGap, by its bound below the 15 s staleness); a waiter that gives up keeps its ticket file (TestWaiterPastDeadlineLeavesQueue); stale tickets not skipped (TestStuckWaiterIsSkipped); no fallback on an unusable queue (TestBrokenQueueDoesNotBlockSlots); a new ticket numbered the same as the last live one (TestNewcomerWaitsBehindLiveWaiter); scans keep dead tickets (TestDeadTicketIsRemoved, TestKilledWaiterLeavesNoGap)
+- 2026-11-19 runs: the new tests -race -count=10 green; lab-gotest PKG=./lab of them COUNT=3 green in a lab node; make lint green at 4bd243ee, make test green at 38175ccf; two full-lab pairs before (877b3931) and after (38175ccf), numbers in Notes
+- 2026-11-19 final: make lint and make test green at 467683c5; full make lab-test on 467683c5 passed (harness phase included), wall 1374 s, over budget only. Boxes: arrival order by TestSlotsGoInArrivalOrder (goroutines and child processes in one queue), no leak on death by TestKilledWaiterLeavesNoGap (killed while queued and while holding), slot waits before/after in Notes. Not verified: the queue's behaviour with rewrite's unqueued pollers beside it beyond the measured runs; a stuck waiter is only simulated (an old mtime), no real SIGSTOP. Out of scope: TP-242's deadline cut still fails late slot waits in a run that goes past about 48 minutes (after-1a: 7 lab starts)
+- 2026-11-19 in-progress → review
+- 2026-11-19 review → has-errors
+- 2026-11-19 review round 1: fix R1.1–R1.5
+- 2026-11-19 R1.1–R1.5 fixed in lab/hostlock.go and lab/timeline.go (heads rescan every heartbeat, injectable queue timing, slot-queue.lock wait bounded by the stale limit with an unqueued timeline line on every fallback, inclusive scan bound, skipped tickets warned about); lab/README.md "A cap on labs" updated
+- 2026-11-19 mutations, each failing its test: a head never scans again (TestHeadGoesBackBehindResumedWaiter); no heartbeat refresh (TestQueueOrderOutlastsStaleLimit, order 3,1,4,2,0,5); "the one ahead left, so I'm head" (TestNewcomerRescansWhenWaiterAheadLeaves); slot-queue.lock wait unbounded (TestStoppedQueueLockHolderDoesNotStopWaiters, both subtests); no unqueued timeline line (TestStoppedQueueLockHolderDoesNotStopWaiters, TestBrokenQueueDoesNotBlockSlots); no used-up check, and the join scan excluding MaxUint64 again (TestBrokenQueueDoesNotBlockSlots/sequence_used_up). The stderr warning for a ticket that can't be opened or locked is untested (EMFILE/ENOLCK not provoked)
+- 2026-11-19 runs at 0f712e56: the queue and timeline tests -race -count=10 green; lab-gotest PKG=./lab of them COUNT=3 green in a lab node; make lint and make test green; no full lab this round (round 1 ran six)
+- 2026-11-19 has-errors → review
+- 2026-11-19 review → done (merged)
