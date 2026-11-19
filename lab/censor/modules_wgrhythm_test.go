@@ -305,6 +305,17 @@ func (r *wgRun) datagram(at time.Duration, toServer bool, n int) {
 // carry sends each record as an application-data record.
 func (r *wgRun) carry(recs []wireRecord) { r.carryIn(0x17, recs) }
 
+// ack sends a bare acknowledgement one way at offset at: a packet, no
+// record.
+func (r *wgRun) ack(at time.Duration, toServer bool) {
+	r.clock = time.Unix(1_700_000_000, 0).Add(at)
+	p := tcpPacket(clientAddr, serverAddr, 40000, 443, r.clientSeq, r.serverSeq, Ack, nil)
+	if !toServer {
+		p = tcpPacket(serverAddr, clientAddr, 443, 40000, r.serverSeq, r.clientSeq, Ack, nil)
+	}
+	r.actions = append(r.actions, wgAction{at, toServer, r.eng.Handle(p)})
+}
+
 // firstBlocked is the first packet the censor didn't accept, and whether
 // there was one.
 func (r *wgRun) firstBlocked() (wgAction, bool) {
@@ -1194,24 +1205,100 @@ func unanswered(first, every, d time.Duration) []wgMessage {
 	return out
 }
 
+// leadIn is an exchange every 250 ms, the latest 125 ms before each of
+// rekeys, for lead: no 300 ms of quiet between them and the handshake, so
+// the step's records start lead before its handshake's. The 125 ms keep
+// them off wgPingTimeline's pings, which come on whole seconds.
+func leadIn(lead time.Duration, rekeys ...time.Duration) []wgMessage {
+	var out []wgMessage
+	for _, at := range rekeys {
+		for t := at - lead + 125*time.Millisecond; t < at; t += 250 * time.Millisecond {
+			out = append(out, wgMessage{t, true, 300}, wgMessage{t + time.Millisecond, false, 300})
+		}
+	}
+	return out
+}
+
 // TestWGRhythmCountsRecords: WireGuard's rekeys under a steady ping, every
 // record padded to 512 bytes so no exchange ever stands out, seen with a
 // 20 ms round trip so no burst holds a handshake whole: the count of
 // records each way steps by one at each rekey and is flat in between, and
-// is flagged on the first record after the third step's quiet. Over UDP,
-// sizes and all, it is caught as well. It isn't when the steps come
-// sooner than a rekey period or later than the rekey window, differ in
-// size, or the count moves in between.
+// is flagged on the first reading of the count wgCountHold after the
+// third step's records (the second ping after it, 3.5 s later). Over UDP,
+// sizes and all, it is caught as well, and so it is when an answer comes
+// 400 ms late between rekeys (the count read off its level until it
+// came: no step) or exchanges 250 ms apart run for 3 s before each rekey,
+// or before the third alone, with no quiet between them and the
+// handshake (the step's span starts with them), and when rekeys 120.3 s
+// apart, as on the lab, have one hidden from the reading after it by a
+// record the other way answered 600 ms later (the step's span starts
+// with the records that reading read), or when the ping that triggers
+// the second rekey is answered 400 ms late (the reading after the
+// handshake two off the level, the step's own value read after it), or
+// 1.5 s late with the next ping's answer 400 ms late (the readings two
+// off, one off, and two off again past the first reading's hold). It
+// isn't when the steps
+// come 119 s or 117 s apart (no WireGuard: it never rekeys sooner than
+// REKEY_AFTER_TIME and a round trip) or later than the rekey window,
+// differ in size, or the count moves in between.
 func TestWGRhythmCountsRecords(t *testing.T) {
 	s, rtt := time.Second, 20*time.Millisecond
 	rekeys := []time.Duration{121*s + 500*time.Millisecond, 121 * s, 121 * s}
+	at := []time.Duration{121*s + 500*time.Millisecond, 242*s + 500*time.Millisecond, 363*s + 500*time.Millisecond}
 	floor := floorOf(512)
-	r := newWGRun(t, `{}`, 1400)
-	r.carry(eachInRecord(wgPingTimeline(400*s, rtt, rekeys), floor))
-	a, blocked := r.firstBlocked()
-	third := 363*s + 500*time.Millisecond
-	if !blocked || a.at < third || a.at > third+2*s || !strings.Contains(a.Reason, "rekey by record count: the difference each way stepped 3 times by +1, the last 2m1s apart") {
-		t.Errorf("rekeys a period apart, padded: first blocked %+v (blocked %v), want a drop by record count within 2 s of the third rekey at %s", a, blocked, third)
+	third := at[2]
+	lateAnswer := wgPingTimeline(400*s, rtt, rekeys, wgMessage{180 * s, true, 300}, wgMessage{180*s + 400*time.Millisecond, false, 300})
+	// hidden: rekeys 120.3 s apart, as on the lab, and a record from the
+	// server 100 ms before the second that the client answers 600 ms
+	// later, so the reading after the handshake finds the level.
+	spaced := []time.Duration{121*s + 500*time.Millisecond, 120*s + 300*time.Millisecond, 120*s + 300*time.Millisecond}
+	hidden := wgPingTimeline(400*s, rtt, spaced, wgMessage{241*s + 700*time.Millisecond, false, 300}, wgMessage{242*s + 300*time.Millisecond, true, 300})
+	// lateTrigger: the reply to the ping that triggers the second rekey
+	// comes 400 ms late, so the reading after the handshake finds the
+	// difference two off the level, and the step's own value is the
+	// latest read, not the first.
+	lateTrigger := wgPingTimeline(400*s, rtt, rekeys)
+	for i, m := range lateTrigger {
+		if m.at == at[1]+rtt && !m.toServer && m.size != wgResponse {
+			lateTrigger[i].at += 400 * time.Millisecond
+		}
+	}
+	slices.SortStableFunc(lateTrigger, func(a, b wgMessage) int { return int(a.at - b.at) })
+	// lateTwice: the second rekey's trigger answered 1.5 s late, so the
+	// readings find the difference two off the level, then one, and the
+	// next ping, 2.5 s after the rekey, answered 400 ms late, so the
+	// reading at its reply finds two off again, past the hold of the
+	// first time it was read: no step of two, as the rekey's own +1
+	// follows.
+	lateTwice := wgPingTimeline(400*s, rtt, rekeys)
+	for i, m := range lateTwice {
+		switch {
+		case m.at == at[1]+rtt && !m.toServer && m.size != wgResponse:
+			lateTwice[i].at += 1500 * time.Millisecond
+		case m.at == at[1]+2500*time.Millisecond+rtt && !m.toServer:
+			lateTwice[i].at += 400 * time.Millisecond
+		}
+	}
+	slices.SortStableFunc(lateTwice, func(a, b wgMessage) int { return int(a.at - b.at) })
+	for _, c := range []struct {
+		name  string
+		msgs  []wgMessage
+		third time.Duration
+	}{
+		{"rekeys a period apart, padded", wgPingTimeline(400*s, rtt, rekeys), third},
+		{"an answer 400 ms late", lateAnswer, third},
+		{"3 s of exchanges before each rekey", wgPingTimeline(400*s, rtt, rekeys, leadIn(3*s, at...)...), third},
+		{"3 s of exchanges before the third rekey", wgPingTimeline(400*s, rtt, rekeys, leadIn(3*s, third)...), third},
+		{"rekeys 120.3 s apart, the second hidden by an answer in flight", hidden, 362*s + 100*time.Millisecond},
+		{"the second rekey's trigger answered 400 ms late", lateTrigger, third},
+		{"the second rekey's trigger answered 1.5 s late, the next ping 400 ms late", lateTwice, third},
+	} {
+		r := newWGRun(t, `{}`, 1400)
+		r.carry(eachInRecord(c.msgs, floor))
+		a, blocked := r.firstBlocked()
+		if !blocked || a.at < c.third+wgCountHold || a.at > c.third+wgCountHold+2*s || !strings.Contains(a.Reason, "rekey by record count: the difference each way stepped 3 times by +1") {
+			t.Errorf("%s: first blocked %+v (blocked %v), want a drop by record count within %s of the third rekey at %s", c.name, a, blocked, wgCountHold+2*s, c.third)
+		}
 	}
 
 	u := newWGUDPRun(t, `{}`)
@@ -1226,6 +1313,8 @@ func TestWGRhythmCountsRecords(t *testing.T) {
 		msgs []wgMessage
 	}{
 		{"steps 60 s apart", wgPingTimeline(400*s, rtt, []time.Duration{60 * s, 60 * s, 60 * s, 60 * s, 60 * s})},
+		{"steps 119 s apart", wgPingTimeline(400*s, rtt, []time.Duration{121*s + 500*time.Millisecond, 119 * s, 119 * s})},
+		{"steps 117 s apart", wgPingTimeline(400*s, rtt, []time.Duration{121*s + 500*time.Millisecond, 117 * s, 117 * s})},
 		{"steps 240 s apart", wgPingTimeline(800*s, rtt, []time.Duration{240 * s, 240 * s, 240 * s})},
 		{"steps of +1, +2, +1", twoKeepalives},
 		{"the count moves in between", wgPingTimeline(400*s, rtt, rekeys, unanswered(30*s, 60*s, 400*s)...)},
@@ -1234,6 +1323,60 @@ func TestWGRhythmCountsRecords(t *testing.T) {
 		r.carry(eachInRecord(c.msgs, floor))
 		if a, blocked := r.firstBlocked(); blocked {
 			t.Errorf("%s: blocked at %s: %+v", c.name, a.at, a)
+		}
+	}
+}
+
+// TestWGRhythmCountsQuietImbalance: a quiet connection that carries one
+// record nothing answers every 130 s, of another size each time (no idle
+// run), each acknowledged a second later by a bare TCP segment, steps by
+// one each time: the reading at the
+// acknowledgement finds the move before its hold has passed, and the
+// next packet, the next record's, reads it again before counting that
+// record, so it is flagged at the fourth record (the third step), each
+// step +1, not +2 every 260 s.
+func TestWGRhythmCountsQuietImbalance(t *testing.T) {
+	s := time.Second
+	r := newWGRun(t, `{}`, 1400)
+	for i, at := 0, 10*s; at < 450*s; i, at = i+1, at+130*s {
+		r.carry([]wireRecord{{at, true, 300 + 13*i}})
+		r.ack(at+s, false)
+	}
+	a, blocked := r.firstBlocked()
+	if !blocked || a.at != 400*s || !strings.HasPrefix(a.Reason, WGRhythmByCount+": the difference each way stepped 3 times by +1, the last 2m10s apart") {
+		t.Errorf("first blocked %+v (blocked %v), want a drop by record count at the fourth record, 400 s", a, blocked)
+	}
+}
+
+// TestWGRhythmCountsLongSpans pins how far a step's span widens the
+// count's range: under a ping every 2 s, a 30 s sync (exchanges 250 ms
+// apart, no quiet in it) with one record in it nothing answers, every
+// gap, steps the count by one in a span about 30 s long. Spans chain
+// from REKEY_AFTER_TIME less their length to the rekey window plus it,
+// so syncs every 95 s or 235 s are flagged by the count (a false positive
+// lab/censor/doc.go names), and syncs every 85 s or 250 s are not.
+func TestWGRhythmCountsLongSpans(t *testing.T) {
+	s := time.Second
+	syncs := func(gap time.Duration) []wgMessage {
+		var out []wgMessage
+		for end := 40 * s; end < 40*s+3*gap+s; end += gap {
+			out = append(out, leadIn(30*s, end)...)
+			out = append(out, wgMessage{end - 15*s + 60*time.Millisecond, true, 300})
+		}
+		return out
+	}
+	for _, c := range []struct {
+		gap  time.Duration
+		flag bool
+	}{{85 * s, false}, {95 * s, true}, {235 * s, true}, {250 * s, false}} {
+		r := newWGRun(t, `{}`, 1400)
+		r.carry(eachInRecord(wgPingTimeline(40*s+3*c.gap+20*s, 20*time.Millisecond, nil, syncs(c.gap)...), floorOf(512)))
+		a, blocked := r.firstBlocked()
+		switch {
+		case c.flag && (!blocked || !strings.HasPrefix(a.Reason, WGRhythmByCount+": the difference each way stepped 3 times by +1")):
+			t.Errorf("syncs every %s: first blocked %+v (blocked %v), want a drop by record count", c.gap, a, blocked)
+		case !c.flag && blocked:
+			t.Errorf("syncs every %s: blocked at %s: %+v", c.gap, a.at, a)
 		}
 	}
 }
@@ -1324,13 +1467,23 @@ func readRecordTrace(t *testing.T, name string) []wireRecord {
 // device and two from the server, at 120.7 s, 241.0 s and 361.6 s, and the
 // count steps by one there: caught by the burst at the third. Seen with
 // the server's records 20 ms later, no burst holds a rekey and the count
-// catches it; with a record from the server every 30 s besides, the count
-// moves and the burst catches it; with both, neither does (each signal's
-// blind spot, lab/censor's package doc). reality held idle is never
-// flagged: one passive keepalive is one step.
+// catches it, also when load at the censor (TP-245) leaves an answer
+// 400 ms late (between rekeys, or to the device's ping 2 s after the
+// second rekey, read 2.4 s after it as a second step until the step's
+// own value reads again) or puts records just before a rekey with no
+// quiet between (exchanges 250 ms apart for 3 s before the third rekey,
+// or before each); with a record from the server every 30 s besides, the
+// count moves and the burst catches it; with both, neither does (each
+// signal's blind spot, lab/censor's package doc). reality held idle is
+// never flagged: one passive keepalive is one step.
 func TestWGRhythmRealityTrace(t *testing.T) {
 	s := time.Second
+	rekeys := []time.Duration{120717 * time.Millisecond, 240968 * time.Millisecond, 361609 * time.Millisecond}
 	inUse := readRecordTrace(t, "reality-held-in-use.txt")
+	sorted := func(out []wireRecord) []wireRecord {
+		slices.SortStableFunc(out, func(a, b wireRecord) int { return int(a.at - b.at) })
+		return out
+	}
 	later := func(recs []wireRecord) []wireRecord {
 		out := slices.Clone(recs)
 		for i := range out {
@@ -1338,24 +1491,50 @@ func TestWGRhythmRealityTrace(t *testing.T) {
 				out[i].at += 20 * time.Millisecond
 			}
 		}
-		slices.SortStableFunc(out, func(a, b wireRecord) int { return int(a.at - b.at) })
-		return out
+		return sorted(out)
+	}
+	// lateAnswer holds the server's first record from from on back
+	// 400 ms: an answer later than the count's 300 ms of quiet, as on a
+	// loaded lab.
+	lateAnswer := func(recs []wireRecord, from time.Duration) []wireRecord {
+		out := slices.Clone(recs)
+		for i := range out {
+			if !out[i].toServer && out[i].at >= from {
+				out[i].at += 400 * time.Millisecond
+				break
+			}
+		}
+		return sorted(out)
+	}
+	// withLeadIn adds exchanges 250 ms apart for 3 s before each of at: no
+	// 300 ms of quiet between them and the handshake, so the count's step
+	// starts 3 s before it.
+	withLeadIn := func(recs []wireRecord, at ...time.Duration) []wireRecord {
+		out := slices.Clone(recs)
+		for _, m := range leadIn(3*s, at...) {
+			out = append(out, wireRecord{m.at, m.toServer, 507})
+		}
+		return sorted(out)
 	}
 	pushed := func(recs []wireRecord) []wireRecord {
 		out := slices.Clone(recs)
 		for at := 15 * s; at < 370*s; at += 30 * s {
 			out = append(out, wireRecord{at, false, 507})
 		}
-		slices.SortStableFunc(out, func(a, b wireRecord) int { return int(a.at - b.at) })
-		return out
+		return sorted(out)
 	}
+	const byCount = "rekey by record count: the difference each way stepped 3 times by +1"
 	for _, c := range []struct {
 		name   string
 		recs   []wireRecord
 		reason string // "" when it passes
 	}{
 		{"as held", inUse, "rekey by burst: 3 records one way and 2 the other"},
-		{"the server's records 20 ms later", later(inUse), "rekey by record count: the difference each way stepped 3 times by +1"},
+		{"the server's records 20 ms later", later(inUse), byCount},
+		{"20 ms later, an answer 400 ms late", lateAnswer(later(inUse), 180*s), byCount},
+		{"20 ms later, the ping after the second rekey answered 400 ms late", lateAnswer(later(inUse), 242900*time.Millisecond), byCount},
+		{"20 ms later, 3 s of exchanges before the third rekey", withLeadIn(later(inUse), rekeys[2]), byCount},
+		{"20 ms later, 3 s of exchanges before each rekey", withLeadIn(later(inUse), rekeys...), byCount},
 		{"a server record every 30 s", pushed(inUse), "rekey by burst: 3 records one way and 2 the other"},
 		{"both", pushed(later(inUse)), ""},
 		{"held idle", readRecordTrace(t, "reality-held-idle.txt"), ""},
@@ -1366,7 +1545,7 @@ func TestWGRhythmRealityTrace(t *testing.T) {
 		switch {
 		case c.reason == "" && blocked:
 			t.Errorf("%s: blocked at %s: %+v", c.name, a.at, a)
-		case c.reason != "" && (!blocked || a.at < 361*s || a.at > 364*s || !strings.Contains(a.Reason, c.reason)):
+		case c.reason != "" && (!blocked || a.at < 361*s || a.at > 365*s || !strings.Contains(a.Reason, c.reason)):
 			t.Errorf("%s: first blocked %+v (blocked %v), want a drop for %q after the third rekey at 361.6 s", c.name, a, blocked, c.reason)
 		}
 	}
@@ -1378,9 +1557,10 @@ func TestWGRhythmRealityTrace(t *testing.T) {
 // maxResp records from the server 1 ms apart, every record of one size:
 // only the record counts tell anything. It draws the traffic as it sends
 // it, holding only the records of exchanges still in flight, and stops at
-// the first packet the censor doesn't accept, which it returns.
-func (r *wgRun) carryRandomExchanges(rng *rand.Rand, perSecond float64, d time.Duration, maxReq, maxResp int, rtt [2]time.Duration) (wgAction, bool) {
-	var pending []wireRecord
+// the first packet the censor doesn't accept, which it returns. extra
+// records go in among them.
+func (r *wgRun) carryRandomExchanges(rng *rand.Rand, perSecond float64, d time.Duration, maxReq, maxResp int, rtt [2]time.Duration, extra ...wireRecord) (wgAction, bool) {
+	pending := slices.Clone(extra)
 	// flush sends the pending records before until, in time order.
 	flush := func(until time.Duration) (wgAction, bool) {
 		slices.SortStableFunc(pending, func(a, b wireRecord) int { return int(a.at - b.at) })
@@ -1415,22 +1595,49 @@ func (r *wgRun) carryRandomExchanges(rng *rand.Rand, perSecond float64, d time.D
 	return flush(math.MaxInt64)
 }
 
+// wgFlags counts flagged connections by the signal that flagged them.
+type wgFlags struct{ rekey, keepalive, count, burst int }
+
+// add counts a connection flagged for reason, reporting whether reason
+// names a signal.
+func (f *wgFlags) add(reason string) bool {
+	switch {
+	case strings.HasPrefix(reason, WGRhythmByCount):
+		f.count++
+	case strings.HasPrefix(reason, WGRhythmByBurst):
+		f.burst++
+	case strings.HasPrefix(reason, "WireGuard rekey:"):
+		f.rekey++
+	case strings.HasPrefix(reason, "WireGuard keepalives:"):
+		f.keepalive++
+	default:
+		return false
+	}
+	return true
+}
+
 // wgRandomFlags pins TestWGRhythmRandomExchanges' measured flags: how
 // many connections flag, of 200 seeds under a request a second and of 20
 // above, by round trip, request and response records, and requests a
-// second; every other count is 0. At one request a minute, identical
-// exchanges after quiet chain by chance 2 to 3.5 minutes apart (the rekey
-// signal); at the lab's vantage, so do bursts of 2 records against 1 or 1
-// against 2 (the burst signal).
-var wgRandomFlags = map[string]int{
-	"0.2-5ms 1:1 0.0167/s": 2,
-	"0.2-5ms 2:3 0.0167/s": 4,
-	"0.2-5ms 2:3 0.1/s":    4,
-	"0.2-5ms 3:6 0.0167/s": 2,
-	"0.2-5ms 3:6 0.1/s":    4,
-	"20-80ms 1:1 0.0167/s": 2,
-	"20-80ms 2:3 0.0167/s": 2,
-	"20-80ms 3:6 0.0167/s": 2,
+// second, and by which signal; every other count is 0. At one request a
+// minute, identical exchanges after quiet chain by chance 2 to 3.5
+// minutes apart (the rekey signal); at the lab's vantage, so do bursts of
+// 2 records against 1 or 1 against 2 (the burst signal).
+var wgRandomFlags = map[string]wgFlags{
+	"0.2-5ms 1:1 0.0167/s":  {rekey: 2},
+	"0.2-5ms 2:3 0.0167/s":  {rekey: 2, burst: 2},
+	"0.2-5ms 2:3 0.1/s":     {burst: 4},
+	"0.2-5ms 3:6 0.0167/s":  {rekey: 2},
+	"0.2-5ms 3:6 0.1/s":     {burst: 4},
+	"20-80ms 1:1 0.0167/s":  {rekey: 2},
+	"20-80ms 2:3 0.0167/s":  {rekey: 2},
+	"20-80ms 3:6 0.0167/s":  {rekey: 2},
+	"0.3-1.9s 1:1 0.0167/s": {rekey: 2},
+	"0.3-1.9s 1:1 1/s":      {rekey: 1},
+	"0.3-1.9s 2:3 0.0167/s": {rekey: 2},
+	"0.3-1.9s 2:3 1/s":      {rekey: 1},
+	"0.3-1.9s 3:6 0.0167/s": {rekey: 2},
+	"0.3-1.9s 3:6 1/s":      {rekey: 1},
 }
 
 // TestWGRhythmRandomExchanges pins the detector's false positives on
@@ -1460,7 +1667,11 @@ func TestWGRhythmRandomExchanges(t *testing.T) {
 	for _, rtt := range []struct {
 		name string
 		rtt  [2]time.Duration
-	}{{"0.2-5ms", [2]time.Duration{200 * time.Microsecond, 5 * ms}}, {"20-80ms", [2]time.Duration{20 * ms, 80 * ms}}} {
+	}{
+		{"0.2-5ms", [2]time.Duration{200 * time.Microsecond, 5 * ms}},
+		{"20-80ms", [2]time.Duration{20 * ms, 80 * ms}},
+		{"0.3-1.9s", [2]time.Duration{300 * ms, 1900 * ms}},
+	} {
 		for _, shape := range [][2]int{{1, 1}, {2, 3}, {3, 6}} {
 			for _, rate := range []float64{1.0 / 60, 1.0 / 10, 1, 10, 50} {
 				// Under a request a second a run is cheap: more seeds
@@ -1470,23 +1681,78 @@ func TestWGRhythmRandomExchanges(t *testing.T) {
 					seeds = 200
 				}
 				key := fmt.Sprintf("%s %d:%d %.3g/s", rtt.name, shape[0], shape[1], rate)
-				flagged := 0
+				var flagged wgFlags
 				var why []string
 				for seed := range seeds {
 					r := newWGRun(t, `{}`, 1400)
 					if a, blocked := r.carryRandomExchanges(rand.New(rand.NewPCG(seed, 223)), rate, 360*time.Second, shape[0], shape[1], rtt.rtt); blocked {
-						flagged++
+						if !flagged.add(a.Reason) {
+							t.Errorf("%s seed %d: flagged by no signal: %s", key, seed, a.Reason)
+						}
 						why = append(why, fmt.Sprintf("seed %d at %s: %s", seed, a.at.Round(time.Second), a.Reason))
 					}
 				}
 				if want := wgRandomFlags[key]; flagged != want {
-					t.Errorf("%s: %d of %d flagged, pinned %d: %s", key, flagged, seeds, want, strings.Join(why, "; "))
+					t.Errorf("%s: of %d flagged %+v, pinned %+v: %s", key, seeds, flagged, want, strings.Join(why, "; "))
 				}
-				t.Logf("%s: %d of %d flagged %s", key, flagged, seeds, strings.Join(why, "; "))
+				t.Logf("%s: of %d flagged %+v %s", key, seeds, flagged, strings.Join(why, "; "))
 			}
 		}
 	}
 	t.Logf("took %s", time.Since(start).Round(time.Millisecond))
+}
+
+// wgImbalanceFlags pins TestWGRhythmImbalanceBesideTraffic's measured
+// flags: how many of 20 connections flag, by round trip and by which
+// signal.
+var wgImbalanceFlags = map[string]wgFlags{
+	"0.2-5ms":  {count: 20},
+	"20-80ms":  {count: 20},
+	"0.3-1.9s": {rekey: 1},
+}
+
+// TestWGRhythmImbalanceBesideTraffic pins the false positive the count's
+// hold leaves beside slow traffic: one record nothing answers every 150 s
+// (an MQTT publish, a one-way heartbeat), of a new size each time, beside
+// random one-for-one exchanges at a request a second, 6 minutes a
+// connection, answers 0.2 to 5 ms, 20 to 80 ms or 0.3 to 1.9 s later.
+// Every count must be the pinned one, by signal (wgImbalanceFlags;
+// lab/censor/doc.go states them). With answers within 80 ms the count
+// catches every connection. With answers 0.3 to 1.9 s later it catches
+// none, though such an answer alone is no step: random requests leave a
+// different number in flight from one reading to the next, so the level
+// is read with some in flight and corrected later by steps of its own,
+// which break the publishes' chain.
+func TestWGRhythmImbalanceBesideTraffic(t *testing.T) {
+	s, ms := time.Second, time.Millisecond
+	var publish []wireRecord
+	for i, at := 0, 7*s; at < 360*s; i, at = i+1, at+150*s {
+		publish = append(publish, wireRecord{at, true, 300 + 13*i})
+	}
+	for _, rtt := range []struct {
+		name string
+		rtt  [2]time.Duration
+	}{
+		{"0.2-5ms", [2]time.Duration{200 * time.Microsecond, 5 * ms}},
+		{"20-80ms", [2]time.Duration{20 * ms, 80 * ms}},
+		{"0.3-1.9s", [2]time.Duration{300 * ms, 1900 * ms}},
+	} {
+		var flagged wgFlags
+		var why []string
+		for seed := range uint64(20) {
+			r := newWGRun(t, `{}`, 1400)
+			if a, blocked := r.carryRandomExchanges(rand.New(rand.NewPCG(seed, 245)), 1, 360*s, 1, 1, rtt.rtt, publish...); blocked {
+				if !flagged.add(a.Reason) {
+					t.Errorf("%s seed %d: flagged by no signal: %s", rtt.name, seed, a.Reason)
+				}
+				why = append(why, fmt.Sprintf("seed %d at %s: %s", seed, a.at.Round(time.Second), a.Reason))
+			}
+		}
+		if want := wgImbalanceFlags[rtt.name]; flagged != want {
+			t.Errorf("%s: of 20 flagged %+v, pinned %+v: %s", rtt.name, flagged, want, strings.Join(why, "; "))
+		}
+		t.Logf("%s: of 20 flagged %+v %s", rtt.name, flagged, strings.Join(why, "; "))
+	}
 }
 
 // TestWGRhythmFlagsMQTTKeepalive pins a false positive the package doc
