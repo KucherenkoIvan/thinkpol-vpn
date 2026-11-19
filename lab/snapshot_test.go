@@ -107,7 +107,7 @@ func TestNodeState(t *testing.T) {
 // state an error, never a state with that kind empty.
 func TestNodeStateUnreadable(t *testing.T) {
 	s := parseNodeState("link lo\nerror sysctl\nerror path\n")
-	if err := s.err(); err == nil || !strings.Contains(err.Error(), "sysctl, path") {
+	if err := s.err(); err == nil || !strings.Contains(err.Error(), "path, sysctl") {
 		t.Errorf("err: %v", err)
 	}
 	if err := parseNodeState("link lo\n").err(); err != nil {
