@@ -85,6 +85,13 @@ Review round 1. The split and the assembly are sound; the problems are the TP-24
 - [x] R1.11 (nits) gotest.go: skip 0.000 time lines for packages not built or failed in prepare; the slowest list shows a parent and its subtests with the same time: leave out or mark parents; TestGotestSkipAndTimes trims the user's real cache: set LAB_NOCACHE; matrixstreams_test.go: a case that reaches "cell in neither share", and a unit test for writeMatrixShare (mutations "Failed always false", "long stream keeps its off cells"). Fixed: no line for a package that never ran (`Elapsed > 0`); parents whose subtests are timed are left out of the slowest list; TestGotestSkipAndTimes sets `LAB_NOCACHE`; "a cell renamed" reaches "in neither stream's share"; `TestMatrixShareOf`, `TestReadMatrixShares`.
 - [x] R1.12 (ticket) `make lab-test-default` alone once in a full lab on the final commit, and one full `make lab-test` on the final commit; record wall times, the budget report's slowest tests, and whether RESULTS.md assembled whole. In Notes, state that the reality row's ~8m19s of serial cells (without the hold) alone makes 15 minutes unreachable, as the next lab-speed item. Done: see Notes (wall times, `make lab-test-default` alone, next lab-speed item).
 
+Delta check round 2 (accepted).
+- [ ] R2.1 (should-fix) lab/streamtime.go SlowestTests treats every `/` as a subtest separator, so a node-phase package (`…/internal/agent`) is dropped as the "parent" of `…/internal/agent/supervisor`. Apply the parent rule only to `<pkg> Test…/…` names; unit test and mutation.
+- [ ] R2.2 (should-fix) lab/stream_test.go TestLongTestsNamed only sees LongTest/SplitStreams as a test's own top-level statement; a call in t.Run, a helper, an `if` or via an import alias slips by, and a caller outside lab/ passes but runs whole in the node phase. Fail on any use that isn't a top-level statement of a top-level test in a package under lab/, resolving the identifier, alias-aware; unit test cases and mutation.
+- [ ] R2.3 (nit) streamtime.go: testjson's spill files go to the system temp dir and survive an abort: give it the run's directory as TMPDIR.
+- [ ] R2.4 (nit) Makefile: `labctl testjson`'s exit status is dropped, so a failure only in WriteTestTimes passes silently under budget: record it and fail the phase on it.
+- [ ] R2.5 (nit) Makefile: the shares' commit is taken before `go test -c`: take it after the build, with a dirty flag.
+
 ## Log
 - 2026-11-16 created in backlog (owner: lab fixes, top priority)
 - 2026-11-18 backlog → in-progress, owner: agent-tp-239
@@ -102,3 +109,4 @@ Review round 1. The split and the assembly are sound; the problems are the TP-24
 - 2026-11-19 `make lint`, `make test` green at 9a1ce52c; final full `make lab-test` at 9a1ce52c: 2448 s (516 s queued for CPU slots), default stream 32m13s (exit 3, over budget only), long stream 10m32s, every test passed, RESULTS.md assembled whole (90 cells); `make lab-test-default` alone at 9a1ce52c: default stream 30m31s, every test passed, exit 3
 - 2026-11-19 not verified: the CI-style use of exit status 3 beyond make's `Error 3` line (make itself exits 2). Out of scope: the default stream is about 2x its budget; labctl's own tests print its usage text into the node phase's output
 - 2026-11-19 has-errors → review
+- 2026-11-19 review round 2: fix R2.1–R2.5, merge

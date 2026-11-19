@@ -193,7 +193,7 @@ func checkLongMarkers(fset *token.FileSet, module string, files map[string]*ast.
 					case !isTest:
 						why = "not in a test file"
 					}
-					c.misplaced = append(c.misplaced, fmt.Sprintf("%s:%d: %s used %s", rel, fset.Position(e.Pos()).Line, types.ExprString(e), why))
+					c.misplaced = append(c.misplaced, fmt.Sprintf("%s:%d: %s: %s", rel, fset.Position(e.Pos()).Line, types.ExprString(e), why))
 				}
 				return false
 			}
