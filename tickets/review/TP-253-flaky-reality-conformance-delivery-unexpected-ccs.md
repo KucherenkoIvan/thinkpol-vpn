@@ -48,3 +48,6 @@ In TP-239's lab-test-default run (2026-11-19) the reality transport package's Te
 - 2026-11-19 cause: REALITY's detection read the system roots from disk inside Listen's 10 s detect wait; nginx's ccs lines are REALITY's own CCS-tolerance probe (documented, RR31). Fix: Listen reads the roots first. Forced repro TestListenDoesntChargeTheSystemRootsToTheTarget fails at d8029347, passes at 9a15267a
 - 2026-11-19 mutation: the fix removed (d8029347, the test alone) fails the forced repro with the lab's message; restored at 9a15267a, 5/5 pass
 - 2026-11-19 runs: TestConformance COUNT=20 lab-gotest under load 20/20 (9a15267a, 232 s); make lint, make test green (9a15267a); reality package lab-gotest passed (dbd581c1, 138 s)
+- 2026-11-19 full make lab-test at 45f7f9e4: every test passed, transport/reality's node phase included; exit 3, OVER BUDGET (default stream 41m23s > 15m0s, with other branches' labs running at once; slowest TestRealityStockXray 15m25s, not this ticket's); wall time 2485 s
+- 2026-11-19 not verified: how long the cold read of the system roots took in the failing runs (they logged nothing of it); the cause rests on the forced repro and the failing runs' timings (Notes)
+- 2026-11-19 in-progress → review
