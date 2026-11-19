@@ -28,9 +28,10 @@ import (
 // for the whole sequence (TP-248): with the switch on and the tunnel down
 // nothing leaves but traffic to the entries (server-1), or with allow-LAN
 // the lab's private networks, a deliberate disconnect keeps it, and with
-// the switch off a disconnect leaves traffic direct (down); an agent killed (SIGKILL, the restart held off) leaves it in
-// place until the restarted agent is connected again, a stop leaves the
-// down shape as a crash would (crash-and-stop); the live agent renews the direct
+// the switch off a disconnect leaves traffic direct (down); an agent
+// killed (SIGKILL, the restart held off) leaves it in place until the
+// restarted agent is connected again, and a stop leaves the down shape as
+// a crash would (crash-and-stop); the live agent renews the direct
 // destinations and repairs its table within a re-apply period, and
 // uninstall removes the switch (live-agent); with the switch off the
 // "everything" preset holds it across a crash (the crash posture), a
@@ -121,14 +122,13 @@ func killSwitchCrashAndStop(k *killSwitchLab) {
 	k.state("connected")
 	ping(t, k.dev, k.s4)
 	k.wantTable("on, started again", true, true)
-
 }
 
 // killSwitchLiveAgent: under "everything", connected, the live agent
 // renews the direct destinations well within their timeout and puts its
 // table back within a re-apply period when it is removed from outside.
-// Then uninstall removes the switch, turned on while connected: this part
-// leaves the agent in that state and is the shortest.
+// Then uninstall removes the switch, turned on while connected: the state
+// this part leaves the agent in.
 func killSwitchLiveAgent(k *killSwitchLab) {
 	t := k.t
 	k.thinkpol("rules", "preset", "everything")
