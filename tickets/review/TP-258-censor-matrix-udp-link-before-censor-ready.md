@@ -60,3 +60,4 @@ Two reviewers; the order fix, the reality refactor and the comparison's directio
 - 2026-11-19 make lint, make test green at 973f63b0; lab-gotest at 973f63b0: the udp row ×3 (`RUN=TestCensorMatrix/^udp(_lab_[0-9]+)?$$/`, 42/42 subtests pass, labs 296-463 s), the reality row ×1 (`^reality(_lab_[0-9]+)?$$/`, 16/16), the held cell's lab ×5 (`^udp$$/^(off|wireguard-rhythm)$$`, 5/5, wireguard-rhythm fails as expected each time); not rerun: the setupUDP order mutation against the up_since check (a lab mutation)
 - 2026-11-19 has-errors → in-progress
 - 2026-11-19 in-progress → review
+- 2026-11-19 merged origin/rewrite (TP-260) in: make lint, make test green and the udp row ×1 (14/14) at 8fcc58ae
