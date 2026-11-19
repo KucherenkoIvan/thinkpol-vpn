@@ -17,6 +17,10 @@ import (
 	"testing"
 	"time"
 
+	"golang.zx2c4.com/wireguard/device"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/udp"
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab/censor"
 )
@@ -128,7 +132,7 @@ func TestCensorMatrix(t *testing.T) {
 			// An active module judges a connection after it has crossed:
 			// the first probe shows it the transport, the cell is the
 			// probe after its verdicts. A cell that should not cross
-			// may stop on the censor's verdict here too (realityUp's
+			// may stop on the censor's verdict here too (deviceUp's
 			// once keeps the first budget).
 			tr.probe(t, l, target, probeBudget{watch: budget.watch})
 			if err := c.settled(t, l); err != nil {
@@ -151,8 +155,8 @@ func TestCensorMatrix(t *testing.T) {
 			if cc.trace != "" {
 				t.Logf("%s's trace of the connection %s for %v:\n%s", cc.watch, cc.heldHow(), cc.hold, c.traceSummary(t, cc.trace, tr.name+" - "+cc.name))
 			}
-			if err := judgedFromTheStart(t, l, c, cc.watch); err != nil {
-				cell.result, cell.detail = "error", "the censor didn't frame the held connection"
+			if err := judgedFromTheStart(t, l, c, cc, tr); err != nil {
+				cell.result, cell.detail = "error", "the censor didn't read the held connection from its start"
 				t.Fatal(err)
 			}
 		}
@@ -1157,6 +1161,9 @@ type transport struct {
 	// before the probe: in use, or idle. blocks counts the connections the
 	// case's module blocked so far, each a redial for the hold to allow.
 	hold func(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool, blocks func() int)
+	// tunnel, on a held row, matches the held connection's flows from
+	// device-a to server-1, either family: what judgedFromTheStart reads.
+	tunnel func(l *lab.Lab, k censor.FlowKey) bool
 }
 
 // withRowSettings is the case's module configs with a row's overrides
@@ -1182,6 +1189,43 @@ func withRowSettings(configs []censor.ModuleConfig, overrides map[string]map[str
 		out[i].Settings = b
 	}
 	return out, nil
+}
+
+// TestFirstWireGuardMessage: a udp tunnel the censor saw from its first
+// datagram starts with device-a's handshake initiation, path probes before
+// it; one it joined already up starts with WireGuard's data or keepalives,
+// or with server-1's reply.
+func TestFirstWireGuardMessage(t *testing.T) {
+	dev := netip.MustParseAddr("192.0.2.2")
+	tunnel := func(k censor.FlowKey) bool { return k.Proto == censor.ProtoUDP && k.Src == dev }
+	out := "udp 192.0.2.2:40000->192.0.2.10:4500"
+	back := "udp 192.0.2.10:4500->192.0.2.2:40000"
+	other := "udp 192.0.2.3:40000->192.0.2.10:4500"
+	sealed := func(n int) int { return udp.Overhead + path.HeaderSize + n }
+	probe := udp.Overhead + 10
+	trace := func(lines ...string) string { return strings.Join(lines, "\n") + "\n" }
+	rec := func(flow string, size int) string {
+		return fmt.Sprintf(`{"flow":%q,"end":"2026-11-19T00:00:00Z","size":%d}`, flow, size)
+	}
+	for _, tc := range []struct {
+		name  string
+		trace string
+		ok    bool
+	}{
+		{"from the start", trace(rec(out, probe), rec(back, probe), rec(out, sealed(device.MessageInitiationSize)), rec(back, sealed(device.MessageResponseSize))), true},
+		{"other flows and a flag line first", trace(rec(other, sealed(device.MessageKeepaliveSize)), rec(out, 0), rec(out, sealed(device.MessageInitiationSize))), true},
+		{"joined: data first", trace(rec(out, probe), rec(out, sealed(device.MessageTransportSize+96)), rec(out, sealed(device.MessageInitiationSize))), false},
+		{"joined: a keepalive first", trace(rec(out, sealed(device.MessageKeepaliveSize))), false},
+		{"joined: server-1's message first", trace(rec(back, sealed(device.MessageResponseSize)), rec(out, sealed(device.MessageInitiationSize))), false},
+		{"server-1's initiation", trace(rec(back, sealed(device.MessageInitiationSize))), false},
+		{"probes only", trace(rec(out, probe), rec(back, probe)), false},
+		{"no trace", "", false},
+	} {
+		err := firstWireGuardMessage(tc.trace, tunnel)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: %v, want ok %v", tc.name, err, tc.ok)
+		}
+	}
 }
 
 // TestWithRowSettings: a row's override reaches the module it names, and
@@ -1242,7 +1286,7 @@ func TestWithRowSettings(t *testing.T) {
 // row, and the default stream's rows are all short.
 var transports = []transport{
 	realityRow,
-	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP, udp: true, oneUnderlay: true, hold: holdTunnel},
+	{name: rowUDP, setup: setupUDP, probe: probeWithDevice, sawFlows: sawUDP, udp: true, oneUnderlay: true, hold: holdWithDevice, tunnel: udpFlow},
 	{name: rowPlainTCP, setup: setupPlainTCP, probe: probePlainTCP, sawFlows: sawPlainTCP},
 	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPSOn(443), sawFlows: sawHTTPS, tls: true},
 	{name: rowWireGuard, setup: setupWireGuard, probe: probeUDP, sawFlows: sawWireGuard, udp: true},
@@ -1398,22 +1442,166 @@ func sawPlainTCP(t *testing.T, l *lab.Lab, c *censorRun) error {
 	return nil
 }
 
+// setupUDP brings server-1 up; device-a comes up in the cell's probe (or
+// hold), after censord (deviceUp), so the censor sees the link from its
+// first datagram.
 func setupUDP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
 	space := newM0Space(t, l.Node(lab.Camouflage), server)
 	envelope, version := space.build(t)
 	space.install(t, dev, "device-a", envelope)
 	space.install(t, server, "server-1", envelope)
-	startUp(t, dev)
 	startUp(t, server)
 	if _, err := statusWithin(server, 60*time.Second, nil, mapApplied(version)); err != nil {
 		return probeTarget{}, err
 	}
-	if _, err := statusWithin(dev, 60*time.Second, nil, mapApplied(version), linkUp); err != nil {
-		return probeTarget{}, err
-	}
+	deferDevice(t, l)
 	o4, o6 := space.overlay(1)
 	return probeTarget{o4, o6}, nil
+}
+
+// deferredDevices are the device-a agents of the rows that start theirs
+// in the cell, after censord (udp, reality): started once per cell (a
+// row's lab runs one cell at a time) by whichever of hold and probe runs
+// first.
+var deferredDevices sync.Map // *lab.Lab → *deferredDevice
+
+type deferredDevice struct {
+	once sync.Once
+	err  error
+}
+
+// deferDevice leaves device-a's agent, installed, to the cell's deviceUp.
+func deferDevice(t *testing.T, l *lab.Lab) {
+	deferredDevices.Store(l, &deferredDevice{})
+	t.Cleanup(func() { deferredDevices.Delete(l) })
+}
+
+// deviceUp starts device-a's agent once per lab and waits for its link,
+// for a minute, or, with the budget's watch, until the censor blocked a
+// 2 s wait of it (its redials are new flows): a cell that should not
+// cross doesn't wait out the minute. The first caller's budget decides:
+// a cell's warm-up probe passes the cell's watch on.
+func deviceUp(t *testing.T, l *lab.Lab, b probeBudget) error {
+	v, ok := deferredDevices.Load(l)
+	if !ok {
+		return fmt.Errorf("the row didn't defer device-a in this lab")
+	}
+	d := v.(*deferredDevice)
+	d.once.Do(func() {
+		dev := l.Node(lab.DeviceA)
+		startUp(t, dev)
+		deadline := time.Now().Add(60 * time.Second)
+		var watch func() func() bool
+		if b.watch != nil {
+			// One link, over either family (oneUnderlay): the watch
+			// counts both.
+			watch = b.watch.attempts(false)
+		}
+		for {
+			var blocked func() bool
+			if watch != nil {
+				blocked = watch()
+			}
+			_, err := statusWithin(dev, 2*time.Second, nil, linkUp)
+			switch {
+			case err == nil:
+				return
+			case errors.Is(err, errSchemaVersion):
+				d.err = err
+				return
+			case blocked != nil && blocked():
+				d.err = fmt.Errorf("the censor blocked device-a's link: %w", err)
+				return
+			case time.Now().After(deadline):
+				d.err = err
+				return
+			}
+		}
+	})
+	return d.err
+}
+
+// probeWithDevice brings device-a's link up (deviceUp) and pings through
+// it (probeUDP).
+func probeWithDevice(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
+	if err := deviceUp(t, l, b); err != nil && b.pass {
+		t.Fatal(err)
+	}
+	return probeUDP(t, l, to, b)
+}
+
+// holdWithDevice brings device-a's link up (deviceUp) and holds it
+// (holdTunnel).
+func holdWithDevice(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool, blocks func() int) {
+	if err := deviceUp(t, l, probeBudget{pass: true}); err != nil {
+		t.Fatal(err)
+	}
+	holdTunnel(t, l, to, d, idle, blocks)
+}
+
+// judgedFromTheStart checks that the held cell's module read the row's
+// held connection (transport.tunnel) from its first packet, without which
+// a pass would mean nothing: it never tagged a TCP one "stream not
+// framed" (not TLS, or joined midstream), and a UDP one, which has no
+// stream to frame, starts in the module's trace with device-a's
+// handshake (firstWireGuardMessage).
+func judgedFromTheStart(t *testing.T, l *lab.Lab, c *censorRun, cc censorCase, tr transport) error {
+	if tr.tunnel == nil {
+		return fmt.Errorf("%s is held, but names no flow for its tunnel (transport.tunnel)", tr.name)
+	}
+	if c.logged(t, func(e verdictLine) bool {
+		return tr.tunnel(l, e.Key) && e.Event == censor.EventTag && e.Module == cc.watch && strings.HasSuffix(e.Reason, "stream not framed")
+	}) {
+		return fmt.Errorf("%s couldn't frame the transport's connection: its pass would mean nothing", cc.watch)
+	}
+	if !tr.udp {
+		return nil
+	}
+	if cc.trace == "" {
+		return fmt.Errorf("censor case %q holds %s, a UDP row, with no trace to read its tunnel's start from", cc.name, tr.name)
+	}
+	out, err := execRead(c.router, pollTimeout, "cat", cc.trace)
+	if err != nil {
+		return fmt.Errorf("reading %s's trace: %w", cc.watch, err)
+	}
+	return firstWireGuardMessage(completeLines(out), func(k censor.FlowKey) bool { return tr.tunnel(l, k) })
+}
+
+// firstWireGuardMessage checks, from wireguard-rhythm's trace, that the
+// censor saw a udp tunnel (its flows from device-a: tunnel) from its
+// first datagram: the first record either way that carries a WireGuard
+// message is device-a's handshake initiation. Before it the link sends
+// only path probes and their replies, shorter than any WireGuard message,
+// and WireGuard sends nothing before its handshake, so a censor that
+// joined a tunnel already up sees transport data or a keepalive first,
+// unless it joined between a link's start and its handshake. The sizes
+// are unpadded: m0.yaml pads nothing.
+func firstWireGuardMessage(trace string, tunnel func(censor.FlowKey) bool) error {
+	smallest := udp.Overhead + path.HeaderSize + device.MessageKeepaliveSize
+	initiation := udp.Overhead + path.HeaderSize + device.MessageInitiationSize
+	for _, line := range strings.Split(trace, "\n") {
+		if line == "" {
+			continue
+		}
+		var tl censor.WGTraceLine
+		if err := json.Unmarshal([]byte(line), &tl); err != nil {
+			return fmt.Errorf("trace line %q: %w", line, err)
+		}
+		k, err := censor.ParseFlowKey(tl.Flow)
+		if err != nil {
+			continue
+		}
+		fromDevice := tunnel(k)
+		if !fromDevice && !tunnel(k.Reverse()) || tl.Size < smallest {
+			continue
+		}
+		if fromDevice && tl.Size == initiation {
+			return nil
+		}
+		return fmt.Errorf("the censor joined the tunnel already up: the first WireGuard message it saw is a %d-byte datagram on %s, not device-a's %d-byte handshake initiation", tl.Size, tl.Flow, initiation)
+	}
+	return fmt.Errorf("no WireGuard message on the tunnel in the trace")
 }
 
 // probeUDP pings server-1's overlay addresses, IPv4 and IPv6, through the
@@ -1429,15 +1617,17 @@ func probeUDP(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
 // sawUDP: the tunnel runs over one underlay family (m0.yaml's first
 // endpoint), so the log needs UDP from device-a to server-1 in either.
 func sawUDP(t *testing.T, l *lab.Lab, c *censorRun) error {
-	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
-	if !c.logged(t, func(e verdictLine) bool {
-		return e.Key.Proto == censor.ProtoUDP &&
-			(e.Key.Src == dev.IPv4(lab.NetDevices) && e.Key.Dst == server.IPv4(lab.NetServers) ||
-				e.Key.Src == dev.IPv6(lab.NetDevices) && e.Key.Dst == server.IPv6(lab.NetServers))
-	}) {
+	if !c.logged(t, func(e verdictLine) bool { return udpFlow(l, e.Key) }) {
 		return fmt.Errorf("no UDP flow device-a -> server-1 in the verdict log")
 	}
 	return nil
+}
+
+func udpFlow(l *lab.Lab, k censor.FlowKey) bool {
+	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
+	return k.Proto == censor.ProtoUDP &&
+		(k.Src == dev.IPv4(lab.NetDevices) && k.Dst == server.IPv4(lab.NetServers) ||
+			k.Src == dev.IPv6(lab.NetDevices) && k.Dst == server.IPv6(lab.NetServers))
 }
 
 // blockedBy checks the verdict log blamed the case's blocker for the

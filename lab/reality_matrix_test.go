@@ -5,7 +5,6 @@ package lab_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -14,7 +13,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -29,26 +27,16 @@ const rowReality = "reality"
 // camouflage site, from lab/maps/reality.yaml; device-a dials it. Its
 // ClientHello names the camouflage site, which the prober and the
 // server-hello comparison point at. The device comes up in the cell's
-// probe (or hold), after censord, so the censor reads its TLS connection
-// from the first byte.
+// probe (or hold), after censord (deviceUp), so the censor reads its TLS
+// connection from the first byte.
 var realityRow = transport{
-	name: rowReality, setup: setupReality, probe: probeReality, sawFlows: sawReality,
-	hold: holdReality, tls: true,
+	name: rowReality, setup: setupReality, probe: probeWithDevice, sawFlows: sawReality,
+	hold: holdWithDevice, tunnel: realityFlow, tls: true,
 	// One link, over whichever of server-1's endpoints came up first.
 	oneUnderlay: true,
 	// REALITY dials its target on every connection it doesn't recognize:
 	// the upstream tell is reported, not a gate check (owner, 2026-11-09).
 	moduleSettings: map[string]map[string]any{"prober": {"upstreamTell": "report"}},
-}
-
-// realityLabs are the reality cells' device-a processes, started once per
-// cell (the row's lab runs one cell at a time) by whichever of hold and
-// probe runs first.
-var realityLabs sync.Map // *lab.Lab → *realityDevice
-
-type realityDevice struct {
-	once sync.Once
-	err  error
 }
 
 func setupReality(t *testing.T, l *lab.Lab) (probeTarget, error) {
@@ -64,70 +52,9 @@ func setupReality(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	if _, err := statusWithin(server, 60*time.Second, nil, mapApplied(version)); err != nil {
 		return probeTarget{}, err
 	}
-	realityLabs.Store(l, &realityDevice{})
-	t.Cleanup(func() { realityLabs.Delete(l) })
+	deferDevice(t, l)
 	o4, o6 := space.overlay(1)
 	return probeTarget{o4, o6}, nil
-}
-
-// realityUp starts device-a's agent once per lab and waits for its link,
-// for a minute, or, with the budget's watch, until the censor blocked a
-// 2 s wait of it (its redials are new flows): a cell that should not
-// cross doesn't wait out the minute. The first caller's budget decides:
-// a cell's warm-up probe passes the cell's watch on.
-func realityUp(t *testing.T, l *lab.Lab, b probeBudget) error {
-	v, ok := realityLabs.Load(l)
-	if !ok {
-		return fmt.Errorf("the reality row wasn't set up in this lab")
-	}
-	d := v.(*realityDevice)
-	d.once.Do(func() {
-		dev := l.Node(lab.DeviceA)
-		startUp(t, dev)
-		deadline := time.Now().Add(60 * time.Second)
-		var watch func() func() bool
-		if b.watch != nil {
-			// One link, over either family (oneUnderlay): the watch
-			// counts both.
-			watch = b.watch.attempts(false)
-		}
-		for {
-			var blocked func() bool
-			if watch != nil {
-				blocked = watch()
-			}
-			_, err := statusWithin(dev, 2*time.Second, nil, linkUp)
-			switch {
-			case err == nil:
-				return
-			case errors.Is(err, errSchemaVersion):
-				d.err = err
-				return
-			case blocked != nil && blocked():
-				d.err = fmt.Errorf("the censor blocked device-a's link: %w", err)
-				return
-			case time.Now().After(deadline):
-				d.err = err
-				return
-			}
-		}
-	})
-	return d.err
-}
-
-func probeReality(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
-	if err := realityUp(t, l, b); err != nil && b.pass {
-		t.Fatal(err)
-	}
-	return probeUDP(t, l, to, b)
-}
-
-// holdReality brings device-a's link up and holds it (holdTunnel).
-func holdReality(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool, blocks func() int) {
-	if err := realityUp(t, l, probeBudget{pass: true}); err != nil {
-		t.Fatal(err)
-	}
-	holdTunnel(t, l, to, d, idle, blocks)
 }
 
 // holdTunnel keeps device-a's tunnel to server-1 up for d before the
@@ -350,27 +277,15 @@ func (c *censorRun) traceSummary(t *testing.T, path, cell string) string {
 // sawReality: the link is one TCP connection from device-a to server-1's
 // reality port, in either family.
 func sawReality(t *testing.T, l *lab.Lab, c *censorRun) error {
-	if !c.logged(t, func(e verdictLine) bool { return realityFlow(l, e) }) {
+	if !c.logged(t, func(e verdictLine) bool { return realityFlow(l, e.Key) }) {
 		return fmt.Errorf("no TCP flow device-a -> server-1:443 in the verdict log")
 	}
 	return nil
 }
 
-func realityFlow(l *lab.Lab, e verdictLine) bool {
+func realityFlow(l *lab.Lab, k censor.FlowKey) bool {
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
-	return e.Key.Proto == censor.ProtoTCP && e.Key.DstPort == 443 &&
-		(e.Key.Src == dev.IPv4(lab.NetDevices) && e.Key.Dst == server.IPv4(lab.NetServers) ||
-			e.Key.Src == dev.IPv6(lab.NetDevices) && e.Key.Dst == server.IPv6(lab.NetServers))
-}
-
-// judgedFromTheStart checks that module read the transport's connections
-// from their first byte: it never tagged one of them "not framed", which
-// would make a pass mean nothing.
-func judgedFromTheStart(t *testing.T, l *lab.Lab, c *censorRun, module string) error {
-	if c.logged(t, func(e verdictLine) bool {
-		return realityFlow(l, e) && e.Event == censor.EventTag && e.Module == module && strings.HasSuffix(e.Reason, "stream not framed")
-	}) {
-		return fmt.Errorf("%s couldn't frame the transport's connection: its pass would mean nothing", module)
-	}
-	return nil
+	return k.Proto == censor.ProtoTCP && k.DstPort == 443 &&
+		(k.Src == dev.IPv4(lab.NetDevices) && k.Dst == server.IPv4(lab.NetServers) ||
+			k.Src == dev.IPv6(lab.NetDevices) && k.Dst == server.IPv6(lab.NetServers))
 }

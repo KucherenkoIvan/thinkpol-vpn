@@ -28,8 +28,8 @@
 // request's ack, so a packet queued in between failed the start
 // ("mismatched sequence in netlink reply", TP-252). Until it is ready the
 // router forwards uncensored, as before censord starts. A cell judged from
-// a flow's first byte starts that flow after the line; the censor
-// matrix's udp row brings its link up before it (a follow-up ticket).
+// a flow's first byte starts that flow after the line: every censor
+// matrix row starts its client in the cell, after censord is ready.
 //
 // # Flows and streams
 //
