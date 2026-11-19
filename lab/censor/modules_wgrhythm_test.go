@@ -1351,7 +1351,7 @@ func TestWGRhythmCountsQuietImbalance(t *testing.T) {
 // TestWGRhythmCountsLongSpans pins how far a step's span widens the
 // count's range: under a ping every 2 s, a 30 s sync (exchanges 250 ms
 // apart, no quiet in it) with one record in it nothing answers, every
-// gap s, steps the count by one in a span about 30 s long. Spans chain
+// gap, steps the count by one in a span about 30 s long. Spans chain
 // from REKEY_AFTER_TIME less their length to the rekey window plus it,
 // so syncs every 95 s or 235 s are flagged by the count (a false positive
 // lab/censor/doc.go names), and syncs every 85 s or 250 s are not.

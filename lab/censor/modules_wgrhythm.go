@@ -135,14 +135,14 @@ const (
 //     by the same amount at each rekey and stays flat in between. A
 //     difference read off the level is a step once the readings have
 //     found it, unchanged, wgCountHold after the records that took it
-//     there, so an answer that comes late is none. A step is timed as a span, from
-//     the records that took the difference off the level to those that
-//     took it to the value it stepped to, so it holds the handshake's
-//     records however busy the connection was around them. It shows the
-//     rhythm when the difference steps by one amount wgRekeys times in a
-//     row, each step ending a rekey period or more after the one before
-//     began and beginning within the rekey window of its end, with no
-//     other change in between.
+//     there, so an answer that comes late is none. A step is timed as a
+//     span, from the records that took the difference off the level to
+//     those that took it to the value it stepped to, so it holds the
+//     handshake's records however busy the connection was around them.
+//     It shows the rhythm when the difference steps by one amount
+//     wgRekeys times in a row, each step ending a rekey period or more
+//     after the one before began and beginning within the rekey window
+//     of its end, with no other change in between.
 //   - burst: the same handshake seen whole, as a burst (records each
 //     within wgBurstGap of the one before, either way) with one record
 //     more one way than the other, at least one each way and at most
@@ -699,9 +699,9 @@ func (m *wgRhythm) window() time.Duration {
 // that took the difference off the level (or those the reading on the
 // level before read, when they ended within wgPairWindow before: an
 // answer in flight then can have hidden the move) to the records that
-// took it to the value it stepped to. It flags the connection when the level has
-// stepped by one amount wgRekeys times in a row, a rekey period apart,
-// with no other change.
+// took it to the value it stepped to. It flags the connection when the
+// level has stepped by one amount wgRekeys times in a row, a rekey period
+// apart, with no other change.
 func (m *wgRhythm) readCount(c *wgConn, now time.Time) {
 	k := &c.count
 	k.settled = true
