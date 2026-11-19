@@ -181,6 +181,7 @@ func (d *device) state(t *testing.T) string {
 func local() *lists.Set { return lists.Local() }
 
 func TestEnforcesInANamespace(t *testing.T) {
+	t.Parallel()
 	d := newDevice(t)
 	before := d.state(t)
 	e := d.enforcer(t)
@@ -337,6 +338,7 @@ func countrySized(t testing.TB) *lists.Set {
 }
 
 func TestCountrySizedTable(t *testing.T) {
+	t.Parallel()
 	d := newDevice(t)
 	before := d.state(t)
 	e := d.enforcer(t)
@@ -391,6 +393,7 @@ func TestCountrySizedTable(t *testing.T) {
 // range (a classless route, an address inside it, an advertised prefix
 // inside the overlay's /48: TunnelVision on the overlay).
 func TestHostileLocalNetworkRoutes(t *testing.T) {
+	t.Parallel()
 	d := newDevice(t)
 	e := d.enforcer(t)
 	overlay := []netip.Prefix{netip.MustParsePrefix("100.64.0.0/16"), netip.MustParsePrefix("fd12:3456:789a::/48")}
@@ -444,6 +447,7 @@ func TestHostileLocalNetworkRoutes(t *testing.T) {
 // and what routing can't confine, sockets bound to an interface, the
 // IPv6 leak guard does (TP-021).
 func TestGatewaysOnLinksAndBoundSockets(t *testing.T) {
+	t.Parallel()
 	d := newDevice(t)
 	e := d.enforcer(t)
 	overlay := []netip.Prefix{netip.MustParsePrefix("100.64.0.0/16"), netip.MustParsePrefix("fd12:3456:789a::/48")}
@@ -551,6 +555,7 @@ func TestGatewaysOnLinksAndBoundSockets(t *testing.T) {
 // service's reload, `nft delete table`) is back within about a second,
 // without an Enforce and long before the Backstop.
 func TestTheGuardComesBackOnItsOwn(t *testing.T) {
+	t.Parallel()
 	d := newDevice(t)
 	e := d.enforcer(t)
 	want := routetable.Want{TUN: "thinkpol0", Direct: local(), IPv6: true}

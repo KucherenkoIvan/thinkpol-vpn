@@ -171,6 +171,7 @@ func TestASecondCloseLeavesTheGuardAlone(t *testing.T) {
 }
 
 func TestEnforcerAppliesTheGuardWithTheRoutes(t *testing.T) {
+	t.Parallel()
 	f := &fakeConfigurator{events: make(chan struct{}), survey: up()}
 	g := newFakeGuard(f)
 	e := routetable.OpenWithGuard(f, g, nil)
@@ -259,6 +260,7 @@ func TestEnforcerAppliesTheGuardWithTheRoutes(t *testing.T) {
 // An OS that can't hold the guard (no nf_tables) stops the guard for
 // good, loudly, and the routes carry on.
 func TestEnforcerStopsTheGuardWhenUnsupported(t *testing.T) {
+	t.Parallel()
 	f := &fakeConfigurator{events: make(chan struct{}), survey: up()}
 	g := newFakeGuard(f)
 	g.setFail(fmt.Errorf("firewall: nftables: %w", routetable.ErrGuardUnsupported))
@@ -292,6 +294,7 @@ func TestEnforcerStopsTheGuardWhenUnsupported(t *testing.T) {
 // only the one it keeps), and the status says how that went the whole
 // time.
 func TestTheGuardIsPutBackWhileTheRoutesFail(t *testing.T) {
+	t.Parallel()
 	f := &fakeConfigurator{events: make(chan struct{}), survey: up()}
 	g := newFakeGuard(f)
 	e := routetable.OpenWithGuard(f, g, nil)
@@ -404,6 +407,7 @@ func checkRepairs(t *testing.T, e *routetable.Enforcer, g *fakeGuard, check func
 // so IPv6 to the prefixes dropped is refused rather than sent direct.
 // It stays so through the routes' retries and the guard's own repairs.
 func TestAFailedShrinkNarrowsTheGuard(t *testing.T) {
+	t.Parallel()
 	old := routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48", "2001:db8:d1::/48"),
 		Bypass: []netip.Addr{netip.MustParseAddr("2001:db8:7::7")}}
 	e, f, g := failingRig(t, old)
@@ -439,6 +443,7 @@ func TestAFailedShrinkNarrowsTheGuard(t *testing.T) {
 // A grow that fails leaves the old routes and their guard: never a guard
 // wider than the routes in place, through retries and repairs alike.
 func TestAFailedGrowHoldsTheGuardToTheRoutes(t *testing.T) {
+	t.Parallel()
 	old := routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48")}
 	e, f, g := failingRig(t, old)
 	n := f.count()
@@ -464,6 +469,7 @@ func TestAFailedGrowHoldsTheGuardToTheRoutes(t *testing.T) {
 // shrink, held by a failed grow, then widened back to the recovered
 // set's.
 func TestTheGuardFollowsTheRoutesBackAfterFailures(t *testing.T) {
+	t.Parallel()
 	ep := netip.MustParseAddr("2001:db8:7::7")
 	old := routetable.Want{TUN: "thinkpol0", Direct: set(t, "2001:db8:d0::/48", "2001:db8:d1::/48"), Bypass: []netip.Addr{ep}}
 	e, f, g := failingRig(t, old)
@@ -613,6 +619,7 @@ func TestIntersectUpstreamsTakesThemInAnyOrder(t *testing.T) {
 // route table to keep) lets go of its subscriptions, the guard's
 // included, without waiting for Close.
 func TestAWatcherThatStopsLetsGoOfItsSubscriptions(t *testing.T) {
+	t.Parallel()
 	f := &fakeConfigurator{events: make(chan struct{}), fail: true, failErr: fmt.Errorf("netcfg: old kernel: %w", errors.ErrUnsupported)}
 	g := newFakeGuard(f)
 	e := routetable.OpenWithGuard(f, g, nil)
