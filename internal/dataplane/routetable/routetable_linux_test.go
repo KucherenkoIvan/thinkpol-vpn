@@ -337,8 +337,9 @@ func countrySized(t testing.TB) *lists.Set {
 	return s
 }
 
+// Not parallel, like TestTheGuardComesBackOnItsOwn: its time bounds
+// hold for this test alone on the CPU.
 func TestCountrySizedTable(t *testing.T) {
-	t.Parallel()
 	d := newDevice(t)
 	before := d.state(t)
 	e := d.enforcer(t)
@@ -553,9 +554,10 @@ func TestGatewaysOnLinksAndBoundSockets(t *testing.T) {
 
 // The guard deleted from outside (`nft flush ruleset`, a firewall
 // service's reload, `nft delete table`) is back within about a second,
-// without an Enforce and long before the Backstop.
+// without an Enforce and long before the Backstop. Not parallel: the 3 s
+// bounds hold for this test alone on the CPU, not beside
+// TestCountrySizedTable.
 func TestTheGuardComesBackOnItsOwn(t *testing.T) {
-	t.Parallel()
 	d := newDevice(t)
 	e := d.enforcer(t)
 	want := routetable.Want{TUN: "thinkpol0", Direct: local(), IPv6: true}

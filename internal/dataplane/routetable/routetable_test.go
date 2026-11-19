@@ -347,8 +347,9 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// Not parallel: it counts the Applies of a burst against the 200 ms
+// debounce window, which a CPU shared with other tests stretches.
 func TestEnforcerAppliesChangesAndReappliesOnEvents(t *testing.T) {
-	t.Parallel()
 	survey := up()
 	survey.ForeignRules = []int{5210, 5270, 5400}
 	f := &fakeConfigurator{events: make(chan struct{}), survey: survey}
