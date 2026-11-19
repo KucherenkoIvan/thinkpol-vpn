@@ -68,6 +68,11 @@ func (t *Transport) openListener(ctx context.Context, cfg transport.ListenConfig
 	if err != nil {
 		return nil, ls, err
 	}
+	// REALITY's detection verifies the target against the system roots,
+	// as verifyTarget does without targetRoots; crypto/x509 reads them from
+	// disk once per process, on first use, which on a loaded disk can take
+	// longer than the bounds below allow the target.
+	_, _ = x509.SystemCertPool()
 	if err := verifyTarget(ctx, ls.target.String(), ls.names, t.targetRoots, detectWait, t.control); err != nil {
 		return nil, ls, err
 	}

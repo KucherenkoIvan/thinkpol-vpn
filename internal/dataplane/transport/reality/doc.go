@@ -155,21 +155,30 @@
 //
 // Then Listen has REALITY learn the target's post-handshake records and
 // waits for that, up to 10 s; REALITY dials the target for that without
-// the Control hook. Listen fails if REALITY's detection didn't end (the
-// target stalled): REALITY keeps what it learned per process, and would
-// otherwise hold every authenticated handshake for good. REALITY's
-// detection runs on after Listen gave up on it, with no deadline, and
-// would store an empty result over a later detection's pending one, so
-// detections of a target are serialized: a later Listen fails while the
-// earlier detection still runs, then forgets every result it left and
-// detects again. A result isn't that detection's last write (having
-// stored the records it read, it closes its connection, then checks the
-// key once more), so a result it left is forgotten only once it has stood
-// for a second. A detection whose target accepted the connection and then
-// stays silent never ends: its keys stay pending, and every later Listen
-// for that target fails until the process restarts. A caller retrying
-// Listen should know that a failure naming an earlier detection won't
-// clear on retry while the target stays silent.
+// the Control hook, and verifies it against the system roots. Before
+// either, Listen has crypto/x509 read the system roots, which it does from
+// disk once per process, on first use, with no bound: neither 10 s counts
+// that read, which can take longer than that on a loaded disk. Besides the
+// records, REALITY's detection learns how many ChangeCipherSpec records in
+// a row the target tolerates, by sending it 2, then 15, then 16 of them a
+// second apart on one more connection per server name and ALPN: a site
+// like nginx refuses the first burst and logs "unexpected ccs message" at
+// each detection, so the target's operator, and whoever sees the
+// server-to-target leg, can see a listener open (RR31). Listen fails if
+// REALITY's detection didn't end (the target stalled): REALITY keeps what
+// it learned per process, and would otherwise hold every authenticated
+// handshake for good. REALITY's detection runs on after Listen gave up on
+// it, with no deadline, and would store an empty result over a later
+// detection's pending one, so detections of a target are serialized: a
+// later Listen fails while the earlier detection still runs, then forgets
+// every result it left and detects again. A result isn't that detection's
+// last write (having stored the records it read, it closes its connection,
+// then checks the key once more), so a result it left is forgotten only
+// once it has stood for a second. A detection whose target accepted the
+// connection and then stays silent never ends: its keys stay pending, and
+// every later Listen for that target fails until the process restarts. A
+// caller retrying Listen should know that a failure naming an earlier
+// detection won't clear on retry while the target stays silent.
 //
 // The dialer checks the certificate the same way. Anything else (a real
 // certificate: the connection was spliced, or a man in the middle
