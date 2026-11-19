@@ -63,7 +63,7 @@ func TestTimelineSlotWaitLine(t *testing.T) {
 
 // TestTimelineStartAndDownLines: a start's line gives the whole of it from
 // the slot and each step's length, "-" for a step it never reached; a
-// tear-down's line its length.
+// tear-down's line and a read of the daemon's subnets their length.
 func TestTimelineStartAndDownLines(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "timeline")
 	t.Setenv(TimelineEnv, file)
@@ -78,13 +78,15 @@ func TestTimelineStartAndDownLines(t *testing.T) {
 	}, nil)
 	noteStart(l, startTimes{slot: slot, created: slot.Add(3 * time.Second)}, context.DeadlineExceeded)
 	noteDown("tplab-x-t-a", slot, slot.Add(7250*time.Millisecond), nil)
+	noteSubnetRead("tplab-x-t-b", slot, slot.Add(1200*time.Millisecond), context.Canceled)
 	got, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := regexp.MustCompile(`^[0-9:.]{12} start 1h[0-9ms.]+ create 40s inspect 1.5s bridges 1.5s seal 2s nodes 2 networks 2 attempts 2 ok tplab-x-t-a\n` +
 		`[0-9:.]{12} start 1h[0-9ms.]+ create 3s inspect - bridges - seal - nodes 2 networks 2 attempts 2 failed tplab-x-t-a\n` +
-		`[0-9:.]{12} down 7.25s ok tplab-x-t-a\n$`)
+		`[0-9:.]{12} down 7.25s ok tplab-x-t-a\n` +
+		`[0-9:.]{12} subnet-read 1.2s failed tplab-x-t-b\n$`)
 	if !want.Match(got) {
 		t.Errorf("timeline:\n%s\nwant:\n%s", got, want)
 	}

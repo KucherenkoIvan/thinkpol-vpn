@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-262"
+branch: "tp-262-faster-lab-start"
 ---
 
 ## Goal
@@ -27,3 +27,4 @@ In two of TP-263's runs (2026-11-19), 25–26 s passed between a lab getting its
 
 ## Log
 - 2026-11-19 created in backlog (TP-263)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-262 (folded into TP-262 by the orchestrator: the gap is part of a lab's start; moves with TP-262 through review)

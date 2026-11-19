@@ -6,8 +6,9 @@ import (
 	"time"
 )
 
-// TimelineEnv names a file each lab start appends lines to: how long it
-// waited for its lab slot; when it asked for the subnet allocation lock,
+// TimelineEnv names a file each lab start appends lines to: how long its
+// read of the daemon's subnets took, before the slot; how long it waited
+// for its lab slot; when it asked for the subnet allocation lock,
 // held it, and ran docker compose up; how long each step from the slot to
 // the sealed lab took; and how long its tear-down took. Runs that share
 // the file give one timeline of how their labs' start-ups overlap.
@@ -54,6 +55,16 @@ func noteStart(l *Lab, st startTimes, err error) {
 		timelineStamp(st.slot), end.Sub(st.slot).Round(time.Millisecond),
 		step(st.slot, st.created), step(st.created, st.inspected), step(st.inspected, st.bridged), step(st.bridged, st.sealed),
 		len(l.Topology.Nodes), len(l.Topology.Networks), l.upAttempt, timelineResult(err), l.Project))
+}
+
+// noteSubnetRead appends a lab start's read of the daemon's subnets,
+// before it waits for its slot, from..to.
+func noteSubnetRead(project string, from, to time.Time, err error) {
+	path := os.Getenv(TimelineEnv)
+	if path == "" {
+		return
+	}
+	appendTimeline(path, fmt.Sprintf("%s subnet-read %s %s %s\n", timelineStamp(from), to.Sub(from).Round(time.Millisecond), timelineResult(err), project))
 }
 
 // noteDown appends a lab's tear-down, from..to.

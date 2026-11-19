@@ -335,9 +335,21 @@ func up(ctx context.Context, clock startClock, root, project string, topo Topolo
 	stateDir := filepath.Join(root, "lab", ".run", project)
 	var img image
 	var binDir string
+	var onDaemon []netip.Prefix
 	err := clock.run(ctx, project, phaseBeforeSlot, func(ctx context.Context) (err error) {
-		img, binDir, err = beforeSlot(ctx, root, project, stateDir, inputs)
-		return err
+		if img, binDir, err = beforeSlot(ctx, root, project, stateDir, inputs); err != nil {
+			return err
+		}
+		// Read before the slot rather than holding one through it: under
+		// load the daemon answers network reads behind every network it is
+		// creating or removing, which took 20 s and more.
+		from := time.Now()
+		onDaemon, err = daemonSubnets.get(ctx, time.Time{})
+		noteSubnetRead(project, from, time.Now(), err)
+		if err != nil {
+			return errors.Join(err, os.RemoveAll(stateDir))
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -357,7 +369,7 @@ func up(ctx context.Context, clock startClock, root, project string, topo Topolo
 	}
 	return l, clock.run(ctx, project, phaseAfterSlot, func(ctx context.Context) error {
 		st := startTimes{slot: time.Now()}
-		err := l.startOnSlot(ctx, img, &st)
+		err := l.startOnSlot(ctx, img, onDaemon, &st)
 		l.started = st
 		noteStart(l, st, err)
 		return err
@@ -370,9 +382,10 @@ type startTimes struct {
 	slot, created, inspected, bridged, sealed time.Time
 }
 
-// startOnSlot creates the lab and seals its nodes.
-func (l *Lab) startOnSlot(ctx context.Context, img image, st *startTimes) error {
-	if err := l.create(ctx, img); err != nil {
+// startOnSlot creates the lab and seals its nodes; onDaemon is the
+// daemon's subnets, as read before the slot.
+func (l *Lab) startOnSlot(ctx context.Context, img image, onDaemon []netip.Prefix, st *startTimes) error {
+	if err := l.create(ctx, img, onDaemon); err != nil {
 		return err
 	}
 	st.created = time.Now()
@@ -410,9 +423,12 @@ func beforeSlot(ctx context.Context, root, project, stateDir string, inputs labI
 
 // create reserves the lab's subnets and starts it. Only the reservation is
 // serialized host-wide (reserveSubnets); docker compose up runs outside the
-// allocation lock, beside other labs' start-ups. A subnet another daemon
-// user took in the meantime means another try.
-func (l *Lab) create(ctx context.Context, img image) error {
+// allocation lock, beside other labs' start-ups. The first try avoids
+// onDaemon, the daemon's subnets as read before the slot, and the live
+// reservations, which cover every lab of the host's slots started since. A
+// subnet another daemon user took in the meantime means another try, on a
+// read of the daemon that began after the overlap.
+func (l *Lab) create(ctx context.Context, img image, onDaemon []netip.Prefix) error {
 	pool, err := subnetPool()
 	if err != nil {
 		return err
@@ -421,10 +437,15 @@ func (l *Lab) create(ctx context.Context, img image) error {
 	if err != nil {
 		return err
 	}
-	var notBefore time.Time // a first try takes a read already running
+	var notBefore time.Time
 	for attempt := 1; ; attempt++ {
 		l.releaseSubnets()
-		used := func(ctx context.Context) ([]netip.Prefix, error) { return daemonSubnets.get(ctx, notBefore) }
+		used := func(ctx context.Context) ([]netip.Prefix, error) {
+			if attempt == 1 {
+				return onDaemon, nil
+			}
+			return daemonSubnets.get(ctx, notBefore)
+		}
 		if l.subnets, err = reserveSubnets(ctx, dir, l.Topology.Networks, pool, used); err != nil {
 			return err
 		}

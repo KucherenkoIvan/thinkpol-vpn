@@ -29,3 +29,4 @@ branch: "tp-262-faster-lab-start"
 ## Log
 - 2026-11-19 created in backlog (full-lab measurement on rewrite cb0348d6)
 - 2026-11-19 backlog → in-progress, owner: agent-tp-262
+- 2026-11-19 TP-267 folded in (orchestrator): the slot-to-lock gap is the read of the daemon's subnets; moving it before the slot
