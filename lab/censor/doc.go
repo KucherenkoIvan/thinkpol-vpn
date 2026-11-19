@@ -603,13 +603,14 @@
 // probing is too little evidence to call the tell unattributable (an
 // entry that splices every connection dials for the suspected client
 // itself just before the probes), so the tell stands and its verdict
-// says the baseline was short; flagged, it flags the server, and
-// reported, the matrix scores its cell not judged too: how long the
-// censor watched before the first probe is a race with the transport's
-// setup, and a reported tell judged on it would pass or not by timing.
-// A long baseline doesn't end that: past about 11 s, setup's dials are
-// too few to make the tell unattributable, so a reported tell over it
-// still scores pass (TP-264 decides how the cell should score). Either way the verdict gives both counts and times. An entry whose
+// says the baseline was short; flagged, it flags the server. Reported
+// (upstreamTell "report"), the tell ends "reported, not flagged" over any
+// baseline, and the matrix scores its cell on the tell alone: not judged,
+// never a pass (owner, 2026-11-19: a). How long the censor watched before
+// the first probe is a race with the transport's setup, and past about
+// 11 s setup's dials are too few to make the tell unattributable, so a
+// reported tell judged on its baseline would pass or not by timing. Either
+// way the verdict gives both counts and times, as evidence. An entry whose
 // connection leaves from another address than the one probed (an IPv4
 // uplink for an IPv6 probe) is matched only when the hosts setting names
 // both addresses as one host (an entry names at least two), as a censor
@@ -709,8 +710,10 @@
 // correct cell, as udp's is. The idle case (one ping, then nothing) is out
 // of the matrix until TP-080 brings it back: an idle thinkpol tunnel shows
 // no WireGuard rhythm, so udp can't be caught there. A prober cell whose
-// upstream tell is unattributable, or reported over a baseline shorter
-// than the probing, crossed but is not judged, never a pass.
+// upstream tell is unattributable, or reported rather than flagged over
+// any baseline (owner, 2026-11-19: a), crossed but is not judged, never a
+// pass; the matrix counts such cells (NOT JUDGED), as it counts known
+// flakes.
 //
 // # Limits
 //

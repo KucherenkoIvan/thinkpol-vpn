@@ -152,6 +152,12 @@ LAB_BUDGET ?= 15m
 # the censor matrix, whose held cells are the long stream's (lab/README.md,
 # "Streams").
 LAB_LONG_TESTS := ^TestCensorMatrix$$
+# $(call LAB_COUNT_CELLS,<label>,<files>): the cells the streams listed
+# in files (a line each, "<transport> / <censor>"), once each, as
+# "<label>: <n> (<cells>)", or nothing when none; for make lab-test's last
+# line (KNOWN FLAKES, NOT JUDGED), as the matrix counts them in
+# RESULTS.md (TestMakefileCountsCells).
+LAB_COUNT_CELLS = LC_ALL=C sort -u $(2) 2>/dev/null | awk -v label='$(1)' 'NF { n++; s = s (n > 1 ? ", " : "") $$0 } END { if (n) printf "%s: %d (%s)", label, n, s }'
 
 # The harness's own lab tests (named TestHarness…) check the lab itself
 # (isolation, sealing, ownership, subnets, binaries), not the product.
@@ -262,7 +268,9 @@ lab-test lab-test-default lab-test-long:
 		fi; \
 		case $$f in node|harness) ;; *) [ "$$(cat "$$tmp/$$f.testjson" 2>/dev/null)" = 0 ] || { echo "lab-test: the $$f phase's labctl testjson failed" >&2; failed="$$failed $$f-testjson"; };; esac; \
 	done; \
-	flakes=$$(LC_ALL=C sort -u "$$tmp"/known-flakes-*.txt 2>/dev/null | awk 'NF { n++; s = s (n > 1 ? ", " : "") $$0 } END { if (n) printf "KNOWN FLAKES: %d (%s)", n, s }'); \
+	flakes=$$($(call LAB_COUNT_CELLS,KNOWN FLAKES,"$$tmp"/known-flakes-*.txt)); \
+	unjudged=$$($(call LAB_COUNT_CELLS,NOT JUDGED,"$$tmp"/not-judged-*.txt)); \
+	counts="$${flakes:+; $$flakes}$${unjudged:+; $$unjudged}"; \
 	case "$$both" in 1) \
 		if ( cd lab && THINKPOL_LAB_STREAM= exec "$$tmp/lab.test" -test.v -test.count=1 -test.run='^TestAssembleCensorMatrix$$' ) > "$$tmp/assemble.out" 2>&1 \
 		&& grep -q '^--- PASS: TestAssembleCensorMatrix ' "$$tmp/assemble.out"; then \
@@ -275,11 +283,11 @@ lab-test lab-test-default lab-test-long:
 	if [ -z "$$THINKPOL_LAB_KEEP" ] && ! "$$labctl" down -run "$$run"; then failed="$$failed tear-down"; fi; run=; \
 	over=$$(cat "$$tmp/over" 2>/dev/null); \
 	if [ -n "$$failed" ]; then \
-		echo "lab-test: FAILED:$$failed$${over:+; also OVER BUDGET ($$over)}$${flakes:+; $$flakes}"; exit 1; \
+		echo "lab-test: FAILED:$$failed$${over:+; also OVER BUDGET ($$over)}$$counts"; exit 1; \
 	elif [ -n "$$over" ]; then \
-		echo "lab-test: tests passed, OVER BUDGET ($$over)$${flakes:+; $$flakes}"; exit 3; \
+		echo "lab-test: tests passed, OVER BUDGET ($$over)$$counts"; exit 3; \
 	fi; \
-	echo "lab-test: passed$${flakes:+; $$flakes}"
+	echo "lab-test: passed$$counts"
 
 
 lab-harness: ## the lab harness's own tests (TestHarness…: isolation, sealing, ownership, subnets), each starting labs

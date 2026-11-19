@@ -1,12 +1,11 @@
 ---
 id: TP-256
 title: "reality's start-up target detection without the CCS probe"
-milestone: M3
+milestone: later
 area: dataplane/transport/reality
 stream: transports
 repo: thinkpol-vpn
 size: M
-needs_human: decision
 depends_on: []
 refs: [RR66, RR31, RR32]
 owner: ""
@@ -28,6 +27,8 @@ REALITY's detection at a server's first Listen sends the camouflage site extra C
 - [ ] The RR row narrowed or closed.
 
 ## Notes
+- "it's a tell, but no reports of censors actually doing that, so record it but don't fix it yet" (owner, 2026-11-19)
 
 ## Log
 - 2026-11-19 created in backlog (TP-253 review)
+- 2026-11-19 owner: record, don't fix yet → later

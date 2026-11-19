@@ -582,10 +582,14 @@ func (u upstreamTally) shortBaseline() bool { return u.outside < u.probing }
 // host dialed as often outside them (unattributable), or the prober
 // watched it outside them for less time than it probed (a short
 // baseline, which the prober's start makes a race with the first
-// suspect). A reported tell with either is not judged.
+// suspect). A tell reported, not flagged (upstreamTell "report"), ends
+// with UpstreamTellReported over any baseline: the matrix scores it on
+// the tell alone, not judged, whatever the counts and times beside it say
+// (owner, 2026-11-19: a), so its cell can't flip by how long setup took.
 const (
 	UpstreamTellUnattributable = "upstream tell: unattributable"
 	UpstreamTellShortBaseline  = "a baseline shorter than the probing, too short to call the tell unattributable"
+	UpstreamTellReported       = "reported, not flagged"
 )
 
 // upstreamTell judges the connections from server's host to the
@@ -606,7 +610,7 @@ func (m *prober) upstreamTell(server netip.Addr, u upstreamTally) (report, diff 
 	case u.unattributable():
 		return fmt.Sprintf("%s (%s, at least half the rate; a connection from %s to the reference during %d of %d probes)", UpstreamTellUnattributable, base, from, u.probes, u.total), ""
 	case m.reportTell:
-		return tell + ", reported, not flagged", ""
+		return tell + ", " + UpstreamTellReported, ""
 	}
 	return "", tell
 }
