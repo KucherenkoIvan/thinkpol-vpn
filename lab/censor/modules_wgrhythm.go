@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"os"
 	"slices"
 	"time"
@@ -23,11 +24,19 @@ func init() {
 // wgPairWindow, wgSteadyJitter, wgRekeys, wgCountSettle, wgBurstGap,
 // wgBurstMax and the keepalive count: those are the module's choices, no
 // WireGuard timer.
+//
+// A shorter rekey period (the module's rekey setting, as a lab whose
+// wireguard-go runs its timers sped up sets it) scales wireguard-go's
+// timers with it, and only those: REJECT_AFTER_TIME, REKEY_TIMEOUT and
+// with it wgQuiet, and wgPairWindow down to REKEY_TIMEOUT (scaled). The
+// persistent keepalive is a setting of a peer, not a wireguard-go
+// constant, and the module's choices are about the network and
+// scheduling: they keep real time.
 const (
-	wgRekeyAfterTime      = 120 * time.Second
+	WGRekeyAfterTime      = 120 * time.Second
 	wgRejectAfterTime     = 180 * time.Second
 	wgRekeyTimeout        = 5 * time.Second
-	wgKeepaliveTimeout    = 10 * time.Second
+	WGKeepaliveTimeout    = 10 * time.Second
 	wgPersistentKeepalive = 25 * time.Second
 )
 
@@ -35,10 +44,13 @@ const (
 	// wgPairWindow is how soon after one record the record the other way
 	// must end to answer it: a choice, a round trip and the peer's work
 	// with room to spare, kept under REKEY_TIMEOUT, after which WireGuard
-	// stops waiting for an answer to its initiation and sends another.
+	// stops waiting for an answer to its initiation and sends another
+	// (with a shorter rekey period, no longer than REKEY_TIMEOUT scaled:
+	// pairWindow).
 	wgPairWindow = 2 * time.Second
 	// wgQuiet is how long the connection must have carried no record, either
-	// way, before a record counts as sent while idle: REKEY_TIMEOUT, under
+	// way, before a record counts as sent while idle (scaled with a
+	// shorter rekey period, quiet): REKEY_TIMEOUT, under
 	// KEEPALIVE_TIMEOUT (a passive keepalive comes that long after the last
 	// packet received) and under any persistent keepalive interval.
 	wgQuiet = wgRekeyTimeout
@@ -52,17 +64,6 @@ const (
 	// against chance recurrences (see the measured false positives in
 	// doc.go), which costs up to 7 minutes of a connection.
 	wgRekeys = 3
-	// wgRekeySlack widens the rekey window past REJECT_AFTER_TIME (for the
-	// default period; scaled with a shorter one): WireGuard rekeys on the
-	// first packet after its deadline, so with wg(8)'s persistent
-	// keepalive the gap grows by up to that interval, and by a retried
-	// initiation's REKEY_TIMEOUT. thinkpol runs no persistent keepalive:
-	// its next packet past the deadline comes only with traffic, so a
-	// tunnel that carries nothing from REKEY_AFTER_TIME until the window
-	// has passed (about 90 s at the default period) rekeys too late, its
-	// chain starts over, and a tunnel used in bursts that far apart is
-	// missed by the rekey signal.
-	wgRekeySlack = wgPersistentKeepalive + wgRekeyTimeout
 	// wgCountSettle is how long the connection must carry no record,
 	// either way, for its record count each way to be read as a level: a
 	// choice, longer than a round trip and a WireGuard handshake in the
@@ -103,23 +104,24 @@ const (
 // from then on, both ways, on any of its signals:
 //
 //   - rekey: an exchange (a record one way and one the other way within
-//     wgPairWindow) that stands out, each of its two sizes new to its
-//     direction over the rekey period before it, or its first record sent
-//     after wgQuiet with no record either way (a record takes on the
-//     standing out of one of its size sent its way within wgPairWindow
-//     before it, as an initiation padded to its trigger's size), and
-//     stands out again a rekey period after the latest time it did, up to
-//     REJECT_AFTER_TIME plus wgRekeySlack past it (WireGuard rekeys on the
+//     the pair window, wgPairWindow) that stands out, each of its two
+//     sizes new to its direction over the rekey period before it, or its
+//     first record sent after the quiet (wgQuiet) with no record either
+//     way (a record takes on the standing out of one of its size sent its
+//     way within the pair window before it, as an initiation padded to
+//     its trigger's size), and stands out again a rekey period after the
+//     latest time it did, up to the rekey window (window) past it
+//     (WireGuard rekeys on the
 //     first packet past REKEY_AFTER_TIME when it sends, past
 //     REJECT_AFTER_TIME - KEEPALIVE_TIMEOUT - REKEY_TIMEOUT when it only
 //     receives), and again a period after that: wgRekeys in all.
-//   - keepalive: an idle run, records of one size each sent after wgQuiet
-//     with no record either way, none answered by a record the other way
-//     within wgPairWindow, at one steady interval: at least `keepalives`
-//     (3 by default, a choice like wgRekeys) of them once the connection
-//     has carried an exchange, two more without. A record counts once its
-//     wgPairWindow has passed, judged on the connection's next packet
-//     either way.
+//   - keepalive: an idle run, records of one size each sent after the
+//     quiet with no record either way, none answered by a record the other
+//     way within the pair window, at one steady interval: at least
+//     `keepalives` (3 by default, a choice like wgRekeys) of them once the
+//     connection has carried an exchange, two more without. A record
+//     counts once its pair window has passed, judged on the connection's
+//     next packet either way.
 //   - count: each WireGuard handshake leaves the initiator one record
 //     ahead (initiation and confirming keepalive against the response;
 //     what triggered it is answered or not as any data), so with traffic
@@ -136,6 +138,10 @@ const (
 //     with the same counts wgRekeys times in a row, each a rekey period to
 //     the rekey window after the one before; a burst of those counts
 //     sooner than a rekey period starts the chain over.
+//
+// With a shorter rekey period the windows that are wireguard-go's timers
+// (the rekey window but its persistent keepalive, the quiet, the pair
+// window's cap) scale with it; see the constants.
 //
 // Flow shape beyond that (size distributions, bursts) is not its business
 // (owner, 2026-11-07). A TCP stream it can't frame as TLS from its first
@@ -237,7 +243,7 @@ type wgDirection struct {
 	// a stream joined midstream, or stream bytes the module never saw.
 	unframed bool
 	consumed uint64 // stream bytes framed so far
-	// recent holds the latest record of each size, for wgPairWindow: by
+	// recent holds the latest record of each size, for the pair window: by
 	// age, not count, so a burst of data around a handshake never pushes
 	// it out.
 	recent map[int]wgRecentRecord
@@ -248,7 +254,7 @@ type wgDirection struct {
 
 type wgRecentRecord struct {
 	end time.Time
-	// afterQuiet is set when no record either way came within wgQuiet
+	// afterQuiet is set when no record either way came within the quiet
 	// before it; fresh when none of its size came its way within the rekey
 	// period before it.
 	afterQuiet, fresh bool
@@ -286,7 +292,8 @@ type wgIdleRun struct {
 //	 "trace": "/run/censor/rhythm.jsonl"}
 //
 // verdict is drop (default) or reset; rekey is WireGuard's rekey period,
-// REKEY_AFTER_TIME (tests shorten it to see three rekeys quickly);
+// REKEY_AFTER_TIME (tests, and a lab whose WireGuard runs its timers sped
+// up, shorten it; wireguard-go's other timers scale with it);
 // keepalives is how many records an idle run needs to show the rhythm
 // once the connection has carried an exchange (without one, two more);
 // trace, if set, is a file the module appends a JSON line to for every
@@ -302,7 +309,7 @@ func newWGRhythm(settings json.RawMessage) (Passive, error) {
 	if err := unmarshalSettings(settings, &s); err != nil {
 		return nil, err
 	}
-	m := &wgRhythm{rekey: wgRekeyAfterTime, keepalives: 3, conns: map[FlowKey]*wgConn{}}
+	m := &wgRhythm{rekey: WGRekeyAfterTime, keepalives: 3, conns: map[FlowKey]*wgConn{}}
 	switch s.Verdict {
 	case "", "drop":
 		m.verdict = Drop
@@ -353,7 +360,7 @@ type WGTraceLine struct {
 	Flow string    `json:"flow"`
 	End  time.Time `json:"end"`
 	Size int       `json:"size"`
-	// AfterQuiet: no record either way within wgQuiet before it; Fresh: no
+	// AfterQuiet: no record either way within the quiet before it; Fresh: no
 	// record of its size its way within the rekey period before it.
 	AfterQuiet bool `json:"afterQuiet,omitempty"`
 	Fresh      bool `json:"fresh,omitempty"`
@@ -485,20 +492,20 @@ func (m *wgRhythm) record(c *wgConn, dir int, f *Flow, size int, end time.Time) 
 	c.burst.n[dir]++
 	d := &c.dirs[dir]
 	r := wgRecord{dir, size, end}
-	if p := c.pending; p != nil && r.dir != p.dir && end.Sub(p.end) <= wgPairWindow {
+	if p := c.pending; p != nil && r.dir != p.dir && end.Sub(p.end) <= m.pairWindow() {
 		c.pending = nil // answered: not a keepalive
 	}
 	seen, ok := d.seen[size]
 	fresh := !ok || end.Sub(seen) >= m.rekey
 	d.seen[size] = end
-	quiet := c.last.IsZero() || end.Sub(c.last) >= wgQuiet
+	quiet := c.last.IsZero() || end.Sub(c.last) >= m.quiet()
 	stood := 0
 	// In order of size, so which of two exchanges flags first doesn't
 	// depend on map order.
 	other := c.dirs[1-dir].recent
 	for _, s := range slices.Sorted(maps.Keys(other)) {
 		b := other[s]
-		if end.Sub(b.end) > wgPairWindow {
+		if end.Sub(b.end) > m.pairWindow() {
 			delete(other, s)
 			continue
 		}
@@ -515,11 +522,11 @@ func (m *wgRhythm) record(c *wgConn, dir int, f *Flow, size int, end time.Time) 
 	// A record of this size just before (a trigger padded to its
 	// initiation's size) leaves this one neither fresh nor after quiet;
 	// the two are one record to answer, so it keeps that one's.
-	if b, ok := d.recent[size]; ok && end.Sub(b.end) <= wgPairWindow {
+	if b, ok := d.recent[size]; ok && end.Sub(b.end) <= m.pairWindow() {
 		quiet, fresh = quiet || b.afterQuiet, fresh || b.fresh
 	}
 	d.recent[size] = wgRecentRecord{end, quiet, fresh}
-	idle := !c.last.IsZero() && end.Sub(c.last) >= wgQuiet
+	idle := !c.last.IsZero() && end.Sub(c.last) >= m.quiet()
 	c.last = end
 	if idle {
 		c.pending = &r
@@ -554,7 +561,7 @@ func (m *wgRhythm) settle(c *wgConn, f *Flow, now time.Time) {
 		return
 	}
 	p := c.pending
-	if p == nil || now.Sub(p.end) <= wgPairWindow {
+	if p == nil || now.Sub(p.end) <= m.pairWindow() {
 		return
 	}
 	c.pending = nil
@@ -591,7 +598,7 @@ func (m *wgRhythm) exchange(c *wgConn, sizes [2]int, stands bool, end time.Time)
 	if e == nil {
 		e = &wgExchange{}
 		c.exchanges[sizes] = e
-	} else if end.Sub(e.seen) <= wgPairWindow {
+	} else if end.Sub(e.seen) <= m.pairWindow() {
 		// More answers to one record are one occurrence, which stands out
 		// if any of them does.
 		e.seen = end
@@ -618,9 +625,37 @@ func (m *wgRhythm) exchange(c *wgConn, sizes [2]int, stands bool, end time.Time)
 }
 
 // window is the latest a rekey comes after the one before:
-// REJECT_AFTER_TIME, scaled with a shorter rekey period, and wgRekeySlack.
+// REJECT_AFTER_TIME, widened by a persistent keepalive interval and a
+// REKEY_TIMEOUT. WireGuard rekeys on the first packet after its
+// deadline, so with wg(8)'s persistent keepalive the gap grows by up to
+// that interval, and by a retried initiation's REKEY_TIMEOUT. thinkpol
+// runs no persistent keepalive: its next packet past the deadline comes
+// only with traffic, so a tunnel that carries nothing from
+// REKEY_AFTER_TIME until the window has passed (about 90 s at the default
+// period) rekeys too late, its chain starts over, and a tunnel used in
+// bursts that far apart is missed by the rekey signal. With a shorter
+// rekey period REJECT_AFTER_TIME and REKEY_TIMEOUT scale; the persistent
+// keepalive, a peer's setting, doesn't.
 func (m *wgRhythm) window() time.Duration {
-	return m.rekey*time.Duration(wgRejectAfterTime/time.Second)/time.Duration(wgRekeyAfterTime/time.Second) + wgRekeySlack
+	return m.scaled(wgRejectAfterTime+wgRekeyTimeout) + wgPersistentKeepalive
+}
+
+// quiet is wgQuiet, scaled with the rekey period.
+func (m *wgRhythm) quiet() time.Duration { return m.scaled(wgQuiet) }
+
+// pairWindow is wgPairWindow, no longer than REKEY_TIMEOUT scaled with
+// the rekey period: a retried initiation, a REKEY_TIMEOUT after the
+// unanswered one, never pairs as an answer.
+func (m *wgRhythm) pairWindow() time.Duration {
+	return min(wgPairWindow, m.scaled(wgRekeyTimeout))
+}
+
+// scaled is a wireguard-go timer d with the module's rekey period in
+// place of REKEY_AFTER_TIME: a lab whose WireGuard runs its timers sped
+// up sets the period they make, and the windows that are those timers
+// follow.
+func (m *wgRhythm) scaled(d time.Duration) time.Duration {
+	return time.Duration(math.Round(float64(d) * float64(m.rekey) / float64(WGRekeyAfterTime)))
 }
 
 // readCount reads the difference of the record counts each way as a

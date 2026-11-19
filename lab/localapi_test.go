@@ -135,9 +135,18 @@ func TestLocalAPI(t *testing.T) {
 		ping(t, devA, s4)
 		ping(t, devA, s6)
 		ping(t, devA, b4)
-		res, err = cli(t, devA, as(aliceUID, apiGID, "status"))
-		if err != nil {
-			t.Fatal(err)
+		// The lab's WireGuard runs its timers sped up, and with them the
+		// exit handshake deadline health reads (1.5 s at a factor of 10):
+		// a rekey under load can flip health for a moment.
+		healthy := regexp.MustCompile(`health: +ok`)
+		for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(500 * time.Millisecond) {
+			res, err = cli(t, devA, as(aliceUID, apiGID, "status"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if healthy.MatchString(res.Stdout) || time.Now().After(deadline) {
+				break
+			}
 		}
 		for _, want := range []string{`health: +ok`, `peers:`, `handshake [0-9hms]+ ago`, `neighbors:`, `udp \(dialed active up\)`} {
 			if !regexp.MustCompile(want).MatchString(res.Stdout) {
