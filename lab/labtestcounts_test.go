@@ -13,8 +13,8 @@ import (
 // the matrix counts them in RESULTS.md: each cell once, however many
 // streams listed it, sorted, "<label>: <n> (<cells>)", and nothing when no
 // stream listed one or none wrote its list. The recipe counts both lists
-// with it and ends every last line (failed, over budget, passed) with
-// both counts.
+// with it, joins both into one tail (each part only when not empty) and
+// ends every last line (failed, over budget, passed) with that tail.
 func TestMakefileCountsCells(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs make")
@@ -65,6 +65,7 @@ func TestMakefileCountsCells(t *testing.T) {
 	for _, want := range []string{
 		`flakes=$$($(call LAB_COUNT_CELLS,KNOWN FLAKES,"$$tmp"/known-flakes-*.txt))`,
 		`unjudged=$$($(call LAB_COUNT_CELLS,NOT JUDGED,"$$tmp"/not-judged-*.txt))`,
+		`counts="$${flakes:+; $$flakes}$${unjudged:+; $$unjudged}"`,
 		`echo "lab-test: FAILED:$$failed$${over:+; also OVER BUDGET ($$over)}$$counts"; exit 1;`,
 		`echo "lab-test: tests passed, OVER BUDGET ($$over)$$counts"; exit 3;`,
 		`echo "lab-test: passed$$counts"`,

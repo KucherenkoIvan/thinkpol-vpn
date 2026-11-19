@@ -35,6 +35,10 @@ Either way, count `NOT JUDGED: n (cells)` in RESULTS.md's header and in `make la
 - TP-255's Notes ("What's left") give the numbers: the tightest run had 8 dials in 8.25 s outside the probes against 8 in 5.52 s of probes, so a baseline past about 11 s with no more dials read `pass` before this ticket.
 - Lab cells (targeted, commit f3886297): relay-tcp (reference) × active prober `fail` (drop, upstream tell, 8 dials in 7.527 s of probes, 1 in 628 ms outside); reality × active prober `not judged` (that run's tell was unattributable, 8 dials in 5.521 s of probes, 8 in 8.109 s outside; the long-baseline reported path is unit-tested, no run hit it); the four labs took 87 s. No full lab (brief: targeted cells only).
 
+## Review findings
+- [x] R1.1 (should-fix, test gap) the Makefile's counts= line (the flakes and not-judged parts) was unchecked by TestMakefileCountsCells: dropping the not-judged part passed. Now asserted; mutation M9 (counts= without the not-judged part) killed.
+- [x] R1.2 (doc) lab/README.md: a killed stream (a -test.timeout panic skips its clean-up) writes no lists, so its part of either count is absent and the FAILED line names the dead phase; replaces "whether or not the run failed".
+
 ## Log
 - 2026-11-19 created in backlog (TP-255 review)
 - 2026-11-19 backlog → in-progress, owner: agent-tp-264
@@ -42,3 +46,4 @@ Either way, count `NOT JUDGED: n (cells)` in RESULTS.md's header and in `make la
 - 2026-11-19 mutations, all killed: M1 unjudged reads the short baseline instead of the reported tell (TestUnjudged, the old code); M2 report mode drops UpstreamTellReported and M3 report mode flags a long-baseline tell (TestUpstreamTellReportedOverAnyBaseline); M4 cells not judged unsorted and M5 RESULTS.md header without NOT JUDGED (TestNotJudgedCounted); M6 a stream writes no not-judged list (TestWriteMatrixShareFlakes); M7 sort without -u and M8 the passed line without NOT JUDGED (TestMakefileCountsCells)
 - 2026-11-19 make lint, make test green (commit f3886297); lab-tagged unit tests green; targeted lab cells reality and relay-tcp × active prober as expected (Notes). Not verified: a lab run where reality's tell is attributable over a long baseline (unit-tested only); no full lab, per the brief
 - 2026-11-19 in-progress → review
+- 2026-11-19 review round 1: R1.1–R1.2, merge
