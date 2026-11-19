@@ -21,20 +21,20 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab/censor"
 )
 
-// TestCensorMatrix scores every transport against every censor module
-// (PRD C4, success metric 1) and regenerates lab/RESULTS.md. Each
-// transport's row runs in one lab of its own (lab.Upstream, holding its
-// own lab slot, lab.StartOwnSlot), the rows in parallel and a row's cells
-// one after another: a transport passes when its data crossed the censor
-// in the lab router over IPv4 and over IPv6, fails when it crossed over
-// neither, and is partial when only one family crossed, which only a row
-// that varies (censorCase.varies) may be. A cell whose outcome contradicts
-// what its censor means to produce fails the test, and a cell whose
-// censor can't be trusted (censord died, the kernel dropped queued
-// packets, an active module missed a snapshot, the verdict log doesn't
-// show the probe's flows, the module the cell quotes didn't compare what
-// it must) is an error. RESULTS.md is written only by a complete run with
-// no error.
+// TestCensorMatrix scores every transport against every censor module (PRD
+// C4, success metric 1) and regenerates lab/RESULTS.md. Each transport's
+// row runs in one lab of its own (router, device-a, server-1 and
+// camouflage, holding its own lab slot, lab.StartOwnSlot), the rows in
+// parallel and a row's cells one after another: a transport passes when
+// its data crossed the censor in the lab router over IPv4 and over IPv6,
+// fails when it crossed over neither, and is partial when only one family
+// crossed, which only a row that varies (censorCase.varies) may be. A cell
+// whose outcome contradicts what its censor means to produce fails the
+// test, and a cell whose censor can't be trusted (censord died, the kernel
+// dropped queued packets, an active module missed a snapshot, the verdict
+// log doesn't show the probe's flows, the module the cell quotes didn't
+// compare what it must) is an error. RESULTS.md is written only by a
+// complete run with no error.
 //
 // Every cell sets its transport up afresh, and after it the row's lab is
 // reset to the state it came up in (matrixRow.reset): the cell's
@@ -1123,7 +1123,7 @@ func sawPlainTCP(t *testing.T, l *lab.Lab, c *censorRun) error {
 
 func setupUDP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
-	space := newM0Space(t, l.Node(lab.Internet), server)
+	space := newM0Space(t, l.Node(lab.Camouflage), server)
 	envelope, version := space.build(t)
 	space.install(t, dev, "device-a", envelope)
 	space.install(t, server, "server-1", envelope)
