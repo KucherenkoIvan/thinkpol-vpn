@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-268"
+branch: "tp-268-critical-path"
 ---
 
 ## Goal
@@ -34,3 +34,4 @@ In TP-261's full labs, TestKillSwitchUnderSystemd (four parallel parts) only sta
 
 ## Log
 - 2026-11-19 created in backlog (owner: do 1-2)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-268
