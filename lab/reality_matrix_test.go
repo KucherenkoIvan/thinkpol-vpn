@@ -123,11 +123,11 @@ func probeReality(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) cross
 }
 
 // holdReality brings device-a's link up and holds it (holdTunnel).
-func holdReality(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool) {
+func holdReality(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool, blocks func() int) {
 	if err := realityUp(t, l, probeBudget{pass: true}); err != nil {
 		t.Fatal(err)
 	}
-	holdTunnel(t, l, to, d, idle)
+	holdTunnel(t, l, to, d, idle, blocks)
 }
 
 // holdTunnel keeps device-a's tunnel to server-1 up for d before the
@@ -138,8 +138,9 @@ func holdReality(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle
 // on its own; no case holds idle until TP-080 brings the idle rhythm case
 // back (results_test.go), and the branch stays for it. A hold whose pings
 // didn't cross held no tunnel, and its cell would mean nothing: it fails
-// the test.
-func holdTunnel(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool) {
+// the test. blocks is how many connections the censor blocked meanwhile,
+// read once the pings are done.
+func holdTunnel(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool, blocks func() int) {
 	ctx, cancel := context.WithTimeout(t.Context(), d+time.Minute)
 	defer cancel()
 	dev := l.Node(lab.DeviceA)
@@ -159,15 +160,18 @@ func holdTunnel(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle 
 	res, err := dev.Exec(ctx, "ping", "-q", "-i", strconv.FormatFloat(interval.Seconds(), 'f', -1, 64),
 		"-w", fmt.Sprint(int(d/time.Second)), to.v4.String())
 	sent, got, perr := pingReceived(res.Stdout)
-	// 10% may be lost, at least 4, and the pings of one redial: a block of
-	// the held connection costs its redial up to 7 s at any timer scale
-	// (thinkpol's path gives up on a link 6 s after its probes go
-	// unanswered, at real time), 3 pings at real time, 17 at a factor of
-	// 10.
-	if allowed := max(4, sent/10) + int(holdRedial/interval); perr != nil || sent == 0 || sent-got > allowed {
-		t.Fatalf("the hold's pings didn't cross: %d of %d came back, want all but %d (%v): %v", got, sent, allowed, perr, err)
+	// 10% may be lost, at least 4, and the pings of one redial per block
+	// the censor logged: a block of the held connection costs its redial
+	// up to 7 s at any timer scale (thinkpol's path gives up on a link 6 s
+	// after its probes go unanswered, at real time), 3 pings at real time,
+	// 17 at a factor of 10. A scaled hold can see two blocks: udp's
+	// connection is caught about 24 s into its 55 s, and the redialled
+	// one again before the hold ends.
+	n := blocks()
+	if allowed := max(4, sent/10) + n*int(holdRedial/interval); perr != nil || sent == 0 || sent-got > allowed {
+		t.Fatalf("the hold's pings didn't cross: %d of %d came back, want all but %d (%d blocks) (%v): %v", got, sent, allowed, n, perr, err)
 	}
-	t.Logf("the hold's pings: %d of %d came back", got, sent)
+	t.Logf("the hold's pings: %d of %d came back, %d blocks", got, sent, n)
 }
 
 // holdRedial is the longest a held tunnel's redial after a block takes.
@@ -220,6 +224,24 @@ func (c *censorRun) blockReason(t *testing.T, module string) string {
 		return false
 	})
 	return why
+}
+
+// blocks is how many flows module dropped or reset in the verdict log,
+// each a connection the hold's tunnel redialled after. A flow that
+// started over under the same addresses and ports counts once.
+func (c *censorRun) blocks(t *testing.T, module string) int {
+	t.Helper()
+	if c == nil {
+		return 0
+	}
+	flows := map[string]bool{}
+	c.logged(t, func(e verdictLine) bool {
+		if e.Module == module && (e.Event == censor.EventDecision || e.Event == censor.EventFlag) && (e.Verdict == censor.Drop || e.Verdict == censor.Reset) {
+			flows[e.Flow] = true
+		}
+		return false
+	})
+	return len(flows)
 }
 
 // blockReasons is every reason module dropped or reset a flow for in the

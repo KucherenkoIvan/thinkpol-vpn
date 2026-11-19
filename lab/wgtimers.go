@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -40,10 +41,19 @@ func WGTimerScale() (int, error) {
 		return DefaultWGTimerScale, nil
 	}
 	n, err := strconv.Atoi(v)
-	if err != nil || n < 1 || n > maxWGTimerScale {
+	if err != nil || CheckWGTimerScale(n) != nil {
 		return 0, fmt.Errorf("lab: %s=%q: want a whole number from 1 to %d", WGTimerScaleEnv, v, maxWGTimerScale)
 	}
 	return n, nil
+}
+
+// CheckWGTimerScale fails for a factor the lab doesn't run WireGuard's
+// timers sped up by.
+func CheckWGTimerScale(n int) error {
+	if n < 1 || n > maxWGTimerScale {
+		return fmt.Errorf("lab: WireGuard timer scale %d: want 1 to %d", n, maxWGTimerScale)
+	}
+	return nil
 }
 
 const wireGuardModule = "golang.zx2c4.com/wireguard"
@@ -78,6 +88,9 @@ func wgTimerModFile(ctx context.Context, root, dir string, scale int) (string, e
 	if scale == 1 {
 		return "", nil
 	}
+	if err := noWireGuardReplace(ctx, root); err != nil {
+		return "", err
+	}
 	res, err := run(ctx, nil, nil, "go", "-C", root, "mod", "download", "-json", wireGuardModule)
 	if err != nil {
 		return "", fmt.Errorf("lab: find %s: %w", wireGuardModule, err)
@@ -98,9 +111,6 @@ func wgTimerModFile(ctx context.Context, root, dir string, scale int) (string, e
 	copyDir, err := scaledWireGuardCopy(mod.Dir, mod.Version, scaled)
 	if err != nil {
 		return "", fmt.Errorf("lab: copy %s with its timers scaled: %w", wireGuardModule, err)
-	}
-	if err := noWireGuardReplace(ctx, root); err != nil {
-		return "", err
 	}
 	gomod, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {
@@ -142,8 +152,9 @@ func noWireGuardReplace(ctx context.Context, root string) error {
 // scaledWireGuardCopy copies the module in modDir, with constants in place
 // of its device/constants.go, to a directory of the user's cache named by
 // the version and the constants, unless it is there already with the
-// same content, and returns that directory. A copy whose content differs
-// (edited, or broken) is made again, and copies a killed build left
+// same content, and returns that directory. Anything there that isn't
+// that copy (edited, broken, or left half removed) is moved aside and
+// removed, and the copy made again; copies a killed build left
 // unfinished are removed.
 func scaledWireGuardCopy(modDir, version string, constants []byte) (string, error) {
 	cache, err := os.UserCacheDir()
@@ -157,11 +168,17 @@ func scaledWireGuardCopy(modDir, version string, constants []byte) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if _, err := os.Stat(filepath.Join(dst, "go.mod")); err == nil {
+	if _, err := os.Lstat(dst); err == nil {
 		if got, err := wgTreeHash(os.DirFS(dst), nil); err == nil && got == want {
 			return dst, nil
 		}
-		if err := os.RemoveAll(dst); err != nil {
+		// Renamed first, so a removal killed halfway leaves a stale
+		// copy for removeStaleCopies, never a partial dst.
+		stale := filepath.Join(parent, fmt.Sprintf("%sstale-%d-%d", wgCopyPrefix, os.Getpid(), time.Now().UnixNano()))
+		if err := os.Rename(dst, stale); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		if err := os.RemoveAll(stale); err != nil {
 			return "", err
 		}
 	}

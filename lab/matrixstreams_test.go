@@ -18,11 +18,15 @@ import (
 // matrixShare is one stream's cells of the censor matrix, as the stream
 // writes them for make lab-test to assemble RESULTS.md from.
 type matrixShare struct {
-	Stream   string
-	Commit   string // lab.CommitEnv: what the run tested
-	Expected int    // how many cells are the stream's (streamCells)
-	Failed   bool   // the matrix test failed in the stream
-	Cells    []shareCell
+	Stream string
+	Commit string // lab.CommitEnv: what the run tested
+	// WGTimerScale is the factor the stream's WireGuard timers ran sped
+	// up by (lab.WGTimerScale): RESULTS.md's header says it, so both
+	// streams must have run the same.
+	WGTimerScale int
+	Expected     int  // how many cells are the stream's (streamCells)
+	Failed       bool // the matrix test failed in the stream
+	Cells        []shareCell
 }
 
 type shareCell struct{ Transport, Censor, Result, Detail string }
@@ -34,8 +38,8 @@ func shareFile(dir, stream string) string {
 // matrixShareOf is the stream's own share of cells: in the long stream, a
 // held row's off cell is the default stream's, run again only as its held
 // cell's gate.
-func matrixShareOf(stream, commit string, failed bool, cells []matrixCell) matrixShare {
-	share := matrixShare{Stream: stream, Commit: commit, Expected: streamCells(stream), Failed: failed}
+func matrixShareOf(stream, commit string, scale int, failed bool, cells []matrixCell) matrixShare {
+	share := matrixShare{Stream: stream, Commit: commit, WGTimerScale: scale, Expected: streamCells(stream), Failed: failed}
 	for _, c := range cells {
 		if stream == lab.StreamLong && c.censor == censorCases[0].name {
 			continue
@@ -55,7 +59,7 @@ func writeMatrixShare(t *testing.T, stream string, cells []matrixCell) {
 		t.Logf("the %s stream's share of the matrix, without %s: RESULTS.md not written", stream, lab.ResultsDirEnv)
 		return
 	}
-	b, err := json.Marshal(matrixShareOf(stream, os.Getenv(lab.CommitEnv), t.Failed(), cells))
+	b, err := json.Marshal(matrixShareOf(stream, os.Getenv(lab.CommitEnv), wgTimerScale, t.Failed(), cells))
 	if err == nil {
 		err = os.WriteFile(shareFile(dir, stream), b, 0o644)
 	}
@@ -96,9 +100,11 @@ func readMatrixShares(dir, commit string) (map[string]*matrixShare, error) {
 // TestAssembleCensorMatrix writes RESULTS.md from both streams' shares of
 // the censor matrix in lab.ResultsDirEnv's directory: make lab-test runs it
 // once both streams have ended, from the test binary both streams ran. A
-// share missing, short of its cells, of another commit, or from a stream
-// whose matrix failed is an error, never a partial RESULTS.md. It runs
-// only outside a stream, with the directory set.
+// share missing, short of its cells, of another commit, of another
+// WireGuard timer scale than the other's, or from a stream whose matrix
+// failed is an error, never a partial RESULTS.md. The header's timer
+// scale is the shares', not this process's. It runs only outside a
+// stream, with the directory set.
 func TestAssembleCensorMatrix(t *testing.T) {
 	stream, err := lab.Stream()
 	if err != nil {
@@ -112,24 +118,32 @@ func TestAssembleCensorMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RESULTS.md not written: %v", err)
 	}
-	cells, err := assembleMatrix(shares)
+	cells, scale, err := assembleMatrix(shares)
 	if err != nil {
 		t.Fatalf("RESULTS.md not written: %v", err)
 	}
-	writeResults(t, cells, len(transports)*len(censorCases))
+	writeResults(t, cells, len(transports)*len(censorCases), scale)
 }
 
 // assembleMatrix is the matrix from both streams' shares: every cell once,
-// or an error saying which share is missing or wrong.
-func assembleMatrix(shares map[string]*matrixShare) ([]matrixCell, error) {
+// and the WireGuard timer scale both ran at, or an error saying which
+// share is missing or wrong.
+func assembleMatrix(shares map[string]*matrixShare) ([]matrixCell, int, error) {
 	var errs []error
 	var cells []matrixCell
+	scale := 0
 	seen := map[[2]string]bool{}
 	for _, stream := range []string{lab.StreamDefault, lab.StreamLong} {
 		share := shares[stream]
 		switch {
 		case share == nil:
 			errs = append(errs, fmt.Errorf("the %s stream's share of the matrix is missing", stream))
+			continue
+		case lab.CheckWGTimerScale(share.WGTimerScale) != nil:
+			errs = append(errs, fmt.Errorf("the %s stream's share: %w", stream, lab.CheckWGTimerScale(share.WGTimerScale)))
+			continue
+		case scale != 0 && share.WGTimerScale != scale:
+			errs = append(errs, fmt.Errorf("the %s stream ran WireGuard's timers ×%d, the default stream ×%d", stream, share.WGTimerScale, scale))
 			continue
 		case share.Failed:
 			errs = append(errs, fmt.Errorf("the %s stream's matrix failed", stream))
@@ -138,6 +152,7 @@ func assembleMatrix(shares map[string]*matrixShare) ([]matrixCell, error) {
 			errs = append(errs, fmt.Errorf("the %s stream's share has %d of %d cells (expected %d)", stream, len(share.Cells), streamCells(stream), share.Expected))
 			continue
 		}
+		scale = share.WGTimerScale
 		for _, c := range share.Cells {
 			key := [2]string{c.Transport, c.Censor}
 			if seen[key] {
@@ -157,7 +172,7 @@ func assembleMatrix(shares map[string]*matrixShare) ([]matrixCell, error) {
 			}
 		}
 	}
-	return cells, errors.Join(errs...)
+	return cells, scale, errors.Join(errs...)
 }
 
 // TestAssembleMatrix: shares that cover the matrix assemble into every
@@ -166,8 +181,8 @@ func assembleMatrix(shares map[string]*matrixShare) ([]matrixCell, error) {
 func TestAssembleMatrix(t *testing.T) {
 	whole := func() map[string]*matrixShare {
 		shares := map[string]*matrixShare{
-			lab.StreamDefault: {Stream: lab.StreamDefault, Expected: streamCells(lab.StreamDefault)},
-			lab.StreamLong:    {Stream: lab.StreamLong, Expected: streamCells(lab.StreamLong)},
+			lab.StreamDefault: {Stream: lab.StreamDefault, WGTimerScale: 10, Expected: streamCells(lab.StreamDefault)},
+			lab.StreamLong:    {Stream: lab.StreamLong, WGTimerScale: 10, Expected: streamCells(lab.StreamLong)},
 		}
 		for _, tr := range transports {
 			for i, cc := range censorCases {
@@ -180,9 +195,9 @@ func TestAssembleMatrix(t *testing.T) {
 		}
 		return shares
 	}
-	cells, err := assembleMatrix(whole())
-	if err != nil || len(cells) != len(transports)*len(censorCases) {
-		t.Fatalf("both shares: %d cells, %v; want %d", len(cells), err, len(transports)*len(censorCases))
+	cells, scale, err := assembleMatrix(whole())
+	if err != nil || len(cells) != len(transports)*len(censorCases) || scale != 10 {
+		t.Fatalf("both shares: %d cells, ×%d, %v; want %d, ×10", len(cells), scale, err, len(transports)*len(censorCases))
 	}
 	if streamCells(lab.StreamLong) == 0 || streamCells(lab.StreamDefault)+streamCells(lab.StreamLong) != len(cells) {
 		t.Fatalf("the streams' cells: default %d, long %d, of %d", streamCells(lab.StreamDefault), streamCells(lab.StreamLong), len(cells))
@@ -207,6 +222,11 @@ func TestAssembleMatrix(t *testing.T) {
 			d.Cells[0] = s[lab.StreamLong].Cells[0]
 		}, "is in both streams' shares"},
 		{"an errored cell", func(s map[string]*matrixShare) { s[lab.StreamLong].Cells[0].Result = "error" }, "errored"},
+		{"timer scales differ", func(s map[string]*matrixShare) { s[lab.StreamLong].WGTimerScale = 1 }, "the long stream ran WireGuard's timers ×1, the default stream ×10"},
+		{"no timer scale", func(s map[string]*matrixShare) { s[lab.StreamDefault].WGTimerScale = 0 }, "the default stream's share: lab: WireGuard timer scale 0"},
+		{"timer scale too high", func(s map[string]*matrixShare) {
+			s[lab.StreamDefault].WGTimerScale, s[lab.StreamLong].WGTimerScale = 11, 11
+		}, "WireGuard timer scale 11"},
 		{"a cell renamed", func(s map[string]*matrixShare) {
 			s[lab.StreamDefault].Cells[0].Transport = "no-such-row"
 		}, "is in neither stream's share"},
@@ -214,7 +234,7 @@ func TestAssembleMatrix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			shares := whole()
 			tc.spoil(shares)
-			_, err := assembleMatrix(shares)
+			_, _, err := assembleMatrix(shares)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("got %v, want an error saying %q", err, tc.want)
 			}
@@ -233,9 +253,9 @@ func TestMatrixShareOf(t *testing.T) {
 			}
 		}
 	}
-	share := matrixShareOf(lab.StreamLong, "c0ffee", true, cells)
-	if !share.Failed || share.Commit != "c0ffee" || share.Stream != lab.StreamLong {
-		t.Errorf("share %+v: want failed, commit c0ffee, the long stream", share)
+	share := matrixShareOf(lab.StreamLong, "c0ffee", 3, true, cells)
+	if !share.Failed || share.Commit != "c0ffee" || share.Stream != lab.StreamLong || share.WGTimerScale != 3 {
+		t.Errorf("share %+v: want failed, commit c0ffee, the long stream, ×3", share)
 	}
 	if len(share.Cells) != streamCells(lab.StreamLong) || len(share.Cells) == len(cells) {
 		t.Fatalf("the long stream's share has %d of the %d cells it ran, want %d", len(share.Cells), len(cells), streamCells(lab.StreamLong))
@@ -245,7 +265,7 @@ func TestMatrixShareOf(t *testing.T) {
 			t.Errorf("the long stream's share has the off cell of %s", c.Transport)
 		}
 	}
-	if matrixShareOf(lab.StreamDefault, "", false, cells).Failed {
+	if matrixShareOf(lab.StreamDefault, "", 1, false, cells).Failed {
 		t.Error("a passing stream's share says failed")
 	}
 }

@@ -49,8 +49,8 @@ import (
 // error and fails fast, whether the off cell didn't run (a -run filter can
 // select the cell alone) or it failed.
 //
-// The held cells (heldCell: a row holding its tunnel for minutes on
-// WireGuard's real rekey timers) are the long stream's (lab.StreamLong),
+// The held cells (heldCell: a row holding its tunnel through three of
+// WireGuard's rekeys, rhythmHold) are the long stream's (lab.StreamLong),
 // every other cell the default stream's: each stream runs its own cells,
 // a held row's off cell in both, in a lab of its own, as each held cell's
 // gate. A stream writes its cells to lab.ResultsDirEnv's directory, and
@@ -74,7 +74,7 @@ func TestCensorMatrix(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		if stream == "" {
-			writeResults(t, cells, len(transports)*len(censorCases))
+			writeResults(t, cells, len(transports)*len(censorCases), wgTimerScale)
 			return
 		}
 		writeMatrixShare(t, stream, cells)
@@ -118,7 +118,7 @@ func TestCensorMatrix(t *testing.T) {
 		}
 		held := cc.hold > 0 && tr.hold != nil
 		if held {
-			tr.hold(t, l, target, cc.hold, cc.idle)
+			tr.hold(t, l, target, cc.hold, cc.idle, func() int { return c.blocks(t, cc.watch) })
 		}
 		if cc.settle {
 			// An active module judges a connection after it has crossed:
@@ -270,8 +270,8 @@ func TestCensorMatrix(t *testing.T) {
 }
 
 // heldCell says whether a cell holds its row's tunnel before the probe
-// (censorCase.hold, transport.hold): minutes on real timers, the long
-// stream's.
+// (censorCase.hold, transport.hold): the matrix's longest waits (7.5
+// minutes at real time, rhythmHold), the long stream's.
 func heldCell(tr transport, cc censorCase) bool { return cc.hold > 0 && tr.hold != nil }
 
 // inStream says whether a censored cell is the stream's: held cells are
@@ -418,7 +418,7 @@ func TestCheckMatrix(t *testing.T) {
 	held := func(expect map[string]string) []censorCase {
 		return []censorCase{{name: "off"}, {name: "held", modules: on, hold: time.Minute, expect: expect, blocker: "wireguard-rhythm"}}
 	}
-	hold := func(*testing.T, *lab.Lab, probeTarget, time.Duration, bool) {}
+	hold := func(*testing.T, *lab.Lab, probeTarget, time.Duration, bool, func() int) {}
 	for _, c := range []struct {
 		name    string
 		cases   []censorCase
@@ -995,8 +995,9 @@ type transport struct {
 	// to compare (checkMatrix).
 	tls bool
 	// hold, if set, keeps the transport up for a while (a case's hold)
-	// before the probe: in use, or idle.
-	hold func(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool)
+	// before the probe: in use, or idle. blocks counts the connections the
+	// case's module blocked so far, each a redial for the hold to allow.
+	hold func(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool, blocks func() int)
 }
 
 // withRowSettings is the case's module configs with a row's overrides
@@ -1754,7 +1755,9 @@ func matchVerdicts(log string, match func(verdictLine) bool) (bool, error) {
 	return false, nil
 }
 
-func writeResults(t *testing.T, cells []matrixCell, expected int) {
+// writeResults writes RESULTS.md from the matrix's cells, run with
+// WireGuard's timers sped up by scale.
+func writeResults(t *testing.T, cells []matrixCell, expected, scale int) {
 	t.Helper()
 	if len(cells) < expected {
 		t.Logf("partial matrix run (%d of %d cells): RESULTS.md not written", len(cells), expected)
@@ -1794,7 +1797,7 @@ func writeResults(t *testing.T, cells []matrixCell, expected int) {
 		"A cell whose detail says `varies` is chance by nature, and says why: it shows what this run got, and only a `(reference)` row may vary. " +
 		"A cell `not judged` crossed, but its module couldn't judge what the cell is for: the prober's upstream tell, unattributable when server-1 dialed the site outside the probes at half their rate or more.\n\n")
 	fmt.Fprintf(&b, "This run: %s (`%s`, lab/README.md \"WireGuard's timers\"); the `wireguard-rhythm` cells held their tunnels %v, a ping every %v, the module's rekey period %v.\n\n",
-		wgTimersHow(wgTimerScale), lab.WGTimerScaleEnv, rhythmHold(wgTimerScale), rhythmPing(wgTimerScale), censor.WGRekeyAfterTime/time.Duration(wgTimerScale))
+		wgTimersHow(scale), lab.WGTimerScaleEnv, rhythmHold(scale), rhythmPing(scale), censor.WGRekeyAfterTime/time.Duration(scale))
 	b.WriteString("| transport | censor | result | detail |\n|---|---|---|---|\n")
 	for _, c := range cells {
 		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.transport, c.censor, c.result, strings.ReplaceAll(c.detail, "|", `\|`))
