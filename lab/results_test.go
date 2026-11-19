@@ -243,7 +243,7 @@ func TestCensorMatrix(t *testing.T) {
 					// but the assignment would not happen: claim that the
 					// cell ran before it can fail.
 					offResult = "error"
-					offResult = runCell(t, row, tr, off, ml.part == 0).result
+					offResult = runCell(t, row, tr, off, ml.recordsOff()).result
 				})
 				for _, cc := range ml.cells {
 					t.Run(cc.name, func(t *testing.T) {
@@ -276,14 +276,18 @@ type matrixLab struct {
 	cells []censorCase
 }
 
-// name is the lab's subtest: the row's name for its first lab, which
-// records the off cell, "<row> lab <n>" for the others.
+// name is the lab's subtest: the row's name for its first lab, "<row> lab
+// <n>" for the others.
 func (ml matrixLab) name() string {
 	if ml.part == 0 {
 		return ml.tr.name
 	}
 	return fmt.Sprintf("%s lab %d", ml.tr.name, ml.part+1)
 }
+
+// recordsOff says whether the lab records its off cell: the row's first
+// lab does, the others run it only as their gate.
+func (ml matrixLab) recordsOff() bool { return ml.part == 0 }
 
 // rowLabs is the row's labs in the stream: the stream's censored cells
 // dealt in turn across transport.labs labs (fewer when the row has fewer
@@ -316,9 +320,10 @@ func rowLabs(stream string, tr transport, censored []censorCase) []matrixLab {
 // TestRowLabs: in each stream, every row's cells of the stream are in
 // exactly one of its labs, each lab with at least one of them (a default
 // stream's row with none has one lab, for its off cell), named apart, no
-// more labs than the row asks for, and only the first lab records the off
-// cell; the long stream starts labs only for held rows. A split row
-// splits its default stream's cells evenly.
+// more labs than the row asks for, and one lab records the off cell (the
+// long stream's share leaves it out, matrixShareOf), so the labs record
+// the stream's cells once each; the long stream starts labs only for held
+// rows. A split row splits its default stream's cells evenly.
 func TestRowLabs(t *testing.T) {
 	split := false
 	censored := censorCases[1:]
@@ -327,7 +332,7 @@ func TestRowLabs(t *testing.T) {
 		recorded := 0
 		for _, tr := range transports {
 			labs := rowLabs(stream, tr, censored)
-			got := map[string]int{}
+			got, offs := map[string]int{}, 0
 			for i, ml := range labs {
 				if ml.part != i || ml.tr.name != tr.name {
 					t.Errorf("%q stream, %s: lab %d says part %d of %s", stream, tr.name, i, ml.part, ml.tr.name)
@@ -342,9 +347,15 @@ func TestRowLabs(t *testing.T) {
 				for _, cc := range ml.cells {
 					got[cc.name]++
 				}
+				if ml.recordsOff() {
+					offs++
+				}
 			}
-			if len(labs) > 0 && stream != lab.StreamLong {
-				recorded++ // the first lab's off cell
+			if len(labs) > 0 && offs != 1 {
+				t.Errorf("%q stream: %s's labs record its off cell %d times", stream, tr.name, offs)
+			}
+			if stream != lab.StreamLong {
+				recorded += offs
 			}
 			if len(labs) > max(tr.labs, 1) {
 				t.Errorf("%q stream: %s has %d labs, asks for %d", stream, tr.name, len(labs), tr.labs)
