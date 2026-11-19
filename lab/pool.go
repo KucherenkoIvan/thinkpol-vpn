@@ -319,9 +319,9 @@ func closePools(w io.Writer) {
 	for _, p := range all {
 		p.down.Wait()
 		if s := p.Stats(); s.Uses > 0 {
-			fmt.Fprintf(w, "lab pool %s: %d labs started for %d tests, %d retired\n", p.name, s.Started, s.Uses, len(s.Retired))
+			_, _ = fmt.Fprintf(w, "lab pool %s: %d labs started for %d tests, %d retired\n", p.name, s.Started, s.Uses, len(s.Retired))
 			for _, r := range s.Retired {
-				fmt.Fprintf(w, "lab pool %s: retired after %s\n", p.name, r)
+				_, _ = fmt.Fprintf(w, "lab pool %s: retired after %s\n", p.name, r)
 			}
 		}
 	}
