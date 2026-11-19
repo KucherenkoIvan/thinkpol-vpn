@@ -22,6 +22,15 @@
 // router's state. The censor matrix runs it between the cells of a row,
 // which share one lab.
 //
+// censord binds and sets up its queue before its table goes in, and logs
+// "censor ready" after: go-nfqueue sets the queue up with requests on the
+// socket queued packets arrive on and takes the next message for each
+// request's ack, so a packet queued in between failed the start
+// ("mismatched sequence in netlink reply", TP-252). Until it is ready the
+// router forwards uncensored, as before censord starts. A cell judged from
+// a flow's first byte starts that flow after the line; the censor
+// matrix's udp row brings its link up before it (a follow-up ticket).
+//
 // # Flows and streams
 //
 // A [Flow] is one direction of a connection ([FlowKey]); the engine links
