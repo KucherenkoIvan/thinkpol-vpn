@@ -32,7 +32,9 @@ const usage = `usage: labctl <command>
                                       and no binaries)
   gotest [-v] [-run re] [-skip re] [-count n] [-timeout d] [-p n] [-perf] [-tagged] [-fail-skipped]
          [-times file] pkgs...
-                                      run each package's tests in a fresh lab node with THINKPOL_LAB=1
+                                      run each package's tests in a lab node with THINKPOL_LAB=1, the
+                                      packages taking turns in up to -p labs, each reset and checked
+                                      between two (a package with ` + lab.FreshLabFile + `: a lab of its own)
                                       (-run, -skip, -count, -timeout: the test binary's; -count repeats
                                       runs for stability)
                                       (-times: write how long each package took, lab setup included,
