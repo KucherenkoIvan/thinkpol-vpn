@@ -15,6 +15,13 @@
 // kept, with KeepEnv). The check reads only what nodeStateScript lists: a
 // test that changes anything else needs a lab of its own (Start).
 //
+// Lab starts take lab slots first come first served (the slot queue), so
+// the order tests start in is the order their labs come up. The longest
+// tests call StartFirst (or Pool.StartFirst) in place of t.Parallel: in
+// make lab-test's streams, every other lab start of the process joins the
+// slot queue only after theirs (firstStarts), and a pool's labs go to the
+// tests waiting with a rank (Pool.AcquireInOrder) lowest first.
+//
 // A run is the processes that share a run id (RunEnv): make lab-test gives
 // its lab tests and its labctl gotest one, and every other process that
 // starts labs makes up its own. Test and gotest labs carry it in their
