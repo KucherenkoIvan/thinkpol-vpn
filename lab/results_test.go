@@ -41,12 +41,12 @@ import (
 // is an error. RESULTS.md is written only by a complete run with no error.
 //
 // Every cell sets its transport up afresh, and after it the cell's lab is
-// reset to the state it came up in (matrixRow.reset): the cell's
-// processes, censord with them, stopped, its TCP connections aborted
-// (and none left, matrixRow.abortTCP), the links, addresses, routes,
-// policy rules, tables and files it left removed, the router's censor
-// table and conntrack cleared, the verdict log gone. A reset that didn't
-// hold makes the cell an error, and every later cell of its lab.
+// reset to the state the row recorded when it took the lab
+// (matrixRow.reset, lab.Lab.Reset): the cell's processes, censord with
+// them, stopped, its TCP connections aborted (and none left), what it
+// left on the nodes removed (the router's censor table, the verdict log),
+// every node's conntrack cleared. A reset that didn't hold makes the cell
+// an error, and every later cell of its lab.
 //
 // A transport's off cell (no censor) runs first in each of its labs and
 // the lab's censored cells read its result: a transport must pass without
