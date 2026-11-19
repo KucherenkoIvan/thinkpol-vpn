@@ -11,7 +11,9 @@
 // one topology can share labs one after another instead (Pool): a test
 // takes a started lab, and when it ends the lab is reset to the state it
 // came up in and checked (Snapshot, Lab.Reset) before the next test gets
-// it; a lab whose check fails, or whose test failed, is torn down.
+// it; a lab whose check fails, or whose test failed, is torn down (or
+// kept, with KeepEnv). The check reads only what nodeStateScript lists: a
+// test that changes anything else needs a lab of its own (Start).
 //
 // A run is the processes that share a run id (RunEnv): make lab-test gives
 // its lab tests and its labctl gotest one, and every other process that

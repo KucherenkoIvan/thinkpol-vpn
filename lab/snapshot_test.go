@@ -16,13 +16,14 @@ import (
 // then the settings.
 func TestNodeState(t *testing.T) {
 	clean := parseNodeState("process 1 /sbin/docker-init -- sh -c wait\nprocess 7 sleep infinity\nlink lo\nlink eth0\n" +
-		"linkattr eth0 <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n" +
+		"linkattr eth0 <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 ifindex 9 link/ether 02:42:ac:10:00:02\n" +
 		"rule4 0:\tfrom all lookup local\nnft table netdev tplab_eth0\nnftrule netdev tplab_eth0: ether saddr 02:42:ac:11:00:01 drop\n" +
 		"path d /tmp\npath d /etc\npath f /etc/resolv.conf\npath f /etc/group\netc 1111 /etc/resolv.conf\netc 2222 /etc/group\n" +
 		"etcmode 644 0 0 /etc/group\nsysctl net.ipv4.ip_forward = 0\nsysctl net.ipv4.conf.eth0.rp_filter = 2\n" +
 		"addr eth0 172.16.1.2/24\n")
 	now := parseNodeState("process 1 /sbin/docker-init -- sh -c wait\nprocess 7 sleep infinity\nprocess 90 thinkpol up\nlink lo\nlink eth0\nlink wg4\n" +
-		"linkattr eth0 <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1400\nlinkattr wg4 <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420\n" +
+		"linkattr eth0 <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1400 ifindex 9 link/ether 02:42:ac:10:00:02\nlinkattr wg4 <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 ifindex 12\n" +
+		"neigh 192.0.2.7 dev eth0 lladdr 02:00:00:00:00:07 PERMANENT\n" +
 		"rule4 0:\tfrom all lookup local\nrule4 5208:\tfrom all fwmark 0x5 lookup 52\nnft table netdev tplab_eth0\n" +
 		"nftrule netdev tplab_eth0: ether saddr 02:42:ac:11:00:01 drop\nnftrule netdev tplab_eth0: ether saddr 02:42:ac:11:00:01 drop\n" +
 		"nft table inet censor\nnftrule inet censor: chain queue {\nqueue 100\nmount /run/netns/space\n" +
@@ -32,7 +33,8 @@ func TestNodeState(t *testing.T) {
 		"route4 default dev wg4 table 52 scope link\nroute6 2001:db8::/64 dev eth0 metric 1024 pref medium\naddr eth0 192.0.2.9/32\n")
 	extra, missing := clean.diff(now)
 	want := nodeState{"process": {"90 thinkpol up"}, "link": {"wg4"}, "rule4": {"5208:\tfrom all fwmark 0x5 lookup 52"},
-		"linkattr": {"eth0 <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1400", "wg4 <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420"},
+		"linkattr": {"eth0 <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1400 ifindex 9 link/ether 02:42:ac:10:00:02", "wg4 <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 ifindex 12"},
+		"neigh":    {"192.0.2.7 dev eth0 lladdr 02:00:00:00:00:07 PERMANENT"},
 		"nft":      {"table inet censor"}, "nftrule": {"inet censor: chain queue {", "netdev tplab_eth0: ether saddr 02:42:ac:11:00:01 drop"},
 		"queue": {"100"}, "mount": {"/run/netns/space"},
 		"path":    {"d /tmp/m0", "f /etc/thinkpol.conf", "f /tmp/m0/map.yaml"},
@@ -44,7 +46,7 @@ func TestNodeState(t *testing.T) {
 	if !maps.EqualFunc(extra, want, slices.Equal) {
 		t.Errorf("extra:%s\nwant:%s", extra, want)
 	}
-	wantMissing := nodeState{"linkattr": {"eth0 <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500"}, "path": {"f /etc/group"},
+	wantMissing := nodeState{"linkattr": {"eth0 <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 ifindex 9 link/ether 02:42:ac:10:00:02"}, "path": {"f /etc/group"},
 		"etc": {"1111 /etc/resolv.conf", "2222 /etc/group"}, "etcmode": {"644 0 0 /etc/group"},
 		"sysctl": {"net.ipv4.ip_forward = 0"}, "addr": {"eth0 172.16.1.2/24"}}
 	if !maps.EqualFunc(missing, wantMissing, slices.Equal) {
@@ -79,11 +81,12 @@ func TestNodeState(t *testing.T) {
 		{"ip", "-6", "route", "del", "2001:db8::/64", "dev", "eth0", "metric", "1024", "pref", "medium"},
 		{"ip", "addr", "del", "192.0.2.9/32", "dev", "eth0"},
 		{"ip", "addr", "add", "172.16.1.2/24", "dev", "eth0"},
+		{"ip", "neigh", "del", "192.0.2.7", "dev", "eth0"},
 	}
 	if !slices.EqualFunc(got, wantCmds, slices.Equal) {
 		t.Errorf("undo, addressing: %q\nwant %q", got, wantCmds)
 	}
-	for _, k := range []string{"route4", "route6", "addr"} {
+	for _, k := range []string{"route4", "route6", "addr", "neigh"} {
 		delete(extra, k)
 		delete(missing, k)
 	}
@@ -94,6 +97,20 @@ func TestNodeState(t *testing.T) {
 	}
 	if !slices.EqualFunc(got, wantCmds, slices.Equal) {
 		t.Errorf("undo, settings: %q\nwant %q", got, wantCmds)
+	}
+	// eth0 made again (another index), or its address changed, at the
+	// same MTU and state: nothing to set, the check fails on it.
+	for _, again := range []string{
+		"eth0 <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 ifindex 14 link/ether 02:42:ac:10:00:02",
+		"eth0 <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 ifindex 9 link/ether 02:00:00:00:00:01",
+	} {
+		e, m := clean.diff(parseNodeState(strings.ReplaceAll(fmt.Sprint(clean), "linkattr eth0 <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 ifindex 9 link/ether 02:42:ac:10:00:02", "linkattr "+again)))
+		if !slices.Equal(e["linkattr"], []string{again}) || len(m["linkattr"]) != 1 {
+			t.Errorf("eth0 as %q: extra%s, missing%s", again, e, m)
+		}
+		if cmds := undo(e, m, snap); len(cmds) != 0 {
+			t.Errorf("eth0 as %q: undo %q, want nothing", again, cmds)
+		}
 	}
 	if e, m := clean.diff(clean); len(e) > 0 || len(m) > 0 {
 		t.Errorf("a state differs from itself: %s / %s", e, m)

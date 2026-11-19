@@ -19,30 +19,43 @@ import (
 
 // nodeStateScript prints what a user may leave behind in a node, one
 // "<kind> <what>" line each, and "error <kind>" for a kind it couldn't
-// read: its processes (but the script's own), links and their flags, MTU
-// and master, addresses, routes in every table, policy rules, the
-// nftables ruleset by table, NFQUEUE queues bound, mounts, xfrm states and
-// policies, qdiscs, the network sysctls, and the filesystem but /usr (and
-// /usr/local with it): every path by type, /etc's files by content, mode
-// and owner, and the other regular files by mode, size and mtime, /var/log
-// by name only (a clean state's nginx writes there). /run/lab is the
-// lab's own (the seal marker, Process pid files, the snapshots' copies of
-// /etc). Left out, as the kernel changes them on its own: neighbour
-// entries, route expiry times, a route's linkdown flag, routes learnt from
-// router advertisements, a qdisc's refcnt and the conntrack count (the
-// reset empties conntrack and checks it apart). A link's own routes and
-// sysctls come and go with it.
+// read: its processes (but the script's own), links and their index,
+// flags, MTU, master and link-layer address, addresses, routes in every
+// table, policy rules, permanent neighbour entries, the nftables ruleset
+// (each line by table and block, a chain's rules numbered in order),
+// NFQUEUE queues bound, mounts, xfrm states and policies, qdiscs, the
+// network sysctls, and the filesystem but /usr (and /usr/local with it):
+// every path by type, /etc's files by content, mode and owner, and the
+// other regular files by mode, size and mtime, /var/log by name only (a
+// clean state's nginx writes there). /run/lab is the lab's own (the seal
+// marker, Process pid files, the snapshots' copies of /etc). Left out, as
+// the kernel changes them on its own: neighbour entries but permanent ones
+// and the TCP metrics cache (the reset flushes both), route expiry times,
+// a route's linkdown flag, routes learnt from router advertisements, a
+// qdisc's refcnt and the conntrack count (the reset empties conntrack and
+// checks it apart). A link's own routes and sysctls come and go with it.
+//
+// Not read at all, so a test that changes any of these needs a fresh lab
+// (Start): owners and modes of files and directories outside /etc,
+// extended attributes, ACLs and file capabilities, /usr outside
+// /usr/local, /dev (its shm and mqueue), /run/lab, what /var/log's files
+// hold, sysctls outside net.*, IPv6 address flags and lifetimes, a link's
+// txqlen and alias, tc filters and classes, nftables counters, quotas and
+// set elements' state (timeouts, dynamic updates: -s leaves them out),
+// mount options, the UTS hostname and ip nexthop objects. The image has no
+// iptables-legacy or ipset, so neither can hold state.
 const nodeStateScript = `
 set -o pipefail
 fail() { echo "error $1"; }
 ps -eo pid=,ppid=,args= | awk -v me=$$ '$1 != me && $2 != me { pid = $1; $1 = ""; $2 = ""; sub(/^ +/, ""); print "process " pid " " $0 }' || fail process
-ip -o link show | awk -F': ' '{ name = $2; sub(/@.*/, "", name); print "link " name; flags = ""; if (match($3, /<[^>]*>/)) flags = substr($3, RSTART, RLENGTH); n = split($3, f, " "); mtu = ""; master = ""; for (i = 1; i < n; i++) { if (f[i] == "mtu") mtu = f[i+1]; if (f[i] == "master") master = " master " f[i+1] } print "linkattr " name " " flags " mtu " mtu master }' || fail link
+ip -o link show | awk -F': ' '{ name = $2; sub(/@.*/, "", name); print "link " name; flags = ""; if (match($3, /<[^>]*>/)) flags = substr($3, RSTART, RLENGTH); n = split($3, f, " "); mtu = ""; master = ""; ll = ""; for (i = 1; i < n; i++) { if (f[i] == "mtu") mtu = f[i+1]; if (f[i] == "master") master = " master " f[i+1]; if (f[i] ~ /^link\// && f[i] != "link/none") ll = " " f[i] " " f[i+1] } print "linkattr " name " " flags " mtu " mtu master " ifindex " $1 ll }' || fail link
 ip -br addr show | awk '{ sub(/@.*/, "", $1); for (i = 3; i <= NF; i++) print "addr " $1 " " $i }' || fail addr
 { ip -4 route show table all | { grep -v 'proto ra' || true; } | sed -e 's/ expires [^ ]*//' -e 's/ linkdown//' -e 's/ *$//' -e 's/^/route4 /'; } || fail route4
 { ip -6 route show table all | { grep -v 'proto ra' || true; } | sed -e 's/ expires [^ ]*//' -e 's/ linkdown//' -e 's/ *$//' -e 's/^/route6 /'; } || fail route6
 ip -4 rule show | sed 's/^/rule4 /' || fail rule4
 ip -6 rule show | sed 's/^/rule6 /' || fail rule6
-nft -s list ruleset 2>/dev/null | awk '/^table / { t = $2 " " $3; print "nft table " t; next } /^[ \t]*}?[ \t]*$/ { next } { sub(/^[ \t]+/, ""); print "nftrule " t ": " $0 }' || fail nft
+ip neigh show nud permanent | sed -e 's/ *$//' -e 's/^/neigh /' || fail neigh
+nft -s list ruleset 2>/dev/null | awk '/^table / { t = $2 " " $3; b = ""; print "nft table " t; next } /^[ \t]*}?[ \t]*$/ { next } /^\t[^\t]/ && /[{]$/ { b = $0; sub(/^\t/, "", b); sub(/ *[{]$/, "", b); i = 0; print "nftrule " t " " b; next } { sub(/^[ \t]+/, ""); if (b ~ /^chain /) print "nftrule " t " " b " #" ++i ": " $0; else print "nftrule " t " " b ": " $0 }' || fail nft
 if [ -e /proc/net/netfilter/nfnetlink_queue ]; then awk '{ print "queue " $1 }' /proc/net/netfilter/nfnetlink_queue || fail queue; fi
 awk '{ print "mount " $5 }' /proc/self/mountinfo || fail mount
 { ip xfrm state; ip xfrm policy; } | { grep -v '^$' || true; } | sed 's/^/xfrm /' || fail xfrm
@@ -174,8 +187,9 @@ func topmost(paths []string) []string {
 
 // undo is the commands that remove what extra holds and put back what
 // missing lacks, for the first stage that has any: mounts, nftables
-// tables, links, policy rules, paths and /etc first; then routes and
-// addresses (read again after the first stage: a link's go with it); then
+// tables, links, policy rules, paths and /etc first; then routes,
+// addresses and permanent neighbour entries (read again after the first
+// stage: a link's go with it); then
 // sysctls and links' MTU and state (again after: forwarding writes reset
 // other sysctls). Processes the reset kills before. What no command can
 // put back (a clean table changed, a file outside /etc changed, a link
@@ -271,6 +285,12 @@ func undoAddressing(extra, missing nodeState) [][]string {
 			cmds = append(cmds, []string{"ip", "addr", "add", cidr, "dev", link})
 		}
 	}
+	for _, e := range extra["neigh"] {
+		// "192.0.2.9 dev eth0 lladdr 02:00:00:00:00:09 PERMANENT"
+		if f := strings.Fields(e); len(f) >= 3 && f[1] == "dev" {
+			cmds = append(cmds, []string{"ip", "neigh", "del", f[0], "dev", f[2]})
+		}
+	}
 	for _, f := range []struct{ flag, kind string }{{"-4", "route4"}, {"-6", "route6"}} {
 		for _, route := range missing[f.kind] {
 			cmds = append(cmds, append([]string{"ip", f.flag, "route", "add"}, strings.Fields(route)...))
@@ -293,15 +313,19 @@ func undoSettings(extra, missing nodeState) [][]string {
 			cmds = append(cmds, []string{"sysctl", "-q", "-w", k + "=" + v})
 		}
 	}
-	links := map[string]bool{}
+	links := map[string][]string{}
 	for _, line := range extra["linkattr"] {
-		name, _, _ := strings.Cut(line, " ")
-		links[name] = true
+		f := strings.Fields(line)
+		links[f[0]] = f
 	}
 	for _, line := range missing["linkattr"] {
-		// "<name> <FLAGS> mtu <n>[ master <m>]"
+		// "<name> <FLAGS> mtu <n>[ master <m>] ifindex <i>[ link/<type> <address>]"
 		f := strings.Fields(line)
-		if len(f) < 4 || !links[f[0]] {
+		now, ok := links[f[0]]
+		// A link whose state and MTU are as clean, but not its index or
+		// address (made again, its address changed), is the check's to
+		// fail on: nothing here sets them back.
+		if len(f) < 4 || !ok || len(now) >= 4 && now[1] == f[1] && now[3] == f[3] {
 			continue
 		}
 		state := "down"
@@ -329,10 +353,15 @@ const (
 
 // Snapshot records every node's state, and a copy of its /etc, as the
 // state Reset puts the lab back in. Take it when nothing runs in the lab
-// but what is meant to stay.
+// but what is meant to stay; it waits first until every node's command
+// has started (it waits for the seal in a loop of its own, whose sleeps a
+// snapshot must not record: Reset would kill the command for them).
 func (l *Lab) Snapshot(ctx context.Context) (*Snapshot, error) {
 	s := &Snapshot{nodes: map[string]nodeState{}, etc: fmt.Sprintf("/run/lab/snapshot-%d.tar", snapshots.Add(1))}
 	err := l.eachNode(func(n *Node) error {
+		if err := n.waitCommand(ctx); err != nil {
+			return err
+		}
 		_, err := n.read(ctx, resetExec, "tar", "-C", "/", "-cf", s.etc, "etc")
 		return err
 	})
@@ -345,6 +374,34 @@ func (l *Lab) Snapshot(ctx context.Context) (*Snapshot, error) {
 	}
 	s.nodes = states
 	return s, nil
+}
+
+// DropSnapshot removes s's copies of /etc from the nodes, for a snapshot
+// no Reset will use again.
+func (l *Lab) DropSnapshot(ctx context.Context, s *Snapshot) error {
+	return l.eachNode(func(n *Node) error {
+		_, err := n.read(ctx, resetExec, "rm", "-f", s.etc)
+		return err
+	})
+}
+
+// waitCommand waits until no process of n is still the wait for the seal
+// its command starts with (compose.go).
+func (n *Node) waitCommand(ctx context.Context) error {
+	for {
+		out, err := n.read(ctx, resetExec, "ps", "-eo", "args=")
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(out, sealWait) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%s: its command still waits for the seal: %w", n.Name, ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // states reads every node's state at once.
@@ -406,11 +463,14 @@ const undoRounds = 6
 // still runs that s doesn't have, aborts every TCP connection left
 // (orphaned or held by a clean-state process), then, with nothing left to
 // make new state, undoes what the nodes have beyond s and puts back what
-// they lack (undo), empties every node's conntrack until it stays empty,
-// and reads every node back: nil only when every node is in s's state.
-// logf gets the TCP connections it aborted.
+// they lack (undo), flushes the caches the state leaves out (routes' path
+// MTUs, TCP metrics, neighbours), empties every node's conntrack until it
+// stays empty, and reads every node back: nil only when every node is in
+// s's state. logf gets, per node, the processes it killed, the TCP
+// connections it aborted and what it found to undo, so a leftover the
+// reset hid (an agent that outlived its test) is in the test's log.
 func (l *Lab) Reset(ctx context.Context, s *Snapshot, logf func(format string, args ...any)) error {
-	err := l.eachNode(func(n *Node) error { return n.killExtra(ctx, s.nodes[n.Name]) })
+	err := l.eachNode(func(n *Node) error { return n.killExtra(ctx, s.nodes[n.Name], logf) })
 	if err == nil {
 		// A killed process's TCP sockets live on as orphans, and a peer
 		// left running (a camouflage site's nginx) keeps its end: either
@@ -420,14 +480,16 @@ func (l *Lab) Reset(ctx context.Context, s *Snapshot, logf func(format string, a
 		err = l.eachNode(func(n *Node) error { return n.abortTCP(ctx, logf) })
 	}
 	if err == nil {
-		err = l.eachNode(func(n *Node) error { return n.undo(ctx, s.nodes[n.Name], s.etc) })
+		err = l.eachNode(func(n *Node) error { return n.undo(ctx, s.nodes[n.Name], s.etc, logf) })
 	}
 	if err == nil {
-		// Path MTUs learnt from the last user's traffic (IPv6's route
-		// exceptions) aren't in the state; nothing of the clean state
-		// depends on them.
+		// What the last user's traffic taught the kernel isn't in the
+		// state: path MTUs (IPv6's route exceptions), TCP metrics (a
+		// destination's RTT and cwnd, which a new connection starts
+		// from) and neighbour entries but permanent ones (the state has
+		// those). Nothing of the clean state depends on them.
 		err = l.eachNode(func(n *Node) error {
-			_, err := n.read(ctx, resetExec, "sh", "-c", "ip -4 route flush cache && ip -6 route flush cache")
+			_, err := n.read(ctx, resetExec, "sh", "-ec", "ip -4 route flush cache; ip -6 route flush cache; ip tcp_metrics flush all; ip -4 neigh flush all; ip -6 neigh flush all")
 			return err
 		})
 	}
@@ -440,9 +502,9 @@ func (l *Lab) Reset(ctx context.Context, s *Snapshot, logf func(format string, a
 	return l.Check(ctx, s)
 }
 
-// killExtra kills the processes n has beyond clean, and waits until none
-// is left.
-func (n *Node) killExtra(ctx context.Context, clean nodeState) error {
+// killExtra kills the processes n has beyond clean, logs them, and waits
+// until none is left.
+func (n *Node) killExtra(ctx context.Context, clean nodeState, logf func(format string, args ...any)) error {
 	now, err := n.state(ctx)
 	if err != nil {
 		return err
@@ -451,6 +513,7 @@ func (n *Node) killExtra(ctx context.Context, clean nodeState) error {
 	if len(extra["process"]) == 0 {
 		return nil
 	}
+	logf("%s: the reset killed:%s", n.Name, nodeState{"process": extra["process"]})
 	// A process may exit between the read and the kill: what still runs
 	// after is what counts.
 	if _, err := n.read(ctx, resetExec, append([]string{"sh", "-c", `kill -KILL "$@" 2>/dev/null; true`, "sh"}, extra.pids()...)...); err != nil {
@@ -473,16 +536,19 @@ func (n *Node) killExtra(ctx context.Context, clean nodeState) error {
 	}
 }
 
-// undo runs undo's commands in rounds until nothing is left to undo. A
-// command that fails is no error of its own: the check says whether the
-// state came back.
-func (n *Node) undo(ctx context.Context, clean nodeState, snap string) error {
-	for range undoRounds {
+// undo runs undo's commands in rounds until nothing is left to undo, and
+// logs what the first round found. A command that fails is no error of
+// its own: the check says whether the state came back.
+func (n *Node) undo(ctx context.Context, clean nodeState, snap string, logf func(format string, args ...any)) error {
+	for round := range undoRounds {
 		now, err := n.state(ctx)
 		if err != nil {
 			return err
 		}
 		extra, missing := clean.diff(now)
+		if round == 0 {
+			logUndone(n.Name, extra, missing, logf)
+		}
 		cmds := undo(extra, missing, snap)
 		if len(cmds) == 0 {
 			return nil
@@ -492,6 +558,17 @@ func (n *Node) undo(ctx context.Context, clean nodeState, snap string) error {
 		}
 	}
 	return nil
+}
+
+// logUndone logs what a node had beyond its clean state (extra) and
+// lacked (missing) when the reset began undoing it.
+func logUndone(node string, extra, missing nodeState, logf func(format string, args ...any)) {
+	if len(extra) > 0 {
+		logf("%s: the reset undid what was left behind:%s", node, extra)
+	}
+	if len(missing) > 0 {
+		logf("%s: the reset undid what was gone or changed:%s", node, missing)
+	}
 }
 
 // abortTCP aborts every TCP connection n has (ss -K: a clean state has

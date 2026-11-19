@@ -3,8 +3,10 @@
 package lab_test
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
@@ -18,12 +20,16 @@ var harnessPool = lab.NewPool(lab.Standard().Only(lab.Router, lab.DeviceA), 1)
 // (processes, a TCP connection, a link with an address, a route in
 // another table and a policy rule, nftables tables, a network namespace,
 // files under /tmp and /var/lib, /etc changed in content and mode and
-// added to, a sysctl, a link's MTU, conntrack entries); a user that leaves
-// what it can't (an /etc symlink pointed elsewhere) gets the lab retired,
-// and the next user a fresh one.
+// added to, a sysctl, a link's MTU, a permanent neighbour entry,
+// conntrack entries, and the neighbour cache its traffic filled); a user
+// that leaves what it can't (an /etc symlink pointed elsewhere) gets the
+// lab retired, and the next user a fresh one. What the reset only reads
+// fails its check, each on its own: a qdisc, an xfrm policy, a rule of
+// the seal's table moved to its other chain, a file outside /etc
+// changed, a link's address changed, a link made again under its name.
 func TestHarnessPoolResetsOrRetires(t *testing.T) {
 	t.Parallel()
-	var first, mode, link, target string
+	var first, mode, link, target, routerAddr string
 	t.Run("leaves what the reset undoes", func(t *testing.T) {
 		l := harnessPool.Acquire(t)
 		first = l.Project
@@ -44,12 +50,14 @@ echo x > /etc/leftover.conf
 chmod 600 /etc/debian_version
 sysctl -q -w net.ipv4.conf.eth0.arp_ignore=1
 ip link set eth0 mtu 1400
+ip neigh add 192.0.2.9 lladdr 02:00:00:00:00:09 dev eth0 nud permanent
 setsid sleep 1000 </dev/null >/dev/null 2>&1 &
 `)
 		router.MustExec(t, "sh", "-ec", `nft add table ip leftover; echo x > /tmp/leftover`)
 		// A connection left open, its ends killed by the reset (their
 		// orphans aborted), and conntrack entries in both nodes.
 		addr := router.IPv4(lab.NetDevices).String()
+		routerAddr = addr
 		router.Start(t, "nc", "-l", "-s", addr, "-p", "4000")
 		router.MustExec(t, "sh", "-ec", `for i in $(seq 100); do ss -H -t -l -n 'sport = :4000' | grep -q . && exit 0; sleep 0.1; done; exit 1`)
 		dev.MustExec(t, "sh", "-ec", `setsid sh -c 'sleep 1000 | nc `+addr+` 4000' </dev/null >/dev/null 2>&1 &
@@ -74,6 +82,9 @@ for i in $(seq 50); do ss -H -t state established | grep -q . && exit 0; sleep 0
 			{"the mode", "stat -c %a /etc/debian_version", mode},
 			{"the sysctl", "sysctl -n net.ipv4.conf.eth0.arp_ignore", "0"},
 			{"the MTU", "cat /sys/class/net/eth0/mtu", "1500"},
+			{"the permanent neighbour", "ip neigh show 192.0.2.9 | wc -l", "0"},
+			{"the router's neighbour entry", "ip neigh show " + routerAddr + " | wc -l", "0"},
+			{"TCP metrics", "ip tcp_metrics show | wc -l", "0"},
 			{"the processes", "ps -eo args= | grep -c '^sleep 1000' || true", "0"},
 			{"the connection", "ss -H -t state connected exclude time-wait | wc -l", "0"},
 			{"conntrack", "cat /proc/sys/net/netfilter/nf_conntrack_count", "0"},
@@ -103,6 +114,60 @@ for i in $(seq 50); do ss -H -t state established | grep -q . && exit 0; sleep 0
 		s := harnessPool.Stats()
 		if s.Started != 2 || len(s.Retired) != 1 || !strings.Contains(s.Retired[0], "gets_the_lab_back") || !strings.Contains(s.Retired[0], "reset didn't hold") {
 			t.Errorf("pool: %+v, want 2 labs started and the second user's retired for its reset", s)
+		}
+	})
+	t.Run("the check fails on what the reset only reads", func(t *testing.T) {
+		l := harnessPool.Acquire(t)
+		dev := l.Node(lab.DeviceA)
+		eth := dev.Interface(lab.NetDevices)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		clean, err := l.Snapshot(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = l.DropSnapshot(context.Background(), clean) })
+		mac := strings.TrimSpace(dev.MustExec(t, "cat", "/sys/class/net/"+eth+"/address"))
+		seal := "netdev tplab_" + eth
+		for _, c := range []struct{ what, leave, putBack, kind string }{
+			{"a qdisc", "tc qdisc add dev " + eth + " root netem delay 1ms", "tc qdisc del dev " + eth + " root", "qdisc"},
+			{"an xfrm policy", "ip xfrm policy add src 192.0.2.1/32 dst 192.0.2.2/32 dir out", "ip xfrm policy flush", "xfrm"},
+			// The rule that drops the bridge's frames moved from the
+			// chain in to the chain out: the table's lines are the same.
+			{"a seal rule moved to another chain", `r=$(nft list chain ` + seal + ` in | grep -o 'ether saddr [^ ]* drop'); test -n "$r"; nft flush chain ` + seal + ` in; nft add rule ` + seal + ` out $r`,
+				`h=$(nft -a list chain ` + seal + ` out | sed -n 's/.*ether saddr \([^ ]*\) drop # handle \([0-9]*\)$/\1 \2/p'); test -n "$h"; set -- $h; nft delete rule ` + seal + ` out handle $2; nft add rule ` + seal + ` in ether saddr $1 drop`, "nftrule"},
+			{"a file outside /etc", "cp -p /var/lib/dpkg/status /run/lab/status; echo >> /var/lib/dpkg/status", "cp -p /run/lab/status /var/lib/dpkg/status; rm /run/lab/status", "attr"},
+			{"a link's address", "ip link set dev " + eth + " address 02:00:00:00:00:99", "ip link set dev " + eth + " address " + mac, "linkattr"},
+		} {
+			dev.MustExec(t, "sh", "-ec", c.leave)
+			if err := l.Reset(ctx, clean, t.Logf); err == nil || !strings.Contains(err.Error(), "\n  "+c.kind+" ") {
+				t.Errorf("%s: the reset's check: %v, want it to fail on a %s line", c.what, err, c.kind)
+			}
+			dev.MustExec(t, "sh", "-ec", c.putBack)
+			if err := l.Reset(ctx, clean, t.Logf); err != nil {
+				t.Fatalf("%s put back by hand: %v", c.what, err)
+			}
+		}
+
+		// A link made again under its name, with its address and MTU:
+		// only its index tells.
+		dev.MustExec(t, "sh", "-ec", "ip link add again0 type dummy")
+		withLink, err := l.Snapshot(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dev.MustExec(t, "sh", "-ec", `a=$(cat /sys/class/net/again0/address); ip link del again0; ip link add again0 address "$a" type dummy`)
+		if err := l.Reset(ctx, withLink, t.Logf); err == nil || !strings.Contains(err.Error(), "\n  linkattr again0 ") {
+			t.Errorf("a link made again: the reset's check: %v, want it to fail on its linkattr line", err)
+		}
+		if err := l.DropSnapshot(ctx, withLink); err != nil {
+			t.Error(err)
+		}
+		if err := l.Reset(ctx, clean, t.Logf); err != nil {
+			t.Fatalf("the link made again removed: %v", err)
+		}
+		if s := harnessPool.Stats(); s.Started != 2 || len(s.Retired) != 1 {
+			t.Errorf("pool: %+v, want this user's lab the third user's, nothing retired since", s)
 		}
 	})
 }

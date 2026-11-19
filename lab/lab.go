@@ -179,20 +179,27 @@ func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool, since time.Tim
 		if res, err := runEnv(ctx, nil, environWithoutCompose(), logs[0], logs[1:]...); err == nil {
 			t.Logf("lab %s logs:\n%s", l.Project, res.Stdout)
 		}
-		if keep {
-			err := bins.keep(l.Project)
-			if err == nil {
-				t.Logf("lab %s kept: docker compose -p %s exec <node> bash; make lab-down removes it", l.Project, l.Project)
-				l.releaseSubnets()
-				l.releaseSlot()
-				return
-			}
-			t.Errorf("lab %s: can't keep it, tearing it down: %v", l.Project, err)
+		if keep && l.keepRunning(t, bins) {
+			return
 		}
 	}
 	if err := l.Down(ctx); err != nil {
 		t.Errorf("lab %s: tear down: %v", l.Project, err)
 	}
+}
+
+// keepRunning keeps the lab up for inspection, and the run directory bins
+// it mounts (KeepEnv), letting go of its slot and subnets; false when it
+// couldn't, the lab still up for the caller to tear down.
+func (l *Lab) keepRunning(t testing.TB, bins *runBinaries) bool {
+	if err := bins.keep(l.Project); err != nil {
+		t.Errorf("lab %s: can't keep it, tearing it down: %v", l.Project, err)
+		return false
+	}
+	t.Logf("lab %s kept: docker compose -p %s exec <node> bash; make lab-down removes it", l.Project, l.Project)
+	l.releaseSubnets()
+	l.releaseSlot()
+	return true
 }
 
 // UpDetached brings up a topology, for a lab that outlives this process

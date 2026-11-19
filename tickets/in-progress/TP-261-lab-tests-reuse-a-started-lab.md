@@ -89,3 +89,4 @@ Round 1 (2026-11-19): pool handover/concurrency and the matrix are sound (three 
 - 2026-11-19 in-progress → review
 - 2026-11-19 review → has-errors (round 1: R1.1–R1.8)
 - 2026-11-19 review round 1: fix R1.1–R1.8
+- 2026-11-19 has-errors → in-progress (round 1 findings)

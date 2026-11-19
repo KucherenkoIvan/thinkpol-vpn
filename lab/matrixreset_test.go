@@ -64,6 +64,15 @@ func startRow(t *testing.T) *matrixRow {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Before the lab goes back: the row's copies of /etc are no part of
+	// the pool's clean state.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+		defer cancel()
+		if err := l.DropSnapshot(ctx, clean); err != nil {
+			t.Logf("lab %s: the row's snapshot stays: %v", l.Project, err)
+		}
+	})
 	up = time.Now()
 	return &matrixRow{lab: l, clean: clean}
 }
