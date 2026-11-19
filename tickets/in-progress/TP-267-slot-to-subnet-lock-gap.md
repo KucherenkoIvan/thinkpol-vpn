@@ -47,6 +47,10 @@ The slot came at 07:01:10.477 and the lock was asked for at 07:01:36.624: 26.1 s
 
 The slot to lock gap was 0.00 s in all 30 measured starts, against a baseline max of 49 s. The read, now before the slot, had a median of 0.14 s, 0.20 s and 2.5 s (max 1.4 s, 4.0 s and 5.0 s) for 1, 4 and 7 nodes.
 
+Full lab on 289bd442 (another full lab at the same time): slot → lock 0.00 s in all 111 starts; the read before the slot 0.5–3.3 s median, 10.6 s max.
+
 ## Log
 - 2026-11-19 created in backlog (TP-263)
 - 2026-11-19 backlog → in-progress, owner: agent-tp-262 (folded into TP-262 by the orchestrator: the gap is part of a lab's start; moves with TP-262 through review)
+- 2026-11-19 done in TP-262's branch: the gap was the read of the daemon's subnets (inspect of every network, one by one when one vanished); now read before the slot (chunked, shared), first try reserves against it; slot → lock 0.00 s in 30/30 measured starts and 111/111 in the full lab on 289bd442; unit tests and mutations in TP-262's Log
+- 2026-11-19 in-progress → review (with TP-262)

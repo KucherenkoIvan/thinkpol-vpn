@@ -20,13 +20,59 @@ branch: "tp-262-faster-lab-start"
 - Cut it (e.g. a lighter node image, health checks that watch state instead of polling intervals, pre-created networks, parallel container start), keeping every lab test's claims.
 
 ## Acceptance
-- [ ] Breakdown of a lab start before and after, in Notes.
-- [ ] Median lab start halved on the remote runner (timeline).
-- [ ] No lab test changes what it proves.
+- [x] Breakdown of a lab start before and after, in Notes.
+- [ ] Median lab start halved on the remote runner (timeline). Not reached: −18% under the same load (A/B), −15% idle; the rest is Docker's own per-object work (see Notes, "Not halved").
+- [x] No lab test changes what it proves.
 
 ## Notes
+**How it was measured.** `TestLabStartTimes` (new, skips unless `THINKPOL_LAB_START_TIMES=n`) starts n labs of each size one after another under the normal lab slots: 1 node (the node phase's), 4 (a censor matrix row's: router, device-a, server-1, camouflage) and 7 (`lab.Upstream()`). It logs each start's steps and, from a live `docker events` stream, when `docker compose up` created the networks and created and started the containers. The timeline (`THINKPOL_LAB_TIMELINE`) now has a `start` line per lab (from the slot to sealed: `create` = subnets + compose up, `inspect`, `bridges`, `seal`), a `down` line per tear-down, and a `subnet-read` line (TP-267). Before = 49693be1 (the instrumentation only, on rewrite 42945fdd); after = 1bfbe69c. 10 starts per size each, on the remote runner. Load came from the other tickets' labs and varied between sets. For the 4-node size an interleaved A/B (before 5, after 5, before 5, after 5, matrix-row only) keeps both sides under the same load.
+
+**Breakdown, medians in seconds (min–max)**
+
+| step | 1 node before | after | 4 nodes before | after | 7 nodes before | after |
+|---|---|---|---|---|---|---|
+| load (1-min avg) | ~8–15, few labs | ~8–17 | 10–25 | 6–17 | 10–23 | 10–23 |
+| slot → sealed | 4.03 (3.05–40.8) | 3.42 (2.48–16.8) | 88.4 (10.2–153) | 10.9 (9.6–87.4) | 122 (17.9–229) | 108 (17.7–139) |
+| slot → lock: subnet read (TP-267) | 0.09 (–34.4) | 0.00 (all) | 2.62 (–37.2) | 0.00 (all) | 1.01 (–48.6) | 0.00 (all) |
+| subnet read before the slot | – | 0.14 (–1.4) | – | 0.20 (–4.0) | – | 2.52 (–5.0) |
+| docker compose up | 3.52 | 2.82 | 77.5 | 10.0 | 108 | 105 |
+| inspect | 0.10 | 0.12 | 1.06 (–5.9) | 0.19 (–3.1) | 0.84 (–4.5) | 1.53 (–4.6) |
+| bridges | 0.10 | 0.11 | 0.58 (–1.6) | 0.25 | 0.44 | 0.21 |
+| seal | 0.21 | 0.24 | 0.92 | 0.57 | 0.92 | 0.74 |
+| tear-down (slot still held) | 1.87 | 2.48 | 23.0 | 11.3 | 30.3 | 35.0 |
+
+Interleaved A/B, 4 nodes, 10 starts each side, load 3–25 falling during the run: slot → sealed **12.77 → 10.45** (−18%); compose up 11.12 → 9.86; inspect 0.16 → 0.11; bridges 0.29 → 0.13; seal 0.34 → 0.32; slot → lock 0.06 → 0.00.
+
+Inside `docker compose up` (Docker's events, medians):
+- 1 node, idle: networks at 0.43–0.49 s; container created at 1.9–2.1 s; started at 2.9–3.1 s. Before, up returned 0.5 s after the start: `--wait` polling.
+- 4 nodes, under load (before): networks at 5.2 s; containers created at 27.6–29.2 s, all of a lab's within about 1.5 s of each other, as if they waited on one thing; started at 42–79 s, one after another.
+- 7 nodes, under load: networks at 3.6–5.7 s; created at 15–33 s; started at 39–116 s.
+
+**Where the time goes.** `docker compose up` is 85–90% of a lab's start at every size and load. Under load it is 10–20 times its idle time. The disk that holds Docker sat at about 90% utilisation, with about 120 small writes and 30 flushes a second, while the machine created about 20 containers a minute. Every Docker object a lab makes waits on that disk: networks, containers, endpoints (one per node per network, joined one after another on a shared network), and their removal. Network reads (inspect) wait behind the network writes. What the harness itself adds is small at the median (0.4–1 s idle, 2–6 s under load), but it reached about 50 s at worst, nearly all of it TP-267's subnet read.
+
+**What changed** (all in `lab/`; no topology, node, image or test changed):
+- The daemon's subnets are read before the lab slot, not holding it (`up`). The first try reserves against that read plus the live reservations, and a try after a Docker overlap reads afresh (`Lab.create`) (TP-267).
+- The read inspects networks in chunks of 4 at once. It takes the CLI's output for the networks it found instead of inspecting one by one whenever one vanished, and lab starts of one process share a read that is running (`usedSubnetsVia`, `sharedRead`).
+- The lab's networks are inspected in one call (`inspect`); their bridges are learned at once (`learnBridges`).
+- `docker compose up` runs without `--wait`, which polled every 0.5 s after the containers had started. A node that died at once fails the sealing's `docker exec` instead.
+- A start no longer runs `docker compose down` for a leftover lab that doesn't exist (`downProject`).
+
+**Not halved.** Measured under the same load (the A/B), the median start went from 12.8 to 10.5 s; idle 1-node starts went from 4.0 to 3.4 s. Under heavy load the subnet read's 20–50 s tail is gone from the slot. The rest is Docker's own work per object, which no harness change shortens, so halving needs fewer Docker objects per lab or per run:
+- fewer containers (TP-242);
+- labs reused (TP-261);
+- in-node labs without a Docker network: one network, one endpoint and the subnet read fewer per node-phase lab, the most common lab. Not done here: `internal/agent/supervisor`'s isolation test sends to the node's own eth0 addresses (`crossTargets`), so it would need a stand-in uplink, or it proves less.
+- tear-down (2–35 s median) holds the slot and is the same kind of Docker work.
+**Full lab** (`make lab-test` on 289bd442, alongside another ticket's full lab and a node-phase run): every test passed, RESULTS.md assembled; wall 2804 s; long stream 8m51s, default stream 46m43s, over its 15m budget under that load. Its slowest were `TestHarnessAnotherRunFromTheCheckoutBuildsItsOwnBinaries` (16m19s) and the matrix rows (12–14.5 min each). Its timeline (111 starts): slot → sealed medians 27.7 s (1 node, 54 starts), 80 s (3), 96 s (4, 29 starts), 120 s (5); `docker compose up` 91–98% of each; slot → lock 0.00 s in every start; the subnet read before the slot 0.5–3.3 s median, 10.6 s max.
 
 ## Log
 - 2026-11-19 created in backlog (full-lab measurement on rewrite cb0348d6)
 - 2026-11-19 backlog → in-progress, owner: agent-tp-262
 - 2026-11-19 TP-267 folded in (orchestrator): the slot-to-lock gap is the read of the daemon's subnets; moving it before the slot
+- 2026-11-19 measured: TestLabStartTimes (new) and the timeline's start/down/subnet-read lines; baseline at 49693be1, 10 starts each of 1, 4 and 7 nodes; after at 1bfbe69c; interleaved A/B for 4 nodes (before 49693be1 / after 1bfbe69c)
+- 2026-11-19 done: subnet read before the slot (TP-267), chunked and shared, one inspect when networks vanished; one network inspect per lab; bridges at once; compose up without --wait; no compose down for a leftover that doesn't exist
+- 2026-11-19 mutations (each failed its test, then restored): chunk outputs dropped (TestUsedSubnetsReadsEveryChunk); a non-not-found error line ignored (TestUsedSubnetsFailsClosed); never join a running read, and join regardless of notBefore (TestSharedReadJoinsARunningRead); "-" for an unreached step dropped (TestTimelineStartAndDownLines); subnet-read line's separator (TestTimelineStartAndDownLines); one-by-one inspect restored (TestUsedSubnetsSkipsNetworksRemovedAfterTheList's single-inspect check); compose down for a missing project (TestDownProjectSkipsComposeWithNothingToRemove)
+- 2026-11-19 make lint, make test green on 289bd442 (merge of rewrite 35b02ca7, TP-260); make lab-harness pass on 1bfbe69c; lab-gotest PKG=./lab RUN=TestSmoke|TestM0|TestNoIPv6LeavesAroundTheTunnel|TestCensorSeesUpstream|TestProberTellsEchoFromNginx|TestServiceUnderSystemd pass on 1bfbe69c; lab-gotest PKG=./internal/dataplane/tun/... ./internal/agent/supervisor/... pass, uncached
+- 2026-11-19 full make lab-test on 289bd442: tests passed, wall 2804 s, default stream 46m43s over its 15m budget (another full lab ran at the same time); slot → lock 0.00 s in all 111 starts
+- 2026-11-19 not verified: the halving (not reached, see Notes); load-matched comparison for 1 and 7 nodes (only the 4-node A/B is interleaved)
+- 2026-11-19 out of scope, for the board: in-node labs without a Docker network (needs a stand-in uplink for supervisor's isolation test); tear-down holds the slot 2–35 s median; TestHarnessAnotherRunFromTheCheckoutBuildsItsOwnBinaries took 16m19s in the full lab
+- 2026-11-19 in-progress → review (with TP-267)
