@@ -25,6 +25,9 @@ import (
 type GoPackage struct {
 	ImportPath string
 	Dir        string // relative to the checkout, slash-separated
+	// NeedsNoNode: the package has HostTestsFile, so on a Linux machine
+	// its tests run there (GoTestOnHost) rather than in a node.
+	NeedsNoNode bool
 }
 
 // ListGoPackages expands go package patterns, as seen for linux, to the
@@ -53,7 +56,8 @@ func ListGoPackages(ctx context.Context, root string, patterns ...string) ([]GoP
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, GoPackage{ImportPath: p.ImportPath, Dir: filepath.ToSlash(rel)})
+		files := slices.Concat(p.TestGoFiles, p.XTestGoFiles)
+		out = append(out, GoPackage{ImportPath: p.ImportPath, Dir: filepath.ToSlash(rel), NeedsNoNode: slices.Contains(files, HostTestsFile)})
 	}
 	return out, nil
 }
@@ -180,6 +184,52 @@ type GoTestResult struct {
 	Cached     bool // not run: a recorded pass (GoTestCache)
 	Tests      TestTally
 	Elapsed    time.Duration // from its lab's start to its end: 0 when cached
+	// Phases splits Elapsed for a package run in a lab node; zero for
+	// one run on the host or not run.
+	Phases LabPhases
+}
+
+// LabPhases is where a package's time in a lab node went: waiting for a
+// lab slot, starting the lab (the rest of its start-up: a leftover lab's
+// removal, docker compose up, sealing the nodes), running the tests (and
+// reading their test log back), and tearing the lab down. A start that
+// failed has no test time; its tear-down, if any, follows the start.
+type LabPhases struct {
+	SlotWait, Start, Tests, Teardown time.Duration
+}
+
+// IsZero says whether no phase was timed.
+func (p LabPhases) IsZero() bool { return p == LabPhases{} }
+
+// String is the phases for a report line, rounded to a tenth of a second.
+func (p LabPhases) String() string {
+	r := func(d time.Duration) time.Duration { return d.Round(100 * time.Millisecond) }
+	return fmt.Sprintf("slot wait %v, lab start %v, tests %v, teardown %v", r(p.SlotWait), r(p.Start), r(p.Tests), r(p.Teardown))
+}
+
+// labTimeLine is a node-phase package's line of where its time went.
+func labTimeLine(pkg string, elapsed time.Duration, p LabPhases) string {
+	return fmt.Sprintf("lab gotest %s: took %v (%v)\n", pkg, elapsed.Round(100*time.Millisecond), p)
+}
+
+// labPhases is the phases of a lab run from when it began, when its start
+// returned (after waiting slotWait of it for a slot), when its tests
+// ended and when its tear-down ended; a zero time is a phase never
+// reached.
+func labPhases(began, started, tested, down time.Time, slotWait time.Duration) LabPhases {
+	span := func(from, to time.Time) time.Duration {
+		if from.IsZero() || to.IsZero() {
+			return 0
+		}
+		return max(to.Sub(from), 0)
+	}
+	p := LabPhases{SlotWait: slotWait, Start: max(span(began, started)-slotWait, 0), Tests: span(started, tested)}
+	if !tested.IsZero() {
+		p.Teardown = span(tested, down)
+	} else {
+		p.Teardown = span(started, down)
+	}
+	return p
 }
 
 // GoTestConcurrency bounds GoTestEach's packages.
@@ -411,11 +461,13 @@ func (r *packageRun) inLab() {
 	start := r.out.Len()
 	run := goTestFresh(r.ctx, r.root, r.project, r.pkg, r.out, r.env, runArgs, r.entry != nil)
 	r.res.Elapsed = time.Since(started)
+	r.res.Phases = run.phases
 	r.res.Failed = run.testErr != nil
 	r.res.Tests = TallyTests(r.out.Bytes()[start:])
 	if run.testErr != nil {
 		fmt.Fprintln(r.out, run.testErr)
 	}
+	r.out.WriteString(labTimeLine(r.pkg.ImportPath, r.res.Elapsed, r.res.Phases))
 	if r.entry != nil {
 		if err := r.cache.record(r.entry, run, started, r.res.Tests); err != nil {
 			fmt.Fprintf(r.out, "lab: results cache: pass not recorded: %v\n", err)
@@ -445,15 +497,23 @@ func (n *Node) readFile(ctx context.Context, name string) ([]byte, error) {
 
 // goTestFresh runs a package's tests in a fresh lab and, with readLog and
 // the tests passed, reads their -test.testlogfile back before the lab goes.
+// It times the run's phases (LabPhases).
 func goTestFresh(ctx context.Context, root, project string, pkg GoPackage, w io.Writer, env, args []string, readLog bool) (run freshRun) {
-	l, err := up(ctx, labBudget.begin(time.Time{}), root, project, GoTestTopology(), "", runInputs)
-	if l != nil {
-		defer func() {
+	var slotWait time.Duration
+	var started, tested time.Time
+	began := time.Now()
+	clock := labBudget.begin(time.Time{})
+	clock.slotWait = &slotWait
+	l, err := up(ctx, clock, root, project, GoTestTopology(), "", runInputs)
+	started = time.Now()
+	defer func() {
+		if l != nil {
 			if err := l.Down(context.WithoutCancel(ctx)); err != nil && run.labErr == nil {
 				run.labErr = err
 			}
-		}()
-	}
+		}
+		run.phases = labPhases(began, started, tested, time.Now(), slotWait)
+	}()
 	if err != nil {
 		run.labErr = err
 		return run
@@ -463,6 +523,7 @@ func goTestFresh(ctx context.Context, root, project string, pkg GoPackage, w io.
 	if readLog && run.testErr == nil {
 		run.testLog, run.logErr = n.readFile(ctx, goTestLogFile)
 	}
+	tested = time.Now()
 	return run
 }
 

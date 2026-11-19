@@ -89,7 +89,7 @@ func TestFilterTestJSON(t *testing.T) {
 	if w.String() != want {
 		t.Errorf("printed:\n%s\nwant:\n%s", w.String(), want)
 	}
-	wantTimes := []TestTime{{"lab TestPass", 1500 * time.Millisecond}, {"lab TestFail/sub", 2 * time.Second}, {"lab TestFail/ok", 500 * time.Millisecond}, {"lab TestFail", 3 * time.Second}, {"lab TestPar", 4 * time.Second}}
+	wantTimes := []TestTime{{Name: "lab TestPass", Elapsed: 1500 * time.Millisecond}, {Name: "lab TestFail/sub", Elapsed: 2 * time.Second}, {Name: "lab TestFail/ok", Elapsed: 500 * time.Millisecond}, {Name: "lab TestFail", Elapsed: 3 * time.Second}, {Name: "lab TestPar", Elapsed: 4 * time.Second}}
 	if len(times) != len(wantTimes) {
 		t.Fatalf("times %v, want %v", times, wantTimes)
 	}
@@ -231,7 +231,7 @@ func TestTestLogBounded(t *testing.T) {
 
 func TestTestTimesRoundTrip(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "times")
-	in := []TestTime{{"lab TestA", 1500 * time.Millisecond}, {"example.net/m/pkg", 90 * time.Second}}
+	in := []TestTime{{Name: "lab TestA", Elapsed: 1500 * time.Millisecond}, {Name: "example.net/m/pkg", Elapsed: 90 * time.Second}}
 	if err := WriteTestTimes(f, in); err != nil {
 		t.Fatal(err)
 	}
@@ -241,11 +241,59 @@ func TestTestTimesRoundTrip(t *testing.T) {
 	}
 }
 
+// TestTestTimesRoundTripPhases: a node-phase package's phases go through
+// the times file beside lines without them; a line with phases other than
+// four is refused.
+func TestTestTimesRoundTripPhases(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "times")
+	in := []TestTime{
+		{Name: "example.net/m/pkg", Elapsed: 90 * time.Second, Phases: LabPhases{SlotWait: time.Minute, Start: 20 * time.Second, Tests: 7500 * time.Millisecond, Teardown: 2500 * time.Millisecond}},
+		{Name: "lab TestA", Elapsed: 1500 * time.Millisecond},
+	}
+	if err := WriteTestTimes(f, in); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadTestTimes(f)
+	if err != nil || !slices.Equal(got, in) {
+		t.Fatalf("read %+v, %v; want %+v", got, err, in)
+	}
+	for _, bad := range []string{"1.000\tx\t1 2 3\n", "1.000\tx\t1 2 3 soon\n", "1.000\n"} {
+		if err := os.WriteFile(f, []byte(bad), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := ReadTestTimes(f); err == nil {
+			t.Errorf("%q read as %+v", bad, got)
+		}
+	}
+}
+
+// TestCheckBudgetPhases: the report sums the node phase's packages'
+// phases, within the budget too, and over it shows each listed package's
+// own; tests without phases add nothing to the sum.
+func TestCheckBudgetPhases(t *testing.T) {
+	times := []TestTime{
+		{Name: "lab TestA", Elapsed: 4 * time.Minute},
+		{Name: "pkg/b", Elapsed: 5 * time.Minute, Phases: LabPhases{SlotWait: 4 * time.Minute, Start: 40 * time.Second, Tests: 15 * time.Second, Teardown: 5 * time.Second}},
+		{Name: "pkg/c", Elapsed: time.Minute, Phases: LabPhases{SlotWait: 30 * time.Second, Start: 20 * time.Second, Tests: 5 * time.Second, Teardown: 5 * time.Second}},
+	}
+	sum := "  node phase, 2 packages in labs, summed: slot wait 4m30s, lab start 1m0s, tests 20s, teardown 10s\n"
+	var w bytes.Buffer
+	if err := CheckBudget(&w, "default", 10*time.Minute, 15*time.Minute, times, 3); err != nil || w.String() != "the default stream took 10m0s of its 15m0s budget\n"+sum {
+		t.Errorf("within budget: %v, %q", err, w.String())
+	}
+	w.Reset()
+	if err := CheckBudget(&w, "default", 16*time.Minute, 15*time.Minute, times, 3); err == nil ||
+		!strings.Contains(w.String(), "pkg/b (slot wait 4m0s, lab start 40s, tests 15s, teardown 5s)\n") ||
+		!strings.Contains(w.String(), "lab TestA\n") || !strings.HasSuffix(w.String(), sum) {
+		t.Errorf("over budget: %v, report:\n%s", err, w.String())
+	}
+}
+
 // TestCheckBudget: within the budget the stream's time is reported; over
 // it the check fails and lists the slowest tests, slowest first, at most
 // top of them; with no budget it only reports.
 func TestCheckBudget(t *testing.T) {
-	times := []TestTime{{"lab TestA", time.Minute}, {"lab TestB", 5 * time.Minute}, {"pkg/c", 3 * time.Minute}, {"lab TestD", time.Second}, {"lab TestM/r", 30 * time.Second}, {"lab TestM", 9 * time.Minute}}
+	times := []TestTime{{Name: "lab TestA", Elapsed: time.Minute}, {Name: "lab TestB", Elapsed: 5 * time.Minute}, {Name: "pkg/c", Elapsed: 3 * time.Minute}, {Name: "lab TestD", Elapsed: time.Second}, {Name: "lab TestM/r", Elapsed: 30 * time.Second}, {Name: "lab TestM", Elapsed: 9 * time.Minute}}
 	var w bytes.Buffer
 	if err := CheckBudget(&w, "default", 14*time.Minute, 15*time.Minute, times, 3); err != nil || !strings.Contains(w.String(), "took 14m0s of its 15m0s budget") {
 		t.Errorf("within budget: %v, %q", err, w.String())
@@ -274,11 +322,11 @@ func TestCheckBudget(t *testing.T) {
 // subpackage stays on the list. A test with timed subtests is left out.
 func TestSlowestTestsPackages(t *testing.T) {
 	times := []TestTime{
-		{"example.net/m/internal/agent", 5 * time.Minute},
-		{"example.net/m/internal/agent/supervisor", time.Minute},
-		{"example.net/m/lab/ip TestX", 4 * time.Minute},
-		{"example.net/m/lab/ip TestX/a", 3 * time.Minute},
-		{"example.net/m/lab/ip TestX/a/b", 2 * time.Minute},
+		{Name: "example.net/m/internal/agent", Elapsed: 5 * time.Minute},
+		{Name: "example.net/m/internal/agent/supervisor", Elapsed: time.Minute},
+		{Name: "example.net/m/lab/ip TestX", Elapsed: 4 * time.Minute},
+		{Name: "example.net/m/lab/ip TestX/a", Elapsed: 3 * time.Minute},
+		{Name: "example.net/m/lab/ip TestX/a/b", Elapsed: 2 * time.Minute},
 	}
 	var got []string
 	for _, tt := range SlowestTests(times, 10) {

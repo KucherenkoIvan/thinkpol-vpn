@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTallyTestsCountsTopLevelResultsOnly(t *testing.T) {
@@ -148,5 +149,42 @@ func TestGoTestLabTaggedRunsTheTaggedTests(t *testing.T) {
 	res, err = GoTestLabTagged(t.Context(), root, GoPackage{ImportPath: "example.net/tagged/fail", Dir: "fail"}, &out, nil, "-test.v")
 	if err == nil || !res.Failed || res.Tests.Failed != 1 {
 		t.Errorf("fail: result %+v, err %v; want a failure\n%s", res, err, out.String())
+	}
+}
+
+// TestLabPhases: a package's time in a node splits into its slot wait,
+// the rest of its lab's start, its tests and its tear-down, which add up
+// to the whole; a start that failed has no test time, and its tear-down
+// follows the start.
+func TestLabPhases(t *testing.T) {
+	began := time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) time.Time { return began.Add(d) }
+	got := labPhases(began, at(70*time.Second), at(75*time.Second), at(78*time.Second), time.Minute)
+	want := LabPhases{SlotWait: time.Minute, Start: 10 * time.Second, Tests: 5 * time.Second, Teardown: 3 * time.Second}
+	if got != want {
+		t.Errorf("phases %+v, want %+v", got, want)
+	}
+	if sum := got.SlotWait + got.Start + got.Tests + got.Teardown; sum != 78*time.Second {
+		t.Errorf("phases add up to %v, want the run's 1m18s", sum)
+	}
+	got = labPhases(began, at(50*time.Second), time.Time{}, at(52*time.Second), 45*time.Second)
+	want = LabPhases{SlotWait: 45 * time.Second, Start: 5 * time.Second, Teardown: 2 * time.Second}
+	if got != want {
+		t.Errorf("a failed start: %+v, want %+v", got, want)
+	}
+	got = labPhases(began, at(50*time.Second), time.Time{}, time.Time{}, 50*time.Second)
+	if want = (LabPhases{SlotWait: 50 * time.Second}); got != want {
+		t.Errorf("no slot, no lab: %+v, want %+v", got, want)
+	}
+}
+
+// TestLabTimeLine: the node phase's line for a package gives its time and
+// the four phases apart.
+func TestLabTimeLine(t *testing.T) {
+	p := LabPhases{SlotWait: 2*time.Minute + 3*time.Second, Start: 12340 * time.Millisecond, Tests: 4100 * time.Millisecond, Teardown: 3 * time.Second}
+	got := labTimeLine("example.net/m/pkg", 2*time.Minute+22440*time.Millisecond, p)
+	want := "lab gotest example.net/m/pkg: took 2m22.4s (slot wait 2m3s, lab start 12.3s, tests 4.1s, teardown 3s)\n"
+	if got != want {
+		t.Errorf("line %q, want %q", got, want)
 	}
 }
