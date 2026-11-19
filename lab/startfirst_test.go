@@ -15,10 +15,9 @@ import (
 // directory goes on; and a first wave that never began fails the wait
 // after the grace rather than holding it forever.
 func TestSlotWaitsBehindFirstStarts(t *testing.T) {
+	// Its own lock directory: the lab tests' first starts, if any, are
+	// another's.
 	dir := oneSlotHost(t)
-	saved := firstStarts
-	firstStarts = startOrder{waves: map[string]*firstWave{}}
-	t.Cleanup(func() { firstStarts = saved })
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 
