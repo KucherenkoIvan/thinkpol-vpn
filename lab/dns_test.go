@@ -172,7 +172,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 // nothing; the domestic resolver is never asked a tunnel or overlay name.
 func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Internet))
+	l := internetPool.Acquire(t)
 	server, devA, inet := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Internet)
 	inetIP := inet.IPv4(lab.NetServers)
 	domestic, foreign := startResolvers(t, inet)

@@ -18,9 +18,10 @@ var (
 	twoDevicePool = lab.NewPool(lab.Standard().Only(lab.Router, lab.DeviceA, lab.DeviceB, lab.Server1), 2)
 	// Two devices, one server and the internet: DNS and a second agent.
 	internetPool = lab.NewPool(lab.Standard().Only(lab.Router, lab.DeviceA, lab.DeviceB, lab.Server1, lab.Internet), 2)
-	// A device and two servers, one an exit: egress and blobs.
-	exitPool = lab.NewPool(lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Server2, lab.Internet), 2)
+	// The whole standard lab: two servers, one an exit (egress, blobs),
+	// or one with its ingress off.
+	standardPool = lab.NewPool(lab.Standard(), 2)
 	// The censor matrix's rows and the tests of the camouflage site. Its
 	// size is the matrix's labs at once.
-	censorPool = lab.NewPool(lab.Upstream().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Camouflage), 6)
+	censorPool = lab.NewPool(lab.Upstream().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Camouflage), 5)
 )

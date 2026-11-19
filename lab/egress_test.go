@@ -27,7 +27,7 @@ import (
 // nothing, and leaves its host's network alone (TP-111).
 func TestEgressThroughAnExit(t *testing.T) {
 	t.Parallel()
-	l := exitPool.Acquire(t)
+	l := standardPool.Acquire(t)
 	s1, s2, devA, inet := l.Node(lab.Server1), l.Node(lab.Server2), l.Node(lab.DeviceA), l.Node(lab.Internet)
 	inet4, exit4 := inet.IPv4(lab.NetServers), s2.IPv4(lab.NetServers)
 	// The lab's IPv6 is unique local, which is no internet to an exit:

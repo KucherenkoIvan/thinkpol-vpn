@@ -69,7 +69,7 @@ func TestHealthWithNoLinkUp(t *testing.T) {
 // health is ok again once the exit answers.
 func TestHealthWithAnExitThatNeverHandshakes(t *testing.T) {
 	t.Parallel()
-	l := exitPool.Acquire(t)
+	l := standardPool.Acquire(t)
 	s1, s2, devA, inet := l.Node(lab.Server1), l.Node(lab.Server2), l.Node(lab.DeviceA), l.Node(lab.Internet)
 	inet4, exit4 := inet.IPv4(lab.NetServers), s2.IPv4(lab.NetServers)
 	space := &m0Space{builder: inet, spec: "/src/lab/maps/egress.yaml", flags: []string{"-insecure-secrets-seed", "egress-lab"}, env: []string{
