@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -21,7 +22,10 @@ type fakeNetworks struct {
 	subnets    map[string]string
 	notFound   string // the CLI's message for a missing network, %s = its id
 	inspectErr error  // when set, inspect fails with it
+	alsoStderr string // another error line beside the missing networks'
 	afterList  func()
+	mu         sync.Mutex
+	inspects   int
 }
 
 func (f *fakeNetworks) docker(_ context.Context, args ...string) (Result, error) {
@@ -36,6 +40,9 @@ func (f *fakeNetworks) docker(_ context.Context, args ...string) (Result, error)
 		}
 		return Result{Stdout: strings.Join(ids, "\n") + "\n"}, nil
 	case len(args) > 4 && args[0] == "network" && args[1] == "inspect":
+		f.mu.Lock()
+		f.inspects++
+		f.mu.Unlock()
 		if f.inspectErr != nil {
 			return Result{Stderr: f.inspectErr.Error(), ExitCode: 1}, f.inspectErr
 		}
@@ -46,6 +53,9 @@ func (f *fakeNetworks) docker(_ context.Context, args ...string) (Result, error)
 			} else {
 				res.Stderr += fmt.Sprintf(f.notFound, id) + "\n"
 			}
+		}
+		if res.Stderr != "" && f.alsoStderr != "" {
+			res.Stderr += f.alsoStderr + "\n"
 		}
 		if res.Stderr != "" {
 			res.ExitCode = 1
@@ -65,11 +75,12 @@ func TestUsedSubnetsSkipsNetworksRemovedAfterTheList(t *testing.T) {
 			subnets: map[string]string{
 				"kept":   "172.16.1.0/24 fd00:1::/64",
 				"gone":   "172.16.2.0/24",
+				"gone2":  "172.16.3.0/24",
 				"noipam": "",
 			},
 			notFound: msg,
 		}
-		f.afterList = func() { delete(f.subnets, "gone") }
+		f.afterList = func() { delete(f.subnets, "gone"); delete(f.subnets, "gone2") }
 		used, err := usedSubnetsVia(t.Context(), f.docker)
 		if err != nil {
 			t.Fatalf("%q: %v", msg, err)
@@ -78,6 +89,11 @@ func TestUsedSubnetsSkipsNetworksRemovedAfterTheList(t *testing.T) {
 		want := []netip.Prefix{netip.MustParsePrefix("172.16.1.0/24"), netip.MustParsePrefix("fd00:1::/64")}
 		if !slices.Equal(used, want) {
 			t.Errorf("%q: used %v, want %v", msg, used, want)
+		}
+		// The CLI printed the networks it found: no inspect one by one
+		// (four networks are one chunk).
+		if f.inspects != 1 {
+			t.Errorf("%q: %d inspects, want 1 however many networks vanished", msg, f.inspects)
 		}
 		// The freed /24 is allocatable again.
 		pool := netip.MustParsePrefix("172.16.0.0/22")
@@ -90,6 +106,41 @@ func TestUsedSubnetsSkipsNetworksRemovedAfterTheList(t *testing.T) {
 				t.Errorf("%q: network %s got the used %v", msg, name, s.v4)
 			}
 		}
+	}
+}
+
+// Networks are inspected in chunks at once: every chunk's subnets count,
+// with networks gone from several of them.
+func TestUsedSubnetsReadsEveryChunk(t *testing.T) {
+	f := &fakeNetworks{subnets: map[string]string{}, notFound: "Error response from daemon: network %s not found"}
+	var want []netip.Prefix
+	for i := range 3*inspectChunk + 1 {
+		id := fmt.Sprintf("net%02d", i)
+		f.subnets[id] = fmt.Sprintf("172.16.%d.0/24", i)
+		if i%inspectChunk != 1 {
+			want = append(want, netip.MustParsePrefix(f.subnets[id]))
+		}
+	}
+	f.afterList = func() {
+		for id := range f.subnets {
+			var i int
+			_, _ = fmt.Sscanf(id, "net%d", &i)
+			if i%inspectChunk == 1 {
+				delete(f.subnets, id)
+			}
+		}
+	}
+	used, err := usedSubnetsVia(t.Context(), f.docker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sortPrefixes := func(ps []netip.Prefix) {
+		slices.SortFunc(ps, func(a, b netip.Prefix) int { return a.Addr().Compare(b.Addr()) })
+	}
+	sortPrefixes(used)
+	sortPrefixes(want)
+	if !slices.Equal(used, want) {
+		t.Errorf("used %v, want %v", used, want)
 	}
 }
 
@@ -118,6 +169,19 @@ func TestUsedSubnetsFailsClosed(t *testing.T) {
 	} {
 		if used, err := usedSubnetsVia(t.Context(), f.docker); err == nil {
 			t.Errorf("%s: no error, used %v", name, used)
+		}
+	}
+
+	// A network gone and something else wrong in the same inspect: the
+	// output may be short of more than the missing network.
+	for _, also := range []string{
+		"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+		"Error response from daemon: network 0000 not found",
+	} {
+		f := &fakeNetworks{subnets: map[string]string{"a": "172.16.1.0/24", "b": "172.16.2.0/24"}, notFound: "Error response from daemon: network %s not found", alsoStderr: also}
+		f.afterList = func() { delete(f.subnets, "b") }
+		if used, err := usedSubnetsVia(t.Context(), f.docker); err == nil {
+			t.Errorf("a network gone and %q: no error, used %v", also, used)
 		}
 	}
 

@@ -449,7 +449,9 @@ func (l *Lab) composeUp(ctx context.Context, img image, r *reservation, attempt 
 		return err
 	}
 	from := time.Now()
-	_, err = runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "up", "-d", "--wait")
+	// No --wait: it polls the containers every half second after they
+	// started; a node that died at once fails the sealing instead.
+	_, err = runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "up", "-d")
 	l.upFrom, l.upTo, l.upAttempt = from, time.Now(), attempt
 	noteTimeline(l.Project, attempt, r, from, l.upTo, err)
 	return err
@@ -566,15 +568,27 @@ func (l *Lab) inspect(ctx context.Context) error {
 	}
 
 	l.gateways = map[string][]netip.Addr{}
+	args := []string{"network", "inspect", "--format", "{{.Name}} {{range .IPAM.Config}}{{.Gateway}} {{end}}"}
 	for _, net := range l.Topology.Networks {
-		res, err := docker(ctx, "network", "inspect", "--format", "{{range .IPAM.Config}}{{.Gateway}} {{end}}", l.Project+"_"+net.Name)
-		if err != nil {
-			return err
+		args = append(args, l.Project+"_"+net.Name)
+	}
+	res, err = docker(ctx, args...)
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
 		}
-		for _, s := range strings.Fields(res.Stdout) {
+		network, ok := strings.CutPrefix(f[0], l.Project+"_")
+		if !ok {
+			return fmt.Errorf("lab %s: docker network inspect: unexpected network %q", l.Project, f[0])
+		}
+		for _, s := range f[1:] {
 			s, _, _ = strings.Cut(s, "/")
 			if a, err := netip.ParseAddr(s); err == nil {
-				l.gateways[net.Name] = append(l.gateways[net.Name], a)
+				l.gateways[network] = append(l.gateways[network], a)
 			}
 		}
 	}
@@ -583,44 +597,57 @@ func (l *Lab) inspect(ctx context.Context) error {
 
 // learnBridges finds each network's bridge MAC from a node on it, before
 // any node is sealed: the bridge answers ARP for the network's gateway
-// address. The MAC also gives the bridge's link-local address.
+// address. The MAC also gives the bridge's link-local address. Networks
+// are asked all at once.
 func (l *Lab) learnBridges(ctx context.Context) error {
+	bridges := make([]Bridge, len(l.Topology.Networks))
+	errs := make([]error, len(l.Topology.Networks))
+	var wg sync.WaitGroup
+	for i, net := range l.Topology.Networks {
+		wg.Go(func() { bridges[i], errs[i] = l.learnBridge(ctx, net) })
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
 	l.bridges = map[string]Bridge{}
-	for _, net := range l.Topology.Networks {
-		var b Bridge
-		for _, gw := range l.gateways[net.Name] {
-			if gw.Is4() {
-				b.IPv4 = gw
-			} else {
-				b.IPv6 = gw
-			}
-		}
-		if !b.IPv4.IsValid() {
-			return fmt.Errorf("lab %s: network %s has no IPv4 gateway", l.Project, net.Name)
-		}
-		i := slices.IndexFunc(l.Topology.Nodes, func(n NodeSpec) bool { return slices.Contains(n.Networks, net.Name) })
-		if i < 0 {
-			l.bridges[net.Name] = b
-			continue
-		}
-		n := l.nodes[l.Topology.Nodes[i].Name]
-		res, err := n.Exec(ctx, "sh", "-c", `ping -c 1 -W 1 "$0" >/dev/null 2>&1; ip -j neigh show "$0"`, b.IPv4.String())
-		if err != nil {
-			return fmt.Errorf("lab %s: network %s: %w", l.Project, net.Name, err)
-		}
-		var neigh []struct {
-			LLAddr string `json:"lladdr"`
-		}
-		if err := json.Unmarshal([]byte(res.Stdout), &neigh); err != nil || len(neigh) == 0 || neigh[0].LLAddr == "" {
-			return fmt.Errorf("lab %s: network %s: no MAC for the bridge at %s: %q", l.Project, net.Name, b.IPv4, res.Stdout)
-		}
-		b.MAC = strings.ToLower(neigh[0].LLAddr)
-		if b.LinkLocal, err = linkLocalFromMAC(b.MAC); err != nil {
-			return err
-		}
-		l.bridges[net.Name] = b
+	for i, net := range l.Topology.Networks {
+		l.bridges[net.Name] = bridges[i]
 	}
 	return nil
+}
+
+// learnBridge is learnBridges for one network.
+func (l *Lab) learnBridge(ctx context.Context, network Network) (Bridge, error) {
+	var b Bridge
+	for _, gw := range l.gateways[network.Name] {
+		if gw.Is4() {
+			b.IPv4 = gw
+		} else {
+			b.IPv6 = gw
+		}
+	}
+	if !b.IPv4.IsValid() {
+		return b, fmt.Errorf("lab %s: network %s has no IPv4 gateway", l.Project, network.Name)
+	}
+	i := slices.IndexFunc(l.Topology.Nodes, func(n NodeSpec) bool { return slices.Contains(n.Networks, network.Name) })
+	if i < 0 {
+		return b, nil
+	}
+	n := l.nodes[l.Topology.Nodes[i].Name]
+	res, err := n.Exec(ctx, "sh", "-c", `ping -c 1 -W 1 "$0" >/dev/null 2>&1; ip -j neigh show "$0"`, b.IPv4.String())
+	if err != nil {
+		return b, fmt.Errorf("lab %s: network %s: %w", l.Project, network.Name, err)
+	}
+	var neigh []struct {
+		LLAddr string `json:"lladdr"`
+	}
+	if err := json.Unmarshal([]byte(res.Stdout), &neigh); err != nil || len(neigh) == 0 || neigh[0].LLAddr == "" {
+		return b, fmt.Errorf("lab %s: network %s: no MAC for the bridge at %s: %q", l.Project, network.Name, b.IPv4, res.Stdout)
+	}
+	b.MAC = strings.ToLower(neigh[0].LLAddr)
+	b.LinkLocal, err = linkLocalFromMAC(b.MAC)
+	return b, err
 }
 
 // linkLocalFromMAC is the EUI-64 link-local address Linux gives an

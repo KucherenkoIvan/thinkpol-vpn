@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // SubnetPoolEnv overrides the IPv4 range lab networks get their /24s from.
@@ -50,10 +51,18 @@ func usedSubnets(ctx context.Context) ([]netip.Prefix, error) {
 // dockerFunc runs a docker CLI command, as docker does.
 type dockerFunc func(ctx context.Context, args ...string) (Result, error)
 
+// inspectChunk is how many networks one docker network inspect asks
+// about; usedSubnetsVia runs the chunks at once. The CLI asks the daemon
+// one network after another, and under load each request waits behind
+// whatever network the daemon is creating or removing at the time.
+const inspectChunk = 4
+
 // usedSubnetsVia is usedSubnets through run. Other daemon users remove
 // networks at any time, also between the list and the inspect: a network
-// that is gone by then no longer holds a subnet and is skipped. Anything
-// else that goes wrong fails, so a sick daemon never reads as "nothing used".
+// that is gone by then no longer holds a subnet and is skipped. The CLI
+// still prints every network it found, so an inspect whose every error is
+// a listed network not found is the answer for the rest. Anything else
+// that goes wrong fails, so a sick daemon never reads as "nothing used".
 func usedSubnetsVia(ctx context.Context, run dockerFunc) ([]netip.Prefix, error) {
 	res, err := run(ctx, "network", "ls", "-q", "--no-trunc")
 	if err != nil {
@@ -63,34 +72,37 @@ func usedSubnetsVia(ctx context.Context, run dockerFunc) ([]netip.Prefix, error)
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	inspect := func(ids ...string) (Result, error) {
-		return run(ctx, append([]string{"network", "inspect", "--format", "{{range .IPAM.Config}}{{.Subnet}} {{end}}"}, ids...)...)
-	}
-	res, err = inspect(ids...)
-	if err != nil && slices.ContainsFunc(ids, func(id string) bool { return networkNotFound(res, err, id) }) {
-		// Some network vanished; which one, only inspecting them one by one
-		// tells.
-		var out strings.Builder
-		read := 0
-		for _, id := range ids {
-			res, err := inspect(id)
-			if networkNotFound(res, err, id) {
-				continue
-			}
+	chunks := slices.Collect(slices.Chunk(ids, inspectChunk))
+	outs := make([]string, len(chunks))
+	gone := make([]int, len(chunks))
+	errs := make([]error, len(chunks))
+	var wg sync.WaitGroup
+	for i, chunk := range chunks {
+		wg.Go(func() {
+			res, err := run(ctx, append([]string{"network", "inspect", "--format", "{{range .IPAM.Config}}{{.Subnet}} {{end}}"}, chunk...)...)
 			if err != nil {
-				return nil, err
+				n, ok := networksNotFound(res, err, chunk)
+				if !ok {
+					errs[i] = err
+					return
+				}
+				gone[i] = n
 			}
-			out.WriteString(res.Stdout + " ")
-			read++
-		}
-		if read == 0 {
-			return nil, fmt.Errorf("lab: none of the %d networks docker listed could be inspected", len(ids))
-		}
-		res, err = Result{Stdout: out.String()}, nil
+			outs[i] = res.Stdout
+		})
 	}
-	if err != nil {
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
+	total := 0
+	for _, n := range gone {
+		total += n
+	}
+	if total == len(ids) {
+		return nil, fmt.Errorf("lab: none of the %d networks docker listed could be inspected", len(ids))
+	}
+	res = Result{Stdout: strings.Join(outs, " ")}
 	var used []netip.Prefix
 	for _, s := range strings.Fields(res.Stdout) {
 		p, err := netip.ParsePrefix(s)
@@ -120,6 +132,22 @@ func networkNotFound(res Result, err error, id string) bool {
 		}
 	}
 	return false
+}
+
+// networksNotFound counts the networks of ids a failed inspect says it
+// didn't find; ok only when that is all its stderr says.
+func networksNotFound(res Result, err error, ids []string) (gone int, ok bool) {
+	for _, line := range strings.Split(res.Stderr, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		line := Result{Stderr: line, ExitCode: res.ExitCode}
+		if !slices.ContainsFunc(ids, func(id string) bool { return networkNotFound(line, err, id) }) {
+			return 0, false
+		}
+		gone++
+	}
+	return gone, gone > 0
 }
 
 func isIDChar(c byte) bool {
