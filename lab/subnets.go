@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
 // SubnetPoolEnv overrides the IPv4 range lab networks get their /24s from.
@@ -46,6 +47,61 @@ func subnetPool() (netip.Prefix, error) {
 // and everyone else's.
 func usedSubnets(ctx context.Context) ([]netip.Prefix, error) {
 	return usedSubnetsVia(ctx, docker)
+}
+
+// daemonSubnets is usedSubnets shared by the lab starts of this process:
+// a run starts as many labs at once as it has slots, and each read asks
+// the daemon about every network on it, behind whatever networks the
+// daemon is creating or removing.
+var daemonSubnets = &sharedRead{read: usedSubnets, bound: 5 * time.Minute}
+
+// sharedRead runs read for whoever asks, and has a caller that asks while
+// a read is running take that one's answer. A read that began before the
+// caller asked can miss a network created just before: as a read and the
+// docker compose up after it can anyway, whose overlap means another try
+// (Lab.create), which then asks for a read that began after it asks.
+type sharedRead struct {
+	read  func(context.Context) ([]netip.Prefix, error)
+	bound time.Duration // a read's own, as it outlives the caller that began it
+
+	mu  sync.Mutex
+	cur *subnetRead
+}
+
+type subnetRead struct {
+	began time.Time
+	done  chan struct{}
+	used  []netip.Prefix
+	err   error
+}
+
+// get is a read's answer: the running one's, if it began at notBefore or
+// later, else a new one's.
+func (s *sharedRead) get(ctx context.Context, notBefore time.Time) ([]netip.Prefix, error) {
+	s.mu.Lock()
+	r := s.cur
+	if r == nil || r.began.Before(notBefore) {
+		r = &subnetRead{began: time.Now(), done: make(chan struct{})}
+		s.cur = r
+		go func() {
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.bound)
+			defer cancel()
+			r.used, r.err = s.read(rctx)
+			s.mu.Lock()
+			if s.cur == r {
+				s.cur = nil
+			}
+			s.mu.Unlock()
+			close(r.done)
+		}()
+	}
+	s.mu.Unlock()
+	select {
+	case <-r.done:
+		return slices.Clone(r.used), r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // dockerFunc runs a docker CLI command, as docker does.

@@ -421,9 +421,11 @@ func (l *Lab) create(ctx context.Context, img image) error {
 	if err != nil {
 		return err
 	}
+	var notBefore time.Time // a first try takes a read already running
 	for attempt := 1; ; attempt++ {
 		l.releaseSubnets()
-		if l.subnets, err = reserveSubnets(ctx, dir, l.Topology.Networks, pool, usedSubnets); err != nil {
+		used := func(ctx context.Context) ([]netip.Prefix, error) { return daemonSubnets.get(ctx, notBefore) }
+		if l.subnets, err = reserveSubnets(ctx, dir, l.Topology.Networks, pool, used); err != nil {
 			return err
 		}
 		err := l.composeUp(ctx, img, l.subnets, attempt)
@@ -433,6 +435,7 @@ func (l *Lab) create(ctx context.Context, img image) error {
 		if !isOverlap(err) || attempt == 5 {
 			return fmt.Errorf("lab %s: up: %w", l.Project, err)
 		}
+		notBefore = time.Now()
 		if err := downProject(ctx, l.Project, l.root); err != nil {
 			return err
 		}

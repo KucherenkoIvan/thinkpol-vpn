@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
 // fakeNetworks answers `docker network ls -q` and `docker network inspect`
@@ -312,4 +314,50 @@ func usesAddr(literal string, a netip.Addr) bool {
 	}
 	addr, err := netip.ParseAddr(literal)
 	return err == nil && addr == a
+}
+
+// Lab starts that ask while a read of the daemon's subnets runs take its
+// answer; one that must not miss what happened before it asked (a try after
+// an overlap) gets a read of its own, and so does one asking after the read
+// ended.
+func TestSharedReadJoinsARunningRead(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		reads := 0
+		release := make(chan struct{})
+		s := &sharedRead{bound: time.Minute, read: func(ctx context.Context) ([]netip.Prefix, error) {
+			reads++
+			n := reads
+			if n == 1 {
+				<-release
+			}
+			return []netip.Prefix{netip.PrefixFrom(netip.AddrFrom4([4]byte{172, 16, byte(n), 0}), 24)}, nil
+		}}
+		ask := func(notBefore time.Time) chan []netip.Prefix {
+			ch := make(chan []netip.Prefix, 1)
+			go func() {
+				used, err := s.get(t.Context(), notBefore)
+				if err != nil {
+					t.Error(err)
+				}
+				ch <- used
+			}()
+			synctest.Wait() // it has asked, and waits for its answer or has it
+			return ch
+		}
+		check := func(name string, ch chan []netip.Prefix, want string) {
+			t.Helper()
+			used := <-ch
+			if len(used) != 1 || used[0].String() != want {
+				t.Errorf("%s: got %v, want %s", name, used, want)
+			}
+		}
+		first := ask(time.Time{})
+		joined := ask(time.Time{})
+		time.Sleep(time.Second) // the bubble's clock: asks after the running read began
+		check("one that must not miss what came before it", ask(time.Now()), "172.16.2.0/24")
+		close(release)
+		check("the first", first, "172.16.1.0/24")
+		check("one asking while it ran", joined, "172.16.1.0/24")
+		check("one asking after it ended", ask(time.Time{}), "172.16.3.0/24")
+	})
 }
