@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -80,10 +81,12 @@ func testHelperDirs(ctx context.Context, root string, p GoPackage) ([]string, er
 	var dirs []string
 	for line := range strings.Lines(res.Stdout) {
 		pkg, dir, ok := strings.Cut(strings.TrimSpace(line), "\t")
-		// "x [y.test]" is x built for y's tests; "y.test" is their main
-		// package, in y's directory, not a helper.
+		// "x [y.test]" is x built for y's tests. y's external tests
+		// (y_test) and their main package (y.test) are in y's directory:
+		// not helpers.
 		pkg, _, _ = strings.Cut(pkg, " ")
-		helper := strings.HasSuffix(pkg, "test") && !strings.HasSuffix(pkg, ".test")
+		base := path.Base(pkg)
+		helper := strings.HasSuffix(base, "test") && !strings.ContainsAny(base, "._")
 		if ok && helper && !slices.Contains(dirs, dir) {
 			dirs = append(dirs, dir)
 		}
