@@ -286,18 +286,18 @@ func (p *Pool) adopt(l *Lab, ops pooledOps, begin time.Time, err error) (*pooled
 	return &pooledLab{lab: l, ops: ops, clean: clean, took: time.Since(begin)}, nil
 }
 
-// giveBack resets the lab t had and puts it back, or retires it when t
-// failed or the reset didn't hold. What the reset found to undo goes to
-// t's log after the names of the users that had the lab before, so a
-// failure that depends on their order can be traced.
-func (p *Pool) giveBack(t labUser, pl *pooledLab, since time.Time) {
+// giveBack resets the lab t had and puts it back (back), or retires it
+// when t failed or the reset didn't hold. What the reset found to undo
+// goes to t's log after the names of the users that had the lab before,
+// so a failure that depends on their order can be traced.
+func (p *Pool) giveBack(t labUser, pl *pooledLab, since time.Time) (back bool) {
 	before := slices.Clone(pl.users)
 	pl.users = append(pl.users, t.Name())
 	if t.Failed() {
 		p.retire(t, pl, "the test failed")
 		pl.ops.cleanup(t, since)
 		p.gone()
-		return
+		return false
 	}
 	var once sync.Once
 	logf := func(format string, args ...any) {
@@ -324,16 +324,16 @@ func (p *Pool) giveBack(t labUser, pl *pooledLab, since time.Time) {
 			cancel()
 		}
 		p.gone()
-		return
+		return false
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.handOn(pl) {
-		return
+	if !p.handOn(pl) {
+		pl.since = time.Now()
+		pl.timer = time.AfterFunc(poolIdleCheck, func() { p.idleCheck(pl) })
+		p.idle = append(p.idle, pl)
 	}
-	pl.since = time.Now()
-	pl.timer = time.AfterFunc(poolIdleCheck, func() { p.idleCheck(pl) })
-	p.idle = append(p.idle, pl)
+	return true
 }
 
 func (p *Pool) retire(t labUser, pl *pooledLab, why string) {

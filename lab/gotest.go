@@ -506,7 +506,7 @@ func (r *packageRun) inLab(queued time.Time) {
 	if r.pool == nil || r.pkg.FreshLab {
 		run = goTestFresh(r.ctx, queued, r.root, r.project, r.pkg, r.out, r.env, runArgs, r.entry != nil)
 	} else {
-		run = r.pool.goTest(r.ctx, queued, r.root, r.pkg.ImportPath, r.out, func(n *Node) freshRun {
+		run = r.pool.goTest(r.ctx, queued, r.root, r.pkg.ImportPath, r.out, testVerbose(r.args), func(n *Node) freshRun {
 			return runInNode(r.ctx, n, r.pkg, r.out, r.env, runArgs, r.entry != nil)
 		})
 	}

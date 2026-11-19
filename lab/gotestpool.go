@@ -1,6 +1,7 @@
 package lab
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -27,9 +28,11 @@ func newNodePool(size int, project func(i int) string) *nodePool {
 // goTest runs run in the node of one of the pool's labs, an idle one or
 // one it starts, then gives the lab back: reset for the next package, or
 // retired when the package failed (run's testErr) or the reset didn't
-// hold. user names the package in the pool's log lines, which go to w.
-// The phases are timed from queued (LabPhases).
-func (p *nodePool) goTest(ctx context.Context, queued time.Time, root, user string, w io.Writer, run func(n *Node) freshRun) (res freshRun) {
+// hold. user names the package in the pool's log lines (what the reset
+// undid), which go to w when verbose or when the reset didn't hold, and
+// w gets which lab it ran in. The phases are timed from queued
+// (LabPhases).
+func (p *nodePool) goTest(ctx context.Context, queued time.Time, root, user string, w io.Writer, verbose bool, run func(n *Node) freshRun) (res freshRun) {
 	timer := labTimer{queued: queued, began: time.Now()}
 	deadline, ok := ctx.Deadline()
 	if !ok {
@@ -49,8 +52,10 @@ func (p *nodePool) goTest(ctx context.Context, queued time.Time, root, user stri
 	fmt.Fprintf(w, "lab %s (pool %s, use %d)\n", pl.lab.Project, p.name, pl.uses)
 	res = run(pl.lab.Node("gotest"))
 	timer.tested = time.Now()
-	u := &packageUser{name: user, failed: res.testErr != nil, w: w}
-	p.giveBack(u, pl, timer.started)
+	u := &packageUser{name: user, failed: res.testErr != nil}
+	if back := p.giveBack(u, pl, timer.started); verbose || !back && !u.failed {
+		_, _ = w.Write(u.log.Bytes())
+	}
 	res.labErr = errors.Join(res.labErr, errors.Join(u.errs...))
 	res.phases = timer.phases(time.Now())
 	return res
@@ -79,13 +84,13 @@ func (n nodeLab) keep(labUser) bool { return false }
 func (n nodeLab) down(ctx context.Context) error { return n.lab.Down(ctx) }
 
 // packageUser is a node-phase package as the user of a pool's lab: the
-// pool's log lines go to the package's output, and an error (a tear-down
-// that failed) is the run's lab error.
+// pool's log lines go to log, and an error (a tear-down that failed) is
+// the run's lab error.
 type packageUser struct {
 	name   string
 	failed bool
 	mu     sync.Mutex
-	w      io.Writer
+	log    bytes.Buffer
 	errs   []error
 }
 
@@ -95,7 +100,7 @@ func (u *packageUser) Failed() bool { return u.failed }
 func (u *packageUser) Logf(format string, args ...any) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	_, _ = fmt.Fprintf(u.w, format+"\n", args...)
+	_, _ = fmt.Fprintf(&u.log, format+"\n", args...)
 }
 
 func (u *packageUser) Errorf(format string, args ...any) {
