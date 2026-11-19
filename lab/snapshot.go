@@ -393,7 +393,7 @@ func (n *Node) waitCommand(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if !strings.Contains(out, sealWait) {
+		if !waitsForSeal(out) {
 			return nil
 		}
 		select {
@@ -402,6 +402,18 @@ func (n *Node) waitCommand(ctx context.Context) error {
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+// waitsForSeal says whether ps's args (one process a line) have the
+// shell that waits for the seal: docker-init, which started it, keeps it
+// in its own args for good.
+func waitsForSeal(ps string) bool {
+	for _, line := range strings.Split(ps, "\n") {
+		if line = strings.TrimSpace(line); strings.HasPrefix(line, "sh -c ") && strings.Contains(line, sealWait) {
+			return true
+		}
+	}
+	return false
 }
 
 // states reads every node's state at once.

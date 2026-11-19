@@ -191,3 +191,16 @@ func TestClearUntilEmpty(t *testing.T) {
 		t.Errorf("entries that never go: %v, want an error listing them", err)
 	}
 }
+
+// TestWaitsForSeal: a node's command waits for the seal while its shell
+// runs, whatever docker-init's args, which keep the whole command.
+func TestWaitsForSeal(t *testing.T) {
+	cmd := `while [ ! -e /run/lab/sealed ]; do sleep 0.1; done; exec "$@" ` + sealWait + " sleep infinity"
+	initArgs := "/sbin/docker-init -- sh -c " + cmd
+	if !waitsForSeal(initArgs + "\nsh -c " + cmd + "\nsleep 0.1\n") {
+		t.Error("its shell still runs: not waiting")
+	}
+	if waitsForSeal(initArgs + "\nsleep infinity\nps -eo args=\n") {
+		t.Error("its command exec'd: still waiting")
+	}
+}
