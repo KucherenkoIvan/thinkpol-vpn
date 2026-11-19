@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: agent-tp-253
+branch: tp-253-reality-ccs-flake
 ---
 
 ## Goal
@@ -30,3 +30,4 @@ In TP-239's lab-test-default run (2026-11-19) the reality transport package's Te
 
 ## Log
 - 2026-11-19 created in backlog (seen in lab runs 2026-11-19)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-253
