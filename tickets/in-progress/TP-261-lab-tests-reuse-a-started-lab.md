@@ -54,6 +54,11 @@ No `lab/` test outside the systemd ones disconnects a network, restarts, pauses 
 - Pools are declared in one file (`lab/pools_test.go`), with their sizes, so the reuse is visible in one place.
 - Proof: unit tests of the snapshot diff/undo; a lab test that leaves state behind on purpose and sees the lab retired (mutation: skip the check, and a later user sees the leftover); the timeline's lab starts and the full lab's wall time before and after.
 
+### Measurements
+
+- **Before** (rewrite 35b02ca7, this branch's board commit cc9c380c, full `make lab-test` with `THINKPOL_LAB_TIMELINE`, cold node phase and harness, another ticket's full lab running at the same time): tests passed, over budget (default stream 47m52s, long stream 4m13s), wall 2872 s. Lab starts (`docker compose up` lines in the timeline): 111 in all, of which 58 by `lab/` tests (default and long stream: TestKillSwitchUnderSystemd 4, the censor matrix's rows 17, every other test 1, `lab/prototypes/reality` 2), 11 by the harness tests, 42 by the node phase.
+- Targeted run of the 25 migrated tests (`make lab-gotest PKG=./lab RUN=…`, 7d13d6d4, under two other tickets' full labs): all passed, 798 s; 20 labs started for 28 tests, none retired; most labs went down idle after one test (a fixed 15 s idle grace), hence the grace now follows the lab's own start time.
+
 ## Log
 - 2026-11-19 created in backlog (full-lab measurement on rewrite cb0348d6)
 - 2026-11-19 backlog → in-progress, owner: agent-tp-261
