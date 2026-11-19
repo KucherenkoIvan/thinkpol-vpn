@@ -8,7 +8,6 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-255]
 refs: []
-needs_human: decision
 owner: "agent-tp-264"
 branch: "tp-264-prober-cell-deterministic"
 ---
@@ -32,6 +31,7 @@ Either way, count `NOT JUDGED: n (cells)` in RESULTS.md's header and in `make la
 - [ ] TP-029's wording matches (owner).
 
 ## Notes
+- Owner's choice (owner, 2026-11-19): a. In report mode the reality × active prober cell is scored on the tell alone: any reported upstream tell scores `not judged` (the counts and times stay in the detail as evidence), so the verdict never depends on the baseline's length.
 - TP-255's Notes ("What's left") give the numbers: the tightest run had 8 dials in 8.25 s outside the probes against 8 in 5.52 s of probes, so a baseline past about 11 s with no more dials reads `pass`.
 
 ## Log

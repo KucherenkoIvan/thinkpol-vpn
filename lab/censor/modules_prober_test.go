@@ -638,6 +638,29 @@ func TestProberSettings(t *testing.T) {
 	}
 }
 
+// TestUpstreamTellReportedOverAnyBaseline: in report mode an attributable
+// tell over a long baseline (TP-255's tightest run, 8 dials in 5.52 s of
+// probes, against none more in 12 s outside them) is reported as a short
+// one is, with UpstreamTellReported, which the matrix scores not judged
+// (owner, 2026-11-19: a); in flag mode it flags.
+func TestUpstreamTellReportedOverAnyBaseline(t *testing.T) {
+	server := netip.MustParseAddr("192.0.2.9")
+	for _, u := range []upstreamTally{
+		{probes: 7, total: 7, during: 8, probing: 5520 * time.Millisecond, between: 8, outside: 12 * time.Second},
+		{probes: 7, total: 7, during: 8, probing: 5520 * time.Millisecond, between: 0, outside: 120 * time.Second},
+		{probes: 7, total: 7, during: 9, probing: 7551 * time.Millisecond, between: 7, outside: 4399 * time.Millisecond},
+	} {
+		report, diff := (&prober{hostOf: map[netip.Addr]netip.Addr{}, reportTell: true}).upstreamTell(server, u)
+		if diff != "" || !strings.HasPrefix(report, "upstream tell: a connection") || !strings.HasSuffix(report, ", "+UpstreamTellReported) {
+			t.Errorf("report, %+v: report %q, diff %q, want the tell reported", u, report, diff)
+		}
+		report, diff = (&prober{hostOf: map[netip.Addr]netip.Addr{}}).upstreamTell(server, u)
+		if report != "" || !strings.HasPrefix(diff, "upstream tell: a connection") || strings.Contains(diff, UpstreamTellReported) {
+			t.Errorf("flag, %+v: report %q, diff %q, want the tell flagged", u, report, diff)
+		}
+	}
+}
+
 // TestUpstreamTellShortBaseline: a splicing entry's own dial for the
 // suspected client, in the second or so the censor ran before the first
 // probe, doesn't hide the tell (relay-tcp in the matrix: 1 dial in 1.5 s

@@ -16,7 +16,7 @@ branch: ""
 M2's "done when": the matrix shows `udp` getting caught and `reality` passing.
 
 ## Scope
-- Run the full matrix; `reality` passes every M2 module; `udp`'s failures recorded (expected: the fully-encrypted heuristics).
+- Run the full matrix; `reality`'s active prober cell is `not judged` by design (its upstream tell is reported, and a reported tell scores not judged: owner, 2026-11-19: a), and `reality` passes every other M2 module; `udp`'s failures recorded (expected: the fully-encrypted heuristics).
 
 ## Acceptance
 - [ ] `lab/RESULTS.md` committed with the M2 matrix
@@ -39,3 +39,4 @@ M2's "done when": the matrix shows `udp` getting caught and `reality` passing.
 - 2026-11-09 notes: all device-test work in the acceptance session (owner)
 - 2026-11-12 depends on TP-204 (captive-portal pause, owner 2026-11-09)
 - 2026-11-12 depends_on: TP-204 removed (dropped, owner 2026-11-12)
+- 2026-11-19 M2 wording: reality's active prober cell is not judged by design (owner, 2026-11-19: a; TP-264)
