@@ -46,6 +46,13 @@ The owner wants a full lab to take at most 15 minutes on the remote runner (2026
 - An earlier full lab on e60da648 (before the reset fix), run beside another full lab: 2536 s, default stream 42m16s, also with the node phase uncached. It failed only on the reset race above (reality lab 2, ip-blocklist), so RESULTS.md wasn't assembled.
 - Out of scope, but the bigger lever for the 15-minute budget: neither `make lab-test` nor `lab-gotest` passes `-test.parallel`, so `./lab` runs only as many parallel tests as the machine has CPUs (GOMAXPROCS), fewer than the 12-lab slot cap: in a targeted matrix run, three of the nine rows waited for the others to finish before they started. Splitting rows adds labs behind that limit.
 
+## Review findings
+- [ ] R1.1 (blocker) `make lab-test-rhythm-real` filters `TestCensorMatrix/^(udp|reality)$/^(off|wireguard-rhythm)$`, but the rhythm cells are dealt in turn into "reality lab 3" and "udp lab 2", so the target runs only the off cells and goes green having tested nothing. Deal the held (rhythm) cells to each row's lab 0 (assert it in TestRowLabs) and make the filter match the lab subtest names robustly; show the target runs both rhythm cells (real timers) once.
+- [ ] R1.2 (should-fix) lab/matrixreset_test.go: `ss -K` exits 0 and kills nothing on a kernel without INET_DIAG_DESTROY (and leaves TIME_WAIT). After it, check that no TCP connection survives on each node (connected and closing states) and fail the reset, listing them, if any does; log per node what `ss -K` killed. Run reality's ip-blocklist lab 10 times.
+- [ ] R1.3 (should-fix) TestRowLabs tests rowLabs, not its call site: `ml.recordsOff()` → `true` and ranging over `censored` instead of `ml.cells` both pass it. Cover the wiring (move the record decision into what the test calls), assert cells keep censorCases order within a lab, and make writeResults (no-stream path) refuse duplicate rows.
+- [ ] R1.4 (should-fix) lab/results_test.go: the "longest first" start order no longer holds (unsplit wireguard, the most cell time, starts after split labs; the -parallel limit makes order matter). Order labs by expected cell time and fix the comment.
+- [ ] R1.5 (nit) the conntrack listing is duplicated in lab/matrixreset_test.go: one helper.
+
 ## Log
 - 2026-11-19 created in backlog (lab-speed follow-ups)
 - 2026-11-19 backlog → in-progress, owner: agent-tp-247
@@ -57,3 +64,4 @@ The owner wants a full lab to take at most 15 minutes on the remote runner (2026
 - 2026-11-19 make lint, make test green on 27ba73b3; targeted matrix on 27ba73b3: longest lab 193 s, matrix 412 s, 88/88 cells, verdicts as before apart from the two chance cells
 - 2026-11-19 full make lab-test on 27ba73b3 (lab commit): passed, RESULTS.md assembled, default stream 34m12s, over the 15m budget; box 1 left unticked (Notes). Not verified: wireguard × fully-encrypted's exemption in the full lab (a passing test's log isn't printed there)
 - 2026-11-19 in-progress → review
+- 2026-11-19 review round 1: fix R1.1–R1.5
