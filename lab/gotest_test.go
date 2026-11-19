@@ -2,6 +2,9 @@ package lab
 
 import (
 	"context"
+	"fmt"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -219,4 +222,74 @@ func TestLabTimeLine(t *testing.T) {
 	if got != want {
 		t.Errorf("line %q, want %q", got, want)
 	}
+}
+
+// TestFreshLabMarksSayWhat: every FreshLabFile in the module holds only
+// its package clause and a comment saying what the package's tests change
+// that the reset doesn't read (freshLabMarkProblem).
+func TestFreshLabMarksSayWhat(t *testing.T) {
+	root, err := Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marked []string
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && path != root && (strings.HasPrefix(d.Name(), ".") || d.Name() == "testdata") {
+			return filepath.SkipDir
+		}
+		if d.Name() != FreshLabFile {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		marked = append(marked, filepath.ToSlash(filepath.Dir(rel)))
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if p := freshLabMarkProblem(src); p != "" {
+			t.Errorf("%s: %s", rel, p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("packages on fresh labs: %v", marked)
+}
+
+func TestFreshLabMarkProblem(t *testing.T) {
+	for _, c := range []struct{ src, want string }{
+		{"// Its tests write kernel.* sysctls, which the reset doesn't read.\npackage x_test\n", ""},
+		{"package x\n\n// The tests change /usr/share, which the reset doesn't read.\n", ""},
+		{"package x\n", "no comment saying what its tests change that the reset doesn't read"},
+		{"//\npackage x // \n", "no comment saying what its tests change that the reset doesn't read"},
+		{"// Why.\npackage x\n\nfunc init() {}\n", "holds more than its package clause and a comment"},
+		{"// Why.\npackage x\n\nimport _ \"os\"\n", "holds more than its package clause and a comment"},
+		{"not go", "doesn't parse"},
+	} {
+		if got := freshLabMarkProblem([]byte(c.src)); !strings.HasPrefix(got, c.want) || (c.want == "") != (got == "") {
+			t.Errorf("%q: %q, want %q", c.src, got, c.want)
+		}
+	}
+}
+
+// freshLabMarkProblem is what is wrong with a FreshLabFile's source src,
+// or "".
+func freshLabMarkProblem(src []byte) string {
+	f, err := parser.ParseFile(token.NewFileSet(), FreshLabFile, src, parser.ParseComments)
+	if err != nil {
+		return fmt.Sprintf("doesn't parse: %v", err)
+	}
+	if len(f.Decls) > 0 {
+		return "holds more than its package clause and a comment"
+	}
+	for _, c := range f.Comments {
+		if strings.TrimSpace(c.Text()) != "" {
+			return ""
+		}
+	}
+	return "no comment saying what its tests change that the reset doesn't read"
 }

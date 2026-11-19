@@ -54,6 +54,20 @@
 // reports its time split into its queue for one of the run's labs, slot
 // wait, lab start, tests and teardown (LabPhases).
 //
+// GoTestEach's packages share their labs through a pool of its own
+// (nodePool, a Pool that Main doesn't know of, closed when GoTestEach
+// returns) of as many labs as packages run at once: a package takes an
+// idle lab or starts one, and its lab is reset and checked before the next
+// package gets it. A failed package's lab is torn down, never kept, as a
+// fresh one is; so is one whose check failed, and one given back while as
+// many labs are idle as packages may still take one (Pool.countTakers): its
+// slot is what the lab/ tests wait for near the end of the phase. A failed
+// tear-down of a pooled lab fails the phase, as a fresh lab's does. A package with FreshLabFile
+// changes what the check doesn't read, and gets a lab of its own. The
+// cache's key names no lab, so a package run in a pooled lab records and
+// finds the same passes as one run in a fresh lab; the test log it reads
+// back is the package's own, as the reset removed the last package's.
+//
 // A package marked with HostTestsFile needs no node: on a Linux machine,
 // run as a user (never as root), labctl gotest runs it there with
 // GoTestOnHost, plain go test without THINKPOL_LAB and without cgo, and

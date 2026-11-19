@@ -175,6 +175,7 @@ type fakeLab struct {
 	resetErr error
 	keepEnv  bool
 	undone   string // what its reset logs as undone
+	downErr  error
 
 	mu                             sync.Mutex
 	resets, cleanups, kept, downed int
@@ -192,13 +193,13 @@ func (f *fakeLab) reset(_ context.Context, _ *Snapshot, logf func(format string,
 	return f.resetErr
 }
 
-func (f *fakeLab) cleanup(testing.TB, time.Time) {
+func (f *fakeLab) cleanup(labUser, time.Time) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cleanups++
 }
 
-func (f *fakeLab) keep(testing.TB) bool {
+func (f *fakeLab) keep(labUser) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.keepEnv {
@@ -211,7 +212,7 @@ func (f *fakeLab) down(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.downed++
-	return nil
+	return f.downErr
 }
 
 func (f *fakeLab) counts() [4]int {
@@ -265,7 +266,7 @@ func TestPoolGiveBack(t *testing.T) {
 	p := &Pool{size: 1, name: "router", labs: 1}
 	f := &fakeLab{project: "lab-1"}
 	p.giveBack(&fakeTB{name: "TestFailed", failed: true}, &pooledLab{ops: f}, time.Now())
-	if c := f.counts(); c != [4]int{0, 1, 0, 0} || p.labs != 0 || len(p.idle) != 0 || !retiredFor(p, "TestFailed", "the test failed") {
+	if c := f.counts(); c != [4]int{0, 1, 0, 0} || p.labs != 0 || len(p.idle) != 0 || !retiredFor(p, "TestFailed", "it failed") {
 		t.Errorf("a failed test: resets, cleanups, kept, downs %v, %d labs, %d idle, retired %q: want its clean-up only, retired", c, p.labs, len(p.idle), p.Stats().Retired)
 	}
 

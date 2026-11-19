@@ -67,7 +67,7 @@ func (f *cacheFixture) entry(t *testing.T) *goTestEntry {
 
 // record records run as goTestPackage does, for a run that started after
 // every file was written: the checkout is watched for changes since then.
-func (f *cacheFixture) record(t *testing.T, run freshRun) error {
+func (f *cacheFixture) record(t *testing.T, run labRun) error {
 	t.Helper()
 	return f.cache.record(f.entry(t), run, time.Now().Add(time.Minute), TestTally{Passed: 2})
 }
@@ -84,14 +84,14 @@ func (f *cacheFixture) hit(t *testing.T) bool {
 func TestOnlyAPassIsRecorded(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		run      freshRun
+		run      labRun
 		recorded bool
 	}{
-		{"pass", freshRun{testLog: cacheFixtureLog}, true},
-		{"tests failed", freshRun{testErr: errors.New("exit status 1"), testLog: cacheFixtureLog}, false},
-		{"lab failed", freshRun{labErr: errors.New("compose down: exit 1"), testLog: cacheFixtureLog}, false},
-		{"log not read back", freshRun{logErr: errors.New("docker exec: exit 1"), testLog: cacheFixtureLog}, false},
-		{"log cut short", freshRun{testLog: cacheFixtureLog[len("# test log\n"):]}, false},
+		{"pass", labRun{testLog: cacheFixtureLog}, true},
+		{"tests failed", labRun{testErr: errors.New("exit status 1"), testLog: cacheFixtureLog}, false},
+		{"lab failed", labRun{labErr: errors.New("compose down: exit 1"), testLog: cacheFixtureLog}, false},
+		{"log not read back", labRun{logErr: errors.New("docker exec: exit 1"), testLog: cacheFixtureLog}, false},
+		{"log cut short", labRun{testLog: cacheFixtureLog[len("# test log\n"):]}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCacheFixture(t)
@@ -142,7 +142,7 @@ func TestEntryKeyCoversTheRun(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCacheFixture(t)
-			if err := f.record(t, freshRun{testLog: cacheFixtureLog}); err != nil {
+			if err := f.record(t, labRun{testLog: cacheFixtureLog}); err != nil {
 				t.Fatal(err)
 			}
 			tc.change(t, f)
@@ -187,7 +187,7 @@ func TestSeccompChangedDuringTheRunIsNotRecorded(t *testing.T) {
 			}
 			// The run read no file of the checkout's: only the profile is
 			// checked.
-			err := f.cache.record(e, freshRun{testLog: []byte("# test log\n")}, started, TestTally{Passed: 2})
+			err := f.cache.record(e, labRun{testLog: []byte("# test log\n")}, started, TestTally{Passed: 2})
 			if !errors.Is(err, testcache.ErrInputChanged) {
 				t.Fatalf("record: %v, want ErrInputChanged", err)
 			}

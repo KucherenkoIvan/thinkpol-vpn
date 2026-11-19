@@ -42,8 +42,9 @@ import (
 // hold, sysctls outside net.*, IPv6 address flags and lifetimes, a link's
 // txqlen and alias, tc filters and classes, nftables counters, quotas and
 // set elements' state (timeouts, dynamic updates: -s leaves them out),
-// mount options, the UTS hostname and ip nexthop objects. The image has no
-// iptables-legacy or ipset, so neither can hold state.
+// mount options, the UTS hostname, ip nexthop objects and SysV IPC
+// objects (ipcs: shared memory, semaphores, message queues). The image has
+// no iptables-legacy or ipset, so neither can hold state.
 const nodeStateScript = `
 set -o pipefail
 fail() { echo "error $1"; }

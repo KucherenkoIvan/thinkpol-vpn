@@ -264,6 +264,33 @@ func TestListGoPackagesFindsTheHostTestsMark(t *testing.T) {
 	}
 }
 
+// TestListGoPackagesFindsTheFreshLabMark: a package with FreshLabFile,
+// in its own package or as an external test, gets a fresh lab; one
+// without it a pooled one.
+func TestListGoPackagesFindsTheFreshLabMark(t *testing.T) {
+	needGoTool(t)
+	isolateGoEnv(t)
+	root := writeModule(t, map[string]string{
+		"fresh/fresh_test.go":    pkgFile(passTest, "fresh"),
+		"fresh/" + FreshLabFile:  "package fresh\n",
+		"xfresh/x.go":            "package xfresh\n",
+		"xfresh/x_test.go":       pkgFile(passTest, "xfresh_test"),
+		"xfresh/" + FreshLabFile: "package xfresh_test\n",
+		"pooled/pooled_test.go":  pkgFile(passTest, "pooled"),
+	})
+	pkgs, err := ListGoPackages(t.Context(), root, "./...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, p := range pkgs {
+		got[p.Dir] = p.FreshLab
+	}
+	if want := map[string]bool{"fresh": true, "xfresh": true, "pooled": false}; !maps.Equal(got, want) {
+		t.Errorf("FreshLab by package: %v, want %v", got, want)
+	}
+}
+
 const (
 	passTest = "package %s\n\nimport \"testing\"\n\nfunc TestPass(t *testing.T) {}\n"
 	labTest  = "package %s\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestNeedsTheLab(t *testing.T) {\n\tif os.Getenv(\"THINKPOL_LAB\") == \"\" {\n\t\tt.Skip(\"needs the lab\")\n\t}\n}\n"

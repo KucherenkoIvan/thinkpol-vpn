@@ -168,7 +168,7 @@ func claimProject(project string) string {
 // test's lab and the run directory bins it mounts. A failed test's log
 // gets the containers' logs since since (all of them when zero: a lab
 // that served other tests before has theirs too).
-func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool, since time.Time) {
+func (l *Lab) cleanup(t labUser, bins *runBinaries, keep bool, since time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), labBudget.teardown)
 	defer cancel()
 	if t.Failed() {
@@ -191,7 +191,7 @@ func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool, since time.Tim
 // keepRunning keeps the lab up for inspection, and the run directory bins
 // it mounts (KeepEnv), letting go of its slot and subnets; false when it
 // couldn't, the lab still up for the caller to tear down.
-func (l *Lab) keepRunning(t testing.TB, bins *runBinaries) bool {
+func (l *Lab) keepRunning(t labUser, bins *runBinaries) bool {
 	if err := bins.keep(l.Project); err != nil {
 		t.Errorf("lab %s: can't keep it, tearing it down: %v", l.Project, err)
 		return false
