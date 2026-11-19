@@ -174,15 +174,24 @@ func TestGoTestGatesQueuedPackageStopsWithContext(t *testing.T) {
 			<-held
 			// Cancelled while the package below waits for the held token.
 			time.AfterFunc(50*time.Millisecond, cancel)
-			var prepared, ranLab bool
-			err := g.run(ctx, func() error { prepared = true; return nil }, func() bool { return true }, func() { ranLab = true })
+			var prepared, ranLab atomic.Bool
+			queued := make(chan error, 1)
+			go func() {
+				queued <- g.run(ctx, func() error { prepared.Store(true); return nil }, func() bool { return true }, func() { ranLab.Store(true) })
+			}()
+			var err error
+			select {
+			case err = <-queued:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("queued behind a held %s token: still waiting 5 s after the context was cancelled", phase)
+			}
 			close(release)
 			<-holder
 			if !errors.Is(err, context.Canceled) {
 				t.Errorf("queued behind a held %s token, the context cancelled: %v, want context.Canceled", phase, err)
 			}
-			if ranLab || (phase == "build" && prepared) {
-				t.Errorf("queued behind a held %s token, the context cancelled: prepared %v, ran in a lab %v", phase, prepared, ranLab)
+			if ranLab.Load() || (phase == "build" && prepared.Load()) {
+				t.Errorf("queued behind a held %s token, the context cancelled: prepared %v, ran in a lab %v", phase, prepared.Load(), ranLab.Load())
 			}
 		})
 	}
