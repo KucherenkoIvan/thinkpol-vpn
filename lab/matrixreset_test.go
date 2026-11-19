@@ -16,11 +16,11 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
 
-// A matrix row runs all its cells in one lab, one after another, so each
-// cell must start from the state the first one did: after a cell, the lab
-// is reset to the state recorded when the row's lab came up (cleanLab),
-// and the reset is checked. A cell whose reset didn't hold is an error,
-// and so is every later cell of its row.
+// A matrix row runs its cells in one lab or a few (rowLabs), each lab's
+// one after another, so each cell must start from the state the lab's
+// first one did: after a cell, the lab is reset to the state recorded when
+// it came up (cleanLab), and the reset is checked. A cell whose reset
+// didn't hold is an error, and so is every later cell of its lab.
 
 // nodeStateScript prints what a cell may leave behind in a node, one
 // "<kind> <what>" line each: its processes (but the script's own), links,
@@ -198,7 +198,8 @@ func TestNodeState(t *testing.T) {
 	}
 }
 
-// matrixRow is a row's lab and the state each of its cells starts from.
+// matrixRow is one of a row's labs and the state each of its cells starts
+// from.
 type matrixRow struct {
 	lab   *lab.Lab
 	clean map[string]nodeState // by node name
@@ -220,7 +221,18 @@ type matrixRow struct {
 // the space and not the censor, where the thinkpol rows' maps are built.
 // No cell reaches device-b, server-2 or internet, so they aren't started.
 func startRow(t *testing.T) *matrixRow {
+	begin := time.Now()
+	var up, cellsDone time.Time
+	// Registered first, so it runs last, after the lab's tear-down: what
+	// the lab's start and tear-down cost next to its cells is what
+	// splitting a row trades (transport.labs).
+	t.Cleanup(func() {
+		if !up.IsZero() && !cellsDone.IsZero() {
+			t.Logf("lab: up in %v, cells %v, down in %v", up.Sub(begin).Round(time.Second), cellsDone.Sub(up).Round(time.Second), time.Since(cellsDone).Round(time.Second))
+		}
+	})
 	l := lab.StartOwnSlot(t, lab.Upstream().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Camouflage))
+	t.Cleanup(func() { cellsDone = time.Now() })
 	lab.StartCamouflage(t, l)
 	if _, err := execRead(l.Node(lab.Router), execTimeout, "censord", "-reset"); err != nil {
 		t.Fatal(err)
@@ -231,6 +243,7 @@ func startRow(t *testing.T) *matrixRow {
 		t.Fatal(err)
 	}
 	row.clean = states
+	up = time.Now()
 	return row
 }
 
@@ -268,12 +281,13 @@ func (r *matrixRow) eachNode(f func(n *lab.Node) error) error {
 
 // reset puts the lab back in its clean state after a cell, whose own
 // cleanups have stopped its processes and censord, and checks it held:
-// it kills what still runs, then (nothing running to make new flows)
-// removes the links, policy rules, tables and files the cell left (the
-// verdict log with /run/censor), then the routes and addresses left on
+// it kills what still runs and aborts every TCP connection left (orphaned
+// or held by a clean-state process), then (nothing left to make new
+// flows) removes the links, policy rules, tables and files the cell left
+// (the verdict log with /run/censor), then the routes and addresses left on
 // the links that remain, clears the router's censor table and conntrack
 // (censord -reset, clearRouter), and reads every node back.
-func (r *matrixRow) reset() error {
+func (r *matrixRow) reset(logf func(format string, args ...any)) error {
 	if r.broken != nil {
 		return r.broken
 	}
@@ -301,6 +315,16 @@ func (r *matrixRow) reset() error {
 			time.Sleep(200 * time.Millisecond)
 		}
 	})
+	if err == nil {
+		// A killed process's TCP sockets live on as orphans, and a peer
+		// left running (the camouflage site's nginx) keeps its end:
+		// either retransmits for minutes, each time the censor dropped
+		// it, and a retransmission after the router's flush makes a
+		// conntrack entry the check finds (reality's handshakes with its
+		// target, cut by ip-blocklist). An RST from the abort makes no
+		// entry of its own.
+		err = r.eachNode(func(n *lab.Node) error { return r.abortTCP(n, logf) })
+	}
 	if err == nil {
 		err = r.eachNode(func(n *lab.Node) error {
 			extra, err := r.leftovers(n)
@@ -343,6 +367,78 @@ func (r *matrixRow) reset() error {
 	return err
 }
 
+// abortTCP aborts every TCP connection n has (ss -K: the clean state has
+// listeners only), logs the ones it aborted, and fails when one is left:
+// ss -K exits 0 and kills nothing on a kernel without INET_DIAG_DESTROY.
+func (r *matrixRow) abortTCP(n *lab.Node, logf func(format string, args ...any)) error {
+	aborted, err := execRead(n, pollTimeout, "ss", "-K", "-H", "-n", "-t", "state", "connected")
+	if err != nil {
+		return err
+	}
+	left, err := execRead(n, pollTimeout, "ss", "-H", "-n", "-t", "state", "connected", "exclude", "time-wait")
+	if err != nil {
+		return err
+	}
+	return tcpAborted(n.Name, aborted, left, logf)
+}
+
+// tcpAborted logs the TCP connections ss -K aborted on node, which a
+// transport that leaks them after its down shows there, and is an error
+// listing the ones left. TIME-WAIT is left out: it sends nothing unless a
+// FIN comes again, and its peer's end, the one that could, was aborted.
+func tcpAborted(node, aborted, left string, logf func(format string, args ...any)) error {
+	if a := strings.TrimSpace(aborted); a != "" {
+		logf("%s: the reset aborted %d TCP connections:\n%s", node, len(strings.Split(a, "\n")), a)
+	}
+	if l := strings.TrimSpace(left); l != "" {
+		return fmt.Errorf("%s: %d TCP connections outlived the reset's abort (ss -K):\n%s", node, len(strings.Split(l, "\n")), l)
+	}
+	return nil
+}
+
+// TestTCPAborted: what ss -K aborted is logged and passes; a connection
+// left after it, as on a kernel that can't destroy sockets, fails the
+// reset with the connections listed.
+func TestTCPAborted(t *testing.T) {
+	conn := "ESTAB 0 0 192.0.2.2:40000 192.0.2.3:443"
+	var logged []string
+	logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	if err := tcpAborted("server-1", conn+"\n", "", logf); err != nil {
+		t.Errorf("all aborted: %v", err)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], conn) || !strings.Contains(logged[0], "server-1: the reset aborted 1 TCP") {
+		t.Errorf("all aborted: logged %q, want the connection named", logged)
+	}
+	logged = nil
+	if err := tcpAborted("router", "\n", "", logf); err != nil || len(logged) != 0 {
+		t.Errorf("nothing to abort: %v, logged %q", err, logged)
+	}
+	err := tcpAborted("server-1", "", conn+"\n", logf)
+	if err == nil || !strings.Contains(err.Error(), conn) || !strings.Contains(err.Error(), "server-1: 1 TCP connections outlived") {
+		t.Errorf("one left: %v, want an error listing it", err)
+	}
+}
+
+// conntrackCount and conntrackEntries read the router's conntrack: how
+// many entries, and each (censord -conntrack).
+func (r *matrixRow) conntrackCount() (string, error) {
+	return execRead(r.lab.Node(lab.Router), pollTimeout, "cat", "/proc/sys/net/netfilter/nf_conntrack_count")
+}
+
+func (r *matrixRow) conntrackEntries() (string, error) {
+	return execRead(r.lab.Node(lab.Router), pollTimeout, "censord", "-conntrack")
+}
+
+// conntrackLeft is the error for n entries left in the router's
+// conntrack, listed by list.
+func conntrackLeft(n, how string, list func() (string, error)) error {
+	entries, err := list()
+	if err != nil {
+		entries = fmt.Sprintf("(couldn't list them: %v)", err)
+	}
+	return fmt.Errorf("router: %s conntrack entries %s:\n%s", n, how, strings.TrimSpace(entries))
+}
+
 // clearRouter clears the router's censor table and conntrack until no
 // entry comes back (clearUntilEmpty), within 30 s.
 func (r *matrixRow) clearRouter() error {
@@ -352,10 +448,8 @@ func (r *matrixRow) clearRouter() error {
 			_, err := execRead(router, pollTimeout, "censord", "-reset")
 			return err
 		},
-		func() (string, error) {
-			return execRead(router, pollTimeout, "cat", "/proc/sys/net/netfilter/nf_conntrack_count")
-		},
-		func() (string, error) { return execRead(router, pollTimeout, "censord", "-conntrack") },
+		r.conntrackCount,
+		r.conntrackEntries,
 		// A retransmission that would make a new entry is an absence no
 		// watcher can see: the settle is a window, once per cell.
 		time.Second, 30*time.Second)
@@ -382,11 +476,7 @@ func clearUntilEmpty(clear func() error, count, list func() (string, error), set
 			return nil
 		}
 		if time.Now().After(deadline) {
-			entries, err := list()
-			if err != nil {
-				entries = fmt.Sprintf("(couldn't list them: %v)", err)
-			}
-			return fmt.Errorf("router: %s conntrack entries came back after every flush for %v:\n%s", n, timeout, strings.TrimSpace(entries))
+			return conntrackLeft(n, fmt.Sprintf("came back after every flush for %v", timeout), list)
 		}
 	}
 }
@@ -461,11 +551,11 @@ func (r *matrixRow) check() error {
 	} else if queueStatement.MatchString(ruleset) {
 		errs = append(errs, fmt.Errorf("router: a queue rule outlived the reset:\n%s", ruleset))
 	}
-	count, err := execRead(router, pollTimeout, "cat", "/proc/sys/net/netfilter/nf_conntrack_count")
+	count, err := r.conntrackCount()
 	if err != nil {
 		errs = append(errs, err)
 	} else if n := strings.TrimSpace(count); n != "0" {
-		errs = append(errs, fmt.Errorf("router: %s conntrack entries outlived the reset", n))
+		errs = append(errs, conntrackLeft(n, "outlived the reset", r.conntrackEntries))
 	}
 	return errors.Join(errs...)
 }
