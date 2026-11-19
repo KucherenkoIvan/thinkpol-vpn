@@ -30,6 +30,12 @@ var harnessPool = lab.NewPool(lab.Standard().Only(lab.Router, lab.DeviceA), 1)
 func TestHarnessPoolResetsOrRetires(t *testing.T) {
 	t.Parallel()
 	var first, mode, link, target, routerAddr string
+	// The pool outlives a run of the test (-count).
+	base := harnessPool.Stats()
+	since := func() (started int, retired []string) {
+		s := harnessPool.Stats()
+		return s.Started - base.Started, s.Retired[len(base.Retired):]
+	}
 	t.Run("leaves what the reset undoes", func(t *testing.T) {
 		l := harnessPool.Acquire(t)
 		first = l.Project
@@ -111,9 +117,8 @@ for i in $(seq 50); do ss -H -t state established | grep -q . && exit 0; sleep 0
 		if got := strings.TrimSpace(l.Node(lab.DeviceA).MustExec(t, "readlink", link)); got != target {
 			t.Errorf("%s points to %q, want %q", link, got, target)
 		}
-		s := harnessPool.Stats()
-		if s.Started != 2 || len(s.Retired) != 1 || !strings.Contains(s.Retired[0], "gets_the_lab_back") || !strings.Contains(s.Retired[0], "reset didn't hold") {
-			t.Errorf("pool: %+v, want 2 labs started and the second user's retired for its reset", s)
+		if started, retired := since(); started != 2 || len(retired) != 1 || !strings.Contains(retired[0], "gets_the_lab_back") || !strings.Contains(retired[0], "reset didn't hold") {
+			t.Errorf("pool since the test began: %d labs started, retired %q: want 2, and the second user's retired for its reset", started, retired)
 		}
 	})
 	t.Run("the check fails on what the reset only reads", func(t *testing.T) {
@@ -166,8 +171,8 @@ for i in $(seq 50); do ss -H -t state established | grep -q . && exit 0; sleep 0
 		if err := l.Reset(ctx, clean, t.Logf); err != nil {
 			t.Fatalf("the link made again removed: %v", err)
 		}
-		if s := harnessPool.Stats(); s.Started != 2 || len(s.Retired) != 1 {
-			t.Errorf("pool: %+v, want this user's lab the third user's, nothing retired since", s)
+		if started, retired := since(); started != 2 || len(retired) != 1 {
+			t.Errorf("pool since the test began: %d labs started, retired %q: want this user's lab the third user's, nothing retired since", started, retired)
 		}
 	})
 }
