@@ -37,8 +37,8 @@ type Pool struct {
 
 	mu      sync.Mutex
 	idle    []*pooledLab
-	labs    int               // started or starting, idle or in use
-	waiters []chan *pooledLab // first come first served; a nil lab: start one
+	labs    int          // started or starting, idle or in use
+	waiters []poolWaiter // by rank, then first come first served
 	stats   PoolStats
 	down    sync.WaitGroup // idle labs being torn down
 	closed  bool
@@ -65,6 +65,16 @@ type pooledLab struct {
 	timer *time.Timer   // while idle: the next idle check
 	since time.Time     // idle since
 }
+
+// poolWaiter is a test waiting for a lab: its channel gets one, or nil
+// for it to start one; rank orders it among the waiting (AcquireInOrder).
+type poolWaiter struct {
+	ch   chan *pooledLab
+	rank int
+}
+
+// unranked is Acquire's rank: after every test that waits with one.
+const unranked = int(^uint(0) >> 1)
 
 // pooledOps is what a pool does to one of its labs: a started lab's
 // (startedLab), or a unit test's stand-in.
@@ -164,14 +174,30 @@ func NewPool(topo Topology, size int) *Pool {
 // anything that uses the lab.
 func (p *Pool) Acquire(t testing.TB) *Lab {
 	t.Helper()
+	return p.acquire(t, unranked)
+}
+
+// AcquireInOrder is Acquire for a test that waits its turn by rank: when
+// no lab is idle, the lab that comes back (or the start the pool can make)
+// goes to the waiting test of the lowest rank, those of one rank first
+// come first served, all of them before the tests waiting in Acquire. A
+// test whose subtests take labs in an order of its own (the censor
+// matrix: its longest rows first) passes each one's place.
+func (p *Pool) AcquireInOrder(t testing.TB, rank int) *Lab {
+	t.Helper()
+	return p.acquire(t, min(max(rank, 0), unranked-1))
+}
+
+func (p *Pool) acquire(t testing.TB, rank int) *Lab {
+	t.Helper()
 	asked := time.Now()
 	dl, _ := labBudget.begin(testDeadline(t)).deadline(phaseSlotWait)
-	pl, err := p.take(dl)
+	pl, err := p.take(dl, rank)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if pl == nil {
-		if pl, err = p.start(t); err != nil {
+		if pl, err = p.start(context.Background(), t); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -187,8 +213,9 @@ func (p *Pool) Acquire(t testing.TB) *Lab {
 }
 
 // take is an idle lab, or nil for the caller to start one, waiting until
-// deadline for one to come back when the pool is full.
-func (p *Pool) take(deadline time.Time) (*pooledLab, error) {
+// deadline, in rank's place among the waiting, for one to come back when
+// the pool is full.
+func (p *Pool) take(deadline time.Time, rank int) (*pooledLab, error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -207,7 +234,11 @@ func (p *Pool) take(deadline time.Time) (*pooledLab, error) {
 		return nil, nil
 	}
 	ch := make(chan *pooledLab, 1)
-	p.waiters = append(p.waiters, ch)
+	at := len(p.waiters)
+	for at > 0 && p.waiters[at-1].rank > rank {
+		at--
+	}
+	p.waiters = slices.Insert(p.waiters, at, poolWaiter{ch: ch, rank: rank})
 	p.mu.Unlock()
 	from := time.Now()
 	timer := time.NewTimer(time.Until(deadline))
@@ -218,7 +249,7 @@ func (p *Pool) take(deadline time.Time) (*pooledLab, error) {
 	case <-timer.C:
 	}
 	p.mu.Lock()
-	if i := slices.Index(p.waiters, ch); i >= 0 {
+	if i := slices.IndexFunc(p.waiters, func(w poolWaiter) bool { return w.ch == ch }); i >= 0 {
 		p.waiters = slices.Delete(p.waiters, i, i+1)
 		p.mu.Unlock()
 		return nil, fmt.Errorf("lab: pool %s: no lab came back within %v", p.name, time.Since(from).Round(time.Second))
@@ -229,9 +260,9 @@ func (p *Pool) take(deadline time.Time) (*pooledLab, error) {
 
 // start brings up a lab for the pool, which the caller counted in
 // p.labs, and snapshots its clean state.
-func (p *Pool) start(t testing.TB) (*pooledLab, error) {
+func (p *Pool) start(ctx context.Context, t testing.TB) (*pooledLab, error) {
 	begin := time.Now()
-	l, bins, keep, err := launch(t, p.topo, func(project string) string { return "pool:" + project }, "pool-"+p.name, os.Getenv(ProjectEnv))
+	l, bins, keep, err := launch(ctx, t, p.topo, func(project string) string { return "pool:" + project }, "pool-"+p.name, os.Getenv(ProjectEnv))
 	var clean *Snapshot
 	if err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -295,6 +326,12 @@ func (p *Pool) giveBack(t testing.TB, pl *pooledLab, since time.Time) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.putBack(pl)
+}
+
+// putBack gives pl, clean, to the first waiter, or keeps it idle. p.mu is
+// held.
+func (p *Pool) putBack(pl *pooledLab) {
 	if p.handOn(pl) {
 		return
 	}
@@ -325,7 +362,7 @@ func (p *Pool) handOn(pl *pooledLab) bool {
 	if len(p.waiters) == 0 {
 		return false
 	}
-	ch := p.waiters[0]
+	ch := p.waiters[0].ch
 	p.waiters = p.waiters[1:]
 	if pl == nil {
 		p.labs++

@@ -13,9 +13,10 @@ import (
 // TestMakefileConcurrencyFollowsLabSlots: make lab-test starts as many
 // labs at once as the lab slot cap allows, and no more of its CPU-bound
 // builds than LAB_P. The Makefile's LAB_SLOTS reads the cap's variable,
-// with the cap's own default; every run of lab tests in a stream or the
-// stream has -parallel LAB_SLOTS (Go's default, GOMAXPROCS, would leave
-// slots idle on a machine with fewer cores than slots), the harness phase
+// with the cap's own default; every run of lab tests in a stream has
+// -parallel LAB_TEST_PARALLEL, well above the slots (a test waiting for a
+// pool's lab or a slot holds its place, and the longest tests would wait
+// behind them: the slots and pools bound the labs), the harness phase
 // LAB_HARNESS_PARALLEL (TestMakefileHarnessParallel); the node phase runs
 // LAB_SLOTS packages at once and builds LAB_P at once.
 func TestMakefileConcurrencyFollowsLabSlots(t *testing.T) {
@@ -31,19 +32,27 @@ func TestMakefileConcurrencyFollowsLabSlots(t *testing.T) {
 		t.Errorf("the Makefile's LAB_SLOTS defaults to %d, the slot cap to %d", n, defaultMaxLabs)
 	}
 
+	m = regexp.MustCompile(`(?m)^LAB_TEST_PARALLEL = ([0-9]+)$`).FindSubmatch(mk)
+	if m == nil {
+		t.Fatal("no LAB_TEST_PARALLEL = <n> in the Makefile")
+	}
+	if n, _ := strconv.Atoi(string(m[1])); n < 8*defaultMaxLabs {
+		t.Errorf("LAB_TEST_PARALLEL is %d: want at least %d, every lab test at once", n, 8*defaultMaxLabs)
+	}
+
 	binaries := regexp.MustCompile(`go tool test2json [^;|\n]*`).FindAll(mk, -1)
 	goTests := regexp.MustCompile(`go test -tags lab [^;|\n]*`).FindAll(mk, -1)
 	if len(binaries) < 2 || len(goTests) < 3 {
 		t.Fatalf("the Makefile runs %d lab test binaries and %d go tests of lab packages: want both streams' and the harness's", len(binaries), len(goTests))
 	}
-	binaryParallel := regexp.MustCompile(` -test\.parallel=\$\(LAB_SLOTS\) `)
+	binaryParallel := regexp.MustCompile(` -test\.parallel=\$\(LAB_TEST_PARALLEL\) `)
 	for _, run := range binaries {
 		if !binaryParallel.Match(run) {
-			t.Errorf("a lab test binary without -test.parallel=$(LAB_SLOTS): %s", run)
+			t.Errorf("a lab test binary without -test.parallel=$(LAB_TEST_PARALLEL): %s", run)
 		}
 	}
 	compile := regexp.MustCompile(` -c `)
-	goTestParallel := regexp.MustCompile(` -parallel \$\(LAB_SLOTS\) `)
+	goTestParallel := regexp.MustCompile(` -parallel \$\(LAB_TEST_PARALLEL\) `)
 	harnessParallel := regexp.MustCompile(` -parallel \$\(LAB_HARNESS_PARALLEL\) .*-run '\$\(LAB_HARNESS_RUN\)'`)
 	harness := 0
 	for _, run := range goTests {
@@ -51,7 +60,7 @@ func TestMakefileConcurrencyFollowsLabSlots(t *testing.T) {
 		case harnessParallel.Match(run):
 			harness++
 		case !compile.Match(run) && !goTestParallel.Match(run):
-			t.Errorf("a go test of lab packages without -parallel $(LAB_SLOTS): %s", run)
+			t.Errorf("a go test of lab packages without -parallel $(LAB_TEST_PARALLEL): %s", run)
 		}
 	}
 	if harness != 1 {

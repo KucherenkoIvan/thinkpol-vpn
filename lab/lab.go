@@ -79,7 +79,7 @@ func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 	if err := mainCalled(); err != nil {
 		t.Fatal(err)
 	}
-	l, bins, keep, err := launch(t, topo, func(string) string { return slotKey }, t.Name(), override)
+	l, bins, keep, err := launch(context.Background(), t, topo, func(string) string { return slotKey }, t.Name(), override)
 	if l != nil {
 		t.Cleanup(func() { l.cleanup(t, bins, keep, time.Time{}) })
 	}
@@ -93,8 +93,9 @@ func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 // slotKey gives for its project, without tying its tear-down to t: Start
 // ties it to the test, a Pool keeps the lab for the tests after. It
 // returns the run's binaries the lab mounts and whether KeepEnv is set;
-// a lab returned with an error still needs its clean-up.
-func launch(t testing.TB, topo Topology, slotKey func(project string) string, name, override string) (*Lab, *runBinaries, bool, error) {
+// a lab returned with an error still needs its clean-up. ctx carries
+// whether StartFirst began the start (asFirstStart).
+func launch(ctx context.Context, t testing.TB, topo Topology, slotKey func(project string) string, name, override string) (*Lab, *runBinaries, bool, error) {
 	t.Helper()
 	if err := mainCalled(); err != nil {
 		return nil, nil, false, err
@@ -136,7 +137,7 @@ func launch(t testing.TB, topo Topology, slotKey func(project string) string, na
 			return nil, nil, false, err
 		}
 	}
-	l, err := up(context.Background(), clock, root, project, topo, slotKey(project), runInputs)
+	l, err := up(ctx, clock, root, project, topo, slotKey(project), runInputs)
 	return l, p.bin, keep, err
 }
 

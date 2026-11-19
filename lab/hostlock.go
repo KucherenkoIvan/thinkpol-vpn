@@ -167,6 +167,9 @@ func acquireHostSlot(ctx context.Context) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := slotOrder(ctx, dir); err != nil {
+		return nil, err
+	}
 	shared := func() {}
 	if !perfHeld.Load() {
 		if shared, err = waitLockMode(ctx, "a perf run to finish", false, filepath.Join(dir, "perf.lock")); err != nil {
@@ -207,6 +210,7 @@ func acquireSlotLock(ctx context.Context, dir string) (func(), error) {
 		return waitLock(ctx, what, paths...)
 	}
 	q, err := joinSlotQueue(ctx, dir)
+	joinedSlotQueue(ctx)
 	if err != nil {
 		return unqueued(err)
 	}

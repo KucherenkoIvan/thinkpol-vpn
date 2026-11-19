@@ -22,7 +22,7 @@ func TestPoolTake(t *testing.T) {
 	p := &Pool{size: 2, name: "router"}
 	far := time.Now().Add(time.Minute)
 	for i := range 2 {
-		if pl, err := p.take(far); pl != nil || err != nil {
+		if pl, err := p.take(far, unranked); pl != nil || err != nil {
 			t.Fatalf("take %d: %v, %v: want leave to start one", i, pl, err)
 		}
 	}
@@ -33,7 +33,7 @@ func TestPoolTake(t *testing.T) {
 	wait := func() chan got {
 		ch := make(chan got, 1)
 		go func() {
-			pl, err := p.take(far)
+			pl, err := p.take(far, unranked)
 			ch <- got{pl, err}
 		}()
 		return ch
@@ -74,7 +74,7 @@ func TestPoolTake(t *testing.T) {
 		t.Errorf("%d labs counted, want 2", p.labs)
 	}
 
-	if _, err := p.take(time.Now().Add(20 * time.Millisecond)); err == nil || !strings.Contains(err.Error(), "no lab came back") {
+	if _, err := p.take(time.Now().Add(20*time.Millisecond), unranked); err == nil || !strings.Contains(err.Error(), "no lab came back") {
 		t.Errorf("a full pool past the deadline: %v", err)
 	}
 	if len(p.waiters) != 0 {
@@ -83,8 +83,61 @@ func TestPoolTake(t *testing.T) {
 
 	idle := &pooledLab{timer: time.NewTimer(time.Hour)}
 	p.idle = append(p.idle, idle)
-	if pl, err := p.take(far); pl != idle || err != nil {
+	if pl, err := p.take(far, unranked); pl != idle || err != nil {
 		t.Errorf("with a lab idle: %v, %v, want it", pl, err)
+	}
+}
+
+// TestPoolTakeInOrder: with the pool full, a lab given back goes to the
+// waiting test of the lowest rank, those of one rank in the order they
+// came, every ranked one before those that wait unranked (Acquire); a lab
+// retired lets the next of them start one.
+func TestPoolTakeInOrder(t *testing.T) {
+	p := &Pool{size: 1, name: "router", labs: 1}
+	far := time.Now().Add(time.Minute)
+	got := make(chan string, 8)
+	for i, w := range []struct {
+		name string
+		rank int
+	}{{"unranked 1", unranked}, {"rank 3", 3}, {"rank 1", 1}, {"unranked 2", unranked}, {"rank 1 again", 1}, {"rank 0", 0}} {
+		go func() {
+			pl, err := p.take(far, w.rank)
+			if err != nil {
+				got <- w.name + ": " + err.Error()
+				return
+			}
+			got <- fmt.Sprintf("%s: %v", w.name, pl != nil)
+		}()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			p.mu.Lock()
+			n := len(p.waiters)
+			p.mu.Unlock()
+			if n == i+1 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%d waiters, want %d", n, i+1)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	var order []string
+	for i := range 6 {
+		p.mu.Lock()
+		if i%2 == 0 {
+			p.handOn(&pooledLab{})
+			p.mu.Unlock()
+		} else {
+			p.labs--
+			p.handOn(nil)
+			p.mu.Unlock()
+		}
+		order = append(order, <-got)
+	}
+	want := []string{"rank 0: true", "rank 1: false", "rank 1 again: true", "rank 3: false", "unranked 1: true", "unranked 2: false"}
+	if !slices.Equal(order, want) {
+		t.Errorf("served %q, want %q", order, want)
 	}
 }
 
@@ -305,7 +358,7 @@ func TestPoolGiveBack(t *testing.T) {
 
 	p.idle = nil
 	ch := make(chan *pooledLab, 1)
-	p.waiters = []chan *pooledLab{ch}
+	p.waiters = []poolWaiter{{ch: ch, rank: unranked}}
 	p.giveBack(&fakeTB{name: "TestD"}, pl, time.Now())
 	if len(ch) != 1 || len(p.idle) != 0 || len(p.waiters) != 0 {
 		t.Errorf("with a waiter: %d handed on, %d idle: want the lab handed on", len(ch), len(p.idle))
@@ -336,7 +389,7 @@ func TestPoolIdleCheck(t *testing.T) {
 		pl := &pooledLab{ops: f, since: time.Now().Add(-c.idle), timer: time.NewTimer(time.Hour)}
 		p.idle = []*pooledLab{pl}
 		ch := make(chan *pooledLab, 1)
-		p.waiters = []chan *pooledLab{ch}
+		p.waiters = []poolWaiter{{ch: ch, rank: unranked}}
 		p.idleCheck(pl)
 		p.down.Wait()
 		p.mu.Lock()
@@ -390,7 +443,7 @@ func TestClosePools(t *testing.T) {
 	if out.String() != want {
 		t.Errorf("closePools wrote %q, want %q", out.String(), want)
 	}
-	if _, err := unused.take(time.Now().Add(time.Minute)); err == nil || !strings.Contains(err.Error(), "closed") {
+	if _, err := unused.take(time.Now().Add(time.Minute), unranked); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Errorf("a take after closing: %v, want closed", err)
 	}
 }
