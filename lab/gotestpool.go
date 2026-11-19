@@ -49,7 +49,7 @@ func (p *nodePool) goTest(ctx context.Context, queued time.Time, root, user stri
 		res.phases = timer.phases(time.Now())
 		return res
 	}
-	fmt.Fprintf(w, "lab %s (pool %s, use %d)\n", pl.lab.Project, p.name, pl.uses)
+	_, _ = fmt.Fprintf(w, "lab %s (pool %s, use %d)\n", pl.lab.Project, p.name, pl.uses)
 	res = run(pl.lab.Node("gotest"))
 	timer.tested = time.Now()
 	u := &packageUser{name: user, failed: res.testErr != nil}
