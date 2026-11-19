@@ -23,6 +23,16 @@ const harnessTestFiles = "harness*_test.go"
 // nodes: its result depends on them, so the hash covers them too.
 const harnessNodePackage = "lab/ip"
 
+// TestHarnessNodePackageRunsInANode: the harness's node package has no
+// HostTestsFile. With one, labctl gotest on a Linux machine runs it on the
+// host, served by go test's cache, and the harness test that needs another
+// run to build its tests for a node builds nothing.
+func TestHarnessNodePackageRunsInANode(t *testing.T) {
+	if _, err := os.Stat(filepath.Join("..", filepath.FromSlash(harnessNodePackage), HostTestsFile)); !os.IsNotExist(err) {
+		t.Errorf("%s has %s (%v): the harness needs it run in a node", harnessNodePackage, HostTestsFile, err)
+	}
+}
+
 // The harness phase reruns only when its hash changes, so everything a
 // TestHarness test runs must be in a hashed file: a helper elsewhere could
 // change and weaken the test without rerunning it. This follows the

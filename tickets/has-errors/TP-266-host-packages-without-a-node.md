@@ -27,11 +27,11 @@ The node phase (`labctl gotest ./...`) runs every package's tests in a lab node.
 ## Notes
 **Mechanism.** A package whose tests need no node carries `hosttests_test.go` (`lab.HostTestsFile`): the package clause and a comment saying why. `labctl gotest` (lab/labctl/main.go `nodePhase`) runs such packages on a Linux machine, when it runs as a user (never as root: `hostRunsNodeless(goos, euid, perf)`), under one `go test -json -p <-build-p>` beside the labs (`lab.GoTestOnHost`, lab/gotesthost.go), with `CGO_ENABLED=0` as in a node, with `THINKPOL_LAB` taken out of the environment, cached by go test's own cache, its output filtered as `labctl testjson` filters (passing output dropped unless `-v`, a package's block cut to its first and last MiB); on other machines, as root and with `-perf` they stay in nodes. Two checks keep the mark right: a marked package fails in the node phase when any of its top-level tests skips on the host (a test skipping for want of the lab can't pass unseen), and `TestNodelessPackagesNeedNoNode` (`make test`), a lint behind the root guard, fails when the module code a marked package's tests build with (its own files and test files, and every module package they import, directly or not, from `go list -deps -test`) uses outside comments `THINKPOL_LAB`, `Geteuid`/`Getuid`, `Unshare`/`Setns`/`CLONE_NEW`, `nsthread`, `netns`, `Mount`, `PivotRoot`, `Chroot`, `Prctl`, `CAP_`, netlink, nftables, `/dev/net/tun` or `os/exec`. They all already ran in `make test` on the host; every one was run as a user without `THINKPOL_LAB` on Linux before marking: 268 top-level tests, all passed, none skipped (only the in-memory transport's conformance subtests for features it lacks skip, as they do in a node).
 
-**Moved (17), and why each needs no node:**
+**Moved (16), and why each needs no node:**
 - internal/agent/ipc: messages and descriptors over socket pairs the test makes itself.
 - internal/agent/logring: rings in memory.
 - internal/dataplane/blobs: services over a loopback test network (`NewOnNet`), no interface binding.
-- internal/dataplane/checksum, packettest, rules, netmap, shaping, lab/ip: computation on bytes and maps in memory.
+- internal/dataplane/checksum, packettest, rules, netmap, shaping: computation on bytes and maps in memory.
 - internal/dataplane/ifbind: on Linux only the network name's family is tested; nothing binds a socket (the binding test is darwin's).
 - internal/dataplane/path: in-memory transports and a channel TUN; its own test keeps the package off sockets.
 - internal/dataplane/transport: endpoint, inbox and shaping checks without a socket.
@@ -40,7 +40,7 @@ The node phase (`labctl gotest ./...`) runs every package's tests in a lab node.
 - internal/devmap: map plans and key files in the test's own directory.
 - internal/lists: list import and matching in memory and the test's directory.
 
-**Kept in a node:** internal/agent/worker (round 1): its tests stop a worker before its sandbox, but the package is the sandbox (`Mount`, `PivotRoot`, `Prctl`, capabilities, `/dev/net/tun`), which the widened guard flags; it was marked in round 0. internal/dataplane/trusteddir: its tests pass as a user, but its ownership check takes another branch as root (`uid != 0 && uid != euid`), and the agent runs as root: only the node run covers that branch.
+**Kept in a node:** lab/ip (round 1): it is the harness's node package (`harnessNodePackage`): `TestHarnessAnotherRunFromTheCheckoutBuildsItsOwnBinaries` has a second `labctl gotest` build its tests for a node, which on the host go test's cache served instead (the round-1 full lab's harness phase failed so; round 0's harness phase was served from its cache and never ran it); `TestHarnessNodePackageRunsInANode` (`make test`) now refuses the mark there. internal/agent/worker (round 1): its tests stop a worker before its sandbox, but the package is the sandbox (`Mount`, `PivotRoot`, `Prctl`, capabilities, `/dev/net/tun`), which the widened guard flags; it was marked in round 0. internal/dataplane/trusteddir: its tests pass as a user, but its ownership check takes another branch as root (`uid != 0 && uid != euid`), and the agent runs as root: only the node run covers that branch.
 
 **Node phase, cold (`LAB_NOCACHE=1`, `labctl gotest -p 12` over `./...`, as make lab-test runs it), both under other runs' load:**
 | | lab starts | wall | slot wait summed (median) |
