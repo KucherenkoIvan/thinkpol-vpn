@@ -20,7 +20,7 @@ func TestClearRouter(t *testing.T) {
 	if os.Getenv("THINKPOL_LAB") == "" {
 		t.Skip("needs the lab")
 	}
-	if err := installQueueRule(250); err != nil {
+	if err := installQueueRule(250, "forward"); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(removeQueueRule)

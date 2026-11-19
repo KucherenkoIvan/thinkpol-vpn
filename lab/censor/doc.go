@@ -22,6 +22,15 @@
 // router's state. The censor matrix runs it between the cells of a row,
 // which share one lab.
 //
+// censord binds and sets up its queue before its table goes in, and logs
+// "censor ready" after: go-nfqueue sets the queue up with requests on the
+// socket queued packets arrive on and takes the next message for each
+// request's ack, so a packet queued in between failed the start
+// ("mismatched sequence in netlink reply", TP-252). Until it is ready the
+// router forwards uncensored, as before censord starts. A cell judged from
+// a flow's first byte starts that flow after the line; the censor
+// matrix's udp row brings its link up before it (a follow-up ticket).
+//
 // # Flows and streams
 //
 // A [Flow] is one direction of a connection ([FlowKey]); the engine links
@@ -650,7 +659,9 @@
 // bring the transport up between device-a and server-1 through the router,
 // and report whether data crossed over IPv4 and over IPv6. A cell passes
 // only when both did and fails only when neither did: one family alone is
-// partial, which fails the run unless the row varies (below), so a
+// partial, which fails the run unless the row varies (below) or the cell
+// is the known flake (udp against fully-encrypted, owner 2026-11-19: a
+// partial there is reported and counted, not failed), so a
 // blocking censor one family slips past is caught. Each row runs in one lab, a cell at a time, the lab
 // reset to its first state after each cell. A transport's cell without a censor runs first, and its
 // censored cells are judged only once that one passed. Every cell is
