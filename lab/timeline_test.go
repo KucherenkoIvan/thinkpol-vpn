@@ -60,3 +60,32 @@ func TestTimelineSlotWaitLine(t *testing.T) {
 		t.Errorf("timeline:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+// TestTimelineStartAndDownLines: a start's line gives the whole of it from
+// the slot and each step's length, "-" for a step it never reached; a
+// tear-down's line its length.
+func TestTimelineStartAndDownLines(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "timeline")
+	t.Setenv(TimelineEnv, file)
+	slot := time.Now().Add(-time.Hour)
+	l := &Lab{Project: "tplab-x-t-a", Topology: Standard().Only(Router, DeviceA), upAttempt: 2}
+	noteStart(l, startTimes{
+		slot:      slot,
+		created:   slot.Add(40 * time.Second),
+		inspected: slot.Add(41500 * time.Millisecond),
+		bridged:   slot.Add(43 * time.Second),
+		sealed:    slot.Add(45 * time.Second),
+	}, nil)
+	noteStart(l, startTimes{slot: slot, created: slot.Add(3 * time.Second)}, context.DeadlineExceeded)
+	noteDown("tplab-x-t-a", slot, slot.Add(7250*time.Millisecond), nil)
+	got, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := regexp.MustCompile(`^[0-9:.]{12} start 1h[0-9ms.]+ create 40s inspect 1.5s bridges 1.5s seal 2s nodes 2 networks 2 attempts 2 ok tplab-x-t-a\n` +
+		`[0-9:.]{12} start 1h[0-9ms.]+ create 3s inspect - bridges - seal - nodes 2 networks 2 attempts 2 failed tplab-x-t-a\n` +
+		`[0-9:.]{12} down 7.25s ok tplab-x-t-a\n$`)
+	if !want.Match(got) {
+		t.Errorf("timeline:\n%s\nwant:\n%s", got, want)
+	}
+}

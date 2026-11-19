@@ -37,6 +37,7 @@ type Lab struct {
 	// The last docker compose up's start and end, and its attempt number.
 	upFrom, upTo time.Time
 	upAttempt    int
+	started      startTimes
 }
 
 // Bridge is Docker's own end of a lab network: the bridge in the Docker VM.
@@ -355,17 +356,39 @@ func up(ctx context.Context, clock startClock, root, project string, topo Topolo
 		release:  release,
 	}
 	return l, clock.run(ctx, project, phaseAfterSlot, func(ctx context.Context) error {
-		if err := l.create(ctx, img); err != nil {
-			return err
-		}
-		if err := l.inspect(ctx); err != nil {
-			return err
-		}
-		if err := l.learnBridges(ctx); err != nil {
-			return err
-		}
-		return l.configure(ctx)
+		st := startTimes{slot: time.Now()}
+		err := l.startOnSlot(ctx, img, &st)
+		l.started = st
+		noteStart(l, st, err)
+		return err
 	})
+}
+
+// startTimes marks the end of each step of a lab's start once it holds its
+// slot, for the timeline (noteStart); a step that never ran stays zero.
+type startTimes struct {
+	slot, created, inspected, bridged, sealed time.Time
+}
+
+// startOnSlot creates the lab and seals its nodes.
+func (l *Lab) startOnSlot(ctx context.Context, img image, st *startTimes) error {
+	if err := l.create(ctx, img); err != nil {
+		return err
+	}
+	st.created = time.Now()
+	if err := l.inspect(ctx); err != nil {
+		return err
+	}
+	st.inspected = time.Now()
+	if err := l.learnBridges(ctx); err != nil {
+		return err
+	}
+	st.bridged = time.Now()
+	if err := l.configure(ctx); err != nil {
+		return err
+	}
+	st.sealed = time.Now()
+	return nil
 }
 
 // beforeSlot removes a leftover lab of the name and gets the lab's inputs.
@@ -438,7 +461,10 @@ func (l *Lab) ComposeFile() string { return filepath.Join(l.stateDir, "compose.j
 // Down removes the lab's containers and networks.
 func (l *Lab) Down(ctx context.Context) error {
 	defer l.releaseSlot()
-	if err := downProject(ctx, l.Project, l.root); err != nil {
+	from := time.Now()
+	err := downProject(ctx, l.Project, l.root)
+	noteDown(l.Project, from, time.Now(), err)
+	if err != nil {
 		return err
 	}
 	l.releaseSubnets()
