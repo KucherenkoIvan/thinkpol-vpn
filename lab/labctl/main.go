@@ -11,8 +11,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -209,7 +211,7 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 	if *timeout != "" {
 		testArgs = append(testArgs, "-test.timeout="+*timeout)
 	}
-	opt := gotestOptions{concurrency: lab.GoTestConcurrency{Labs: *parallel, Builds: *builds, BuildAllFirst: *perf}, tagged: *tagged, failSkipped: *failSkipped, times: *times, nodeFor: nodeFor, hostFor: hostFor}
+	opt := gotestOptions{concurrency: lab.GoTestConcurrency{Labs: *parallel, Builds: *builds, BuildAllFirst: *perf}, tagged: *tagged, failSkipped: *failSkipped, times: *times, nodeFor: nodeFor, hostFor: hostFor, nodelessOnHost: hostRunsNodeless(runtime.GOOS, os.Geteuid(), *perf)}
 	if useCache(*count, *perf) {
 		opt.cache = lab.NewGoTestCache(os.Stdout)
 	}
@@ -293,6 +295,9 @@ type gotestOptions struct {
 	cache               *lab.GoTestCache // nil: run every package
 	// The node phase's bound and each host run's (gotestRunFor; 0: none).
 	nodeFor, hostFor time.Duration
+	// nodelessOnHost runs the packages that need no node on this machine
+	// (hostRunsNodeless).
+	nodelessOnHost bool
 }
 
 func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patterns []string) error {
@@ -320,7 +325,7 @@ func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patt
 	if len(pkgs) > 0 {
 		var labErr error
 		nodeCtx, cancel := withBound(ctx, opt.nodeFor)
-		results, labErr = lab.GoTestEach(nodeCtx, root, pkgs, opt.concurrency, os.Stdout, opt.cache, env, args...)
+		results, labErr = nodePhase(nodeCtx, root, pkgs, opt, env, args)
 		cancel()
 		if labErr != nil {
 			// The packages that ran still took their time: the budget's
@@ -341,6 +346,61 @@ func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patt
 	return errors.Join(gotestVerdict(results, opt.failSkipped), writeGotestTimes(opt.times, results))
 }
 
+// nodePhase runs each package's tests in a lab node of its own, except
+// those that need no node (lab.HostTestsFile) when opt.nodelessOnHost:
+// they run on this machine under one go test beside the labs, compiling
+// as many packages at once as the nodes' builds do.
+func nodePhase(ctx context.Context, root string, pkgs []lab.GoPackage, opt gotestOptions, env, args []string) ([]lab.GoTestResult, error) {
+	var inNodes, onHost []lab.GoPackage
+	for _, p := range pkgs {
+		if p.NeedsNoNode && opt.nodelessOnHost {
+			onHost = append(onHost, p)
+		} else {
+			inNodes = append(inNodes, p)
+		}
+	}
+	w := &lockedWriter{w: os.Stdout}
+	var hostResults []lab.GoTestResult
+	var hostErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		hostResults, hostErr = lab.GoTestOnHost(ctx, root, onHost, opt.concurrency.Builds, w, env, args...)
+	}()
+	var results []lab.GoTestResult
+	var labErr error
+	if len(inNodes) > 0 {
+		results, labErr = lab.GoTestEach(ctx, root, inNodes, opt.concurrency, w, opt.cache, env, args...)
+	}
+	<-done
+	results = append(results, hostResults...)
+	slices.SortFunc(results, func(a, b lab.GoTestResult) int { return strings.Compare(a.ImportPath, b.ImportPath) })
+	return results, errors.Join(labErr, hostErr)
+}
+
+// hostRunsNodeless says whether packages that need no node run on this
+// machine: only on Linux, where they build as they would in a node; never
+// as root (euid 0), where a test reaching code that mounts, pivots or
+// changes the network would do it to the host's own namespaces, not a
+// node's; and not in a perf run, where nothing else may load the host
+// while it measures.
+func hostRunsNodeless(goos string, euid int, perf bool) bool {
+	return goos == "linux" && euid != 0 && !perf
+}
+
+// lockedWriter keeps the node phase's packages' outputs, each one Write,
+// whole.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(b []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(b)
+}
+
 // writeGotestTimes writes, to file, how long each package that ran took;
 // file "" writes nothing.
 func writeGotestTimes(file string, results []lab.GoTestResult) error {
@@ -352,7 +412,7 @@ func writeGotestTimes(file string, results []lab.GoTestResult) error {
 		// 0: cached, or never run (no tests for Linux, a build or a
 		// lab's preparation failed).
 		if r.Elapsed > 0 {
-			times = append(times, lab.TestTime{Name: r.ImportPath, Elapsed: r.Elapsed})
+			times = append(times, lab.TestTime{Name: r.ImportPath, Elapsed: r.Elapsed, Phases: r.Phases})
 		}
 	}
 	return lab.WriteTestTimes(file, times)

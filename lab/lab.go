@@ -231,6 +231,9 @@ type startClock struct {
 	now   func() time.Time
 	began time.Time
 	end   time.Time // the test's deadline less the tear-down; zero without one
+	// slotWait, when set, gets how long the start waited for its slot,
+	// whether or not it got one.
+	slotWait *time.Duration
 }
 
 // deadline is when phase p, beginning now, must end, and whether the
@@ -295,7 +298,11 @@ func waitForSlot(ctx context.Context, clock startClock, project, slotKey string)
 		release, err = acquireSlot(ctx, slotKey)
 		return err
 	})
-	noteSlotWait(project, from, time.Now(), err)
+	to := time.Now()
+	noteSlotWait(project, from, to, err)
+	if clock.slotWait != nil {
+		*clock.slotWait = to.Sub(from)
+	}
 	return release, err
 }
 

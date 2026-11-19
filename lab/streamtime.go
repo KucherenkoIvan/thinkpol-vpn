@@ -21,6 +21,7 @@ import (
 type TestTime struct {
 	Name    string
 	Elapsed time.Duration
+	Phases  LabPhases // a node-phase package's split of Elapsed; zero otherwise
 }
 
 // Bounds on what FilterTestJSON holds: one input line; each test's output
@@ -239,6 +240,7 @@ type testLog struct {
 	mem  []byte
 	file *os.File
 	size int64
+	what string // what writeTo says it cut; "": this test's output
 }
 
 func (l *testLog) Write(b []byte) (int, error) {
@@ -283,7 +285,7 @@ func (l *testLog) writeTo(w io.Writer, whole bool) error {
 	if _, err := io.Copy(w, io.NewSectionReader(r, 0, testLogKeep)); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "\n... (%d bytes of this test's output cut) ...\n", l.size-2*testLogKeep); err != nil {
+	if _, err := fmt.Fprintf(w, "\n... (%d bytes of %s cut) ...\n", l.size-2*testLogKeep, cmp.Or(l.what, "this test's output")); err != nil {
 		return err
 	}
 	_, err := io.Copy(w, io.NewSectionReader(r, l.size-testLogKeep, testLogKeep))
@@ -298,11 +300,17 @@ func (l *testLog) close() {
 	}
 }
 
-// WriteTestTimes writes times to a file, one "seconds<TAB>name" line each.
+// WriteTestTimes writes times to a file, one "seconds<TAB>name" line each,
+// followed for a node-phase package by "<TAB>" and its phases' seconds:
+// queue, slot wait, lab start, tests and teardown, space-separated.
 func WriteTestTimes(name string, times []TestTime) error {
 	var b strings.Builder
 	for _, t := range times {
-		fmt.Fprintf(&b, "%.3f\t%s\n", t.Elapsed.Seconds(), t.Name)
+		fmt.Fprintf(&b, "%.3f\t%s", t.Elapsed.Seconds(), t.Name)
+		if p := t.Phases; !p.IsZero() {
+			fmt.Fprintf(&b, "\t%.3f %.3f %.3f %.3f %.3f", p.Queue.Seconds(), p.SlotWait.Seconds(), p.Start.Seconds(), p.Tests.Seconds(), p.Teardown.Seconds())
+		}
+		b.WriteByte('\n')
 	}
 	return os.WriteFile(name, []byte(b.String()), 0o644)
 }
@@ -315,14 +323,47 @@ func ReadTestTimes(name string) ([]TestTime, error) {
 	}
 	var times []TestTime
 	for line := range strings.Lines(string(b)) {
-		secs, test, ok := strings.Cut(strings.TrimSuffix(line, "\n"), "\t")
-		s, err := strconv.ParseFloat(secs, 64)
-		if !ok || err != nil {
+		t, err := parseTestTime(strings.TrimSuffix(line, "\n"))
+		if err != nil {
 			return nil, fmt.Errorf("%s: bad line %q", name, line)
 		}
-		times = append(times, TestTime{Name: test, Elapsed: time.Duration(s * float64(time.Second))})
+		times = append(times, t)
 	}
 	return times, nil
+}
+
+func parseTestTime(line string) (TestTime, error) {
+	secs, rest, ok := strings.Cut(line, "\t")
+	if !ok {
+		return TestTime{}, errors.New("no name")
+	}
+	test, phases, hasPhases := strings.Cut(rest, "\t")
+	elapsed, err := parseSeconds(secs)
+	if err != nil {
+		return TestTime{}, err
+	}
+	t := TestTime{Name: test, Elapsed: elapsed}
+	if !hasPhases {
+		return t, nil
+	}
+	f := strings.Split(phases, " ")
+	if len(f) != 5 {
+		return TestTime{}, errors.New("want five phases")
+	}
+	for i, d := range []*time.Duration{&t.Phases.Queue, &t.Phases.SlotWait, &t.Phases.Start, &t.Phases.Tests, &t.Phases.Teardown} {
+		if *d, err = parseSeconds(f[i]); err != nil {
+			return TestTime{}, err
+		}
+	}
+	return t, nil
+}
+
+func parseSeconds(s string) (time.Duration, error) {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, err
+	}
+	return time.Duration(f * float64(time.Second)), nil
 }
 
 // SlowestTests is the n slowest of times, slowest first. A test whose
@@ -369,25 +410,49 @@ func (e *OverBudgetError) Error() string {
 // CheckBudget reports to w how long a stream took and, with a budget
 // (0: none), fails with an *OverBudgetError when it took longer, listing
 // its top slowest tests: where the time went.
+//
+// When node-phase packages ran in labs, a line sums their phases
+// (LabPhases), and each such package on the list shows its own.
 func CheckBudget(w io.Writer, stream string, took, budget time.Duration, times []TestTime, top int) error {
 	took = took.Round(time.Second)
-	if budget <= 0 {
-		_, err := fmt.Fprintf(w, "the %s stream took %v\n", stream, took)
-		return err
-	}
-	if took <= budget {
-		_, err := fmt.Fprintf(w, "the %s stream took %v of its %v budget\n", stream, took, budget)
-		return err
-	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "the %s stream took %v, over its %v budget (LAB_BUDGET: wall time from the stream's start, lab setup included); its slowest tests:\n", stream, took, budget)
-	for _, t := range SlowestTests(times, top) {
-		fmt.Fprintf(&b, "  %10v  %s\n", t.Elapsed.Round(100*time.Millisecond), t.Name)
+	switch {
+	case budget <= 0:
+		fmt.Fprintf(&b, "the %s stream took %v\n", stream, took)
+	case took <= budget:
+		fmt.Fprintf(&b, "the %s stream took %v of its %v budget\n", stream, took, budget)
+	default:
+		fmt.Fprintf(&b, "the %s stream took %v, over its %v budget (LAB_BUDGET: wall time from the stream's start, lab setup included); its slowest tests:\n", stream, took, budget)
+		for _, t := range SlowestTests(times, top) {
+			fmt.Fprintf(&b, "  %10v  %s", t.Elapsed.Round(100*time.Millisecond), t.Name)
+			if !t.Phases.IsZero() {
+				fmt.Fprintf(&b, " (%v)", t.Phases)
+			}
+			b.WriteByte('\n')
+		}
+	}
+	var sum LabPhases
+	labs := 0
+	for _, t := range times {
+		if !t.Phases.IsZero() {
+			labs++
+			sum.Queue += t.Phases.Queue
+			sum.SlotWait += t.Phases.SlotWait
+			sum.Start += t.Phases.Start
+			sum.Tests += t.Phases.Tests
+			sum.Teardown += t.Phases.Teardown
+		}
+	}
+	if labs > 0 {
+		fmt.Fprintf(&b, "  node phase, %d packages in labs, summed: %v\n", labs, sum)
 	}
 	if _, err := io.WriteString(w, b.String()); err != nil {
 		return err
 	}
-	return &OverBudgetError{Took: took, Budget: budget}
+	if budget > 0 && took > budget {
+		return &OverBudgetError{Took: took, Budget: budget}
+	}
+	return nil
 }
 
 // ParseBudget parses a stream's time budget (LAB_BUDGET): a Go duration,
