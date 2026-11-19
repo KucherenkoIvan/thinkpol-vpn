@@ -61,6 +61,47 @@ func TestTimelineSlotWaitLine(t *testing.T) {
 	}
 }
 
+// TestWaitForSlotTimesTheWait: a start whose clock asks for it gets how
+// long it waited for its slot, both when it got one after another start
+// let go of it and when it ran out of time.
+func TestWaitForSlotTimesTheWait(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv(MaxLabsEnv, "1")
+	ctx := context.Background()
+	budget := startBudget{before: time.Minute, wait: time.Minute, start: time.Minute}
+	held, err := waitForSlot(ctx, budget.begin(time.Time{}), "tplab-x-t-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const hold = 300 * time.Millisecond
+	go func() {
+		time.Sleep(hold)
+		held()
+	}()
+	var waited time.Duration
+	clock := budget.begin(time.Time{})
+	clock.slotWait = &waited
+	release, err := waitForSlot(ctx, clock, "tplab-x-t-b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited < hold || waited > time.Minute {
+		t.Errorf("waited %v for a slot held %v", waited, hold)
+	}
+
+	budget.wait = 200 * time.Millisecond
+	waited = 0
+	clock = budget.begin(time.Time{})
+	clock.slotWait = &waited
+	if _, err := waitForSlot(ctx, clock, "tplab-x-t-c", ""); err == nil {
+		t.Fatal("got the slot that is held")
+	}
+	release()
+	if waited < budget.wait {
+		t.Errorf("a wait that ran out after %v noted as %v", budget.wait, waited)
+	}
+}
+
 // TestTimelineStartAndDownLines: a start's line gives the whole of it from
 // the slot and each step's length, "-" for a step it never reached; a
 // tear-down's line and a read of the daemon's subnets their length.

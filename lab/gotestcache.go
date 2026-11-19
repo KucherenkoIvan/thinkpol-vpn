@@ -121,6 +121,7 @@ type freshRun struct {
 	labErr, testErr error
 	testLog         []byte // its -test.testlogfile, when asked for
 	logErr          error  // reading testLog back
+	phases          LabPhases
 }
 
 // record stores run as a pass of entry, if it is one. A run whose tests
