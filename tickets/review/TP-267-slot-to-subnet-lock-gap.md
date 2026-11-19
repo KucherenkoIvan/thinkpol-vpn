@@ -54,3 +54,4 @@ Full lab on 289bd442 (another full lab at the same time): slot → lock 0.00 s i
 - 2026-11-19 backlog → in-progress, owner: agent-tp-262 (folded into TP-262 by the orchestrator: the gap is part of a lab's start; moves with TP-262 through review)
 - 2026-11-19 done in TP-262's branch: the gap was the read of the daemon's subnets (inspect of every network, one by one when one vanished); now read before the slot (chunked, shared), first try reserves against it; slot → lock 0.00 s in 30/30 measured starts and 111/111 in the full lab on 289bd442; unit tests and mutations in TP-262's Log
 - 2026-11-19 in-progress → review (with TP-262)
+- 2026-11-19 review round 1 (with TP-262): boxes ticked from this branch's evidence (timeline above, 30/30 measured starts and the full lab's 111); R1.2's fresh read for a full pool is in TP-262's Log; moves to done with TP-262

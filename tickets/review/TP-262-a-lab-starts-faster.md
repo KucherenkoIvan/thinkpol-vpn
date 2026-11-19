@@ -21,7 +21,7 @@ branch: "tp-262-faster-lab-start"
 
 ## Acceptance
 - [x] Breakdown of a lab start before and after, in Notes.
-- [ ] Median lab start halved on the remote runner (timeline). Not reached: −18% under the same load (A/B), −15% idle; the rest is Docker's own per-object work (see Notes, "Not halved").
+- [ ] Median lab start halved on the remote runner (timeline). Moved to TP-261 (lab reuse): `docker compose up` is 85–98% of a start and, under load, is bound by the disk under the Docker daemon, so the lever is fewer Docker objects per run, not a faster start of each. Measured here: −18% median in one interleaved 4-node A/B, 10 starts per side (12.77 → 10.45 s). The before/after breakdown table compares sets run under different loads: its differences are load noise, not the change's effect (see Notes, "Not halved").
 - [x] No lab test changes what it proves.
 
 ## Notes
@@ -57,12 +57,20 @@ Inside `docker compose up` (Docker's events, medians):
 - `docker compose up` runs without `--wait`, which polled every 0.5 s after the containers had started. A node that died at once fails the sealing's `docker exec` instead.
 - A start no longer runs `docker compose down` for a leftover lab that doesn't exist (`downProject`).
 
-**Not halved.** Measured under the same load (the A/B), the median start went from 12.8 to 10.5 s; idle 1-node starts went from 4.0 to 3.4 s. Under heavy load the subnet read's 20–50 s tail is gone from the slot. The rest is Docker's own work per object, which no harness change shortens, so halving needs fewer Docker objects per lab or per run:
+**Not halved.** The one load-matched measurement is the A/B: the median 4-node start went from 12.8 to 10.5 s (−18%). The breakdown table's before and after sets ran under different loads, so its differences (1 node 4.0 → 3.4 s, 4 nodes 88 → 11 s) are mostly load, not the change. Under heavy load the subnet read's 20–50 s tail is gone from the slot. The rest is Docker's own work per object, which no harness change shortens, so halving needs fewer Docker objects per lab or per run:
 - fewer containers (TP-242);
 - labs reused (TP-261);
 - in-node labs without a Docker network: one network, one endpoint and the subnet read fewer per node-phase lab, the most common lab. Not done here: `internal/agent/supervisor`'s isolation test sends to the node's own eth0 addresses (`crossTargets`), so it would need a stand-in uplink, or it proves less.
 - tear-down (2–35 s median) holds the slot and is the same kind of Docker work.
 **Full lab** (`make lab-test` on 289bd442, alongside another ticket's full lab and a node-phase run): every test passed, RESULTS.md assembled; wall 2804 s; long stream 8m51s, default stream 46m43s, over its 15m budget under that load. Its slowest were `TestHarnessAnotherRunFromTheCheckoutBuildsItsOwnBinaries` (16m19s) and the matrix rows (12–14.5 min each). Its timeline (111 starts): slot → sealed medians 27.7 s (1 node, 54 starts), 80 s (3), 96 s (4, 29 starts), 120 s (5); `docker compose up` 91–98% of each; slot → lock 0.00 s in every start; the subnet read before the slot 0.5–3.3 s median, 10.6 s max.
+
+## Review findings
+Review round 1 (two reviewers): subnet safety holds; dropping `--wait` and skipping `docker compose down` for a lab that doesn't exist are fine. Fix these, then merge.
+- [x] R1.1 (should-fix) lab/subnets.go: `usedSubnetsVia` started one docker CLI per 4 networks with no cap; with up to 12 test processes at once that is hundreds of docker CLIs on a daemon whose disk is already the bottleneck. Cap the fan-out (a semaphore of 8 per read).
+- [x] R1.2 (should-fix) lab/lab.go: no test covered "a retry after an overlap reads afresh" (reusing the pre-slot read passed every test); add it with a mutation. A stale pre-slot read (as old as the slot wait) that fills the pool failed with "no free /24 left" and was never retried on fresh data: on the first try, treat a full pool like an overlap (read afresh and retry), via a sentinel error.
+- [x] R1.3 (nits) the before-slot timeout message omitted the subnet read; `Lab.started` exists only for TestLabStartTimes: comment it as test instrumentation; TestLabStartTimes matches a lab's events by the exact Compose project label (and network names), not a name prefix; a unit test for the single network-inspect parsing.
+- [x] R1.4 (ticket) the "halved" box: unticked, with what was measured stated honestly (−18% median, one interleaved 4-node A/B, 10 starts per side; the before/after table is load noise), moved to TP-261 (lab reuse) with the reason.
+- [x] R1.5 (tickets) TP-267: its boxes are ticked from this branch's evidence; it moves with TP-262.
 
 ## Log
 - 2026-11-19 created in backlog (full-lab measurement on rewrite cb0348d6)
@@ -77,3 +85,7 @@ Inside `docker compose up` (Docker's events, medians):
 - 2026-11-19 out of scope, for the board: in-node labs without a Docker network (needs a stand-in uplink for supervisor's isolation test); tear-down holds the slot 2–35 s median; TestHarnessAnotherRunFromTheCheckoutBuildsItsOwnBinaries took 16m19s in the full lab
 - 2026-11-19 merged rewrite 02574d94 (TP-258: lab tests and the local API, no harness file): make lint, make test green on b1676c35; the full lab above is on 289bd442, before that merge
 - 2026-11-19 in-progress → review (with TP-267)
+- 2026-11-19 review round 1: fix R1.1–R1.5, merge
+- 2026-11-19 R1.1–R1.3 in b8eb0ca7: at most 8 subnet-read inspects in flight (`inspectsAtOnce`); `createTries` (create's loop) reads afresh after an overlap and, on the first try, after a full pool (`errNoFreeSubnet`); `parseGateways`; before-slot timeout message names the subnet read; `Lab.started` commented as TestLabStartTimes' instrumentation; TestLabStartTimes matches events by network name and the Compose project label. New tests TestUsedSubnetsCapsInspectsAtOnce, TestCreateTriesReadAfresh (overlap, pool full), TestParseGateways
+- 2026-11-19 mutations (scratch checkout, never pushed), each failed its test, then restored: semaphore removed (TestUsedSubnetsCapsInspectsAtOnce: 32 at once); a retry reusing the pre-slot read (TestCreateTriesReadAfresh: overlap 5 ups, pool full); the full-pool retry dropped (TestCreateTriesReadAfresh/pool_full); the gateway's "/len" cut dropped (TestParseGateways)
+- 2026-11-19 on b8eb0ca7: make lint, make test green; make lab-harness pass (150 s); lab-gotest PKG=./lab RUN=TestSmoke|TestM0 pass. Docker CLIs started from this checkout's run, sampled during both: at most 6 (harness) and 4 (smoke) subnet-read inspects at once, 11 and 17 docker CLIs in all; the cap of 8 never bound there (the daemon had too few networks for more than 8 chunks), the unit test shows it binding (32 chunks, 8 at once)
