@@ -27,6 +27,33 @@ Most lab tests start a fresh lab (4–7 containers) that lives seconds to a minu
 
 ## Notes
 
+### Plan (2026-11-19)
+
+**What the `lab/` tests change on their nodes**, by topology (S = `lab.Standard()`, U = `lab.Upstream()`; R router, A/B device-a/-b, S1/S2 server-1/-2, I internet, C camouflage):
+
+| Topology | Tests | What they leave on the nodes | Verdict |
+|---|---|---|---|
+| S{R,A,S1} | TestCensorForwardsWhatNoModuleDecides, TestCensorFragmentedUDPBlocked, TestTCPResetReachesClient, TestTCPThroughCensorDrop, TestTCPResetReachesBothEnds, TestCensorReplaysClientHello, TestFullyEncryptedRandomNotHTTPS, TestDiagShowsWhatTheHostHolds, TestCaptureFlagsRawWireGuard, TestHealthWithNoLinkUp, TestShapingCapture, TestTheNodeFileSetsUp (its hand-written topology is this one) | processes (`thinkpol up`, censord, tcpdump, nc, socat, dbus-daemon and systemd-resolved in diag), links (TUN, `wg0`), addresses, routes and rules in thinkpol's tables, nft tables (`thinkpol-*`, `censor`, the tests' own `tp140`, `sink`), queue bindings, files under `/tmp`, `/run`, `/var/lib/thinkpol`, `/etc` (diag's `groupadd`, resolv.conf), conntrack (censor's ct match, docker's DNS nat table in every node), forwarding sysctls | reusable after reset |
+| S{R,A,B,S1} | TestLocalAPI, TestUpRunsTheM0Space, TestM0 (two subtests, own slot each) | as above, plus `/run/foreign-api`, `/etc/resolv.conf` | reusable after reset |
+| S{R,A,B,S1,I} | TestASecondAgentChangesNothing, TestDNSFollowsTheRules, TestDisconnectLeavesNothingBehind | as above; DNS tests rewrite `/etc/resolv.conf` (a bind mount: restored in place) | reusable after reset |
+| S{R,A,S1,I} | TestDNSFollowsTheRulesOnAServerExit | as the DNS tests | reusable; joins S{R,A,B,S1,I} (device-b idle there) if a pool of its own costs a start for one test |
+| S{R,A,S1,S2,I} | TestBlobDistribution, TestEgressThroughAnExit, TestHealthWithAnExitThatNeverHandshakes | as above, plus addresses on `lo`/eth, host routes, masquerade (conntrack NAT entries) | reusable after reset |
+| U{R,A,S1,C} | TestProberTellsEchoFromNginx, TestServerHelloAgainstTheSite, the censor matrix's row labs (TP-240: already reset per cell) | nginx (camouflage), censord and its table/conntrack, transports' processes/links/files | reusable after reset; a matrix row takes a pooled lab, keeps its own per-cell reset on top |
+| U{R,S1,C} | TestCensorSeesUpstream | nc listeners, censord | reusable; joins U{R,A,S1,C} (device-a idle there) |
+| S{R,A,B,S1,S2} | TestIngressOffAdmitsOnlyServers | as above | reusable, but the only test of its topology: stays `lab.Start` (a pool of one lab saves nothing) |
+| S{R,A,I} | TestSmoke | — | **fresh**: checks the lab's own start (sealing, hermetic) |
+| custom with systemd nodes | TestKillSwitchUnderSystemd (4 parts), TestRollbackPutsTheHostBack…, TestServiceUnderSystemd, TestServiceUninstallAfterAServerCrash | systemd units and their enablement, `/etc/systemd`, `/usr/local/bin/thinkpol`, the journal; TestServiceUnderSystemd restarts the container (`Node.Restart`, docker-level) | **fresh**: systemd state and container restarts are outside what the reset can verify (a later step may pool the kill-switch/rollback topology, 5 labs, if the halving needs it) |
+| custom (S + `abroad`/`router-2`, xray) | TestNoIPv6LeavesAroundTheTunnel, TestRouteTableSendsOnlyDirect…, TestRealityStockXray | as above | singletons: stay `lab.Start` |
+| harness | TestHarness* | the lab itself | **fresh**: they test lab start, teardown, isolation |
+
+No `lab/` test outside the systemd ones disconnects a network, restarts, pauses or kills a container.
+
+**Design.**
+- `lab.NewPool(topo, size)`: a process-wide pool of at most `size` started labs of one topology; `pool.Acquire(t)` gives the test an idle lab, starts one (its own lab slot, held while the lab lives) while the pool has fewer than `size`, or waits (first come, first served) for one to come back. At the test's end (`t.Cleanup`, registered first so it runs after the test's own clean-ups) the lab is reset and checked; it goes back to the pool only when the check passes. A failed check retires it (torn down, the reason logged), and a failed test's lab is retired too (or kept with `THINKPOL_LAB_KEEP`), so the next test gets a fresh one. An idle lab is torn down after a short grace, so idle labs don't sit on slots other runs wait for; `lab.Main` tears down whatever the pools still hold. Tests that need a fresh lab keep calling `lab.Start`/`lab.StartOwnSlot`: that is the opt-out.
+- The reset is TP-240's (`matrixRow.reset`) moved into package `lab` (`Lab.Snapshot`, `Lab.Reset`) and widened: processes, links (and their flags and MTU), addresses, routes in every table, policy rules, the nftables ruleset by table (tables a test added are deleted; a changed harness table fails the check), queue bindings, mounts, xfrm states and policies, qdiscs, net sysctls (restored to their snapshot values), the whole writable filesystem but `/usr` (new paths removed; `/etc` by content, restored in place from a copy taken with the snapshot; other files' size and mtime checked, `/var/log` by name only), and conntrack on every node (flushed until it stays empty). Anything the reset can't put back fails the check (prefer failing over guessing). The matrix rows keep their per-cell reset through the same code.
+- Pools are declared in one file (`lab/pools_test.go`), with their sizes, so the reuse is visible in one place.
+- Proof: unit tests of the snapshot diff/undo; a lab test that leaves state behind on purpose and sees the lab retired (mutation: skip the check, and a later user sees the leftover); the timeline's lab starts and the full lab's wall time before and after.
+
 ## Log
 - 2026-11-19 created in backlog (full-lab measurement on rewrite cb0348d6)
 - 2026-11-19 backlog → in-progress, owner: agent-tp-261
