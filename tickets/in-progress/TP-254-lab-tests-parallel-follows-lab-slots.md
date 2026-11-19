@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-254"
+branch: "tp-254-lab-parallel-follows-slots"
 ---
 
 ## Goal
@@ -33,3 +33,4 @@ A full `make lab-test` runs as many labs at once as the machine's lab-slot cap a
 
 ## Log
 - 2026-11-19 created in backlog (lab-speed follow-ups)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-254
