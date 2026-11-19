@@ -141,6 +141,58 @@ func TestPoolTakeInOrder(t *testing.T) {
 	}
 }
 
+// TestPoolWaitsForLabsComing: while labs started first are coming up, a
+// test that finds none idle waits for one of them rather than start a
+// lab, as long as more are coming than tests wait; past that it starts
+// one, room allowing. A lab that came goes to the first waiter; a start
+// that failed lets the next waiter start one instead.
+func TestPoolWaitsForLabsComing(t *testing.T) {
+	p := &Pool{size: 5, name: "router", labs: 2, coming: 2}
+	far := time.Now().Add(time.Minute)
+	got := make(chan *pooledLab, 2)
+	for i := range 2 {
+		go func() {
+			pl, err := p.take(far, unranked)
+			if err != nil {
+				t.Error(err)
+			}
+			got <- pl
+		}()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			p.mu.Lock()
+			n := len(p.waiters)
+			p.mu.Unlock()
+			if n == i+1 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%d waiters, want %d: a test started a lab while one was coming for it", n, i+1)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if pl, err := p.take(far, unranked); pl != nil || err != nil {
+		t.Fatalf("a third test, with two coming for two waiting: %v, %v, want leave to start one", pl, err)
+	}
+	up := &pooledLab{}
+	p.mu.Lock()
+	p.came(up)
+	p.mu.Unlock()
+	if pl := <-got; pl != up {
+		t.Errorf("the first waiter got %v, want the lab that came", pl)
+	}
+	p.mu.Lock()
+	p.came(nil)
+	p.mu.Unlock()
+	if pl := <-got; pl != nil {
+		t.Errorf("after a failed start the second waiter got %v, want leave to start one", pl)
+	}
+	if p.labs != 3 || p.coming != 0 {
+		t.Errorf("%d labs, %d coming, want 3 and 0", p.labs, p.coming)
+	}
+}
+
 // TestNewPool: one pool per topology, a positive size, and no systemd
 // or privileged node.
 func TestNewPool(t *testing.T) {

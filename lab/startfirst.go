@@ -246,8 +246,10 @@ func (f *FirstLabs) Take(t testing.TB) *Lab {
 // more than it has room for) for t's tests, ahead of every lab start of
 // the process's other tests (see above); t calls it in place of
 // t.Parallel. They go to the pool's waiting tests, or wait idle in it, as
-// any of its labs. A start that failed fails t, and the next waiting test
-// starts a lab instead. Outside a stream it starts nothing.
+// any of its labs: a test that finds none idle waits for one of them,
+// rather than start a lab, while more are coming than tests wait. A start
+// that failed fails t, and the next waiting test starts a lab instead.
+// Outside a stream it starts nothing.
 func (p *Pool) StartFirst(t *testing.T, n int) {
 	t.Helper()
 	p.mu.Lock()
@@ -257,17 +259,17 @@ func (p *Pool) StartFirst(t *testing.T, n int) {
 	}
 	if s, _ := Stream(); s != "" && n > 0 {
 		p.labs += n
+		p.coming += n
 	}
 	p.mu.Unlock()
 	wait := startFirst(t, n, func(ctx context.Context) {
 		pl, err := p.start(ctx, t)
 		if err != nil {
 			t.Errorf("lab pool %s: a lab started first: %v", p.name, err)
-			return
 		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		p.putBack(pl)
+		p.came(pl)
 	})
 	t.Cleanup(wait)
 }

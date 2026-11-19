@@ -38,6 +38,7 @@ type Pool struct {
 	mu      sync.Mutex
 	idle    []*pooledLab
 	labs    int          // started or starting, idle or in use
+	coming  int          // of those, started first (StartFirst) and not up yet
 	waiters []poolWaiter // by rank, then first come first served
 	stats   PoolStats
 	down    sync.WaitGroup // idle labs being torn down
@@ -198,6 +199,7 @@ func (p *Pool) acquire(t testing.TB, rank int) *Lab {
 	}
 	if pl == nil {
 		if pl, err = p.start(context.Background(), t); err != nil {
+			p.gone()
 			t.Fatal(err)
 		}
 	}
@@ -228,7 +230,9 @@ func (p *Pool) take(deadline time.Time, rank int) (*pooledLab, error) {
 		p.mu.Unlock()
 		return pl, nil
 	}
-	if p.labs < p.size && len(p.waiters) == 0 {
+	// A lab started first and still coming is a waiter's to have, not a
+	// reason to start another.
+	if p.labs < p.size && len(p.waiters) >= p.coming {
 		p.labs++
 		p.mu.Unlock()
 		return nil, nil
@@ -259,7 +263,7 @@ func (p *Pool) take(deadline time.Time, rank int) (*pooledLab, error) {
 }
 
 // start brings up a lab for the pool, which the caller counted in
-// p.labs, and snapshots its clean state.
+// p.labs (and counts out on an error), and snapshots its clean state.
 func (p *Pool) start(ctx context.Context, t testing.TB) (*pooledLab, error) {
 	begin := time.Now()
 	l, bins, keep, err := launch(ctx, t, p.topo, func(project string) string { return "pool:" + project }, "pool-"+p.name, os.Getenv(ProjectEnv))
@@ -275,7 +279,6 @@ func (p *Pool) start(ctx context.Context, t testing.TB) (*pooledLab, error) {
 			err = errors.Join(err, l.Down(ctx))
 			cancel()
 		}
-		p.gone()
 		return nil, err
 	}
 	p.mu.Lock()
@@ -345,6 +348,19 @@ func (p *Pool) retire(t testing.TB, pl *pooledLab, why string) {
 	p.mu.Lock()
 	p.stats.Retired = append(p.stats.Retired, fmt.Sprintf("%s (%s)", t.Name(), why))
 	p.mu.Unlock()
+}
+
+// came puts a lab started first (StartFirst) back, or for a start that
+// failed (nil), counts it out, which lets the first waiter start one.
+// p.mu is held.
+func (p *Pool) came(pl *pooledLab) {
+	p.coming--
+	if pl == nil {
+		p.labs--
+		p.handOn(nil)
+		return
+	}
+	p.putBack(pl)
 }
 
 // gone counts a lab out of the pool, which lets the first waiter start
