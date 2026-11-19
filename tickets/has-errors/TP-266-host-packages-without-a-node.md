@@ -55,6 +55,15 @@ The 18 packages took 98.8 s summed on the host (slowest transport/memory 41.7 s,
 
 **Out of scope:** the before run (unchanged tree) failed `internal/agent/supervisor` TestWorkersAreSandboxed once: "space 0 has leaked host-file fds: [/proc/748/uid_map]"; it passed in the after run and the full lab.
 
+## Review findings
+- [ ] R1.1 (blocker) labctl's hostRunsNodeless checks only the OS and -perf, never root: `sudo make lab-test` (or a CI run as root) runs all 18 marked packages as root in the host's namespaces (worker's sandbox could mount or pivot_root if a future test reaches it). Run the host path only when the effective uid isn't 0 (`hostRunsNodeless(goos, euid, perf)`), else keep them in nodes; a table row for euid 0; make the README's "as the user running it" true.
+- [ ] R1.2 (should-fix) the static guard (lab/gotesthost_test.go) reads only the package's _test.go files and helpers named `...test`; it misses production code the tests call, other helpers (e.g. internal/testutil), and terms like Mount, PivotRoot, Chroot, Prctl, CAP_, netlink, nftables, /dev/net/tun, os/exec. Widen it: scan every main-module package in the marked package's `go list -deps -test` (at least its test helpers and the package itself) with the wider term list; keep `make test` green; it is a lint behind R1.1's kernel guard, say so.
+- [ ] R1.3 (should-fix, tests that can't fail) add TestTestHelperDirs (wg lists transport/transporttest and packettest, not itself) and a fixture module whose helper mentions THINKPOL_LAB so needsNode fires on a helper; a test for the "go test ended without a result for a package" path (lab/gotesthost.go: deleting the missing loop must fail a test).
+- [ ] R1.4 (should-fix) the host `go test` gets no -p (it builds and runs GOMAXPROCS packages beside node builds held to -build-p $(LAB_P)): pass -p from the build concurrency; and CGO_ENABLED=0 like the nodes (the same binaries as nodes and production).
+- [ ] R1.5 (should-fix) lab/gotesthost.go keeps all output (=== RUN, --- PASS, passing t.Log: -json is verbose), capped at 8 MiB head-only, so a late failure's text is cut: filter like FilterTestJSON (drop passing output; keep the first and last MiB), and set Cached only from the package-level ok … (cached) line.
+- [ ] R1.6 (TP-265) see TP-265's findings.
+- [ ] R1.7 (ticket) file nothing; note in the Log that TestWorkersAreSandboxed failed once on the unchanged tree ("leaked host-file fds /proc/…/uid_map") for the orchestrator to track.
+
 ## Log
 - 2026-11-19 created in backlog (TP-263)
 - 2026-11-19 backlog → in-progress, owner: agent-tp-266
@@ -62,3 +71,5 @@ The 18 packages took 98.8 s summed on the host (slowest transport/memory 41.7 s,
 - 2026-11-19 mutations, each killed: M1 hosttests_test.go added to internal/dataplane/tun (TestNodelessPackagesNeedNoNode: tun_linux_test.go and the nsthreadtest helper flagged); M2 a host skip doesn't fail the package; M3 THINKPOL_LAB kept in the host env; M4 the mark not detected; M5 labctl ignores nodelessOnHost (docker called); M6 perf runs host packages; M7 a cached host package timed; M14 host tally from output lines (subtest skip fails the package)
 - 2026-11-19 node phase cold before/after: 40 → 22 lab starts, 1143 s → 623 s wall (both under load); make lint, make test green on 7be89020; make lab-gotest PKG=transport/memory + trusteddir green on 7be89020; full make lab-test on 7be89020: tests passed, over budget 23m53s (as on rewrite), 1433 s wall
 - 2026-11-19 in-progress → review
+- 2026-11-19 review → has-errors
+- 2026-11-19 review round 1: fix R1.1–R1.7

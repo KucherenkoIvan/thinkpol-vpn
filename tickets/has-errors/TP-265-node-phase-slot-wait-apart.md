@@ -35,6 +35,9 @@ The summed slot wait matches the timeline: the cold node-phase run on b886094f s
 
 **What it shows.** In that full lab, slot waits are 66% of the node packages' lab time and their tests 9%: nsthread took 14m30s for 0.3 s of tests, router 11m39s for 0.6 s. The node phase's speed is the slots' and the lab start's, not the tests'.
 
+## Review findings
+- [ ] R1.6 (should-fix) the wait for the run's own lab gate (takeGate before inLab's start, lab/gotest.go) is in neither Elapsed nor SlotWait, so a node phase queued on its own gate shows "slot wait 0s": time it (in SlotWait or a "queue" column); a test that drops `clock.slotWait = &slotWait` must fail.
+
 ## Log
 - 2026-11-19 created in backlog (TP-263)
 - 2026-11-19 backlog → in-progress, owner: agent-tp-266
@@ -42,3 +45,5 @@ The summed slot wait matches the timeline: the cold node-phase run on b886094f s
 - 2026-11-19 mutations, each killed: M8 lab start keeps the slot wait (TestLabPhases); M9 the slot wait not noted (TestWaitForSlotTimesTheWait); M10 phases not written to the times file; M11 the budget's summed line dropped; M12 labctl drops the phases from -times
 - 2026-11-19 full make lab-test on 7be89020: tests passed, over budget 23m53s (as on rewrite); node-phase lines and the budget report show the four phases (Notes)
 - 2026-11-19 in-progress → review
+- 2026-11-19 review → has-errors
+- 2026-11-19 review round 1: fix R1.6
