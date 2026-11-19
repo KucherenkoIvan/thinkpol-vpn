@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: agent-tp-252
+branch: tp-252-censord-netlink-seq
 ---
 
 ## Goal
@@ -30,3 +30,4 @@ In a full lab on TP-251's branch (2026-11-19, three other labs running) the cens
 
 ## Log
 - 2026-11-19 created in backlog (seen in lab runs 2026-11-19)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-252
