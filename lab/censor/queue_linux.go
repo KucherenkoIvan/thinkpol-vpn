@@ -160,7 +160,7 @@ func installQueueRule(queue uint16, hook string) error {
 	removeQueueRule()
 	rule := fmt.Sprintf(`
 table inet %s {
-  chain queue {
+  chain judge {
     type filter hook %s priority filter; policy accept;
     ct state invalid counter
     ip frag-off & 0x3fff != 0 counter drop
