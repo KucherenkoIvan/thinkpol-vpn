@@ -1,0 +1,64 @@
+---
+id: TP-254
+title: "Lab tests run as many at once as the machine's lab slots allow"
+milestone: M2
+area: lab
+stream: verification
+repo: thinkpol-vpn
+size: S
+depends_on: []
+refs: []
+owner: "agent-tp-254"
+branch: "tp-254-lab-parallel-follows-slots"
+---
+
+## Goal
+A full `make lab-test` runs as many labs at once as the machine's lab-slot cap allows, so the default stream gets closer to the owner's 15-minute target (2026-11-16). TP-247 found (2026-11-19) that the `lab/` test binary runs with Go's default `-test.parallel` (GOMAXPROCS), below the 12-lab slot cap, so the matrix's row labs and the other parallel lab tests queue behind each other. The node phase runs `labctl gotest -p $(LAB_P)`, and `LAB_P` is set to the job's CPU weight (3 for a full lab), so at most 3 node packages run at once although each mostly waits on containers. The owner's rule (2026-11-16): weights are machine-agnostic, and how much work runs at a time is decided by the machine's configuration; for labs, the lab-slot cap is that configuration. The full lab's default stream took 34m12s, with lab starts waiting up to ~3 min for a slot.
+
+## Scope
+- The lab streams' test binaries (`lab/` and the other `./lab/...` packages, both streams, the harness phase) run with `-test.parallel` equal to the machine's lab-slot cap: the same `THINKPOL_LAB_MAX_LABS` the slots read (default 12), through one Make variable, so a machine sets it in its environment.
+- The node phase's `labctl gotest` runs as many packages at once as that cap; `LAB_P` keeps bounding only the CPU-bound part, the package test builds.
+- lab/README.md says how concurrency is set.
+
+## Out of scope
+- The slot cap itself (`THINKPOL_LAB_MAX_LABS`, its default).
+- `make lab-gotest`'s concurrency.
+
+## Acceptance
+- [x] lab/ and node-phase concurrency follow the lab-slot cap (Makefile, README).
+- [x] Full-lab default stream before and after, in Notes (budget report: wall, slot waits, slowest tests).
+- [x] No new failures from the higher concurrency (full lab green, or failures shown unrelated by targeted re-runs).
+
+## Notes
+- Makefile: `LAB_SLOTS = $(or $(THINKPOL_LAB_MAX_LABS),12)`, the cap the slots read (`TestMakefileConcurrencyFollowsLabSlots` checks its default against `defaultMaxLabs` in lab/hostlock.go). Every lab test run in a stream gets it: `-test.parallel=$(LAB_SLOTS)` on both streams' `lab.test`, `-parallel $(LAB_SLOTS)` on both streams' `go test` of the other `./lab/...` packages. The harness phase (`LAB_HARNESS_GOTEST`) gets `-parallel $(LAB_HARNESS_PARALLEL)`, LAB_SLOTS but at least 4: `-parallel` counts tests, not labs, and TestHarnessLabStartsOverlapOnDistinctSubnets skips under 4, which would leave the harness unremembered and run it on every make lab-test (`TestMakefileHarnessParallel` evaluates it with make for caps 1 to 16). The node phase runs `labctl gotest -p $(LAB_SLOTS) -build-p $(LAB_P)`. Set in the environment or on the command line, `THINKPOL_LAB_MAX_LABS` reaches both the variable and the recipes' environment (checked with GNU make: unset 12, environment 7, command line 5).
+- lab/gotest.go: `GoTestEach` takes a `GoTestConcurrency` (`Labs`, `Builds`, `BuildAllFirst`). `goTestGates.run` takes a package's prepare, build and lab steps as functions: prepare and build under a build token (`LAB_P`), then, only once the build token is back, the lab step under a lab token (`LAB_SLOTS`). Builds run ahead of the labs, a cached package never takes a lab token, and a package still queued for a token when the run's context ends returns its error and starts nothing. Under `-perf` (`make lab-perf`), `BuildAllFirst` holds every lab back until every package is built, so no compile overlaps a measurement. `labctl gotest -build-p` (default 4, like `-p`); both refuse values under 1.
+- To measure slot waits, each lab start now writes a `slot-wait <duration> ok|failed <project>` line to `THINKPOL_LAB_TIMELINE` (lab/timeline.go, `waitForSlot` in lab/lab.go), a wait that ran out of time too.
+- Before: TP-247's full lab on 27ba73b3 (its own branch, with the matrix rows split into 15 labs; not this branch's code): 2053 s wall, default stream 34m12s, long 4m6s, node phase uncached (40 packages ran). Its lab starts took 16 s to 2m53s each, slot wait included. Slowest: TestCensorMatrix/https_(control) 14m28s, wireguard_(reference) 12m6s, TestKillSwitchUnderSystemd/down 7m30s, lab/censor 7m0s.
+- After, run 1 (05fbcee9, node phase uncached: 40 packages, 0 cached; the harness phase ran because the harness hash changed; another full lab and a matrix run were on the machine at the start): 1729 s wall, default stream 28m49s, long 11m58s. All tests passed and RESULTS.md was assembled; the run exited 3, the default stream over its 15m budget. Slot waits over this run's 101 labs: median 147 s, mean 272 s, max 18m49s, 74 over a minute. Slowest tests (their times include slot waits): TestHarnessCommandStartsSealed 18m10s, TestHarnessLabsBelongToTheirCheckout 18m5s, TestHealthWithAnExitThatNeverHandshakes 18m0s, TestDisconnectLeavesNothingBehind 17m25s, internal/agent/supervisor 17m24s. Memory stayed above the guard (10 s samples).
+- After, run 2 (05fbcee9, node phase warm: 40 of 40 cached; harness stamped, not run; this run's labs held all 12 slots at its peak): 923 s wall, default stream 15m24s (24 s over the 15m budget), long 2m53s. All tests passed and RESULTS.md was assembled; the run exited 3 on that budget. Slot waits over 51 labs: median 4 s, mean 24 s, max 140 s, 9 over a minute. Slowest tests: TestCensorMatrix/openvpn-tcp_(reference) 7m22s, reality 7m4s, openvpn-udp_(reference) 6m42s, TestEgressThroughAnExit 6m2s, https_(control) 5m43s. Memory stayed above the guard.
+- The queue moved from Go's `-parallel` to the slots. With the node phase uncached, the default stream fell from 34m12s to 28m49s, but slot waits make up much of every slow test's time. Run 1 also shared its slots with other runs, so it does not isolate this change from the load. With a warm node cache, the default stream is 15m24s, and the remaining time is the matrix rows (5–7 min each, all started at once). No lab ran this branch's code at the old concurrency, so before and after compare different matrix layouts (TP-247's split rows vs rewrite's one lab per row).
+
+## Review findings
+- [x] R1.1 (should-fix) lab/gotest.go with the Makefile's lab-perf: `make lab-perf` passes -p 1 but no -build-p, and the build gate is released before the lab gate, so later packages compile while a perf test measures. Under -perf, keep builds from overlapping measurements (hold the build gate through the run, or build everything first). Done: `GoTestConcurrency.BuildAllFirst`, set by `labctl gotest -perf`: no lab starts until every package is past its build steps (lab/gotest.go `goTestGates`); lab/README.md "Performance gates".
+- [x] R1.2 (should-fix) no test can fail for the gate split (swap the two ints at the GoTestEach call; delete doneBuilding(); take labs before builds: all pass). Move the gate ordering into a function taking prepare/build/run steps as parameters and test it without Docker: max concurrent per phase, the build token released before a lab token is taken, a cached package never takes a lab token, a failed build returns its token. Name the mutations. Done: `goTestGates.run(ctx, prepare, build, labRun)` in lab/gotest.go, tested without Docker in lab/gotest_gates_test.go (TestGoTestGatesBoundEachPhase, …BuildTokenFreeDuringLab, …CachedPackageTakesNoLab, …FailedBuildReturnsToken, …QueuedPackageStopsWithContext, …BuildAllFirst); mutations in the Log.
+- [x] R1.3 (should-fix) lab/lab.go: a slot wait that fails ("no lab slot within …") writes no timeline line: note it before the error check with ok/failed; lab/timeline_test.go's "unset" check can't fail (deleting the call in lab.go passes): make it real. Done: `waitForSlot` (lab/lab.go) notes every wait, `ok` or `failed`, before up checks the error; TestTimelineNotesSlotWait runs it against a one-slot lock directory of its own (TMPDIR) and needs an ok and a failed line; the unset check is gone (with no path there is nothing to observe).
+- [x] R1.4 (should-fix) Makefile with lab/harness_subnets_lab_test.go: the subnets harness test skips under -parallel < 4, so a slot cap of 2–3 silently skips it, writes no stamp, and reruns the harness every time: give the harness phase -parallel max(LAB_SLOTS, 4) (goroutines, not labs) and update the oracle (lab/concurrency_test.go). Done: Makefile `LAB_HARNESS_PARALLEL = $(if $(filter 1 2 3,$(LAB_SLOTS)),4,$(LAB_SLOTS))` on `LAB_HARNESS_GOTEST`; TestMakefileConcurrencyFollowsLabSlots wants it on the harness's go test, TestMakefileHarnessParallel evaluates it with make (caps unset, 1 to 5, 16).
+- [x] R1.5 (nit) lab/gotest.go: the gates ignore ctx (after nodeFor expires, queued packages drain through up() one by one): select on ctx.Done(). Done: `takeGate` and `waitGate` select on ctx.Done() (and check ctx first): a package queued when ctx ends returns its error without preparing or starting a lab.
+- [x] R1.6 (nits) concurrency_test.go's regex `[^;|]*` crosses newlines: use `[^;|\n]*`; share the "15:04:05.000" stamp helper (timeline.go); labctl rejects -p/-build-p < 1 instead of clamping. Done: the regexes are `[^;|\n]*`; `timelineStamp` and `timelineResult` shared in lab/timeline.go; `labctl gotest` refuses -p or -build-p under 1 (TestGotestRejectsConcurrencyBelowOne), and GoTestEach does too.
+- [x] R1.7 (ticket) both "after" full labs exited on the budget (exit 3), not "green": say so; remove machine-specific details from the ticket (absolute free-memory figures, the machine's own tooling): say "memory stayed above the guard" and "the job's CPU weight". Done: Notes say both after-runs exited 3 on the default stream's budget, memory as "stayed above the guard", and LAB_P as the job's CPU weight.
+
+## Log
+- 2026-11-19 created in backlog (lab-speed follow-ups)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-254
+- 2026-11-19 Makefile LAB_SLOTS from THINKPOL_LAB_MAX_LABS: -parallel on the streams' and harness phase's lab test runs, node phase -p LAB_SLOTS -build-p LAB_P; GoTestEach build and lab gates; slot waits in the lab timeline; lab/README.md "Tests under load", Environment.
+- 2026-11-19 tests: TestMakefileConcurrencyFollowsLabSlots (mutations: LAB_SLOTS default 11; the long stream's lab.test without -test.parallel; LAB_HARNESS_GOTEST without -parallel; node phase -p $(LAB_P): each fails it), TestTimelineNotesSlotWait (mutations: the line written to another file; the wait's sign reversed: each fails it). The gates in GoTestEach have no unit test (they need Docker); the full labs ran the node phase through them (40 packages uncached in run 1).
+- 2026-11-19 make lint, make test green on 05fbcee9; full make lab-test twice on 05fbcee9: 1729 s (default 28m49s, node uncached) and 923 s (default 15m24s, node cached), both all tests passed, over budget only (Notes).
+- 2026-11-19 out of scope: the slot cap is shared by every run on the machine and slots are taken by polling, not in order, so a run with many waiting labs takes most free slots; under the budget report, slow tests' times are mostly slot waits when runs overlap.
+- 2026-11-19 in-progress → review
+- 2026-11-19 review round 1: fix R1.1–R1.7
+- 2026-11-19 R1.1–R1.7 fixed: GoTestConcurrency and goTestGates.run (build token, then lab token; ctx while queued; BuildAllFirst under -perf); waitForSlot notes failed waits; LAB_HARNESS_PARALLEL at least 4; labctl refuses -p/-build-p under 1; shared timeline stamp; Notes without machine details, both after-runs exited 3 on the budget.
+- 2026-11-19 mutations, each fails its test: Labs and Builds swapped in newGoTestGates (BoundEachPhase); build token given back after the lab instead of before (BoundEachPhase, BuildTokenFreeDuringLab, BuildAllFirst); lab token taken before the build (CachedPackageTakesNoLab); token kept on a failed prepare (FailedBuildReturnsToken, BuildAllFirst); takeGate without ctx, and the select without its ctx case (QueuedPackageStopsWithContext); BuildAllFirst ignored (BuildAllFirst); slot wait noted only on success, and not at all (TimelineNotesSlotWait); LAB_HARNESS_PARALLEL = LAB_SLOTS (MakefileHarnessParallel); the harness go test with -parallel $(LAB_SLOTS) (MakefileConcurrencyFollowsLabSlots); labctl clamping -p instead of refusing (GotestRejectsConcurrencyBelowOne).
+- 2026-11-19 make lint, make test green on 86a045f5; make lab-gotest PKG="./internal/devmap ./lab/testcache" twice on 86a045f5: 2 packages run, then 2 of 2 cached; make lab-harness on 86a045f5 passed (82 s). No new full lab: the full-lab path changed only in the node phase's gates, which lab-gotest runs.
+- 2026-11-19 has-errors → review
+- 2026-11-19 runs on 56a5bdde (merge of rewrite at ee2ee444, TP-247 and TP-252 in): make lint and make test green; filed TP-260 (lab slots handed out in order)
+- 2026-11-19 review → done (merged)

@@ -161,13 +161,17 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 	count := fs.Int("count", 0, "run each test n times (the test binary's -test.count)")
 	timeout := fs.String("timeout", "", "the test binary's -test.timeout (default "+lab.DefaultTestTimeout+" in a node, "+lab.DefaultLabTestTimeout+" on the host with -tagged)")
 	verbose := fs.Bool("v", false, "verbose test output")
-	parallel := fs.Int("p", 4, "packages tested at once")
-	perf := fs.Bool("perf", false, "a perf run: wait until no other lab runs, keep others from starting, set "+lab.PerfEnv+"=1")
+	parallel := fs.Int("p", 4, "packages tested at once, each in a lab")
+	builds := fs.Int("build-p", 4, "packages whose tests compile at once")
+	perf := fs.Bool("perf", false, "a perf run: wait until no other lab runs, keep others from starting, build every package's tests before the first lab starts, set "+lab.PerfEnv+"=1")
 	tagged := fs.Bool("tagged", false, "also run packages with lab-tagged tests on the host (go test -tags lab)")
 	failSkipped := fs.Bool("fail-skipped", false, "fail a package whose tests all skipped, and a run in which no test ran (implies -v)")
 	times := fs.String("times", "", "write how long each package took to this file (labctl budget)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *parallel < 1 || *builds < 1 {
+		return fmt.Errorf("gotest: -p %d -build-p %d: want 1 or more", *parallel, *builds)
 	}
 	nodeFor, err := gotestRunFor(*timeout, lab.DefaultTestTimeout)
 	if err != nil {
@@ -205,7 +209,7 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 	if *timeout != "" {
 		testArgs = append(testArgs, "-test.timeout="+*timeout)
 	}
-	opt := gotestOptions{parallel: *parallel, tagged: *tagged, failSkipped: *failSkipped, times: *times, nodeFor: nodeFor, hostFor: hostFor}
+	opt := gotestOptions{concurrency: lab.GoTestConcurrency{Labs: *parallel, Builds: *builds, BuildAllFirst: *perf}, tagged: *tagged, failSkipped: *failSkipped, times: *times, nodeFor: nodeFor, hostFor: hostFor}
 	if useCache(*count, *perf) {
 		opt.cache = lab.NewGoTestCache(os.Stdout)
 	}
@@ -283,7 +287,7 @@ func up(ctx context.Context, root string) error {
 }
 
 type gotestOptions struct {
-	parallel            int
+	concurrency         lab.GoTestConcurrency
 	tagged, failSkipped bool
 	times               string           // the file to write each package's time to; "": none
 	cache               *lab.GoTestCache // nil: run every package
@@ -316,7 +320,7 @@ func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patt
 	if len(pkgs) > 0 {
 		var labErr error
 		nodeCtx, cancel := withBound(ctx, opt.nodeFor)
-		results, labErr = lab.GoTestEach(nodeCtx, root, pkgs, opt.parallel, os.Stdout, opt.cache, env, args...)
+		results, labErr = lab.GoTestEach(nodeCtx, root, pkgs, opt.concurrency, os.Stdout, opt.cache, env, args...)
 		cancel()
 		if labErr != nil {
 			// The packages that ran still took their time: the budget's
