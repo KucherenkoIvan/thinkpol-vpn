@@ -33,13 +33,13 @@ func TestNodeState(t *testing.T) {
 	extra, missing := clean.diff(now)
 	want := nodeState{"process": {"90 thinkpol up"}, "link": {"wg4"}, "rule4": {"5208:\tfrom all fwmark 0x5 lookup 52"},
 		"linkattr": {"eth0 <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1400", "wg4 <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420"},
-		"nft": {"table inet censor"}, "nftrule": {"inet censor: chain queue {", "netdev tplab_eth0: ether saddr 02:42:ac:11:00:01 drop"},
+		"nft":      {"table inet censor"}, "nftrule": {"inet censor: chain queue {", "netdev tplab_eth0: ether saddr 02:42:ac:11:00:01 drop"},
 		"queue": {"100"}, "mount": {"/run/netns/space"},
-		"path":   {"d /tmp/m0", "f /etc/thinkpol.conf", "f /tmp/m0/map.yaml"},
-		"etc":    {"3333 /etc/resolv.conf", "4444 /etc/thinkpol.conf"},
+		"path":    {"d /tmp/m0", "f /etc/thinkpol.conf", "f /tmp/m0/map.yaml"},
+		"etc":     {"3333 /etc/resolv.conf", "4444 /etc/thinkpol.conf"},
 		"etcmode": {"600 0 0 /etc/group"},
-		"sysctl": {"net.ipv4.conf.wg4.rp_filter = 0", "net.ipv4.ip_forward = 1"},
-		"route4": {"default dev wg4 table 52 scope link"}, "route6": {"2001:db8::/64 dev eth0 metric 1024 pref medium"},
+		"sysctl":  {"net.ipv4.conf.wg4.rp_filter = 0", "net.ipv4.ip_forward = 1"},
+		"route4":  {"default dev wg4 table 52 scope link"}, "route6": {"2001:db8::/64 dev eth0 metric 1024 pref medium"},
 		"addr": {"eth0 192.0.2.9/32"}}
 	if !maps.EqualFunc(extra, want, slices.Equal) {
 		t.Errorf("extra:%s\nwant:%s", extra, want)
