@@ -564,9 +564,10 @@ type upstreamTally struct {
 // unattributable says whether the host connects to the reference outside
 // its probes at least half as often as during them: then the probes
 // didn't clearly cause the connections, which may be the host's own. A
-// baseline shorter than the probing is too little evidence for that: the
-// censor starts right before the first probe, so an entry's dial for the
-// very client the censor suspects lands in a baseline of a second or two.
+// baseline shorter than the probing is too little evidence for that: an
+// entry dials for the very client the censor suspects, and censord starts
+// right before the transport's setup, so the baseline before the first
+// probe is however long setup took (about 4 to 8 s in the lab).
 func (u upstreamTally) unattributable() bool {
 	// between/outside >= during/probing / 2, in integers.
 	return !u.shortBaseline() && u.between > 0 && 2*int64(u.between)*int64(u.probing) >= int64(u.during)*int64(u.outside)
@@ -575,6 +576,17 @@ func (u upstreamTally) unattributable() bool {
 // shortBaseline says whether the prober watched the host outside its
 // probes for less time than it probed.
 func (u upstreamTally) shortBaseline() bool { return u.outside < u.probing }
+
+// What an upstream tell's verdict says when the prober couldn't judge
+// whether its probes caused the host's connections to the reference: the
+// host dialed as often outside them (unattributable), or the prober
+// watched it outside them for less time than it probed (a short
+// baseline, which the prober's start makes a race with the first
+// suspect). A reported tell with either is not judged.
+const (
+	UpstreamTellUnattributable = "upstream tell: unattributable"
+	UpstreamTellShortBaseline  = "a baseline shorter than the probing, too short to call the tell unattributable"
+)
 
 // upstreamTell judges the connections from server's host to the
 // reference: a line for the report, or a difference when the tell flags.
@@ -585,14 +597,14 @@ func (m *prober) upstreamTell(server netip.Addr, u upstreamTally) (report, diff 
 	}
 	base := fmt.Sprintf("%d dials in %s of probes, %d in %s outside them", u.during, u.probing.Round(time.Millisecond), u.between, u.outside.Round(time.Millisecond))
 	if u.shortBaseline() {
-		base += ", a baseline shorter than the probing, too short to call the tell unattributable"
+		base += ", " + UpstreamTellShortBaseline
 	}
 	tell := fmt.Sprintf("upstream tell: a connection from %s to the reference during every probe (%d of %d; %s)", from, u.probes, u.total, base)
 	switch {
 	case u.total < 2 || u.probes < u.total:
 		return fmt.Sprintf("connections to the reference during %d of %d probes", u.probes, u.total), ""
 	case u.unattributable():
-		return fmt.Sprintf("upstream tell: unattributable (%s, at least half the rate; a connection from %s to the reference during %d of %d probes)", base, from, u.probes, u.total), ""
+		return fmt.Sprintf("%s (%s, at least half the rate; a connection from %s to the reference during %d of %d probes)", UpstreamTellUnattributable, base, from, u.probes, u.total), ""
 	case m.reportTell:
 		return tell + ", reported, not flagged", ""
 	}
