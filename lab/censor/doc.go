@@ -245,6 +245,26 @@
 //     REKEY_AFTER_TIME to the rekey window after the one before; one of
 //     those counts sooner than REKEY_AFTER_TIME starts the chain over.
 //
+// A shorter rekey period (the module's rekey setting) is for a WireGuard
+// whose timers run sped up, as the lab's thinkpol runs wireguard-go's
+// (lab/README.md, "WireGuard's timers"): REJECT_AFTER_TIME and
+// REKEY_TIMEOUT scale with it, so the rekey window but its persistent
+// keepalive, the quiet before an idle record, and the 2 s an answer has,
+// capped at REKEY_TIMEOUT so a retried initiation never answers. The
+// persistent keepalive is a peer's setting, which wireguard-go doesn't
+// scale, and the module's own choices are about the network and
+// scheduling: they keep real time. Scaled, the module reads traffic the
+// same as at real time only when that traffic keeps its order against
+// the scaled timers: records come closer together than the quiet (else
+// each stands out after quiet and restarts its exchange's chain) and
+// further apart than the 300 ms count settle, and each end sends more
+// often than KEEPALIVE_TIMEOUT (else wireguard-go adds a passive
+// keepalive, a one-way record that steps the count). The lab's rhythm
+// cells scale the ping that keeps their tunnels busy so (at a factor of
+// 10, every 0.4 s against a 0.5 s quiet and a 1 s KEEPALIVE_TIMEOUT); the
+// idle run's 1 s of jitter doesn't scale, so the keepalive signal, unused
+// by the cells, is looser at a shorter period.
+//
 // The rekey signal chains only what stands out, from the latest time it
 // stood out, so a steady stream of records (thinkpol's own 2 s path
 // probes, a ping, an interactive or TURN stream), whatever its sizes and
@@ -586,7 +606,8 @@
 // didn't cross must still be the module's doing. Only a reference row may
 // vary, so a gate row (a thinkpol transport) never does. The rhythm case
 // holds the reality row's tunnel and udp's for 7.5 minutes before the
-// probe, in use (a ping every 2 s), and logs a summary of the module's
+// probe, in use (a ping every 2 s; both shorter with the lab's sped-up
+// WireGuard timers, above), and logs a summary of the module's
 // trace; udp, which carries WireGuard with its timing untouched, is the
 // control and must be caught, or the run fails: a held row's pass means
 // nothing unless the same hold catches udp. reality is expected to fail,
