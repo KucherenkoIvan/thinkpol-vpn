@@ -254,7 +254,8 @@ func (c startClock) deadline(p startPhase) (time.Time, bool) {
 
 // run runs f under phase p's bound. An error of f's once the bound has
 // passed says which bound it was; the slot wait still takes a free slot
-// with no time left (waitLock tries once).
+// with no time left when no waiter is queued ahead of it (acquireSlotLock
+// tries once).
 func (c startClock) run(ctx context.Context, project string, p startPhase, f func(context.Context) error) error {
 	from := c.now()
 	if p == phaseBeforeSlot {
