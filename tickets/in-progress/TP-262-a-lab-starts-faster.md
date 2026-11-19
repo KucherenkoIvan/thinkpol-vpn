@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-262"
+branch: "tp-262-faster-lab-start"
 ---
 
 ## Goal
@@ -28,3 +28,4 @@ branch: ""
 
 ## Log
 - 2026-11-19 created in backlog (full-lab measurement on rewrite cb0348d6)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-262
