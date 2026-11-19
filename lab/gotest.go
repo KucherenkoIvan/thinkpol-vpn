@@ -184,14 +184,16 @@ type GoTestResult struct {
 
 // GoTestEach runs each package's tests in a fresh lab of its own
 // (GoTestTopology), up to parallel at a time, so no package sees what
-// another left behind. Each package's output goes to w in one piece, in the
+// another left behind. At most builds packages' tests compile at once, the
+// CPU-bound part, ahead of the labs, which mostly wait on containers. Each
+// package's output goes to w in one piece, in the
 // order the packages finish. env (NAME=value) is added to the test
 // binaries' environment. With a cache, a package whose recorded pass still
 // holds starts no lab and is reported "(cached)", and a package that passes
 // is recorded. It returns each package's result, sorted by import path; err
 // is for the lab itself failing. Its labs run this process's binaries: the
 // caller removes them with RemoveRunBinaries once GoTestEach returns.
-func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int, w io.Writer, cache *GoTestCache, env []string, args ...string) (results []GoTestResult, err error) {
+func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel, builds int, w io.Writer, cache *GoTestCache, env []string, args ...string) (results []GoTestResult, err error) {
 	checkout, err := CheckoutProject(root)
 	if err != nil {
 		return nil, err
@@ -201,19 +203,17 @@ func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int
 		return nil, err
 	}
 	var (
-		mu   sync.Mutex
-		errs []error
-		wg   sync.WaitGroup
-		sem  = make(chan struct{}, max(parallel, 1))
+		mu    sync.Mutex
+		errs  []error
+		wg    sync.WaitGroup
+		gates = goTestGates{builds: make(chan struct{}, max(builds, 1)), labs: make(chan struct{}, max(parallel, 1))}
 	)
 	for _, pkg := range pkgs {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
 			var out bytes.Buffer
-			res, labErr := goTestPackage(ctx, root, ownGoTestPackageProject(checkout, run, pkg.ImportPath), pkg, &out, cache, env, args)
+			res, labErr := goTestPackage(ctx, root, ownGoTestPackageProject(checkout, run, pkg.ImportPath), pkg, &out, cache, gates, env, args)
 			mu.Lock()
 			defer mu.Unlock()
 			if labErr != nil {
@@ -228,11 +228,24 @@ func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, parallel int
 	return results, errors.Join(errs...)
 }
 
+// goTestGates bound GoTestEach's packages: builds, those compiling their
+// tests or checking the cache, labs, those running in a lab.
+type goTestGates struct{ builds, labs chan struct{} }
+
 // goTestPackage is one package of GoTestEach: served from the cache, or run
 // in a fresh lab, its output in out.
-func goTestPackage(ctx context.Context, root, project string, pkg GoPackage, out *bytes.Buffer, cache *GoTestCache, env, args []string) (res GoTestResult, labErr error) {
+func goTestPackage(ctx context.Context, root, project string, pkg GoPackage, out *bytes.Buffer, cache *GoTestCache, gates goTestGates, env, args []string) (res GoTestResult, labErr error) {
 	res = GoTestResult{ImportPath: pkg.ImportPath}
 	header := "=== lab gotest " + pkg.ImportPath
+	gates.builds <- struct{}{}
+	building := true
+	doneBuilding := func() {
+		if building {
+			building = false
+			<-gates.builds
+		}
+	}
+	defer doneBuilding()
 	p, err := prepare(ctx, root)
 	if err != nil {
 		fmt.Fprintln(out, header)
@@ -266,6 +279,9 @@ func goTestPackage(ctx context.Context, root, project string, pkg GoPackage, out
 	} else {
 		fmt.Fprintln(out, header)
 	}
+	doneBuilding()
+	gates.labs <- struct{}{}
+	defer func() { <-gates.labs }()
 	started := time.Now()
 	runArgs := args
 	if entry != nil {
