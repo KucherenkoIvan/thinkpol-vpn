@@ -21,20 +21,20 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab/censor"
 )
 
-// TestCensorMatrix scores every transport against every censor module
-// (PRD C4, success metric 1) and regenerates lab/RESULTS.md. Each
-// transport's row runs in one lab of its own (lab.Upstream, holding its
-// own lab slot, lab.StartOwnSlot), the rows in parallel and a row's cells
-// one after another: a transport passes when its data crossed the censor
-// in the lab router over IPv4 and over IPv6, fails when it crossed over
-// neither, and is partial when only one family crossed, which only a row
-// that varies (censorCase.varies) may be. A cell whose outcome contradicts
-// what its censor means to produce fails the test, and a cell whose
-// censor can't be trusted (censord died, the kernel dropped queued
-// packets, an active module missed a snapshot, the verdict log doesn't
-// show the probe's flows, the module the cell quotes didn't compare what
-// it must) is an error. RESULTS.md is written only by a complete run with
-// no error.
+// TestCensorMatrix scores every transport against every censor module (PRD
+// C4, success metric 1) and regenerates lab/RESULTS.md. Each transport's
+// row runs in one lab of its own (router, device-a, server-1 and
+// camouflage, holding its own lab slot, lab.StartOwnSlot), the rows in
+// parallel and a row's cells one after another: a transport passes when
+// its data crossed the censor in the lab router over IPv4 and over IPv6,
+// fails when it crossed over neither, and is partial when only one family
+// crossed, which only a row that varies (censorCase.varies) may be. A cell
+// whose outcome contradicts what its censor means to produce fails the
+// test, and a cell whose censor can't be trusted (censord died, the kernel
+// dropped queued packets, an active module missed a snapshot, the verdict
+// log doesn't show the probe's flows, the module the cell quotes didn't
+// compare what it must) is an error. RESULTS.md is written only by a
+// complete run with no error.
 //
 // Every cell sets its transport up afresh, and after it the row's lab is
 // reset to the state it came up in (matrixRow.reset): the cell's
@@ -48,8 +48,18 @@ import (
 // judged against one. A censored cell without a passing off cell is an
 // error and fails fast, whether the off cell didn't run (a -run filter can
 // select the cell alone) or it failed.
+//
+// The held cells (heldCell: a row holding its tunnel for minutes on
+// WireGuard's real rekey timers) are the long stream's (lab.StreamLong),
+// every other cell the default stream's: each stream runs its own cells,
+// a held row's off cell in both, in a lab of its own, as each held cell's
+// gate. A stream writes its cells to lab.ResultsDirEnv's directory, and
+// make lab-test assembles RESULTS.md from both (TestAssembleCensorMatrix);
+// with lab.StreamEnv unset the test runs every cell and writes RESULTS.md
+// itself.
 func TestCensorMatrix(t *testing.T) {
 	t.Parallel()
+	stream := lab.SplitStreams(t)
 	var (
 		mu    sync.Mutex
 		cells []matrixCell
@@ -59,7 +69,13 @@ func TestCensorMatrix(t *testing.T) {
 		defer mu.Unlock()
 		cells = append(cells, cell)
 	}
-	t.Cleanup(func() { writeResults(t, cells, len(transports)*len(censorCases)) })
+	t.Cleanup(func() {
+		if stream == "" {
+			writeResults(t, cells, len(transports)*len(censorCases))
+			return
+		}
+		writeMatrixShare(t, stream, cells)
+	})
 
 	// runCell probes one cell, resets the row's lab after it, and records
 	// it: t.Fatal below ends the function before its return, the cleanup
@@ -211,6 +227,9 @@ func TestCensorMatrix(t *testing.T) {
 	}
 	off, censored := censorCases[0], censorCases[1:]
 	for _, tr := range transports {
+		if stream == lab.StreamLong && !slices.ContainsFunc(censored, func(cc censorCase) bool { return heldCell(tr, cc) }) {
+			continue
+		}
 		t.Run(tr.name, func(t *testing.T) {
 			t.Parallel()
 			row := startRow(t)
@@ -223,6 +242,9 @@ func TestCensorMatrix(t *testing.T) {
 				offResult = runCell(t, row, tr, off).result
 			})
 			for _, cc := range censored {
+				if !inStream(stream, tr, cc) {
+					continue
+				}
 				t.Run(cc.name, func(t *testing.T) {
 					gate := ""
 					switch {
@@ -242,6 +264,39 @@ func TestCensorMatrix(t *testing.T) {
 			}
 		})
 	}
+}
+
+// heldCell says whether a cell holds its row's tunnel before the probe
+// (censorCase.hold, transport.hold): minutes on real timers, the long
+// stream's.
+func heldCell(tr transport, cc censorCase) bool { return cc.hold > 0 && tr.hold != nil }
+
+// inStream says whether a censored cell is the stream's: held cells are
+// the long stream's, the rest the default stream's; "" (no stream) runs
+// both. A row's off cell runs in each stream that runs one of its cells.
+func inStream(stream string, tr transport, cc censorCase) bool {
+	switch stream {
+	case lab.StreamLong:
+		return heldCell(tr, cc)
+	case lab.StreamDefault:
+		return !heldCell(tr, cc)
+	}
+	return true
+}
+
+// streamCells is how many of the matrix's cells are the stream's: the long
+// stream's are its held cells, the default stream's every other cell, off
+// cells included.
+func streamCells(stream string) int {
+	n := 0
+	for _, tr := range transports {
+		for i, cc := range censorCases {
+			if stream == "" || (i > 0 && inStream(stream, tr, cc)) || (i == 0 && stream == lab.StreamDefault) {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // checkMatrix refuses cases and rows that would let a cell pass without
@@ -962,7 +1017,9 @@ func TestWithRowSettings(t *testing.T) {
 // rows in this order as slots free up, so the rows that hold their tunnel
 // 7.5 minutes for wireguard-rhythm (reality about 865 s, udp) never wait
 // behind short ones, and the matrix takes about as long as its longest row
-// (RESULTS.md sorts the rows by name).
+// (RESULTS.md sorts the rows by name). Under make lab-test the holds run
+// in the long stream, a lab per held row, and the default stream's rows
+// are all short.
 var transports = []transport{
 	realityRow,
 	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP, udp: true, oneUnderlay: true, hold: holdTunnel},
@@ -1123,7 +1180,7 @@ func sawPlainTCP(t *testing.T, l *lab.Lab, c *censorRun) error {
 
 func setupUDP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
-	space := newM0Space(t, l.Node(lab.Internet), server)
+	space := newM0Space(t, l.Node(lab.Camouflage), server)
 	envelope, version := space.build(t)
 	space.install(t, dev, "device-a", envelope)
 	space.install(t, server, "server-1", envelope)
