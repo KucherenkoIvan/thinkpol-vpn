@@ -21,9 +21,9 @@ Most lab tests start a fresh lab (4–7 containers) that lives seconds to a minu
 - Start with the most common topologies.
 
 ## Acceptance
-- [ ] Lab starts per full lab, before and after, in Notes (target: at least halved).
-- [ ] Every reused lab passes the reset check before the next test gets it; a failed check retires that lab (test).
-- [ ] Full-lab wall time before and after, in Notes.
+- [x] Lab starts per full lab, before and after, in Notes (target: at least halved). 57 → 26 and 28 (Measurements).
+- [x] Every reused lab passes the reset check before the next test gets it; a failed check retires that lab (test). `Pool.giveBack` (lab/pool.go) resets and checks (`Lab.Reset`, lab/snapshot.go) before the lab goes back; TestHarnessPoolResetsOrRetires (reused lab comes back clean, an un-undoable leftover retires it), mutations in the Log.
+- [x] Full-lab wall time before and after, in Notes. Warm: 943 s → 737 s and 724 s; cold: 1172 s → 1002 s.
 
 ## Notes
 
@@ -58,6 +58,13 @@ No `lab/` test outside the systemd ones disconnects a network, restarts, pauses 
 ### Measurements
 
 - **Before** (rewrite 35b02ca7, this branch's board commit cc9c380c, full `make lab-test` with `THINKPOL_LAB_TIMELINE`, cold node phase and harness, another ticket's full lab running at the same time): tests passed, over budget (default stream 47m52s, long stream 4m13s), wall 2872 s. Lab starts (`docker compose up` lines in the timeline): 111 in all, of which 57 by the lab tests of the two streams (`lab/` and `lab/prototypes/reality`: TestKillSwitchUnderSystemd 4, the censor matrix's rows 17, every other test 1), 12 by the harness tests, 42 by the node phase.
+- **Before, same base** (rewrite 8bac5c29, this branch's last merge base, in a worktree of its own, nothing else on the machine's lab slots): cold (node phase 0/40 cached, harness run) 1172 s, tests passed, OVER BUDGET (default stream 19m32s, long 4m29s); warm (node 40/40 cached, harness cached) 943 s, tests passed, OVER BUDGET (default 15m44s, long 3m36s). 57 lab-test lab starts in both.
+- **After** (`make lab-test` with `THINKPOL_LAB_TIMELINE`, alone on the lab slots):
+  - 54e1ddc8, twice in a row, warm (node 39/40 and 40/40 cached, harness cached): passed, 737 s (default 12m18s of 15m, long 3m3s) and 724 s (default 12m4s, long 3m5s). Lab-test lab starts 26 and 28: pools 16 and 18 (tunnel 2, two-device 2/4, internet 2, standard 2, abroad 1, censor 5 + long-stream 2), fresh 10 (TestKillSwitchUnderSystemd 4, TestSmoke, TestServiceUnderSystemd, TestServiceUninstallAfterAServerCrash, TestRollback…, TestRealityStockXray, TestRealityPrototype); 47 tests took a pooled lab each run; no reset failed, no lab retired.
+  - e1e42d84, cold (node 0/40 cached after the TP-266 merge, harness run): 1002 s, default 16m42s (over budget), 30 starts; TestEgressThroughAnExit failed on a timing bound (Log), passed re-run targeted.
+  - 30a66e8a (pools 3/2/2/2/5, the route-table tests fresh, idle grace = start time only), warm: passed, 804 s (13m25s) and 727 s (12m8s); 28 and 30 starts.
+  - The two-device pool's 2 extra starts in some runs are labs torn down idle while another start waited for a slot, then TestM0, which runs last of its pool (go test resumes parallel tests in source order), starting two.
+  - The code after 54e1ddc8 changes only the wording of a pool's timeout error (037e9d42); on the final head lint, test and TestHarnessPoolResetsOrRetires passed.
 - Targeted run of the 25 migrated tests (`make lab-gotest PKG=./lab RUN=…`, 7d13d6d4, under two other tickets' full labs): all passed, 798 s; 20 labs started for 28 tests, none retired; most labs went down idle after one test (a fixed 15 s idle grace), hence the grace now follows the lab's own start time.
 
 ## Log
@@ -66,3 +73,6 @@ No `lab/` test outside the systemd ones disconnects a network, restarts, pauses 
 - 2026-11-19 plan in Notes; built `lab.Pool` (pool.go: Acquire, size, first-come-first-served waiters, idle grace = the lab's own start time within 15 s to 3 min, retire on a failed test or reset, Main tears down) and moved TP-240's snapshot/reset/check into package lab (snapshot.go: Snapshot, Reset, Check), widened to links' flags/MTU, the nft ruleset by line, mounts, xfrm, qdiscs, net sysctls, the filesystem but /usr (/etc by content/mode/owner/symlink, restored from a copy), conntrack on every node; the matrix rows take their lab from the censor pool and reset through it; 26 tests moved to five pools (pools_test.go)
 - 2026-11-19 mutations (each restored after): undoSettings returns nil → TestNodeState fails; set instead of multiset diff → TestNodeState fails; handOn LIFO → TestPoolTake fails; Lab.Reset skips its Check → TestHarnessPoolResetsOrRetires's third user gets the same lab with /etc/localtime re-pointed; giveBack skips Reset → its second user sees all 14 leftovers (link, rule, table 100, nft table, netns, files, resolv.conf, /etc file, mode, sysctl, MTU, processes, connection, conntrack)
 - 2026-11-19 full lab on e1e42d84 (cold node phase after the TP-266 merge, harness run): TestEgressThroughAnExit failed on "IPv6 refused after 5.2 s, want at once" (curl itself refused after 0 ms: the bound timed the docker exec under load) in a fresh lab (use 1); re-run targeted: passed (68 s). Out of scope: that bound times the exec, not the refusal
+- 2026-11-19 runs: full lab on 54e1ddc8 green twice in a row (737 s, 724 s; 26 and 28 lab-test starts against 57 before; warm baseline on rewrite 8bac5c29: 943 s, over budget); final head bcd4abbd: make lint, make test, lab-gotest TestHarnessPoolResetsOrRetires green. Not verified: the pools under a second concurrent full lab (only the targeted runs had that load); the systemd tests stay on fresh labs (a systemd pool would take TestKillSwitchUnderSystemd's 4 labs and TestRollback's 1, one topology)
+- 2026-11-19 out of scope: TestEgressThroughAnExit's "refused at once" bound (3 s) times the docker exec, not curl's refusal (0 ms), and failed once under a cold node phase; go test's -parallel (LAB_SLOTS) counts tests that wait in a pool's queue, so TestKillSwitchUnderSystemd (late in source order) starts only ~8 minutes into the default stream and ends with the matrix on its critical path
+- 2026-11-19 in-progress → review
