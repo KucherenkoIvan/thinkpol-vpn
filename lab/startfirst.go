@@ -114,13 +114,48 @@ func asFirstStart(ctx context.Context, joined func()) context.Context {
 	return context.WithValue(ctx, firstStartKey{}, joined)
 }
 
+// slotQueueShare is how many of a process's slot waits, first starts
+// aside, stand in a lock directory's slot queue at once (0: no bound). The
+// queue is first come first served: make lab-test's lab/ phase, which runs
+// every test at once, queued all its labs' starts at once, and its node
+// phase's packages, queued a minute or two later, waited for every one of
+// them (18 minutes). A share per process interleaves the run's phases, and
+// other runs, as slots free up; a process's own waits take their turns
+// among themselves.
+var slotQueueShare = 2
+
+var (
+	queueSharesMu sync.Mutex
+	queueShares   = map[string]chan struct{}{} // by lock directory
+)
+
 // slotOrder is what a slot wait in dir under ctx does before it joins the
-// slot queue: a first start goes on, any other waits for the first ones.
-func slotOrder(ctx context.Context, dir string) error {
+// slot queue: a first start goes on; any other waits for the first ones,
+// then for a place in the process's share of the queue (slotQueueShare),
+// which leave gives back once the wait is over.
+func slotOrder(ctx context.Context, dir string) (leave func(), err error) {
 	if _, first := ctx.Value(firstStartKey{}).(func()); first {
-		return nil
+		return func() {}, nil
 	}
-	return firstStarts.wait(ctx, dir)
+	if err := firstStarts.wait(ctx, dir); err != nil {
+		return nil, err
+	}
+	queueSharesMu.Lock()
+	share, ok := queueShares[dir]
+	if !ok && slotQueueShare > 0 {
+		share = make(chan struct{}, slotQueueShare)
+		queueShares[dir] = share
+	}
+	queueSharesMu.Unlock()
+	if share == nil {
+		return func() {}, nil
+	}
+	select {
+	case share <- struct{}{}:
+		return func() { <-share }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("lab: waiting for this process's turn in the slot queue: %w", ctx.Err())
+	}
 }
 
 // joinedSlotQueue tells a first start's StartFirst that its slot wait

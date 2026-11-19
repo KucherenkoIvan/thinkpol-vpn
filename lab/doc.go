@@ -20,7 +20,9 @@
 // tests call StartFirst (or Pool.StartFirst) in place of t.Parallel: in
 // make lab-test's streams, every other lab start of the process joins the
 // slot queue only after theirs (firstStarts), and a pool's labs go to the
-// tests waiting with a rank (Pool.AcquireInOrder) lowest first.
+// tests waiting with a rank (Pool.AcquireInOrder) lowest first. A process
+// stands no more than slotQueueShare of its other starts in the queue at
+// once, so a run's phases, and other runs, take turns as slots free up.
 //
 // A run is the processes that share a run id (RunEnv): make lab-test gives
 // its lab tests and its labctl gotest one, and every other process that

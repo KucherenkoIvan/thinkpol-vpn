@@ -81,3 +81,49 @@ func TestSlotWaitsBehindFirstStarts(t *testing.T) {
 		t.Fatalf("behind first starts past its deadline: %v", err)
 	}
 }
+
+// TestSlotQueueShare: a process stands no more than its share of slot
+// waits in the slot queue at once; the next joins as one of them leaves
+// it (with the slot), and a first start isn't counted in the share.
+func TestSlotQueueShare(t *testing.T) {
+	dir := oneSlotHost(t)
+	queueShareOf(t, 2)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	held := holdSlot(t, ctx)
+	got := make(chan func(), 3)
+	for range 3 {
+		go func() {
+			release, err := acquireHostSlot(ctx)
+			if err != nil {
+				t.Error(err)
+			}
+			got <- release
+		}()
+	}
+	waitForTickets(t, dir, 2)
+	// Nothing to watch: the third wait does nothing while it is held back.
+	time.Sleep(300 * time.Millisecond)
+	if tickets := queueTickets(t, dir); len(tickets) != 2 {
+		t.Fatalf("the slot queue holds %v: want the process's share, 2", tickets)
+	}
+	_, joined := firstStarts.hold(dir)
+	first := make(chan error, 1)
+	go func() {
+		release, err := acquireHostSlot(asFirstStart(ctx, joined))
+		if err == nil {
+			defer release()
+		}
+		first <- err
+	}()
+	waitForTickets(t, dir, 3) // a first start, beside the share
+	held()
+	for range 3 {
+		if release := <-got; release != nil {
+			release()
+		}
+	}
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+}
