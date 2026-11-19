@@ -21,9 +21,9 @@ func init() {
 // REKEY_TIMEOUT and KEEPALIVE_TIMEOUT), and the persistent keepalive
 // interval wg(8) suggests, which thinkpol doesn't set
 // (internal/dataplane/wg). The thresholds below derive from them, but for
-// wgPairWindow, wgSteadyJitter, wgRekeys, wgCountSettle, wgBurstGap,
-// wgBurstMax and the keepalive count: those are the module's choices, no
-// WireGuard timer.
+// wgPairWindow, wgSteadyJitter, wgRekeys, wgCountSettle, wgCountHold,
+// wgBurstGap, wgBurstMax and the keepalive count: those are the module's
+// choices, no WireGuard timer.
 //
 // A shorter rekey period (the module's rekey setting, as a lab whose
 // wireguard-go runs its timers sped up sets it) scales wireguard-go's
@@ -31,7 +31,8 @@ func init() {
 // with it wgQuiet, and wgPairWindow down to REKEY_TIMEOUT (scaled). The
 // persistent keepalive is a setting of a peer, not a wireguard-go
 // constant, and the module's choices are about the network and
-// scheduling: they keep real time.
+// scheduling: they keep real time, wgCountHold and the count's look-back
+// (wgPairWindow unscaled) too.
 const (
 	WGRekeyAfterTime      = 120 * time.Second
 	wgRejectAfterTime     = 180 * time.Second
@@ -68,9 +69,16 @@ const (
 	// either way, for its record count each way to be read as a level: a
 	// choice, longer than a round trip and a WireGuard handshake in the
 	// lab, shorter than the gaps of a ping every 2 s or of thinkpol's path
-	// probes. Where a round trip takes longer, a request in flight makes
-	// the level move and the count signal misses.
+	// probes. Where a round trip takes longer, a request in flight is
+	// read off the level until its answer comes (wgCountHold).
 	wgCountSettle = 300 * time.Millisecond
+	// wgCountHold is how long after the records that took the difference
+	// to a value off the level it must read that value again to be a
+	// step: a choice, the time an answer has. A request whose answer
+	// comes later than wgCountSettle (a loaded path or censor) but within
+	// wgPairWindow takes the count off its level, or to another value
+	// off it, for no longer than that, and is no step.
+	wgCountHold = wgPairWindow
 	// wgBurstGap is how close a record must end to the one before, either
 	// way, to be in its burst: a choice, a few ms, room for a handshake
 	// where the censor sees it start to end within a few ms (the lab's
@@ -127,10 +135,17 @@ const (
 //     what triggered it is answered or not as any data), so with traffic
 //     even both ways the difference of the record counts each way, read
 //     whenever the connection carried no record for wgCountSettle, steps
-//     by the same amount at each rekey and stays flat in between. It
-//     shows the rhythm when the difference steps by one amount wgRekeys
-//     times in a row, each step starting a rekey period to the rekey
-//     window after the one before, with no other change in between.
+//     by the same amount at each rekey and stays flat in between. A
+//     difference read off the level is a step once the readings have
+//     found it, unchanged, wgCountHold after the records that took it
+//     there, so an answer that comes late is none. A step is timed as a
+//     span, from the records that took the difference off the level to
+//     those that took it to the value it stepped to, so it holds the
+//     handshake's records however busy the connection was around them.
+//     It shows the rhythm when the difference steps by one amount
+//     wgRekeys times in a row, each step ending a rekey period or more
+//     after the one before began and beginning within the rekey window
+//     of its end, with no other change in between.
 //   - burst: the same handshake seen whole, as a burst (records each
 //     within wgBurstGap of the one before, either way) with one record
 //     more one way than the other, at least one each way and at most
@@ -192,15 +207,62 @@ type wgConn struct {
 }
 
 // wgCount is the count signal's state: records each way, the difference
-// last read as a level, when the records since that reading began, and
-// the chain of the level's steps.
+// last held as a level, when the records since the latest reading began,
+// the records the latest reading on the level read, the move off the
+// level not yet a step, and the chain of the level's steps.
 type wgCount struct {
 	n       [2]int
 	level   int
 	leveled bool // a level has been read
-	settled bool // the level has been read since the latest record
+	settled bool // the difference has been read since the latest record
 	since   time.Time
-	chain   wgChain
+	// onLevel spans the records the latest reading that found the level
+	// read: an answer in flight then can have hidden a move from it.
+	onLevel wgSpan
+	move    wgMove
+	chain   wgCountChain
+}
+
+// wgSpan is a run of records: when its first and its last ended.
+type wgSpan struct{ start, end time.Time }
+
+// wgMove is a difference read off the level and not yet a step: when the
+// records that took it off began (zero while it reads the level), and
+// the latest value it was read at, with when the records that took it to
+// that value ended.
+type wgMove struct {
+	start  time.Time
+	latest wgMoveValue
+}
+
+type wgMoveValue struct {
+	d   int
+	end time.Time
+}
+
+// wgCountChain is a run of the count's steps of one amount, each timed as
+// a span: the latest one, how many, and how far apart the latest two
+// began.
+type wgCountChain struct {
+	span  wgSpan
+	n     int
+	gap   time.Duration
+	delta int
+}
+
+// next counts a step timed by span into the chain: one that ends least
+// or more after the latest began, and begins no later than window after
+// it ended, continues it; any other starts it over. The handshake lies in
+// both spans, so rekeys least to window apart always continue it; steps
+// whose spans are L long continue it when they begin least - L to
+// window + L apart, a wider range for false positives (lab/censor/doc.go).
+func (ch *wgCountChain) next(span wgSpan, least, window time.Duration) {
+	if ch.n > 0 && span.end.Sub(ch.span.start) >= least && span.start.Sub(ch.span.end) <= window {
+		ch.n, ch.gap = ch.n+1, span.start.Sub(ch.span.start)
+	} else {
+		ch.n, ch.gap = 1, 0
+	}
+	ch.span = span
 }
 
 // wgRecordBurst is a burst of records each within wgBurstGap of the one
@@ -211,20 +273,19 @@ type wgRecordBurst struct {
 }
 
 // wgChain is a run of occurrences each a rekey period to the rekey
-// window after the one before: the latest one, how many, the latest gap,
-// and for the count signal the step they share.
+// window after the one before: the latest one, how many, and the latest
+// gap.
 type wgChain struct {
-	at    time.Time
-	n     int
-	gap   time.Duration
-	delta int
+	at  time.Time
+	n   int
+	gap time.Duration
 }
 
-// next counts an occurrence at at into the chain: one a rekey period to
-// window after the latest continues it, any other starts it over.
-func (ch *wgChain) next(at time.Time, rekey, window time.Duration) {
+// next counts an occurrence at at into the chain: one least to window
+// after the latest continues it, any other starts it over.
+func (ch *wgChain) next(at time.Time, least, window time.Duration) {
 	gap := at.Sub(ch.at)
-	if ch.n > 0 && gap >= rekey && gap <= window {
+	if ch.n > 0 && gap >= least && gap <= window {
 		ch.n, ch.gap = ch.n+1, gap
 	} else {
 		ch.n, ch.gap = 1, 0
@@ -552,8 +613,11 @@ func (m *wgRhythm) settle(c *wgConn, f *Flow, now time.Time) {
 	if !c.last.IsZero() && now.Sub(c.last) > wgBurstGap && c.burst.n != [2]int{} {
 		m.closeBurst(c)
 	}
-	if !c.last.IsZero() && now.Sub(c.last) >= wgCountSettle && !c.count.settled {
-		m.readCount(c)
+	// A move not yet a step is read again, though no record came since,
+	// so its hold ends on the next packet rather than the next record's
+	// reading, which would count that record into it.
+	if !c.last.IsZero() && now.Sub(c.last) >= wgCountSettle && (!c.count.settled || !c.count.move.start.IsZero()) {
+		m.readCount(c, now)
 	}
 	if c.flagged != "" {
 		// The flag's own line: no record, the packet it came on.
@@ -658,27 +722,55 @@ func (m *wgRhythm) scaled(d time.Duration) time.Duration {
 	return time.Duration(math.Round(float64(d) * float64(m.rekey) / float64(WGRekeyAfterTime)))
 }
 
-// readCount reads the difference of the record counts each way as a
-// level, the connection having carried no record for wgCountSettle, and
-// flags the connection when it has stepped by one amount wgRekeys times
-// in a row, a rekey period apart, with no other change.
-func (m *wgRhythm) readCount(c *wgConn) {
+// readCount reads the difference of the record counts each way, the
+// connection having carried no record for wgCountSettle, at now. A
+// difference off the level is a move: a step once a reading finds the
+// latest value the move was read at again, wgCountHold or more after the
+// records that took it to that value ended. Any other value off the
+// level is the move's latest (a request whose answer is still to come,
+// on top of the move or not), even one the move was read at before: a
+// late answer can take the count back to that value, and it would
+// confirm a step the request's answer then undoes. One back on the level
+// ends the move, no step. A step is timed as the span from the records
+// that took the difference off the level (or those the reading on the
+// level before read, when they ended within wgPairWindow before: an
+// answer in flight then can have hidden the move) to the records that
+// took it to the value it stepped to. It flags the connection when the
+// level has stepped by one amount wgRekeys times in a row, a rekey period
+// apart, with no other change.
+func (m *wgRhythm) readCount(c *wgConn, now time.Time) {
 	k := &c.count
 	k.settled = true
 	d := k.n[0] - k.n[1]
-	if !k.leveled {
-		k.level, k.leveled = d, true
+	read := wgSpan{k.since, c.last}
+	switch {
+	case !k.leveled:
+		k.level, k.leveled, k.onLevel = d, true, read
+		return
+	case d == k.level:
+		k.move, k.onLevel = wgMove{}, read
+		return
+	case k.move.start.IsZero():
+		start := read.start
+		if !k.onLevel.end.IsZero() && read.start.Sub(k.onLevel.end) <= wgPairWindow {
+			start = k.onLevel.start
+		}
+		k.move = wgMove{start, wgMoveValue{d, read.end}}
+	}
+	mv := &k.move
+	switch {
+	case d != mv.latest.d:
+		mv.latest = wgMoveValue{d, read.end}
+		return
+	case now.Sub(mv.latest.end) < wgCountHold:
 		return
 	}
-	step := d - k.level
-	if step == 0 {
-		return
-	}
-	k.level = d
+	step, span := d-k.level, wgSpan{mv.start, mv.latest.end}
+	k.level, k.move, k.onLevel = d, wgMove{}, read
 	if step != k.chain.delta {
-		k.chain = wgChain{delta: step}
+		k.chain = wgCountChain{delta: step}
 	}
-	k.chain.next(k.since, m.rekey, m.window())
+	k.chain.next(span, m.rekey, m.window())
 	if k.chain.n >= wgRekeys {
 		c.flagged = fmt.Sprintf(WGRhythmByCount+": the difference each way stepped %d times by %+d, the last %s apart, flat in between",
 			k.chain.n, step, k.chain.gap.Round(time.Second))
