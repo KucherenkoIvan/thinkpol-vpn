@@ -1625,7 +1625,7 @@ func (f *wgFlags) add(reason string) bool {
 // 2 records against 1 or 1 against 2 (the burst signal).
 var wgRandomFlags = map[string]wgFlags{
 	"0.2-5ms 1:1 0.0167/s":  {rekey: 2},
-	"0.2-5ms 2:3 0.0167/s":  {rekey: 4},
+	"0.2-5ms 2:3 0.0167/s":  {rekey: 2, burst: 2},
 	"0.2-5ms 2:3 0.1/s":     {burst: 4},
 	"0.2-5ms 3:6 0.0167/s":  {rekey: 2},
 	"0.2-5ms 3:6 0.1/s":     {burst: 4},

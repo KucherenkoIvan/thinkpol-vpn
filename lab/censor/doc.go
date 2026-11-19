@@ -231,45 +231,50 @@
 //     against the response (the packet that triggered the rekey is
 //     answered, or not, as any data). The module counts each direction's
 //     records and reads their difference whenever the connection has
-//     carried no record for 300 ms. A difference read off the level is a
-//     move, and a step once a reading finds the value it was first read
-//     at (or the latest it was read at) again 2 s or more after the
-//     records that took it there ended: a request answered later than
-//     300 ms but within 2 s takes the count off the level, or to another
-//     value off it, and back, and is no step. A move read again on a
-//     packet with no record since (a bare TCP acknowledgement, the next
-//     record's packet before that record is counted) is read like any
-//     reading, so a quiet connection's step is confirmed on the next
-//     packet past its 2 s, not at the reading after the next record. A
-//     step is timed as a span, from the first record of the run (records
-//     with no 300 ms of quiet between them) whose reading found the move
-//     to the last record of the run that took the count to the value it
-//     stepped to; when the run the reading on the level before it read
-//     ended within 2 s before, the span starts with that run, since an
-//     answer in flight then can have hidden the step from that reading
-//     (a record the other way sent just before the handshake and
-//     answered late). The handshake's records lie in the span however
-//     busy the connection was around them. The rhythm shows when the
-//     difference steps by one amount three times in a row, each step's
-//     span ending REKEY_AFTER_TIME or more after the one before began and
-//     beginning within the rekey window above after it ended, with no
-//     other change in between: under traffic of one record each way per
-//     exchange (a ping, the path probes) the count is flat but for the
-//     rekeys. WireGuard's rekeys come REKEY_AFTER_TIME and a round trip
-//     or more apart (wireguard-go starts the timer when the response
-//     arrives), so they always chain, while steps that truly come sooner
-//     chain only when they come within the length of their spans of
-//     REKEY_AFTER_TIME: under 2 s plus the runs around them under the
-//     traffic of the tests (steps 119 s apart under a ping every 2 s
-//     don't chain). TP-245 measured why the span is needed: WireGuard's
-//     rekeys under steady use came 120.13 to 120.92 s apart on 13 loaded
-//     lab runs (120.3 and 120.6 s on the trace below), and the first
-//     record of a step's run came up to 0.34 s before the handshake's (a
-//     probe and a late ping with no quiet between them and the rekey).
-//     Traffic that isn't one for one moves the count: TCP inside the
-//     tunnel, segments against fewer, delayed acknowledgements, steps
-//     the level by its own amounts, and a rekey under it is missed by
-//     this signal.
+//     carried no record for 300 ms. A difference read off the level is
+//     a move, and a step once the readings have found it unchanged 2 s
+//     or more after the records that took it to that value ended: a
+//     request answered later than 300 ms but within 2 s takes the count
+//     off the level, or to another value off it, and back, and is no
+//     step. Only the latest value counts, not one the move was read at
+//     earlier: a late answer can take the count back to an earlier
+//     value, and a step confirmed there would be undone by that
+//     answer's request (TP-245's review: a rekey's trigger answered
+//     1.5 s late, then a ping answered 400 ms late). A move read again
+//     on a packet with no record since (a bare TCP acknowledgement, the
+//     next record's packet before that record is counted) is read like
+//     any reading, so a quiet connection's step is confirmed on the
+//     next packet past its 2 s, not at the reading after the next
+//     record. A step is timed as a span, from the first record of the
+//     run (records with no 300 ms of quiet between them) whose reading
+//     found the move to the last record of the run that took the count
+//     to the value it stepped to; when the run the reading on the level
+//     before it read ended within 2 s before, the span starts with that
+//     run, since an answer in flight then can have hidden the step from
+//     that reading (a record the other way sent just before the
+//     handshake and answered late). The handshake's records lie in the
+//     span however busy the connection was around them. The rhythm
+//     shows when the difference steps by one amount three times in a
+//     row, each step's span ending REKEY_AFTER_TIME or more after the
+//     one before began and beginning within the rekey window above
+//     after it ended, with no other change in between: under traffic of
+//     one record each way per exchange (a ping, the path probes) the
+//     count is flat but for the rekeys. WireGuard's rekeys come
+//     REKEY_AFTER_TIME and a round trip or more apart (wireguard-go
+//     starts the timer when the response arrives), so they always
+//     chain, while steps that truly come sooner chain only when they
+//     come within the length of their spans of REKEY_AFTER_TIME: under
+//     2 s plus the runs around them under the traffic of the tests
+//     (steps 119 s apart under a ping every 2 s don't chain). TP-245
+//     measured why the span is needed: WireGuard's rekeys under steady
+//     use came 120.13 to 120.92 s apart on 13 loaded lab runs (120.3
+//     and 120.6 s on the trace below), and the first record of a step's
+//     run came up to 0.34 s before the handshake's (a probe and a late
+//     ping with no quiet between them and the rekey). Traffic that
+//     isn't one for one moves the count: TCP inside the tunnel,
+//     segments against fewer, delayed acknowledgements, steps the level
+//     by its own amounts, and a rekey under it is missed by this
+//     signal.
 //   - burst: the same handshake seen whole, as a burst of records each
 //     within 10 ms of the one before, either way, with one record more one
 //     way than the other and at least one each way (a rekey under a ping:
@@ -343,26 +348,35 @@
 //
 // Neither counting rule needs a quiet connection: traffic of one record
 // each way between steps leaves the count's chain alone, and a burst of
-// one record against one restarts no burst chain. So, flagged by design,
-// as false positives: anything that leaves the same imbalance from 2 (for
-// the count, a little less: its spans, above) to 3.5 minutes apart,
-// whatever balanced traffic runs beside it (a poll whose response takes
-// one record more than its request, a one-way heartbeat, on a busy or a
-// quiet connection), and an exchange of one record more one way than the
-// other within 10 ms recurring at that interval. For instance MQTT over
-// TLS with PINGREQ and PINGRESP every 60 s and a QoS 0 publish nothing
-// answers every 150 s (pinned, TestWGRhythmFlagsMQTTKeepalive: flagged by
-// the count at the third publish), such a publish every 150 s beside
-// random exchanges at a request a second answered within 80 ms (20 of 20
-// connections flagged by the count, TestWGRhythmImbalanceBesideTraffic;
-// answered 0.3 to 1.9 s later, none by the count, above), a websocket
-// with ping and pong and a presence message one way every 2 to 3.5
-// minutes, or a long poll whose timeout runs from 2 minutes (a little
-// less for the count) to 210 s and whose empty answer takes a record more
-// or fewer than its request. The 2 s hold is what lets an imbalance chain
-// beside answers 0.3 to 2 s late that used to break it; measured, it adds
-// no flag on random traffic below. An accepted risk of the lab's
-// detector, which judges transports held in the lab, not users' traffic.
+// one record against one restarts no burst chain. So, flagged by
+// design, as false positives: anything that leaves the same imbalance
+// from 2 to 3.5 minutes apart, whatever balanced traffic runs beside it
+// (a poll whose response takes one record more than its request, a
+// one-way heartbeat, on a busy or a quiet connection), and an exchange
+// of one record more one way than the other within 10 ms recurring at
+// that interval. For the count the range widens by the length of the
+// steps' spans (above): an imbalance inside a run of records L long
+// with no 300 ms of quiet chains with runs whose starts are from
+// 2 minutes - L to 3.5 minutes + L apart, so a 30 s gapless sync with
+// one record nothing answers chains every 95 s or every 235 s (pinned,
+// TestWGRhythmCountsLongSpans; every 85 s or 250 s it doesn't). Real
+// rekeys are never missed for it: the handshake lies in each span. For
+// instance MQTT over TLS with PINGREQ and PINGRESP every 60 s and a
+// QoS 0 publish nothing answers every 150 s (pinned,
+// TestWGRhythmFlagsMQTTKeepalive: flagged by the count at the third
+// publish), such a publish every 150 s beside random exchanges at a
+// request a second answered within 80 ms (20 of 20 connections flagged
+// by the count, TestWGRhythmImbalanceBesideTraffic; answered 0.3 to
+// 1.9 s later, none by the count, above), a websocket with ping and
+// pong and a presence message one way every 2 to 3.5 minutes, or a long
+// poll whose timeout runs from 2 minutes to 210 s (wider for the count,
+// by its spans) and whose empty answer takes a record more or fewer
+// than its request. The 2 s hold doesn't let such an imbalance chain
+// beside random answers 0.3 to 1.9 s late: measured, none of 20 by the
+// count (above), where the level is read with requests in flight; nor
+// does it add a flag on random traffic below. An accepted risk of the
+// lab's detector, which judges transports held in the lab, not users'
+// traffic.
 //
 // Measured on random two-way traffic, every record one size (so no size is
 // ever new), 6 minutes a connection, requests of up to 1, 2 or 3 records

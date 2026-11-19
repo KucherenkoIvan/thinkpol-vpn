@@ -246,7 +246,9 @@ type wgCountChain struct {
 // next counts a step timed by span into the chain: one that ends least
 // or more after the latest began, and begins no later than window after
 // it ended, continues it; any other starts it over. The handshake lies in
-// both spans, so rekeys least to window apart always continue it.
+// both spans, so rekeys least to window apart always continue it; steps
+// whose spans are L long continue it when they begin least - L to
+// window + L apart, a wider range for false positives (lab/censor/doc.go).
 func (ch *wgCountChain) next(span wgSpan, least, window time.Duration) {
 	if ch.n > 0 && span.end.Sub(ch.span.start) >= least && span.start.Sub(ch.span.end) <= window {
 		ch.n, ch.gap = ch.n+1, span.start.Sub(ch.span.start)
