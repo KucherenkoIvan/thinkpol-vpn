@@ -294,7 +294,8 @@ func nft(rule string) error {
 // TestRunStartsUnderTraffic starts the censor again and again while the
 // node floods its own output with datagrams the queue rule takes: a start
 // must not fail because packets reach the queue while it is being set up
-// (TP-252: "netlink validate: mismatched sequence in netlink reply").
+// (TP-252: "netlink validate: mismatched sequence in netlink reply"), nor
+// because a table an unclean stop left queues them.
 func TestRunStartsUnderTraffic(t *testing.T) {
 	if os.Getenv("THINKPOL_LAB") == "" {
 		t.Skip("needs the lab")
@@ -328,6 +329,12 @@ func TestRunStartsUnderTraffic(t *testing.T) {
 	}
 	defer func() { close(stop); flooding.Wait() }()
 	defer log.SetOutput(os.Stderr)
+	// The table a censord killed leaves, which queues before the next one
+	// has set its queue up unless that one deletes it first.
+	if err := installQueueRule(queue, "output"); err != nil {
+		t.Fatal(err)
+	}
+	defer removeQueueRule()
 
 	const starts = 20
 	for i := range starts {
