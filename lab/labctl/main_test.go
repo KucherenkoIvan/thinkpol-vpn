@@ -347,3 +347,75 @@ func TestGotestRejectsConcurrencyBelowOne(t *testing.T) {
 		}
 	}
 }
+
+// TestGotestRunsNodelessPackagesOnTheHost: with nodelessOnHost, a package
+// with lab.HostTestsFile runs on the host, starting no lab (Docker, which
+// fails here, is never called), and its time is in -times; without it,
+// the same package goes to a node.
+func TestGotestRunsNodelessPackagesOnTheHost(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the go command")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no go command here")
+	}
+	called := fakeDockerMarker(t)
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOFLAGS", "-mod=mod")
+	root := writeModule(t, map[string]string{
+		"go.mod":                    "module example.net/hostrun\n\ngo 1.26\n",
+		"host/host_test.go":         "package host\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {}\n",
+		"host/" + lab.HostTestsFile: "package host\n",
+	})
+	times := filepath.Join(t.TempDir(), "times")
+	opt := gotestOptions{concurrency: lab.GoTestConcurrency{Labs: 1, Builds: 1}, nodelessOnHost: true, times: times}
+	if err := gotest(t.Context(), root, opt, nil, []string{"-test.count=1"}, []string{"./..."}); err != nil {
+		t.Fatalf("on the host: %v", err)
+	}
+	if _, err := os.Stat(called); err == nil {
+		t.Error("a package that needs no node called docker")
+	}
+	got, err := lab.ReadTestTimes(times)
+	if err != nil || len(got) != 1 || got[0].Name != "example.net/hostrun/host" || got[0].Elapsed <= 0 || !got[0].Phases.IsZero() {
+		t.Errorf("times: %+v, %v; want the host package's, without lab phases", got, err)
+	}
+	opt.nodelessOnHost = false
+	if err := gotest(t.Context(), root, opt, nil, []string{"-test.count=1"}, []string{"./..."}); err == nil {
+		t.Error("in a node, with Docker failing: passed")
+	}
+	if _, err := os.Stat(called); err != nil {
+		t.Errorf("in a node: docker not called (%v)", err)
+	}
+}
+
+// TestHostRunsNodeless: packages that need no node run on the host only
+// on Linux, and never in a perf run.
+func TestHostRunsNodeless(t *testing.T) {
+	for _, tc := range []struct {
+		goos string
+		perf bool
+		want bool
+	}{{"linux", false, true}, {"linux", true, false}, {"darwin", false, false}, {"windows", false, false}} {
+		if got := hostRunsNodeless(tc.goos, tc.perf); got != tc.want {
+			t.Errorf("hostRunsNodeless(%q, %v) = %v, want %v", tc.goos, tc.perf, got, tc.want)
+		}
+	}
+}
+
+// TestWriteGotestTimesKeepsPhases: a node package's lab phases reach the
+// times file the budget reads.
+func TestWriteGotestTimesKeepsPhases(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "times")
+	p := lab.LabPhases{SlotWait: time.Minute, Start: 20 * time.Second, Tests: 5 * time.Second, Teardown: 3 * time.Second}
+	results := []lab.GoTestResult{
+		{ImportPath: "example.net/m/node", Elapsed: 88 * time.Second, Phases: p},
+		{ImportPath: "example.net/m/cached", Cached: true},
+	}
+	if err := writeGotestTimes(f, results); err != nil {
+		t.Fatal(err)
+	}
+	got, err := lab.ReadTestTimes(f)
+	if err != nil || len(got) != 1 || got[0] != (lab.TestTime{Name: "example.net/m/node", Elapsed: 88 * time.Second, Phases: p}) {
+		t.Errorf("times: %+v, %v", got, err)
+	}
+}

@@ -79,8 +79,12 @@ func testHelperDirs(ctx context.Context, root string, p GoPackage) ([]string, er
 	}
 	var dirs []string
 	for line := range strings.Lines(res.Stdout) {
-		path, dir, ok := strings.Cut(strings.TrimSpace(line), "\t")
-		if ok && strings.HasSuffix(path, "test") && !slices.Contains(dirs, dir) {
+		pkg, dir, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		// "x [y.test]" is x built for y's tests; "y.test" is their main
+		// package, in y's directory, not a helper.
+		pkg, _, _ = strings.Cut(pkg, " ")
+		helper := strings.HasSuffix(pkg, "test") && !strings.HasSuffix(pkg, ".test")
+		if ok && helper && !slices.Contains(dirs, dir) {
 			dirs = append(dirs, dir)
 		}
 	}

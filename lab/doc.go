@@ -44,7 +44,13 @@
 // harness, the args and env, and the files the binary read through package
 // os, which it lists in its -test.testlogfile, read back from the node
 // before the lab goes down). Only passes are recorded, for a week, and not
-// when a checkout input changed during the run.
+// when a checkout input changed during the run. Each package run in a lab
+// reports its time split into slot wait, lab start, tests and teardown
+// (LabPhases).
+//
+// A package marked with HostTestsFile needs no node: on a Linux machine
+// labctl gotest runs it there with GoTestOnHost, plain go test without
+// THINKPOL_LAB, and fails it if any of its tests skips.
 //
 // The helpers build without tags so lint and unit tests cover them; the tests
 // that need Docker carry the lab build tag and run on the host through make
