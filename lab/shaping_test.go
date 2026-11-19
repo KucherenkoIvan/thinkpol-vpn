@@ -25,7 +25,7 @@ func TestShapingCapture(t *testing.T) {
 	// labBuckets in udp's tests.
 	buckets := []int{128, 256, 512, 1024, 1452}
 
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1))
+	l := tunnelPool.Acquire(t)
 	device, server, router := l.Node(lab.DeviceA), l.Node(lab.Server1), l.Node(lab.Router)
 	server.WriteFile(t, "/tmp/sink.nft", []byte(`table inet shaping_sink {
 	chain in {

@@ -35,6 +35,17 @@ func noteSlotWait(project string, from, to time.Time, err error) {
 	appendTimeline(path, fmt.Sprintf("%s slot-wait %s %s %s\n", timelineStamp(from), to.Sub(from).Round(time.Millisecond), timelineResult(err), project))
 }
 
+// notePool appends a pool's event to the timeline: a test taking one of
+// its labs ("take"), a lab retired after a test ("retire"), a lab torn
+// down ("down").
+func notePool(event, project, detail string) {
+	path := os.Getenv(TimelineEnv)
+	if path == "" {
+		return
+	}
+	appendTimeline(path, fmt.Sprintf("%s pool-%s %s %s\n", timelineStamp(time.Now()), event, project, strings.ReplaceAll(detail, "\n", " ")))
+}
+
 // noteSlotUnqueued appends to the timeline that a lab's slot wait gave up
 // on the slot queue (reason) and polls the slots in no order.
 func noteSlotUnqueued(reason error) {

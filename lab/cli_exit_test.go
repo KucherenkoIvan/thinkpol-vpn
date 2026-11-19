@@ -18,7 +18,7 @@ import (
 // stopped, 69.
 func TestTheCLIExitsBySysexits(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceB, lab.Server1))
+	l := twoDevicePool.Acquire(t)
 	server, devB, router := l.Node(lab.Server1), l.Node(lab.DeviceB), l.Node(lab.Router)
 	space := newM0Space(t, router, server)
 	envelope, _ := space.build(t)

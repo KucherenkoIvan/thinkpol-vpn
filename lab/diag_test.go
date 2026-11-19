@@ -398,7 +398,7 @@ type ipLink struct {
 // report. No snapshot shows a key.
 func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1))
+	l := tunnelPool.Acquire(t)
 	server, dev, router := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Router)
 	space := newM0Space(t, router, server)
 	space.spec = "/src/lab/maps/routetable.yaml"

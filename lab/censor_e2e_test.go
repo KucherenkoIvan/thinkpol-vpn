@@ -26,7 +26,7 @@ const tcpProbePort = 18080
 // each of those flows, the datagram's in one piece.
 func TestCensorForwardsWhatNoModuleDecides(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1))
+	l := tunnelPool.Acquire(t)
 	dev, server, router := l.Node(lab.DeviceA), l.Node(lab.Server1), l.Node(lab.Router)
 	listenTCP(t, server)
 	c := startCensor(t, l, []censor.ModuleConfig{})
@@ -71,7 +71,7 @@ func TestCensorForwardsWhatNoModuleDecides(t *testing.T) {
 // reach server-1, over IPv4 or IPv6.
 func TestCensorFragmentedUDPBlocked(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1))
+	l := tunnelPool.Acquire(t)
 	dev, server, router := l.Node(lab.DeviceA), l.Node(lab.Server1), l.Node(lab.Router)
 	c := startCensor(t, l, entryBlockSettings(t, l, "drop"))
 
@@ -110,7 +110,7 @@ func TestCensorFragmentedUDPBlocked(t *testing.T) {
 // SYN nor an RST.
 func TestTCPResetReachesClient(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1))
+	l := tunnelPool.Acquire(t)
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
 	listenTCP(t, server)
 	c := startCensor(t, l, entryBlockSettings(t, l, "reset"))
@@ -157,7 +157,7 @@ func TestTCPResetReachesClient(t *testing.T) {
 // verdict log has the drops.
 func TestTCPThroughCensorDrop(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1))
+	l := tunnelPool.Acquire(t)
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
 	listenTCP(t, server)
 	c := startCensor(t, l, entryBlockSettings(t, l, "drop"))

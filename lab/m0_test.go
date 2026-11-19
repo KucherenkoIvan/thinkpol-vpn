@@ -40,7 +40,7 @@ func TestM0(t *testing.T) {
 const burstSize, burstCount = 1200, 20
 
 func testM0(t *testing.T, ipv6 bool) {
-	l := lab.StartOwnSlot(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.DeviceB, lab.Server1))
+	l := twoDevicePool.Acquire(t)
 	server, devA, devB, router := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.DeviceB), l.Node(lab.Router)
 	space := newM0Space(t, l.Node(lab.Router), server)
 	underlay := func(n *lab.Node, network string) netip.Addr {
@@ -411,7 +411,7 @@ func family(a netip.Addr) string {
 // alike.
 func TestCaptureFlagsRawWireGuard(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1))
+	l := tunnelPool.Acquire(t)
 	dev, server, router := l.Node(lab.DeviceA), l.Node(lab.Server1), l.Node(lab.Router)
 	c := router.Capture(t, "udp port 51820")
 

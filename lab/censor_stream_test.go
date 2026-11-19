@@ -31,7 +31,7 @@ import (
 // reaches server-1.
 func TestTCPResetReachesBothEnds(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1))
+	l := tunnelPool.Acquire(t)
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
 	listenTCP(t, server)
 	settings, err := json.Marshal(map[string]any{
@@ -117,7 +117,7 @@ func TestTCPResetReachesBothEnds(t *testing.T) {
 // over both families.
 func TestCensorReplaysClientHello(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().Only(lab.Router, lab.DeviceA, lab.Server1))
+	l := tunnelPool.Acquire(t)
 	dev, server, router := l.Node(lab.DeviceA), l.Node(lab.Server1), l.Node(lab.Router)
 	const port = 18443
 	ch := goClientHello(t)
@@ -190,7 +190,7 @@ func TestCensorReplaysClientHello(t *testing.T) {
 // router, and the censor there sees it, over both families.
 func TestCensorSeesUpstream(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Upstream().Only(lab.Router, lab.Server1, lab.Camouflage))
+	l := censorPool.Acquire(t)
 	entry, target := l.Node(lab.Server1), l.Node(lab.Camouflage)
 	const port = 18444
 	targets := []netip.Addr{target.IPv4(lab.NetWorld), target.IPv6(lab.NetWorld)}

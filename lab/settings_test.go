@@ -17,15 +17,7 @@ import (
 // The key is link_mtu, which the overlay's MTU follows one for one.
 func TestTheNodeFileSetsUp(t *testing.T) {
 	t.Parallel()
-	topo := lab.Topology{
-		Networks: []lab.Network{{Name: lab.NetDevices}, {Name: lab.NetServers}},
-		Nodes: []lab.NodeSpec{
-			{Name: lab.Router, Networks: []string{lab.NetDevices, lab.NetServers}, Forward: true},
-			{Name: lab.DeviceA, Networks: []string{lab.NetDevices}, Gateway: lab.Router},
-			{Name: lab.Server1, Networks: []string{lab.NetServers}, Gateway: lab.Router, Forward: true},
-		},
-	}
-	l := lab.Start(t, topo)
+	l := tunnelPool.Acquire(t)
 	server, dev := l.Node(lab.Server1), l.Node(lab.DeviceA)
 	space := newM0Space(t, l.Node(lab.Router), server)
 	envelope, _ := space.build(t)
