@@ -85,10 +85,11 @@ func TestGoTestGatesBoundEachPhase(t *testing.T) {
 func TestGoTestGatesBuildTokenFreeDuringLab(t *testing.T) {
 	g := newGoTestGates(GoTestConcurrency{Labs: 2, Builds: 1}, 2)
 	ctx := bounded(t)
-	secondBuilt := make(chan struct{})
+	secondBuilt, inLab := make(chan struct{}), make(chan struct{})
 	first := make(chan error, 1)
 	go func() {
 		first <- g.run(ctx, func() error { return nil }, func() bool { return true }, func() {
+			close(inLab)
 			select {
 			case <-secondBuilt:
 			case <-ctx.Done():
@@ -96,6 +97,7 @@ func TestGoTestGatesBuildTokenFreeDuringLab(t *testing.T) {
 			}
 		})
 	}()
+	<-inLab
 	if err := g.run(ctx, func() error { return nil }, func() bool { close(secondBuilt); return false }, func() {}); err != nil {
 		t.Fatal(err)
 	}
