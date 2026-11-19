@@ -13,6 +13,7 @@ import (
 	"net"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -427,6 +428,7 @@ func harness(t *testing.T, tr *Transport, s transport.Shaping) transporttest.Har
 			}
 			l, err := tr.Listen(t.Context(), transport.ListenConfig{Address: addr, Settings: listenSettingsFor(t, k, tg, 0)},
 				transport.Admission{Peers: peers, Camouflage: camouflage})
+			logSystemRootsRead(t)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -438,6 +440,21 @@ func harness(t *testing.T, tr *Transport, s transport.Shaping) transporttest.Har
 		Shaping:     s,
 		Refused:     refused,
 		Transport:   tr,
+	}
+}
+
+var systemRootsLogged atomic.Bool
+
+// logSystemRootsRead logs, once per process, how long Listen's first read
+// of the system roots took: the read TP-253 moved out of Listen's bounds,
+// which is ruled out as the cause if Delivery's "didn't complete" recurs.
+func logSystemRootsRead(t *testing.T) {
+	select {
+	case <-systemRoots.done:
+		if systemRootsLogged.CompareAndSwap(false, true) {
+			t.Logf("the first read of the system roots took %v", systemRoots.took)
+		}
+	default:
 	}
 }
 

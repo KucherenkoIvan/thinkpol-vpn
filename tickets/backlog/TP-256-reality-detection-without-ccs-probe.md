@@ -8,7 +8,7 @@ repo: thinkpol-vpn
 size: M
 needs_human: decision
 depends_on: []
-refs: [RR31, RR32]
+refs: [RR66, RR31, RR32]
 owner: ""
 branch: ""
 ---
