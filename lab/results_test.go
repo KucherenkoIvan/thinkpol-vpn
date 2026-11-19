@@ -30,10 +30,11 @@ import (
 // fails when it crossed over neither, and is partial when only one family
 // crossed, which only a row that varies (censorCase.varies) or a known
 // flake (censorCase.flakes) may be. A cell whose outcome contradicts what
-// its censor means to produce fails the test, and a cell whose censor can't be trusted (censord died, the kernel
-// dropped queued packets, an active module missed a snapshot, the verdict
-// log doesn't show the probe's flows, the module the cell quotes didn't
-// compare what it must) is an error. RESULTS.md is written only by a
+// its censor means to produce fails the test, and a cell whose censor
+// can't be trusted (censord died, the kernel dropped queued packets, an
+// active module missed a snapshot, the verdict log doesn't show the
+// probe's flows, the module the cell quotes didn't compare what it must)
+// is an error. RESULTS.md is written only by a
 // complete run with no error.
 //
 // Every cell sets its transport up afresh, and after it the row's lab is
@@ -220,11 +221,7 @@ func TestCensorMatrix(t *testing.T) {
 				}
 			}
 		}
-		if err := cc.verdict(cell, want); err != nil {
-			t.Error(err)
-		} else {
-			t.Logf("%s against %s: %s (%s)", tr.name, cc.name, cell.result, cell.detail)
-		}
+		finishCell(t, cc, cell, want)
 		return *cell
 	}
 
@@ -526,9 +523,11 @@ func score(c crossed) (result, detail string) {
 }
 
 // TestKnownFlake: udp's partial against fully-encrypted, which expects a
-// fail, is reported as its known flake (TP-236) and counted, not failed;
-// its pass still fails the run, as does a partial in any other cell, and
-// no other cell of the matrix carries a known flake.
+// fail, is reported as its known flake (TP-236) and counted, in the test
+// log and RESULTS.md's header, not failed; its pass or error still fails
+// the run, as does a partial in any other cell or where the case wants
+// other than a fail, and no other cell of the matrix carries a known
+// flake.
 func TestKnownFlake(t *testing.T) {
 	caseNamed := func(name string) censorCase {
 		i := slices.IndexFunc(censorCases, func(cc censorCase) bool { return cc.name == name })
@@ -539,22 +538,34 @@ func TestKnownFlake(t *testing.T) {
 	}
 	fe, blocklist := caseNamed("fully-encrypted"), caseNamed("ip-blocklist (entry)")
 	for _, c := range []struct {
-		name   string
-		cc     censorCase
-		cell   matrixCell
-		failed bool // the run fails on it
-		flake  bool // reported as the known flake
+		name  string
+		cc    censorCase
+		cell  matrixCell
+		want  string
+		err   string // what the failed run says, "" when it doesn't fail
+		flake bool   // reported as the known flake
 	}{
-		{"udp's partial", fe, matrixCell{rowUDP, fe.name, "partial", "only IPv6 crossed"}, false, true},
-		{"udp's fail", fe, matrixCell{rowUDP, fe.name, "fail", "neither IPv4 nor IPv6 crossed"}, false, false},
-		{"udp's pass", fe, matrixCell{rowUDP, fe.name, "pass", ""}, true, false},
-		{"random-tcp's partial, same case", fe, matrixCell{rowRandomTCP, fe.name, "partial", "only IPv4 crossed"}, true, false},
-		{"udp's partial, another case", blocklist, matrixCell{rowUDP, blocklist.name, "partial", "only IPv4 crossed"}, true, false},
+		{"udp's partial", fe, matrixCell{rowUDP, fe.name, "partial", "only IPv6 crossed"}, "fail", "", true},
+		{"udp's fail", fe, matrixCell{rowUDP, fe.name, "fail", "neither IPv4 nor IPv6 crossed"}, "fail", "", false},
+		{"udp's pass", fe, matrixCell{rowUDP, fe.name, "pass", ""}, "fail",
+			"udp against fully-encrypted: pass (), want fail", false},
+		{"udp's error", fe, matrixCell{rowUDP, fe.name, "error", "censor unhealthy"}, "fail",
+			"udp against fully-encrypted: error (censor unhealthy), want fail", false},
+		{"udp's partial, wanted to pass", fe, matrixCell{rowUDP, fe.name, "partial", "only IPv4 crossed"}, "pass",
+			"udp against fully-encrypted: partial (only IPv4 crossed), want pass", false},
+		{"random-tcp's partial, same case", fe, matrixCell{rowRandomTCP, fe.name, "partial", "only IPv4 crossed"}, "fail",
+			rowRandomTCP + " against fully-encrypted: partial (only IPv4 crossed), want fail", false},
+		{"udp's partial, another case", blocklist, matrixCell{rowUDP, blocklist.name, "partial", "only IPv4 crossed"}, blocklist.want(rowUDP),
+			"udp against ip-blocklist (entry): partial (only IPv4 crossed), want " + blocklist.want(rowUDP), false},
 	} {
+		if c.want == "fail" && c.cc.want(c.cell.transport) != "fail" {
+			t.Fatalf("%s: the matrix wants %s, not fail", c.name, c.cc.want(c.cell.transport))
+		}
 		cell := c.cell
-		err := c.cc.verdict(&cell, c.cc.want(cell.transport))
-		if (err != nil) != c.failed {
-			t.Errorf("%s: verdict %v, want the run failed: %v", c.name, err, c.failed)
+		rec := &recordingTB{}
+		finishCell(rec, c.cc, &cell, c.want)
+		if c.err == "" && len(rec.errs) > 0 || c.err != "" && !slices.Equal(rec.errs, []string{c.err}) {
+			t.Errorf("%s: the test's errors %q, want %q", c.name, rec.errs, c.err)
 		}
 		if isKnownFlake(cell) != c.flake {
 			t.Errorf("%s: detail %q, want the known flake marked: %v", c.name, cell.detail, c.flake)
@@ -562,6 +573,9 @@ func TestKnownFlake(t *testing.T) {
 		if c.flake {
 			if want := "KNOWN FLAKE (TP-236): "; !strings.HasPrefix(cell.detail, want) || !strings.HasSuffix(cell.detail, "; "+c.cell.detail) {
 				t.Errorf("%s: detail %q, want %q, the flake's why and the score's detail", c.name, cell.detail, want)
+			}
+			if want := "udp against fully-encrypted: partial (" + cell.detail + ")"; !slices.Equal(rec.logs, []string{want}) {
+				t.Errorf("%s: the test's log %q, want %q", c.name, rec.logs, want)
 			}
 		} else if cell.detail != c.cell.detail {
 			t.Errorf("%s: detail changed to %q", c.name, cell.detail)
@@ -579,6 +593,12 @@ func TestKnownFlake(t *testing.T) {
 	if got := knownFlakes(cells[:1]); got != "" {
 		t.Errorf("the summary of a run without a flake: %q, want none", got)
 	}
+	if md := resultsMarkdown(slices.Clone(cells), 1); !strings.Contains(md, "\nKNOWN FLAKES: 1 (udp / fully-encrypted).\n") {
+		t.Errorf("RESULTS.md doesn't count the known flake:\n%s", md)
+	}
+	if md := resultsMarkdown(slices.Clone(cells[:1]), 1); strings.Contains(md, "KNOWN FLAKES:") {
+		t.Errorf("RESULTS.md of a run without a flake counts one:\n%s", md)
+	}
 
 	for _, cc := range censorCases {
 		for row := range cc.flakes {
@@ -589,9 +609,22 @@ func TestKnownFlake(t *testing.T) {
 	}
 	on := func(*testing.T, *lab.Lab) []censor.ModuleConfig { return nil }
 	unexpected := censorCase{name: "x", modules: on, flakes: map[string]knownFlake{rowUDP: {ticket: "TP-0", why: "chance"}}}
-	if checkMatrix([]censorCase{{name: "off"}, unexpected}, nil) == nil {
-		t.Error("a known flake on a row its case doesn't expect to fail passed the checks")
+	want := `censor case "x" marks udp a known flake, but doesn't expect it to fail`
+	if err := checkMatrix([]censorCase{{name: "off"}, unexpected}, nil); err == nil || err.Error() != want {
+		t.Errorf("a known flake on a row its case doesn't expect to fail: %v, want %q", err, want)
 	}
+}
+
+// recordingTB is a test as finishCell sees it.
+type recordingTB struct {
+	testing.TB
+	errs, logs []string
+}
+
+func (r *recordingTB) Helper()           {}
+func (r *recordingTB) Error(args ...any) { r.errs = append(r.errs, fmt.Sprint(args...)) }
+func (r *recordingTB) Logf(format string, args ...any) {
+	r.logs = append(r.logs, fmt.Sprintf(format, args...))
 }
 
 // TestScore: a cell meant to block, where one family still crossed, is
@@ -664,6 +697,17 @@ type censorCase struct {
 	verdictSays map[string]string
 }
 
+// finishCell fails the test unless the cell's result is what its case
+// wants or the row's known flake (verdict), and logs it otherwise.
+func finishCell(t testing.TB, cc censorCase, cell *matrixCell, want string) {
+	t.Helper()
+	if err := cc.verdict(cell, want); err != nil {
+		t.Error(err)
+		return
+	}
+	t.Logf("%s against %s: %s (%s)", cell.transport, cell.censor, cell.result, cell.detail)
+}
+
 // knownFlake is a cell expected to fail that a censor working as meant
 // lets one family through by chance: the ticket that measured it and why,
 // with the rate.
@@ -682,6 +726,8 @@ func isKnownFlake(c matrixCell) bool { return strings.HasPrefix(c.detail, knownF
 // starts with the flake's mark. A pass there is still an error: both
 // families crossing is no known chance.
 func (cc censorCase) verdict(cell *matrixCell, want string) error {
+	// A cell sees both families, so one alone is partial; a row split per
+	// family (one cell per family) could never be, and the mark would stop.
 	if k, ok := cc.flakes[cell.transport]; ok && want == "fail" && cell.result == "partial" {
 		cell.detail = strings.TrimSuffix(k.mark()+"; "+cell.detail, "; ")
 		return nil
@@ -1868,19 +1914,26 @@ func matchVerdicts(log string, match func(verdictLine) bool) (bool, error) {
 	return false, nil
 }
 
-// knownFlakes is the summary of the known flakes among cells ("" when
-// none occurred), which make lab-test's last line repeats.
-func knownFlakes(cells []matrixCell) string {
+// flakedCells are the known flakes among cells, "<transport> / <censor>"
+// each, sorted.
+func flakedCells(cells []matrixCell) []string {
 	var which []string
 	for _, c := range cells {
 		if isKnownFlake(c) {
 			which = append(which, c.transport+" / "+c.censor)
 		}
 	}
+	slices.Sort(which)
+	return which
+}
+
+// knownFlakes is the summary of the known flakes among cells ("" when
+// none occurred), as make lab-test's last line says it too.
+func knownFlakes(cells []matrixCell) string {
+	which := flakedCells(cells)
 	if len(which) == 0 {
 		return ""
 	}
-	slices.Sort(which)
 	return fmt.Sprintf("KNOWN FLAKES: %d (%s)", len(which), strings.Join(which, ", "))
 }
 
@@ -1906,6 +1959,14 @@ func writeResults(t *testing.T, cells []matrixCell, expected, scale int) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "lab", "RESULTS.md"), []byte(resultsMarkdown(cells, scale)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// resultsMarkdown is RESULTS.md for the matrix's cells, sorted in place,
+// run with WireGuard's timers sped up by scale.
+func resultsMarkdown(cells []matrixCell, scale int) string {
 	slices.SortFunc(cells, func(a, b matrixCell) int {
 		if c := strings.Compare(a.transport, b.transport); c != 0 {
 			return c
@@ -1935,7 +1996,5 @@ func writeResults(t *testing.T, cells []matrixCell, expected, scale int) {
 	for _, c := range cells {
 		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.transport, c.censor, c.result, strings.ReplaceAll(c.detail, "|", `\|`))
 	}
-	if err := os.WriteFile(filepath.Join(root, "lab", "RESULTS.md"), []byte(b.String()), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	return b.String()
 }

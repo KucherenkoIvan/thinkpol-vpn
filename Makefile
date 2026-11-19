@@ -222,7 +222,7 @@ lab-test lab-test-default lab-test-long:
 	labpkg=$$(go list -tags lab ./lab) && others=$$(go list -tags lab ./lab/... | grep -vx "$$labpkg") || exit 1; \
 	"$$labctl" down -stale || exit 1; \
 	run=$$("$$labctl" run-id) || { run=; exit 1; }; export THINKPOL_LAB_RUN=$$run THINKPOL_LAB_RESULTS_DIR=$$tmp; \
-	phases=; failed=; both=; flakes=; \
+	phases=; failed=; both=; \
 	case " $(LAB_STREAMS) " in *" default "*) case " $(LAB_STREAMS) " in *" long "*) both=1;; esac;; esac; \
 	case " $(LAB_STREAMS) " in *" default "*) \
 		( { ( cd lab && THINKPOL_LAB_STREAM=default exec go tool test2json -t -p "$$labpkg" "$$tmp/lab.test" -test.v=test2json -test.paniconexit0 -test.count=1 -test.timeout=$(LAB_TIMEOUT) -test.skip='$(LAB_HARNESS_RUN)' ) 2>&1; echo $$? > "$$tmp/lab.status"; } | { TMPDIR="$$tmp" "$$labctl" testjson -times "$$tmp/lab.times" 2>&1; echo $$? > "$$tmp/lab.testjson"; } | awk '{print "[lab]  " $$0; fflush()}' ) & lab=$$!; \
@@ -250,11 +250,11 @@ lab-test lab-test-default lab-test-long:
 		fi; \
 		case $$f in node|harness) ;; *) [ "$$(cat "$$tmp/$$f.testjson" 2>/dev/null)" = 0 ] || { echo "lab-test: the $$f phase's labctl testjson failed" >&2; failed="$$failed $$f-testjson"; };; esac; \
 	done; \
+	flakes=$$(LC_ALL=C sort -u "$$tmp"/known-flakes-*.txt 2>/dev/null | awk 'NF { n++; s = s (n > 1 ? ", " : "") $$0 } END { if (n) printf "KNOWN FLAKES: %d (%s)", n, s }'); \
 	case "$$both" in 1) \
 		if ( cd lab && THINKPOL_LAB_STREAM= exec "$$tmp/lab.test" -test.v -test.count=1 -test.run='^TestAssembleCensorMatrix$$' ) > "$$tmp/assemble.out" 2>&1 \
 		&& grep -q '^--- PASS: TestAssembleCensorMatrix ' "$$tmp/assemble.out"; then \
-			flakes=$$(grep -o 'KNOWN FLAKES: .*' "$$tmp/assemble.out" | head -n 1); \
-			echo "lab-test: lab/RESULTS.md assembled from both streams$${flakes:+; $$flakes}"; \
+			echo "lab-test: lab/RESULTS.md assembled from both streams"; \
 		else \
 			cat "$$tmp/assemble.out"; echo "lab-test: lab/RESULTS.md not assembled" >&2; failed="$$failed RESULTS.md"; \
 		fi;; \
