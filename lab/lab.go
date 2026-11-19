@@ -37,6 +37,9 @@ type Lab struct {
 	// The last docker compose up's start and end, and its attempt number.
 	upFrom, upTo time.Time
 	upAttempt    int
+	// The last start's steps, kept only for TestLabStartTimes (the
+	// timeline has them too, as text).
+	started startTimes
 }
 
 // Bridge is Docker's own end of a lab network: the bridge in the Docker VM.
@@ -300,7 +303,7 @@ func (c startClock) run(ctx context.Context, project string, p startPhase, f fun
 	var what string
 	switch p {
 	case phaseBeforeSlot:
-		what = fmt.Sprintf("not ready for a lab slot within %v (removing a leftover lab, building the image and binaries)", within)
+		what = fmt.Sprintf("not ready for a lab slot within %v (removing a leftover lab, building the image and binaries, reading the daemon's subnets)", within)
 	case phaseSlotWait:
 		what = fmt.Sprintf("no lab slot within %v", within)
 	case phaseAfterSlot:
@@ -363,9 +366,21 @@ func up(ctx context.Context, clock startClock, root, project string, topo Topolo
 	stateDir := filepath.Join(root, "lab", ".run", project)
 	var img image
 	var binDir string
+	var onDaemon []netip.Prefix
 	err := clock.run(ctx, project, phaseBeforeSlot, func(ctx context.Context) (err error) {
-		img, binDir, err = beforeSlot(ctx, root, project, stateDir, inputs)
-		return err
+		if img, binDir, err = beforeSlot(ctx, root, project, stateDir, inputs); err != nil {
+			return err
+		}
+		// Read before the slot rather than holding one through it: under
+		// load the daemon answers network reads behind every network it is
+		// creating or removing, which took 20 s and more.
+		from := time.Now()
+		onDaemon, err = daemonSubnets.get(ctx, time.Time{})
+		noteSubnetRead(project, from, time.Now(), err)
+		if err != nil {
+			return errors.Join(err, os.RemoveAll(stateDir))
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -384,17 +399,40 @@ func up(ctx context.Context, clock startClock, root, project string, topo Topolo
 		release:  release,
 	}
 	return l, clock.run(ctx, project, phaseAfterSlot, func(ctx context.Context) error {
-		if err := l.create(ctx, img); err != nil {
-			return err
-		}
-		if err := l.inspect(ctx); err != nil {
-			return err
-		}
-		if err := l.learnBridges(ctx); err != nil {
-			return err
-		}
-		return l.configure(ctx)
+		st := startTimes{slot: time.Now()}
+		err := l.startOnSlot(ctx, img, onDaemon, &st)
+		l.started = st
+		noteStart(l, st, err)
+		return err
 	})
+}
+
+// startTimes marks the end of each step of a lab's start once it holds its
+// slot, for the timeline (noteStart); a step that never ran stays zero.
+type startTimes struct {
+	slot, created, inspected, bridged, sealed time.Time
+}
+
+// startOnSlot creates the lab and seals its nodes; onDaemon is the
+// daemon's subnets, as read before the slot.
+func (l *Lab) startOnSlot(ctx context.Context, img image, onDaemon []netip.Prefix, st *startTimes) error {
+	if err := l.create(ctx, img, onDaemon); err != nil {
+		return err
+	}
+	st.created = time.Now()
+	if err := l.inspect(ctx); err != nil {
+		return err
+	}
+	st.inspected = time.Now()
+	if err := l.learnBridges(ctx); err != nil {
+		return err
+	}
+	st.bridged = time.Now()
+	if err := l.configure(ctx); err != nil {
+		return err
+	}
+	st.sealed = time.Now()
+	return nil
 }
 
 // beforeSlot removes a leftover lab of the name and gets the lab's inputs.
@@ -416,9 +454,8 @@ func beforeSlot(ctx context.Context, root, project, stateDir string, inputs labI
 
 // create reserves the lab's subnets and starts it. Only the reservation is
 // serialized host-wide (reserveSubnets); docker compose up runs outside the
-// allocation lock, beside other labs' start-ups. A subnet another daemon
-// user took in the meantime means another try.
-func (l *Lab) create(ctx context.Context, img image) error {
+// allocation lock, beside other labs' start-ups.
+func (l *Lab) create(ctx context.Context, img image, onDaemon []netip.Prefix) error {
 	pool, err := subnetPool()
 	if err != nil {
 		return err
@@ -427,19 +464,58 @@ func (l *Lab) create(ctx context.Context, img image) error {
 	if err != nil {
 		return err
 	}
+	return createTries(ctx, onDaemon, daemonSubnets.get,
+		func(ctx context.Context, used func(context.Context) ([]netip.Prefix, error)) (err error) {
+			l.releaseSubnets()
+			l.subnets, err = reserveSubnets(ctx, dir, l.Topology.Networks, pool, used)
+			return err
+		},
+		func(ctx context.Context, attempt int) error {
+			if err := l.composeUp(ctx, img, l.subnets, attempt); err != nil {
+				return fmt.Errorf("lab %s: up: %w", l.Project, err)
+			}
+			return nil
+		},
+		func(ctx context.Context) error { return downProject(ctx, l.Project, l.root) })
+}
+
+// createTries is create's tries: reserve, then up. The first try avoids
+// onDaemon, the daemon's subnets as read before the slot, and the live
+// reservations, which cover every lab of the host's slots started since. A
+// subnet another daemon user took in the meantime (an overlap from up)
+// means another try after down, on a read that began after the overlap.
+// onDaemon is as old as the slot wait: a pool it shows full gets one more
+// try on a read that began after.
+func createTries(ctx context.Context, onDaemon []netip.Prefix,
+	read func(ctx context.Context, notBefore time.Time) ([]netip.Prefix, error),
+	reserve func(ctx context.Context, used func(context.Context) ([]netip.Prefix, error)) error,
+	up func(ctx context.Context, attempt int) error,
+	down func(context.Context) error,
+) error {
+	var notBefore time.Time
 	for attempt := 1; ; attempt++ {
-		l.releaseSubnets()
-		if l.subnets, err = reserveSubnets(ctx, dir, l.Topology.Networks, pool, usedSubnets); err != nil {
+		used := func(ctx context.Context) ([]netip.Prefix, error) {
+			if attempt == 1 {
+				return onDaemon, nil
+			}
+			return read(ctx, notBefore)
+		}
+		if err := reserve(ctx, used); err != nil {
+			if attempt == 1 && errors.Is(err, errNoFreeSubnet) {
+				notBefore = time.Now()
+				continue
+			}
 			return err
 		}
-		err := l.composeUp(ctx, img, l.subnets, attempt)
+		err := up(ctx, attempt)
 		if err == nil {
 			return nil
 		}
 		if !isOverlap(err) || attempt == 5 {
-			return fmt.Errorf("lab %s: up: %w", l.Project, err)
+			return err
 		}
-		if err := downProject(ctx, l.Project, l.root); err != nil {
+		notBefore = time.Now()
+		if err := down(ctx); err != nil {
 			return err
 		}
 	}
@@ -455,7 +531,9 @@ func (l *Lab) composeUp(ctx context.Context, img image, r *reservation, attempt 
 		return err
 	}
 	from := time.Now()
-	_, err = runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "up", "-d", "--wait")
+	// No --wait: it polls the containers every half second after they
+	// started; a node that died at once fails the sealing instead.
+	_, err = runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "up", "-d")
 	l.upFrom, l.upTo, l.upAttempt = from, time.Now(), attempt
 	noteTimeline(l.Project, attempt, r, from, l.upTo, err)
 	return err
@@ -467,7 +545,10 @@ func (l *Lab) ComposeFile() string { return filepath.Join(l.stateDir, "compose.j
 // Down removes the lab's containers and networks.
 func (l *Lab) Down(ctx context.Context) error {
 	defer l.releaseSlot()
-	if err := downProject(ctx, l.Project, l.root); err != nil {
+	from := time.Now()
+	err := downProject(ctx, l.Project, l.root)
+	noteDown(l.Project, from, time.Now(), err)
+	if err != nil {
 		return err
 	}
 	l.releaseSubnets()
@@ -568,62 +649,94 @@ func (l *Lab) inspect(ctx context.Context) error {
 		}
 	}
 
-	l.gateways = map[string][]netip.Addr{}
+	args := []string{"network", "inspect", "--format", "{{.Name}} {{range .IPAM.Config}}{{.Gateway}} {{end}}"}
 	for _, net := range l.Topology.Networks {
-		res, err := docker(ctx, "network", "inspect", "--format", "{{range .IPAM.Config}}{{.Gateway}} {{end}}", l.Project+"_"+net.Name)
-		if err != nil {
-			return err
+		args = append(args, l.Project+"_"+net.Name)
+	}
+	res, err = docker(ctx, args...)
+	if err != nil {
+		return err
+	}
+	l.gateways, err = parseGateways(l.Project, res.Stdout)
+	return err
+}
+
+// parseGateways reads one docker network inspect of a lab's networks, a
+// line of name and gateways per network, into gateways by network.
+func parseGateways(project, out string) (map[string][]netip.Addr, error) {
+	gateways := map[string][]netip.Addr{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
 		}
-		for _, s := range strings.Fields(res.Stdout) {
+		network, ok := strings.CutPrefix(f[0], project+"_")
+		if !ok {
+			return nil, fmt.Errorf("lab %s: docker network inspect: unexpected network %q", project, f[0])
+		}
+		for _, s := range f[1:] {
 			s, _, _ = strings.Cut(s, "/")
 			if a, err := netip.ParseAddr(s); err == nil {
-				l.gateways[net.Name] = append(l.gateways[net.Name], a)
+				gateways[network] = append(gateways[network], a)
 			}
 		}
 	}
-	return nil
+	return gateways, nil
 }
 
 // learnBridges finds each network's bridge MAC from a node on it, before
 // any node is sealed: the bridge answers ARP for the network's gateway
-// address. The MAC also gives the bridge's link-local address.
+// address. The MAC also gives the bridge's link-local address. Networks
+// are asked all at once.
 func (l *Lab) learnBridges(ctx context.Context) error {
+	bridges := make([]Bridge, len(l.Topology.Networks))
+	errs := make([]error, len(l.Topology.Networks))
+	var wg sync.WaitGroup
+	for i, net := range l.Topology.Networks {
+		wg.Go(func() { bridges[i], errs[i] = l.learnBridge(ctx, net) })
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
 	l.bridges = map[string]Bridge{}
-	for _, net := range l.Topology.Networks {
-		var b Bridge
-		for _, gw := range l.gateways[net.Name] {
-			if gw.Is4() {
-				b.IPv4 = gw
-			} else {
-				b.IPv6 = gw
-			}
-		}
-		if !b.IPv4.IsValid() {
-			return fmt.Errorf("lab %s: network %s has no IPv4 gateway", l.Project, net.Name)
-		}
-		i := slices.IndexFunc(l.Topology.Nodes, func(n NodeSpec) bool { return slices.Contains(n.Networks, net.Name) })
-		if i < 0 {
-			l.bridges[net.Name] = b
-			continue
-		}
-		n := l.nodes[l.Topology.Nodes[i].Name]
-		res, err := n.Exec(ctx, "sh", "-c", `ping -c 1 -W 1 "$0" >/dev/null 2>&1; ip -j neigh show "$0"`, b.IPv4.String())
-		if err != nil {
-			return fmt.Errorf("lab %s: network %s: %w", l.Project, net.Name, err)
-		}
-		var neigh []struct {
-			LLAddr string `json:"lladdr"`
-		}
-		if err := json.Unmarshal([]byte(res.Stdout), &neigh); err != nil || len(neigh) == 0 || neigh[0].LLAddr == "" {
-			return fmt.Errorf("lab %s: network %s: no MAC for the bridge at %s: %q", l.Project, net.Name, b.IPv4, res.Stdout)
-		}
-		b.MAC = strings.ToLower(neigh[0].LLAddr)
-		if b.LinkLocal, err = linkLocalFromMAC(b.MAC); err != nil {
-			return err
-		}
-		l.bridges[net.Name] = b
+	for i, net := range l.Topology.Networks {
+		l.bridges[net.Name] = bridges[i]
 	}
 	return nil
+}
+
+// learnBridge is learnBridges for one network.
+func (l *Lab) learnBridge(ctx context.Context, network Network) (Bridge, error) {
+	var b Bridge
+	for _, gw := range l.gateways[network.Name] {
+		if gw.Is4() {
+			b.IPv4 = gw
+		} else {
+			b.IPv6 = gw
+		}
+	}
+	if !b.IPv4.IsValid() {
+		return b, fmt.Errorf("lab %s: network %s has no IPv4 gateway", l.Project, network.Name)
+	}
+	i := slices.IndexFunc(l.Topology.Nodes, func(n NodeSpec) bool { return slices.Contains(n.Networks, network.Name) })
+	if i < 0 {
+		return b, nil
+	}
+	n := l.nodes[l.Topology.Nodes[i].Name]
+	res, err := n.Exec(ctx, "sh", "-c", `ping -c 1 -W 1 "$0" >/dev/null 2>&1; ip -j neigh show "$0"`, b.IPv4.String())
+	if err != nil {
+		return b, fmt.Errorf("lab %s: network %s: %w", l.Project, network.Name, err)
+	}
+	var neigh []struct {
+		LLAddr string `json:"lladdr"`
+	}
+	if err := json.Unmarshal([]byte(res.Stdout), &neigh); err != nil || len(neigh) == 0 || neigh[0].LLAddr == "" {
+		return b, fmt.Errorf("lab %s: network %s: no MAC for the bridge at %s: %q", l.Project, network.Name, b.IPv4, res.Stdout)
+	}
+	b.MAC = strings.ToLower(neigh[0].LLAddr)
+	b.LinkLocal, err = linkLocalFromMAC(b.MAC)
+	return b, err
 }
 
 // linkLocalFromMAC is the EUI-64 link-local address Linux gives an
