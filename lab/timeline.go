@@ -12,8 +12,10 @@ import (
 // for its lab slot (and whether it gave up on the slot queue); when it
 // asked for the subnet allocation lock, held it, and ran docker compose
 // up; how long each step from the slot to the sealed lab took; and how
-// long its tear-down took. Runs that share the file give one timeline of
-// how their labs' start-ups overlap.
+// long its tear-down took; and, from labctl testjson, when each test
+// started, got its place among the parallel ones (-parallel) and ended.
+// Runs that share the file give one timeline of how their labs' start-ups
+// overlap.
 const TimelineEnv = "THINKPOL_LAB_TIMELINE"
 
 func noteTimeline(project string, attempt int, r *reservation, upFrom, upTo time.Time, upErr error) {
@@ -97,6 +99,20 @@ func noteDown(project string, from, to time.Time, err error) {
 		return
 	}
 	appendTimeline(path, fmt.Sprintf("%s down %s %s %s\n", timelineStamp(from), to.Sub(from).Round(time.Millisecond), timelineResult(err), project))
+}
+
+// noteTest appends a test's event from go test -json: run (its function
+// started), cont (a parallel test got its place and goes on), and pass,
+// fail or skip with how long it took.
+func noteTest(path string, ev testEvent) {
+	pkg := ev.Package[strings.LastIndex(ev.Package, "/")+1:]
+	switch ev.Action {
+	case "run", "cont":
+		appendTimeline(path, fmt.Sprintf("%s test-%s %s %s\n", timelineStamp(ev.Time), ev.Action, pkg, ev.Test))
+	case "pass", "fail", "skip":
+		elapsed := time.Duration(ev.Elapsed * float64(time.Second)).Round(time.Millisecond)
+		appendTimeline(path, fmt.Sprintf("%s test-%s %s %s %s\n", timelineStamp(ev.Time), ev.Action, elapsed, pkg, ev.Test))
+	}
 }
 
 func timelineStamp(t time.Time) string { return t.UTC().Format("15:04:05.000") }
