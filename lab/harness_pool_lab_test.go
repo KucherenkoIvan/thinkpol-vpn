@@ -49,8 +49,9 @@ setsid sleep 1000 </dev/null >/dev/null 2>&1 &
 		router.MustExec(t, "sh", "-ec", `nft add table ip leftover; echo x > /tmp/leftover`)
 		// A connection left open, its ends killed by the reset (their
 		// orphans aborted), and conntrack entries in both nodes.
-		router.Start(t, "nc", "-l", "-p", "4000")
 		addr := router.IPv4(lab.NetDevices).String()
+		router.Start(t, "nc", "-l", "-s", addr, "-p", "4000")
+		router.MustExec(t, "sh", "-ec", `for i in $(seq 100); do ss -H -t -l -n 'sport = :4000' | grep -q . && exit 0; sleep 0.1; done; exit 1`)
 		dev.MustExec(t, "sh", "-ec", `setsid sh -c 'sleep 1000 | nc `+addr+` 4000' </dev/null >/dev/null 2>&1 &
 for i in $(seq 50); do ss -H -t state established | grep -q . && exit 0; sleep 0.1; done; exit 1`)
 		dev.MustExec(t, "ping", "-c", "1", "-W", "5", addr)

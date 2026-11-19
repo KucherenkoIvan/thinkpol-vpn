@@ -3,11 +3,15 @@
 // packets where the censor sits.
 //
 // Each test declares the topology it needs (Standard is the usual one) and
-// gets a lab of its own: a Compose project named after the checkout, the
-// run and the test, labelled as the lab's, on subnets allocated for it,
-// sealed off from everything outside the lab. No lab state is shared
-// between tests, runs or checkouts, so several can run at once, and
-// tear-down never touches what isn't the lab's.
+// gets a lab of its own (Start): a Compose project named after the
+// checkout, the run and the test, labelled as the lab's, on subnets
+// allocated for it, sealed off from everything outside the lab. No lab is
+// shared between runs or checkouts, so several can run at once, and
+// tear-down never touches what isn't the lab's. Within a process, tests of
+// one topology can share labs one after another instead (Pool): a test
+// takes a started lab, and when it ends the lab is reset to the state it
+// came up in and checked (Snapshot, Lab.Reset) before the next test gets
+// it; a lab whose check fails, or whose test failed, is torn down.
 //
 // A run is the processes that share a run id (RunEnv): make lab-test gives
 // its lab tests and its labctl gotest one, and every other process that
