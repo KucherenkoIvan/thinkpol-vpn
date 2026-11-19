@@ -113,3 +113,4 @@ Delta check round 2 (accepted).
 - 2026-11-19 round 2 fixes in at 4de14dbb; `make lint`, `make test` green there; the lab-test, lab-test-long and lab-harness-cached recipes parse under `sh -n` (a broken one is caught)
 - 2026-11-19 mutations, each failing its test: a package line taken for a parent (TestSlowestTestsPackages); the alias ignored, nested uses not reported, callers outside lab/ accepted, a dot import ignored (TestCheckLongMarkers); TestLongTest's exemption removed (TestLongTestsNamed reports its subtest call)
 - 2026-11-19 not verified by a run on this commit: R2.3–R2.5 in a lab run (no full lab for this delta)
+- 2026-11-19 merged origin/rewrite (TP-249: rows start only the nodes they need; the lab README's matrix paragraph keeps both sides); `make lint`, `make test` green at 63a82b1c; `make lab-test-long` at 63a82b1c passed, the long stream 9m10s
