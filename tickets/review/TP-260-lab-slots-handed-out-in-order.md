@@ -24,9 +24,9 @@ Lab slots are taken by polling, not in order (lab/hostlock.go: every waiter trie
 - The slot cap itself (`THINKPOL_LAB_MAX_LABS`, its default) and how many labs a run asks for at once (TP-254).
 
 ## Acceptance
-- [ ] Slots go to waiters in arrival order (test with concurrent waiters).
-- [ ] Two concurrent full labs: max slot wait before/after in Notes.
-- [ ] No slot leaks when a waiter dies (test).
+- [x] Slots go to waiters in arrival order (test with concurrent waiters).
+- [x] Two concurrent full labs: max slot wait before/after in Notes.
+- [x] No slot leaks when a waiter dies (test).
 
 ## Notes
 - How slots are handed out now: lab/hostlock.go (acquireSlotLock and the slot queue's doc comment) and lab/README.md, "A cap on labs". In short: each waiter takes a numbered ticket in the lock directory's `slot-queue/`, a file it holds flock'd while it waits (numbers assigned under `slot-queue.lock`); only the oldest waiter tries the slot locks (every 100 ms), each other waiter checks only the ticket just ahead of its own (one non-blocking flock and one fstat per 100 ms) and looks again when that one leaves.
@@ -43,7 +43,7 @@ Lab slots are taken by polling, not in order (lab/hostlock.go: every waiter trie
   | after, 2 | 40 of 40 cached | 57 | 245 s / 265 s | 322 s / 338 s | 382 s / 352 s | 2135 s / 2282 s |
 
   The second pairs are the like-for-like comparison (the same 57 lab starts per run, nothing else in the default stream): the longest slot wait drops from 1428 s and 1095 s to 382 s and 352 s, about 3 to 4 times less, while the median rises (104 s and 214 s to 245 s and 265 s) and the mean stays about where it was (193 s and 257 s before, 221 s and 257 s after). First come, first served doesn't add slots, so it doesn't shorten a run (wall times unchanged); it takes the long tail off, which is what TP-242's deadline cut punishes. The first after-pair isn't comparable with the first before-pair: it also ran the harness phase (14 more lab starts, the harness taking 1255 s and 1535 s) and took longer, and 7 of after-1a's slot waits began after the test binary's deadline less TP-242's reserve, so they failed with `no lab slot within 0s, cut short by the test's deadline` (TP-242's documented price, not the queue: the run was 52m45s).
-- Full lab runs: all six full runs' tests passed except after-1a's 7 deadline-cut lab starts above; every run was over the 15-minute budget with the other runs beside it.
+- Full lab runs: all six full runs' tests passed except after-1a's 7 deadline-cut lab starts above; every run was over the 15-minute budget with the other runs beside it. The final run on 467683c5 (rewrite 3fc84882 merged; harness phase run, its hash changed; 3 node packages run, 37 cached): tests passed, wall 1374 s, over budget only (22m55s > 15m); 74 lab starts, slot wait median 78 s, max 238 s, none failed.
 
 ## Log
 - 2026-11-19 created in backlog (TP-254 review)
@@ -51,3 +51,5 @@ Lab slots are taken by polling, not in order (lab/hostlock.go: every waiter trie
 - 2026-11-19 slot queue in lab/hostlock.go (tickets flock'd in slot-queue/, head-only slot polling, dead tickets removed, stale ones skipped, fallback to unordered polling); tests in lab/hostlock_test.go across goroutines and child processes; lab/README.md and lab.go's comment updated
 - 2026-11-19 mutations, each failing its test: every waiter at the head (TestSlotsGoInArrivalOrder, TestNewcomerWaitsBehindLiveWaiter); a dead ticket ahead counted as live (TestKilledWaiterLeavesNoGap, by its bound below the 15 s staleness); a waiter that gives up keeps its ticket file (TestWaiterPastDeadlineLeavesQueue); stale tickets not skipped (TestStuckWaiterIsSkipped); no fallback on an unusable queue (TestBrokenQueueDoesNotBlockSlots); a new ticket numbered the same as the last live one (TestNewcomerWaitsBehindLiveWaiter); scans keep dead tickets (TestDeadTicketIsRemoved, TestKilledWaiterLeavesNoGap)
 - 2026-11-19 runs: the new tests -race -count=10 green; lab-gotest PKG=./lab of them COUNT=3 green in a lab node; make lint green at 4bd243ee, make test green at 38175ccf; two full-lab pairs before (877b3931) and after (38175ccf), numbers in Notes
+- 2026-11-19 final: make lint and make test green at 467683c5; full make lab-test on 467683c5 passed (harness phase included), wall 1374 s, over budget only. Boxes: arrival order by TestSlotsGoInArrivalOrder (goroutines and child processes in one queue), no leak on death by TestKilledWaiterLeavesNoGap (killed while queued and while holding), slot waits before/after in Notes. Not verified: the queue's behaviour with rewrite's unqueued pollers beside it beyond the measured runs; a stuck waiter is only simulated (an old mtime), no real SIGSTOP. Out of scope: TP-242's deadline cut still fails late slot waits in a run that goes past about 48 minutes (after-1a: 7 lab starts)
+- 2026-11-19 in-progress → review
