@@ -207,12 +207,20 @@ type matrixRow struct {
 	broken error
 }
 
-// startRow brings up the row's lab: lab.Upstream, the camouflage site
-// running for every cell (the prober, server-hello and the rows that
-// splice to it start it in vain), and the router's conntrack empty; that
-// is the clean state.
+// startRow brings up the row's lab: lab.Upstream's router, device-a,
+// server-1 and camouflage, the camouflage site running for every cell
+// (the prober, server-hello and the rows that splice to it start it in
+// vain), and the router's conntrack empty; that is the clean state.
+//
+// Those are the nodes the row's cells drive: device-a and server-1 are
+// the transport's ends (the control rows' client and server, the
+// reference VPNs' peers), the router runs censord, and the camouflage
+// site is what the prober and server-hello compare every row's server
+// with, what the relay-tcp and reality rows splice to, and, being outside
+// the space and not the censor, where the thinkpol rows' maps are built.
+// No cell reaches device-b, server-2 or internet, so they aren't started.
 func startRow(t *testing.T) *matrixRow {
-	l := lab.StartOwnSlot(t, lab.Upstream())
+	l := lab.StartOwnSlot(t, lab.Upstream().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Camouflage))
 	lab.StartCamouflage(t, l)
 	if _, err := execRead(l.Node(lab.Router), execTimeout, "censord", "-reset"); err != nil {
 		t.Fatal(err)
