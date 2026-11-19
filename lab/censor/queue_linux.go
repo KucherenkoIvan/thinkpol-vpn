@@ -19,9 +19,10 @@ import (
 // again on shutdown; a stale one from an unclean stop is deleted at start.
 const table = "censor"
 
-// Run drives the censor: it installs the router's queue rule, serves the
-// queue with the engine until ctx is done, and removes the rule after. It
-// logs "censor ready" once packets are being served.
+// Run drives the censor: it serves the queue with the engine until ctx is
+// done, installing the router's queue rule once the queue is bound, and
+// removes the rule after. It logs "censor ready" once packets are being
+// served.
 func Run(ctx context.Context, cfg Config, eng *Engine) error {
 	return run(ctx, cfg, eng, "forward")
 }
@@ -29,14 +30,14 @@ func Run(ctx context.Context, cfg Config, eng *Engine) error {
 // run is Run with the queue rule on hook: the router's forward; tests
 // queue a node's own output, which forward never sees.
 func run(ctx context.Context, cfg Config, eng *Engine, hook string) error {
-	if err := installQueueRule(cfg.Queue, hook); err != nil {
-		return err
-	}
+	// A table an unclean stop left would queue packets while the queue is
+	// set up (see serveQueue).
+	removeQueueRule()
 	defer removeQueueRule()
 	// serveQueue returns once the queue is closed and its callback has
 	// returned, so nothing publishes to the active modules' channels when
 	// Shutdown closes them.
-	err := serveQueue(ctx, cfg, eng)
+	err := serveQueue(ctx, cfg, eng, func() error { return installQueueRule(cfg.Queue, hook) })
 	eng.Shutdown()
 	if n := eng.Unnoticed(); n > 0 {
 		log.Printf("censor: %d new flows never reached an active module (its channel was full)", n)
@@ -44,9 +45,10 @@ func run(ctx context.Context, cfg Config, eng *Engine, hook string) error {
 	return err
 }
 
-// serveQueue opens the queue and serves it with the engine. The queue rule
-// itself is the caller's (Run's forward hook; tests queue output instead).
-func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
+// serveQueue opens the queue and serves it with the engine, calling
+// queueRule to send packets to it once it is set up. The rule itself is
+// the caller's (Run's forward hook; tests queue output instead).
+func serveQueue(ctx context.Context, cfg Config, eng *Engine, queueRule func() error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -94,6 +96,13 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
 	}, failed)
 	if err != nil {
 		return fmt.Errorf("censor: register on queue %d: %w", cfg.Queue, err)
+	}
+	// Only now may packets come: go-nfqueue binds the queue, then sets it
+	// up with requests on the socket packets arrive on, taking the next
+	// message for each request's ack, and a packet queued meanwhile fails
+	// the start with "mismatched sequence in netlink reply".
+	if err := queueRule(); err != nil {
+		return err
 	}
 	log.Printf("censor ready: queue=%d", cfg.Queue)
 	<-ctx.Done()
@@ -157,7 +166,6 @@ func setVerdict(nf *nfqueue.Nfqueue, id uint32, v Verdict) {
 // out, which nearly every TCP segment carries. The router forwards only the
 // lab's own traffic, so the rule needs no match of its own.
 func installQueueRule(queue uint16, hook string) error {
-	removeQueueRule()
 	rule := fmt.Sprintf(`
 table inet %s {
   chain judge {

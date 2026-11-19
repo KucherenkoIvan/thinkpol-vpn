@@ -38,15 +38,14 @@ func TestQueuePipeline(t *testing.T) {
 	// the test installs its own.
 	startCensor := func(t *testing.T, table string, queue uint16, settings string) string {
 		t.Helper()
-		runNFT(t, fmt.Sprintf(`
+		rule := fmt.Sprintf(`
 table inet %s {
   chain out {
     type filter hook output priority filter; policy accept;
     queue num %d
   }
 }
-`, table, queue))
-		t.Cleanup(func() { runNFT(t, "delete table inet "+table+"\n") })
+`, table, queue)
 
 		logPath := filepath.Join(t.TempDir(), "verdicts.jsonl")
 		// The log file, as censord's main opens it and hands it to the
@@ -63,7 +62,14 @@ table inet %s {
 		eng := NewEngine([]Passive{m}, nil, logFile)
 		ctx, cancel := context.WithCancel(context.Background())
 		errc := make(chan error, 1)
-		go func() { errc <- serveQueue(ctx, Config{Queue: queue}, eng) }()
+		ruled := make(chan error, 1)
+		go func() {
+			errc <- serveQueue(ctx, Config{Queue: queue}, eng, func() error {
+				err := nft(rule)
+				ruled <- err
+				return err
+			})
+		}()
 		t.Cleanup(func() {
 			cancel()
 			if err := <-errc; err != nil {
@@ -71,6 +77,16 @@ table inet %s {
 			}
 			eng.Shutdown() // as Run does: once the queue has stopped calling Handle
 		})
+		select {
+		case err := <-ruled:
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { runNFT(t, "delete table inet "+table+"\n") })
+		case err := <-errc:
+			errc <- err // for the cleanup
+			t.Fatalf("censor: %v", err)
+		}
 		return logPath
 	}
 	t.Run("accepts what no module decides", func(t *testing.T) {
@@ -159,19 +175,6 @@ table inet %s {
 	t.Run("watermarks what it decided", func(t *testing.T) {
 		const queue = 204
 		logPath := startCensor(t, "censor-test-watermark", queue, `{"destinations": ["127.0.0.2"]}`)
-		// startCensor returns before the censor has bound the queue, and a
-		// packet the rule queues to no one is dropped without an id.
-		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-			proc, err := os.ReadFile("/proc/net/netfilter/nfnetlink_queue")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := ParseQueueStats(string(proc), queue); err == nil {
-				break
-			} else if time.Now().After(deadline) {
-				t.Fatalf("the censor didn't bind queue %d within 10 s: %v", queue, err)
-			}
-		}
 		const flows = 20
 		for range flows {
 			c, err := net.DialUDP("udp", nil, udpAddr)
@@ -274,11 +277,18 @@ func pollVerdicts(path string, match func(*LogEntry) bool) (*LogEntry, error) {
 
 func runNFT(t *testing.T, rule string) {
 	t.Helper()
+	if err := nft(rule); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func nft(rule string) error {
 	cmd := exec.Command("nft", "-f", "-")
 	cmd.Stdin = strings.NewReader(rule)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("nft: %v: %s", err, out)
+		return fmt.Errorf("nft: %w: %s", err, out)
 	}
+	return nil
 }
 
 // TestRunStartsUnderTraffic starts the censor again and again while the
