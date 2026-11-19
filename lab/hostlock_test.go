@@ -65,6 +65,33 @@ func queueTickets(t *testing.T, dir string) []string {
 	return names
 }
 
+// fastQueue paces the slot queue by timing for the rest of the test. It
+// comes before anything that waits for a slot, so the timing is restored
+// only after every such wait has ended.
+func fastQueue(t *testing.T, timing slotQueueTiming) {
+	t.Helper()
+	saved := slotQueueTimes
+	slotQueueTimes = timing
+	t.Cleanup(func() { slotQueueTimes = saved })
+}
+
+// unqueuedLines are the timeline's lines of slot waits that gave up on the
+// queue.
+func unqueuedLines(t *testing.T, timeline string) []string {
+	t.Helper()
+	got, err := os.ReadFile(timeline)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	var lines []string
+	for line := range strings.Lines(string(got)) {
+		if strings.Contains(line, " slot-wait unqueued: ") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 func holdSlot(t *testing.T, ctx context.Context) func() {
 	t.Helper()
 	release, err := acquireHostSlot(ctx)
@@ -240,7 +267,7 @@ func TestKilledWaiterLeavesNoGap(t *testing.T) {
 			t.Fatal(a.err)
 		}
 		a.release()
-	case <-time.After(slotQueueStale / 2):
+	case <-time.After(slotQueueTimes.stale / 2):
 		// Sooner than a stale ticket is passed over: the dead one's lock is
 		// what lets the waiter behind it on.
 		t.Fatal("the waiter behind a killed one didn't get the slot")
@@ -355,11 +382,13 @@ func TestStuckWaiterIsSkipped(t *testing.T) {
 }
 
 // TestBrokenQueueDoesNotBlockSlots: whatever is in the queue's place, a
-// slot that is free is taken.
+// slot that is free is taken, and a waiter that can't use the queue says so
+// in the timeline.
 func TestBrokenQueueDoesNotBlockSlots(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		spoil func(t *testing.T, q string)
+		name     string
+		spoil    func(t *testing.T, q string)
+		unqueued string // what the timeline's unqueued line says; "" for none
 	}{
 		{"junk entries", func(t *testing.T, q string) {
 			if err := os.MkdirAll(filepath.Join(q, "00000000000000000005-1-dir"+slotQueueSuffix), 0o700); err != nil {
@@ -370,7 +399,7 @@ func TestBrokenQueueDoesNotBlockSlots(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-		}},
+		}, ""},
 		{"queue is a file", func(t *testing.T, q string) {
 			if err := os.RemoveAll(q); err != nil {
 				t.Fatal(err)
@@ -378,13 +407,15 @@ func TestBrokenQueueDoesNotBlockSlots(t *testing.T) {
 			if err := os.WriteFile(q, nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
-		}},
+		}, "not a directory"},
 		{"sequence used up", func(t *testing.T, q string) {
 			fakeTicket(t, filepath.Dir(q), 1<<64-1, time.Now().Add(-time.Hour))
-		}},
+		}, "sequence is used up"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := oneSlotHost(t)
+			timeline := filepath.Join(t.TempDir(), "timeline")
+			t.Setenv(TimelineEnv, timeline)
 			q := filepath.Join(dir, "slot-queue")
 			if err := os.MkdirAll(q, 0o700); err != nil {
 				t.Fatal(err)
@@ -393,6 +424,13 @@ func TestBrokenQueueDoesNotBlockSlots(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 			defer cancel()
 			holdSlot(t, ctx)()
+			lines := unqueuedLines(t, timeline)
+			switch {
+			case tc.unqueued == "" && len(lines) != 0:
+				t.Errorf("the queue was given up: %q", lines)
+			case tc.unqueued != "" && (len(lines) != 1 || !strings.Contains(lines[0], tc.unqueued)):
+				t.Errorf("timeline's unqueued lines: %q, want one saying %q", lines, tc.unqueued)
+			}
 		})
 	}
 }
@@ -408,5 +446,180 @@ func TestDeadTicketIsRemoved(t *testing.T) {
 	holdSlot(t, ctx)()
 	if left := queueTickets(t, dir); len(left) != 0 {
 		t.Errorf("tickets left in the queue: %v", left)
+	}
+}
+
+// TestQueueOrderOutlastsStaleLimit: waiters queued far longer than a
+// ticket stays fresh unrefreshed still get the slot in arrival order.
+func TestQueueOrderOutlastsStaleLimit(t *testing.T) {
+	timing := slotQueueTiming{poll: 20 * time.Millisecond, heartbeat: 100 * time.Millisecond, stale: time.Second}
+	fastQueue(t, timing)
+	dir := oneSlotHost(t)
+	order := filepath.Join(t.TempDir(), "order")
+	release := holdSlot(t, t.Context())
+
+	var waiters sync.WaitGroup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer waiters.Wait()
+	defer cancel()
+	const n = 6
+	for i := range n {
+		waiters.Go(func() {
+			release, err := acquireHostSlot(ctx)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			appendLine(t, order, fmt.Sprint(i))
+			release()
+		})
+		waitForTickets(t, dir, i+1)
+	}
+	time.Sleep(3 * timing.stale)
+	release()
+	waiters.Wait()
+
+	got, err := os.ReadFile(order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "0\n1\n2\n3\n4\n5\n"; string(got) != want {
+		t.Errorf("after %v queued, slots went to %q, want arrival order %q", 3*timing.stale, got, want)
+	}
+}
+
+// TestHeadGoesBackBehindResumedWaiter: a waiter that became the head by
+// passing over a stale ticket (its process stopped, the machine asleep)
+// lines up behind it again once that ticket is refreshed.
+func TestHeadGoesBackBehindResumedWaiter(t *testing.T) {
+	timing := slotQueueTiming{poll: 20 * time.Millisecond, heartbeat: 100 * time.Millisecond, stale: time.Second}
+	fastQueue(t, timing)
+	dir := oneSlotHost(t)
+	stopped := fakeTicket(t, dir, 1, time.Now().Add(-time.Hour))
+	release := holdSlot(t, t.Context())
+	got := acquireInBackground(t) // the head: ticket 1 was stale when it joined
+	waitForTickets(t, dir, 2)
+
+	resumed, stop := context.WithCancel(t.Context())
+	var refreshing sync.WaitGroup
+	defer refreshing.Wait()
+	defer stop()
+	refreshing.Go(func() {
+		for {
+			now := time.Now()
+			if err := os.Chtimes(stopped.Name(), now, now); err != nil {
+				t.Error(err)
+			}
+			select {
+			case <-resumed.Done():
+				return
+			case <-time.After(timing.heartbeat):
+			}
+		}
+	})
+	time.Sleep(5 * timing.heartbeat)
+	release()
+	select {
+	case a := <-got:
+		if a.release != nil {
+			a.release()
+		}
+		t.Fatal("the slot went to a waiter behind a resumed one")
+	case <-time.After(3 * timing.stale):
+	}
+
+	stop()
+	refreshing.Wait()
+	select {
+	case a := <-got:
+		if a.err != nil {
+			t.Fatal(a.err)
+		}
+		a.release()
+	case <-time.After(time.Minute):
+		t.Fatal("the waiter never got the slot once the one ahead went stale again")
+	}
+}
+
+// TestNewcomerRescansWhenWaiterAheadLeaves: a waiter whose neighbour ahead
+// leaves the queue lines up behind the next live one rather than taking a
+// slot.
+func TestNewcomerRescansWhenWaiterAheadLeaves(t *testing.T) {
+	dir := oneSlotHost(t)
+	first := fakeTicket(t, dir, 1, time.Now())
+	second := fakeTicket(t, dir, 2, time.Now())
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	waited := make(chan error, 1)
+	go func() {
+		release, err := acquireHostSlot(ctx)
+		if release != nil {
+			release()
+		}
+		waited <- err
+	}()
+	waitForTickets(t, dir, 3)
+	_ = second.Close() // its waiter dies
+
+	if err := <-waited; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a newcomer behind ticket 1 after ticket 2 left: %v, want it still waiting at its deadline", err)
+	}
+	if left := queueTickets(t, dir); len(left) != 1 || left[0] != filepath.Base(first.Name()) {
+		t.Errorf("tickets left in the queue: %v, want only ticket 1", left)
+	}
+}
+
+// TestStoppedQueueLockHolderDoesNotStopWaiters: slot-queue.lock held for
+// longer than the stale limit (its holder stopped mid-scan) makes a waiter,
+// joining or looking again, give up on the queue and take a free slot,
+// with an unqueued line in the timeline.
+func TestStoppedQueueLockHolderDoesNotStopWaiters(t *testing.T) {
+	timing := slotQueueTiming{poll: 20 * time.Millisecond, heartbeat: 100 * time.Millisecond, stale: 300 * time.Millisecond}
+	for _, tc := range []struct {
+		name   string
+		joined bool // whether the waiter is queued before the lock is taken
+	}{
+		{"joining", false},
+		{"looking again", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fastQueue(t, timing)
+			dir := oneSlotHost(t)
+			timeline := filepath.Join(t.TempDir(), "timeline")
+			t.Setenv(TimelineEnv, timeline)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			lock := func() {
+				unlock, err := pollLock(ctx, time.Millisecond, true, filepath.Join(dir, "slot-queue.lock"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(unlock)
+			}
+			var got <-chan acquired
+			if tc.joined {
+				ahead := fakeTicket(t, dir, 1, time.Now())
+				got = acquireInBackground(t)
+				waitForTickets(t, dir, 2)
+				lock()
+				_ = ahead.Close() // the waiter ahead dies: the one behind looks again
+			} else {
+				lock()
+				got = acquireInBackground(t)
+			}
+
+			select {
+			case a := <-got:
+				if a.err != nil {
+					t.Fatal(a.err)
+				}
+				a.release()
+			case <-ctx.Done():
+				t.Fatal("a waiter waited for slot-queue.lock held by a stopped process")
+			}
+			if lines := unqueuedLines(t, timeline); len(lines) != 1 || !strings.Contains(lines[0], "slot-queue.lock held for over 300ms") {
+				t.Errorf("timeline's unqueued lines: %q, want one saying slot-queue.lock is held", lines)
+			}
+		})
 	}
 }

@@ -3,6 +3,7 @@ package lab
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -32,6 +33,16 @@ func noteSlotWait(project string, from, to time.Time, err error) {
 		return
 	}
 	appendTimeline(path, fmt.Sprintf("%s slot-wait %s %s %s\n", timelineStamp(from), to.Sub(from).Round(time.Millisecond), timelineResult(err), project))
+}
+
+// noteSlotUnqueued appends to the timeline that a lab's slot wait gave up
+// on the slot queue (reason) and polls the slots in no order.
+func noteSlotUnqueued(reason error) {
+	path := os.Getenv(TimelineEnv)
+	if path == "" {
+		return
+	}
+	appendTimeline(path, fmt.Sprintf("%s slot-wait unqueued: %s\n", timelineStamp(time.Now()), strings.ReplaceAll(reason.Error(), "\n", " ")))
 }
 
 func timelineStamp(t time.Time) string { return t.UTC().Format("15:04:05.000") }
