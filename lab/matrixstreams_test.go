@@ -122,6 +122,9 @@ func TestAssembleCensorMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RESULTS.md not written: %v", err)
 	}
+	if flakes := knownFlakes(cells); flakes != "" {
+		t.Log(flakes)
+	}
 	writeResults(t, cells, len(transports)*len(censorCases), scale)
 }
 

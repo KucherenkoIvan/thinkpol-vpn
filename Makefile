@@ -222,7 +222,7 @@ lab-test lab-test-default lab-test-long:
 	labpkg=$$(go list -tags lab ./lab) && others=$$(go list -tags lab ./lab/... | grep -vx "$$labpkg") || exit 1; \
 	"$$labctl" down -stale || exit 1; \
 	run=$$("$$labctl" run-id) || { run=; exit 1; }; export THINKPOL_LAB_RUN=$$run THINKPOL_LAB_RESULTS_DIR=$$tmp; \
-	phases=; failed=; both=; \
+	phases=; failed=; both=; flakes=; \
 	case " $(LAB_STREAMS) " in *" default "*) case " $(LAB_STREAMS) " in *" long "*) both=1;; esac;; esac; \
 	case " $(LAB_STREAMS) " in *" default "*) \
 		( { ( cd lab && THINKPOL_LAB_STREAM=default exec go tool test2json -t -p "$$labpkg" "$$tmp/lab.test" -test.v=test2json -test.paniconexit0 -test.count=1 -test.timeout=$(LAB_TIMEOUT) -test.skip='$(LAB_HARNESS_RUN)' ) 2>&1; echo $$? > "$$tmp/lab.status"; } | { TMPDIR="$$tmp" "$$labctl" testjson -times "$$tmp/lab.times" 2>&1; echo $$? > "$$tmp/lab.testjson"; } | awk '{print "[lab]  " $$0; fflush()}' ) & lab=$$!; \
@@ -253,7 +253,8 @@ lab-test lab-test-default lab-test-long:
 	case "$$both" in 1) \
 		if ( cd lab && THINKPOL_LAB_STREAM= exec "$$tmp/lab.test" -test.v -test.count=1 -test.run='^TestAssembleCensorMatrix$$' ) > "$$tmp/assemble.out" 2>&1 \
 		&& grep -q '^--- PASS: TestAssembleCensorMatrix ' "$$tmp/assemble.out"; then \
-			echo "lab-test: lab/RESULTS.md assembled from both streams"; \
+			flakes=$$(grep -o 'KNOWN FLAKES: .*' "$$tmp/assemble.out" | head -n 1); \
+			echo "lab-test: lab/RESULTS.md assembled from both streams$${flakes:+; $$flakes}"; \
 		else \
 			cat "$$tmp/assemble.out"; echo "lab-test: lab/RESULTS.md not assembled" >&2; failed="$$failed RESULTS.md"; \
 		fi;; \
@@ -262,11 +263,11 @@ lab-test lab-test-default lab-test-long:
 	if [ -z "$$THINKPOL_LAB_KEEP" ] && ! "$$labctl" down -run "$$run"; then failed="$$failed tear-down"; fi; run=; \
 	over=$$(cat "$$tmp/over" 2>/dev/null); \
 	if [ -n "$$failed" ]; then \
-		echo "lab-test: FAILED:$$failed$${over:+; also OVER BUDGET ($$over)}"; exit 1; \
+		echo "lab-test: FAILED:$$failed$${over:+; also OVER BUDGET ($$over)}$${flakes:+; $$flakes}"; exit 1; \
 	elif [ -n "$$over" ]; then \
-		echo "lab-test: tests passed, OVER BUDGET ($$over)"; exit 3; \
+		echo "lab-test: tests passed, OVER BUDGET ($$over)$${flakes:+; $$flakes}"; exit 3; \
 	fi; \
-	echo "lab-test: passed"
+	echo "lab-test: passed$${flakes:+; $$flakes}"
 
 
 lab-harness: ## the lab harness's own tests (TestHarness…: isolation, sealing, ownership, subnets), each starting labs
