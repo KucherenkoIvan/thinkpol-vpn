@@ -160,8 +160,8 @@ func appendLine(t *testing.T, path, line string) {
 		t.Error(err)
 		return
 	}
-	defer f.Close()
-	if _, err := f.WriteString(line + "\n"); err != nil {
+	_, err = f.WriteString(line + "\n")
+	if err := errors.Join(err, f.Close()); err != nil {
 		t.Error(err)
 	}
 }
