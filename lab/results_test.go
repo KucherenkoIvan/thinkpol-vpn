@@ -43,10 +43,9 @@ import (
 // Every cell sets its transport up afresh, and after it the cell's lab is
 // reset to the state it came up in (matrixRow.reset): the cell's
 // processes, censord with them, stopped, its TCP connections aborted
-// (and none left, matrixRow.abortTCP), the
-// links, addresses, routes, policy rules, tables and files it left
-// removed, the router's censor table and conntrack cleared, the verdict
-// log gone. A reset that didn't hold makes the cell an error, and every
+// (and none left, matrixRow.abortTCP), the links, addresses, routes,
+// policy rules, tables and files it left removed, the router's censor
+// table and conntrack cleared, the verdict log gone. A reset that didn't hold makes the cell an error, and every
 // later cell of its lab.
 //
 // A transport's off cell (no censor) runs first in each of its labs and
