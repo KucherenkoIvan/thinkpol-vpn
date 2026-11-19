@@ -27,11 +27,12 @@ const (
 	// of its own, once the ClientHello authenticated: a dialer holding a
 	// credential that stalls there would hold the connection for good.
 	handshakeTimeout = 15 * time.Second
-	// detectWait bounds Listen's check of the target's certificate, and
-	// how long it waits for REALITY to learn the target's post-handshake
-	// records.
-	detectWait = 10 * time.Second
 )
+
+// detectWait bounds Listen's check of the target's certificate, and how
+// long it waits for REALITY to learn the target's post-handshake records.
+// A listener reads it at Listen.
+var detectWait = 10 * time.Second
 
 // helloTimeout bounds reading the ClientHello, from accept: what doesn't
 // arrive in time stays spliced to the target, whose own timeouts end it
