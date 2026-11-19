@@ -107,3 +107,17 @@ func TestNewPool(t *testing.T) {
 		}()
 	}
 }
+
+// TestPoolIdle: an idle lab waits as long as its start took, but at
+// least 15 s and at most 3 minutes.
+func TestPoolIdle(t *testing.T) {
+	for took, want := range map[time.Duration]time.Duration{
+		time.Second:      15 * time.Second,
+		80 * time.Second: 80 * time.Second,
+		time.Hour:        3 * time.Minute,
+	} {
+		if got := poolIdle(took); got != want {
+			t.Errorf("poolIdle(%v) = %v, want %v", took, got, want)
+		}
+	}
+}

@@ -26,8 +26,9 @@ import (
 // A pool holds at most size labs, each with a lab slot of its own for as
 // long as it lives: a test that finds none idle starts one while the pool
 // has fewer, or waits for one to come back, first come first served. An
-// idle lab is torn down after poolIdle, so it doesn't sit on a slot
-// another run waits for; Main tears down what the pools still hold.
+// idle lab is torn down once it has waited as long as its start took
+// (poolIdle), so it doesn't sit on a slot another run waits for; Main
+// tears down what the pools still hold.
 type Pool struct {
 	topo Topology
 	size int
@@ -55,12 +56,18 @@ type pooledLab struct {
 	keep  bool
 	clean *Snapshot
 	uses  int
-	timer *time.Timer // while idle
+	took  time.Duration // its start, the slot wait included
+	timer *time.Timer   // while idle
 }
 
-// poolIdle is how long an idle lab waits for its next test: the next test
-// of a topology usually starts as soon as one before it ends.
-var poolIdle = 15 * time.Second
+// poolIdle is how long an idle lab waits for its next test: as long as
+// its own start took (the slot wait included), within bounds. Waiting
+// longer would cost the slot more than a new start costs the next test;
+// tearing it down sooner throws away a start the next test of the
+// topology, a minute or two behind under load, would have used.
+func poolIdle(started time.Duration) time.Duration {
+	return min(max(started, 15*time.Second), 3*time.Minute)
+}
 
 var (
 	poolsMu sync.Mutex
@@ -166,6 +173,7 @@ func (p *Pool) take(deadline time.Time) (*pooledLab, error) {
 // start brings up a lab for the pool, which the caller counted in
 // p.labs, and snapshots its clean state.
 func (p *Pool) start(t testing.TB) (*pooledLab, error) {
+	begin := time.Now()
 	l, bins, keep, err := launch(t, p.topo, func(project string) string { return "pool:" + project }, "pool-"+p.name, os.Getenv(ProjectEnv))
 	var clean *Snapshot
 	if err == nil {
@@ -185,7 +193,7 @@ func (p *Pool) start(t testing.TB) (*pooledLab, error) {
 	p.mu.Lock()
 	p.stats.Started++
 	p.mu.Unlock()
-	return &pooledLab{lab: l, bins: bins, keep: keep, clean: clean}, nil
+	return &pooledLab{lab: l, bins: bins, keep: keep, clean: clean, took: time.Since(begin)}, nil
 }
 
 // giveBack resets the test's lab and puts it back, or retires it when the
@@ -216,7 +224,7 @@ func (p *Pool) giveBack(t testing.TB, pl *pooledLab, since time.Time) {
 	if p.handOn(pl) {
 		return
 	}
-	pl.timer = time.AfterFunc(poolIdle, func() { p.expire(pl) })
+	pl.timer = time.AfterFunc(poolIdle(pl.took), func() { p.expire(pl) })
 	p.idle = append(p.idle, pl)
 }
 
