@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,6 +60,13 @@ func TestListenStopsWhileTheSystemRootsAreRead(t *testing.T) {
 		const stop = 100 * time.Millisecond
 		tg := newTargetAt(t, "127.0.0.1:0")
 		cfg := transport.ListenConfig{Address: "127.0.0.1:0", Settings: listenSettingsFor(t, newKeys(t), tg, 0)}
+		// The read starts here, and the parent closes stdin once it has
+		// begun: a stop counted from earlier could end before the read
+		// opens the bundle, under load.
+		ended, end := context.WithCancel(t.Context())
+		end()
+		_ = readSystemRoots(ended)
+		_, _ = io.Copy(io.Discard, os.Stdin)
 		ctx, cancel := context.WithTimeout(t.Context(), stop)
 		defer cancel()
 		start := time.Now()
@@ -81,7 +89,8 @@ func TestListenStopsWhileTheSystemRootsAreRead(t *testing.T) {
 
 // runWithSlowRoots runs test again in a child process, as part, with the
 // child's CA bundle a FIFO held shut for slowRootsHold once the child
-// opens it, and fails t unless the child passes.
+// opens it, and fails t unless the child passes. The child's stdin closes
+// once it has opened the bundle.
 func runWithSlowRoots(t *testing.T, test, part string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -97,6 +106,10 @@ func runWithSlowRoots(t *testing.T, test, part string) {
 		slowRootsChild+"="+part, "SSL_CERT_FILE="+bundle, "SSL_CERT_DIR="+filepath.Join(dir, "none"))
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
+	began, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -137,6 +150,7 @@ func runWithSlowRoots(t *testing.T, test, part string) {
 		if f == nil {
 			killed("opening the CA bundle to write failed")
 		}
+		_ = began.Close()
 		time.Sleep(slowRootsHold)
 		_ = f.Close()
 	case <-exited:

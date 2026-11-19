@@ -49,6 +49,8 @@ Four reviewers (one of another model family) agree the fix (the system pool read
 - [x] R1.3 (should-fix, falsifiability) The cause is unmeasured: log how long the first SystemCertPool() took, and say in Notes: "if `didn't complete … in 10s` recurs in Delivery, this cause is ruled out".
 - [x] R1.4 (nit) listener.go: the pool read ignores ctx, so a stop during a stuck bundle waits out the read; make ctx cancellation still return if it stays simple, else note it.
 - [x] R1.5 (ticket) Box "20 runs under load": COUNT=20 runs in one process, so the roots are read once; say the forced repro is the proof and the 20 runs show no other regression.
+- [x] R2.1 (nit) RESIDUAL-RISKS.md RR66 and doc.go say "the detection's Go-fingerprinted ClientHellos"; record_detect.go uses HelloChrome_Auto for the h2 case, so of the 6 connections per server name 4 send Go's ClientHello and 2 Chrome's: say exactly that.
+- [x] R2.2 (nit) listener_linux_test.go: under extreme load, more than 100 ms between WithTimeout and the read's once.Do makes Listen return before the child opens its CA bundle ("the child never read its CA bundle"). Start the timeout after the read has begun.
 
 ## Log
 - 2026-11-19 created in backlog (seen in lab runs 2026-11-19)
@@ -66,3 +68,4 @@ Four reviewers (one of another model family) agree the fix (the system pool read
 - 2026-11-19 not verified: the forced repro's own timeout paths (no run hung the child); no full make lab-test (brief: targeted runs only)
 - 2026-11-19 filed TP-256 (start-up detection without the CCS probe) and TP-257 (handoff workers' ChangeCipherSpec tolerance) on rewrite; TP-256's refs gain RR66 in this branch, where RR66 lands
 - 2026-11-19 has-errors → review
+- 2026-11-19 review round 2: nits R2.1–R2.2, merge
