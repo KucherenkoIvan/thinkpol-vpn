@@ -422,7 +422,8 @@ func writeGotestTimes(file string, results []lab.GoTestResult) error {
 
 // testJSON filters go test -json from r into what go test would have
 // printed without -v (with -v: with it), and writes each test's time to
-// -times, and its start, resume and end to TimelineEnv's timeline when set.
+// -times, and its start, resume and end to TimelineEnv's timeline when set,
+// with StreamEnv's stream (make lab-test sets both for it).
 func testJSON(r io.Reader, w io.Writer, args []string) error {
 	fs := flag.NewFlagSet("testjson", flag.ContinueOnError)
 	times := fs.String("times", "", "write how long each test took to this file")
@@ -433,7 +434,7 @@ func testJSON(r io.Reader, w io.Writer, args []string) error {
 	if *times == "" || fs.NArg() > 0 {
 		return errors.New("testjson: want -times file and no arguments")
 	}
-	got, err := lab.FilterTestJSON(r, w, *verbose, os.Getenv(lab.TimelineEnv))
+	got, err := lab.FilterTestJSON(r, w, *verbose, lab.TestTimeline{File: os.Getenv(lab.TimelineEnv), Stream: os.Getenv(lab.StreamEnv)})
 	// Whatever was read is written: a time file missing makes the budget's
 	// report miss tests, not pass.
 	return errors.Join(err, lab.WriteTestTimes(*times, got))

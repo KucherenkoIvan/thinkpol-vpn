@@ -1,6 +1,7 @@
 package lab
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"strings"
@@ -101,17 +102,24 @@ func noteDown(project string, from, to time.Time, err error) {
 	appendTimeline(path, fmt.Sprintf("%s down %s %s %s\n", timelineStamp(from), to.Sub(from).Round(time.Millisecond), timelineResult(err), project))
 }
 
+// TestTimeline is where FilterTestJSON notes the tests' events: the
+// timeline File ("" for none), and the Stream they ran in ("" for none),
+// which tells the streams' runs of one test apart.
+type TestTimeline struct{ File, Stream string }
+
 // noteTest appends a test's event from go test -json: run (its function
 // started), cont (a parallel test got its place and goes on), and pass,
-// fail or skip with how long it took.
-func noteTest(path string, ev testEvent) {
+// fail or skip with how long it took; then the stream ("-" for none), the
+// package and the test.
+func noteTest(tl TestTimeline, ev testEvent) {
 	pkg := ev.Package[strings.LastIndex(ev.Package, "/")+1:]
+	stream := cmp.Or(tl.Stream, "-")
 	switch ev.Action {
 	case "run", "cont":
-		appendTimeline(path, fmt.Sprintf("%s test-%s %s %s\n", timelineStamp(ev.Time), ev.Action, pkg, ev.Test))
+		appendTimeline(tl.File, fmt.Sprintf("%s test-%s %s %s %s\n", timelineStamp(ev.Time), ev.Action, stream, pkg, ev.Test))
 	case "pass", "fail", "skip":
 		elapsed := time.Duration(ev.Elapsed * float64(time.Second)).Round(time.Millisecond)
-		appendTimeline(path, fmt.Sprintf("%s test-%s %s %s %s\n", timelineStamp(ev.Time), ev.Action, elapsed, pkg, ev.Test))
+		appendTimeline(tl.File, fmt.Sprintf("%s test-%s %s %s %s %s\n", timelineStamp(ev.Time), ev.Action, elapsed, stream, pkg, ev.Test))
 	}
 }
 
