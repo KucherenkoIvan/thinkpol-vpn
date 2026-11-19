@@ -256,6 +256,7 @@ func (f *fakeTB) log() string {
 // first waiter, or idle. What a reset undid is logged after the tests
 // that had the lab before.
 func TestPoolGiveBack(t *testing.T) {
+	t.Setenv(TimelineEnv, "") // its labs aren't the run's
 	retiredFor := func(p *Pool, test, why string) bool {
 		s := p.Stats()
 		return len(s.Retired) == 1 && s.Retired[0] == test+" ("+why+")"
@@ -318,6 +319,7 @@ func TestPoolGiveBack(t *testing.T) {
 // past that it is torn down and the first waiter may start one; a lab
 // taken meanwhile is left alone.
 func TestPoolIdleCheck(t *testing.T) {
+	t.Setenv(TimelineEnv, "") // its labs aren't the run's
 	for _, c := range []struct {
 		what   string
 		wanted bool
@@ -365,6 +367,7 @@ func TestPoolIdleCheck(t *testing.T) {
 // TestClosePools: closing tears down every pool's idle labs, refuses
 // takes after, and writes each used pool's starts, uses and retirements.
 func TestClosePools(t *testing.T) {
+	t.Setenv(TimelineEnv, "") // its labs aren't the run's
 	defer func(saved []*Pool) {
 		poolsMu.Lock()
 		pools = saved
