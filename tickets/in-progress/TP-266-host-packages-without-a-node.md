@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-266"
+branch: "tp-266-host-packages"
 ---
 
 ## Goal
@@ -28,3 +28,4 @@ The node phase (`labctl gotest ./...`) runs every package's tests in a lab node.
 
 ## Log
 - 2026-11-19 created in backlog (TP-263)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-266
