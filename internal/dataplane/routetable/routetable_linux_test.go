@@ -181,6 +181,7 @@ func (d *device) state(t *testing.T) string {
 func local() *lists.Set { return lists.Local() }
 
 func TestEnforcesInANamespace(t *testing.T) {
+	t.Parallel()
 	d := newDevice(t)
 	before := d.state(t)
 	e := d.enforcer(t)
@@ -336,6 +337,8 @@ func countrySized(t testing.TB) *lists.Set {
 	return s
 }
 
+// Not parallel, like TestTheGuardComesBackOnItsOwn: its time bounds
+// hold for this test alone on the CPU.
 func TestCountrySizedTable(t *testing.T) {
 	d := newDevice(t)
 	before := d.state(t)
@@ -391,6 +394,7 @@ func TestCountrySizedTable(t *testing.T) {
 // range (a classless route, an address inside it, an advertised prefix
 // inside the overlay's /48: TunnelVision on the overlay).
 func TestHostileLocalNetworkRoutes(t *testing.T) {
+	t.Parallel()
 	d := newDevice(t)
 	e := d.enforcer(t)
 	overlay := []netip.Prefix{netip.MustParsePrefix("100.64.0.0/16"), netip.MustParsePrefix("fd12:3456:789a::/48")}
@@ -444,6 +448,7 @@ func TestHostileLocalNetworkRoutes(t *testing.T) {
 // and what routing can't confine, sockets bound to an interface, the
 // IPv6 leak guard does (TP-021).
 func TestGatewaysOnLinksAndBoundSockets(t *testing.T) {
+	t.Parallel()
 	d := newDevice(t)
 	e := d.enforcer(t)
 	overlay := []netip.Prefix{netip.MustParsePrefix("100.64.0.0/16"), netip.MustParsePrefix("fd12:3456:789a::/48")}
@@ -549,7 +554,9 @@ func TestGatewaysOnLinksAndBoundSockets(t *testing.T) {
 
 // The guard deleted from outside (`nft flush ruleset`, a firewall
 // service's reload, `nft delete table`) is back within about a second,
-// without an Enforce and long before the Backstop.
+// without an Enforce and long before the Backstop. Not parallel: the 3 s
+// bounds hold for this test alone on the CPU, not beside
+// TestCountrySizedTable.
 func TestTheGuardComesBackOnItsOwn(t *testing.T) {
 	d := newDevice(t)
 	e := d.enforcer(t)
