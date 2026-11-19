@@ -48,3 +48,4 @@ In a full lab on TP-251's branch (2026-11-19, three other labs running) the cens
 - 2026-11-19 in-progress → review
 - 2026-11-19 merged rewrite (175b3535; it changes only lab/censor/doc.go's matrix text there): make lint and make test green on a5087454, lab-gotest ./lab/censor/... pass (cached, the test binary unchanged)
 - 2026-11-19 review round 1: fix R1.1–R1.4, merge
+- 2026-11-19 runs on db3b92b2: go test ./lab/censor/... -count=3 pass; lab-gotest ./lab/censor RUN=TestRunStartsUnderTraffic|TestQueuePipeline|TestClearRouter pass; make lint and make test green
