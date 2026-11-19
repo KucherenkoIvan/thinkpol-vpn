@@ -192,13 +192,13 @@ func (f *fakeLab) reset(_ context.Context, _ *Snapshot, logf func(format string,
 	return f.resetErr
 }
 
-func (f *fakeLab) cleanup(testing.TB, time.Time) {
+func (f *fakeLab) cleanup(labUser, time.Time) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cleanups++
 }
 
-func (f *fakeLab) keep(testing.TB) bool {
+func (f *fakeLab) keep(labUser) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.keepEnv {

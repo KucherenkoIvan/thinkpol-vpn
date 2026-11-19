@@ -28,7 +28,16 @@ type GoPackage struct {
 	// NeedsNoNode: the package has HostTestsFile, so on a Linux machine
 	// its tests run there (GoTestOnHost) rather than in a node.
 	NeedsNoNode bool
+	// FreshLab: the package has FreshLabFile, so GoTestEach runs it in a
+	// lab of its own rather than one of its pool.
+	FreshLab bool
 }
+
+// FreshLabFile marks a package whose tests change what a lab's reset
+// doesn't read (lab/snapshot.go, nodeStateScript): a test file holding only
+// the package clause and a comment saying what, so GoTestEach starts it a
+// lab of its own instead of handing it one another package used.
+const FreshLabFile = "freshlab_test.go"
 
 // ListGoPackages expands go package patterns, as seen for linux, to the
 // packages that have tests.
@@ -57,7 +66,7 @@ func ListGoPackages(ctx context.Context, root string, patterns ...string) ([]GoP
 			return nil, err
 		}
 		files := slices.Concat(p.TestGoFiles, p.XTestGoFiles)
-		out = append(out, GoPackage{ImportPath: p.ImportPath, Dir: filepath.ToSlash(rel), NeedsNoNode: slices.Contains(files, HostTestsFile)})
+		out = append(out, GoPackage{ImportPath: p.ImportPath, Dir: filepath.ToSlash(rel), NeedsNoNode: slices.Contains(files, HostTestsFile), FreshLab: slices.Contains(files, FreshLabFile)})
 	}
 	return out, nil
 }
@@ -191,10 +200,13 @@ type GoTestResult struct {
 
 // LabPhases is where a package's time in a lab node went: queued for one
 // of the run's own labs (GoTestConcurrency.Labs; with BuildAllFirst, for
-// every package's build too), waiting for a lab slot, starting the lab (the rest of its start-up: a leftover lab's
-// removal, docker compose up, sealing the nodes), running the tests (and
-// reading their test log back), and tearing the lab down. A start that
-// failed has no test time; its tear-down, if any, follows the start.
+// every package's build too), waiting for a lab slot, starting the lab
+// (the rest of its start-up: a leftover lab's removal, docker compose up,
+// sealing the nodes, and for a pooled lab its snapshot; none for a lab
+// another package used), running the tests (and reading their test log
+// back), and tearing the lab down, or for a pooled lab that goes back,
+// resetting it. A start that failed has no test time; its tear-down, if
+// any, follows the start.
 type LabPhases struct {
 	Queue, SlotWait, Start, Tests, Teardown time.Duration
 }
@@ -260,10 +272,15 @@ type GoTestConcurrency struct {
 	BuildAllFirst bool
 }
 
-// GoTestEach runs each package's tests in a fresh lab of its own
-// (GoTestTopology), so no package sees what another left behind. Builds,
-// the CPU-bound part, run ahead of the labs, which mostly wait on
-// containers (GoTestConcurrency). Each package's output goes to w in one
+// GoTestEach runs each package's tests in a lab node (GoTestTopology).
+// The packages share labs, one after another, through a pool of as many
+// labs as run at once: after a package, its lab is reset and checked
+// (Lab.Reset), so no package sees what another left behind, and a lab
+// whose check failed, or whose package failed, is torn down; a package
+// with FreshLabFile gets a lab of its own. Builds, the CPU-bound part, run
+// ahead of the labs, which mostly wait on containers (GoTestConcurrency).
+// The pool's count of labs started, packages and labs retired ends w.
+// Each package's output goes to w in one
 // piece, in the order the packages finish. env (NAME=value) is added to the
 // test binaries' environment. With a cache, a package whose recorded pass
 // still holds starts no lab and is reported "(cached)", and a package that
@@ -288,13 +305,15 @@ func GoTestEach(ctx context.Context, root string, pkgs []GoPackage, c GoTestConc
 		errs  []error
 		wg    sync.WaitGroup
 		gates = newGoTestGates(c, len(pkgs))
+		pool  = newNodePool(c.Labs, func(i int) string { return ownGoTestPackageProject(checkout, run, fmt.Sprintf("node pool lab %d", i)) })
 	)
+	defer pool.close(w, "packages")
 	for _, pkg := range pkgs {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			var out bytes.Buffer
-			res, labErr := goTestPackage(ctx, root, ownGoTestPackageProject(checkout, run, pkg.ImportPath), pkg, &out, cache, gates, env, args)
+			res, labErr := goTestPackage(ctx, root, ownGoTestPackageProject(checkout, run, pkg.ImportPath), pkg, &out, cache, gates, pool, env, args)
 			mu.Lock()
 			defer mu.Unlock()
 			if labErr != nil {
@@ -398,9 +417,10 @@ func waitGate(ctx context.Context, what string, done <-chan struct{}) error {
 }
 
 // goTestPackage is one package of GoTestEach: served from the cache, or run
-// in a fresh lab, its output in out.
-func goTestPackage(ctx context.Context, root, project string, pkg GoPackage, out *bytes.Buffer, cache *GoTestCache, gates *goTestGates, env, args []string) (GoTestResult, error) {
-	r := &packageRun{ctx: ctx, root: root, project: project, pkg: pkg, out: out, cache: cache, env: env, args: args}
+// in a lab of pool (in a fresh lab with FreshLab, or a nil pool), its
+// output in out. project names its lab when fresh.
+func goTestPackage(ctx context.Context, root, project string, pkg GoPackage, out *bytes.Buffer, cache *GoTestCache, gates *goTestGates, pool *nodePool, env, args []string) (GoTestResult, error) {
+	r := &packageRun{ctx: ctx, root: root, project: project, pkg: pkg, out: out, cache: cache, pool: pool, env: env, args: args}
 	r.res = GoTestResult{ImportPath: pkg.ImportPath}
 	if err := gates.run(ctx, r.prepare, r.build, r.inLab); err != nil {
 		if !r.headed {
@@ -418,6 +438,7 @@ type packageRun struct {
 	pkg           GoPackage
 	out           *bytes.Buffer
 	cache         *GoTestCache
+	pool          *nodePool // nil: a fresh lab
 	env, args     []string
 
 	p      preparedRun
@@ -472,8 +493,8 @@ func (r *packageRun) build() (needsLab bool) {
 	return false
 }
 
-// inLab runs the package's tests in a fresh lab and records a pass. Its
-// time is from when it queued for the lab.
+// inLab runs the package's tests in a lab, the pool's or a fresh one, and
+// records a pass. Its time is from when it queued for the lab.
 func (r *packageRun) inLab(queued time.Time) {
 	started := time.Now()
 	runArgs := r.args
@@ -481,7 +502,14 @@ func (r *packageRun) inLab(queued time.Time) {
 		runArgs = append(slices.Clone(r.args), "-test.testlogfile="+goTestLogFile)
 	}
 	start := r.out.Len()
-	run := goTestFresh(r.ctx, queued, r.root, r.project, r.pkg, r.out, r.env, runArgs, r.entry != nil)
+	var run freshRun
+	if r.pool == nil || r.pkg.FreshLab {
+		run = goTestFresh(r.ctx, queued, r.root, r.project, r.pkg, r.out, r.env, runArgs, r.entry != nil)
+	} else {
+		run = r.pool.goTest(r.ctx, queued, r.root, r.pkg.ImportPath, r.out, func(n *Node) freshRun {
+			return runInNode(r.ctx, n, r.pkg, r.out, r.env, runArgs, r.entry != nil)
+		})
+	}
 	r.res.Elapsed = time.Since(queued)
 	r.res.Phases = run.phases
 	r.res.Failed = run.testErr != nil
@@ -537,12 +565,18 @@ func goTestFresh(ctx context.Context, queued time.Time, root, project string, pk
 		run.labErr = err
 		return run
 	}
-	n := l.Node("gotest")
+	run = runInNode(ctx, l.Node("gotest"), pkg, w, env, args, readLog)
+	timer.tested = time.Now()
+	return run
+}
+
+// runInNode runs a package's tests in n and, with readLog and the tests
+// passed, reads their -test.testlogfile back.
+func runInNode(ctx context.Context, n *Node, pkg GoPackage, w io.Writer, env, args []string, readLog bool) (run freshRun) {
 	run.testErr = n.goTest(ctx, w, pkg, env, args)
 	if readLog && run.testErr == nil {
 		run.testLog, run.logErr = n.readFile(ctx, goTestLogFile)
 	}
-	timer.tested = time.Now()
 	return run
 }
 

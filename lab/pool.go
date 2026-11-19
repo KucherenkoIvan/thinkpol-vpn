@@ -66,16 +66,25 @@ type pooledLab struct {
 	since time.Time     // idle since
 }
 
-// pooledOps is what a pool does to one of its labs: a started lab's
-// (startedLab), or a unit test's stand-in.
+// labUser is who had a pool's lab: a test (testing.TB), or a node-phase
+// package (packageUser).
+type labUser interface {
+	Name() string
+	Failed() bool
+	Logf(format string, args ...any)
+	Errorf(format string, args ...any)
+}
+
+// pooledOps is what a pool does to one of its labs: a lab test pool's
+// (startedLab), the node phase's (nodeLab), or a unit test's stand-in.
 type pooledOps interface {
 	name() string
 	reset(ctx context.Context, clean *Snapshot, logf func(format string, args ...any)) error
-	// cleanup, after a failed test, tears the lab down or keeps it
-	// (KeepEnv), the containers' logs since since in the test's log.
-	cleanup(t testing.TB, since time.Time)
+	// cleanup, after a failed user, tears the lab down or keeps it
+	// (KeepEnv), the containers' logs since since in the user's log.
+	cleanup(u labUser, since time.Time)
 	// keep keeps the lab up when KeepEnv is set, and says whether it did.
-	keep(t testing.TB) bool
+	keep(u labUser) bool
 	down(ctx context.Context) error
 }
 
@@ -92,12 +101,12 @@ func (s startedLab) reset(ctx context.Context, clean *Snapshot, logf func(format
 	return s.lab.Reset(ctx, clean, logf)
 }
 
-func (s startedLab) cleanup(t testing.TB, since time.Time) {
-	s.lab.cleanup(t, s.bins, s.keepEnv, since)
+func (s startedLab) cleanup(u labUser, since time.Time) {
+	s.lab.cleanup(u, s.bins, s.keepEnv, since)
 }
 
-func (s startedLab) keep(t testing.TB) bool {
-	return s.keepEnv && s.lab.keepRunning(t, s.bins)
+func (s startedLab) keep(u labUser) bool {
+	return s.keepEnv && s.lab.keepRunning(u, s.bins)
 }
 
 func (s startedLab) down(ctx context.Context) error { return s.lab.Down(ctx) }
@@ -130,6 +139,21 @@ var (
 // privileged container may change (devices, kernel state beyond its
 // namespaces), are outside what Reset checks.
 func NewPool(topo Topology, size int) *Pool {
+	p := newPool(topo, size)
+	poolsMu.Lock()
+	defer poolsMu.Unlock()
+	for _, other := range pools {
+		if reflect.DeepEqual(other.topo, topo) {
+			panic(fmt.Sprintf("lab: NewPool: a pool of %s exists", p.name))
+		}
+	}
+	pools = append(pools, p)
+	return p
+}
+
+// newPool is NewPool's pool, which Main doesn't know of: its owner closes
+// it (close).
+func newPool(topo Topology, size int) *Pool {
 	if size < 1 {
 		panic(fmt.Sprintf("lab: NewPool: size %d", size))
 	}
@@ -146,16 +170,7 @@ func NewPool(topo Topology, size int) *Pool {
 		}
 		names = append(names, n.Name)
 	}
-	p := &Pool{topo: topo, size: size, name: strings.Join(names, ",")}
-	poolsMu.Lock()
-	defer poolsMu.Unlock()
-	for _, other := range pools {
-		if reflect.DeepEqual(other.topo, topo) {
-			panic(fmt.Sprintf("lab: NewPool: a pool of %s exists", p.name))
-		}
-	}
-	pools = append(pools, p)
-	return p
+	return &Pool{topo: topo, size: size, name: strings.Join(names, ",")}
 }
 
 // Acquire gives the test a lab of the pool's topology, which goes back to
@@ -166,24 +181,35 @@ func (p *Pool) Acquire(t testing.TB) *Lab {
 	t.Helper()
 	asked := time.Now()
 	dl, _ := labBudget.begin(testDeadline(t)).deadline(phaseSlotWait)
-	pl, err := p.take(dl)
+	pl, err := p.acquire(dl, func() (*pooledLab, error) { return p.start(t) })
 	if err != nil {
 		t.Fatal(err)
 	}
+	since := time.Now()
+	t.Cleanup(func() { p.giveBack(t, pl, since) })
+	notePool("take", pl.lab.Project, fmt.Sprintf("use %d %s", pl.uses, t.Name()))
+	t.Logf("lab %s (pool %s, use %d) after %v", pl.lab.Project, p.name, pl.uses, since.Sub(asked).Round(100*time.Millisecond))
+	return pl.lab
+}
+
+// acquire is an idle lab, or one start starts (counted in p.labs: it
+// adopts what it starts), waiting until deadline for one to come back when
+// the pool is full; the lab's use is counted.
+func (p *Pool) acquire(deadline time.Time, start func() (*pooledLab, error)) (*pooledLab, error) {
+	pl, err := p.take(deadline)
+	if err != nil {
+		return nil, err
+	}
 	if pl == nil {
-		if pl, err = p.start(t); err != nil {
-			t.Fatal(err)
+		if pl, err = start(); err != nil {
+			return nil, err
 		}
 	}
 	p.mu.Lock()
 	p.stats.Uses++
 	p.mu.Unlock()
 	pl.uses++
-	since := time.Now()
-	t.Cleanup(func() { p.giveBack(t, pl, since) })
-	notePool("take", pl.lab.Project, fmt.Sprintf("use %d %s", pl.uses, t.Name()))
-	t.Logf("lab %s (pool %s, use %d) after %v", pl.lab.Project, p.name, pl.uses, since.Sub(asked).Round(100*time.Millisecond))
-	return pl.lab
+	return pl, nil
 }
 
 // take is an idle lab, or nil for the caller to start one, waiting until
@@ -232,6 +258,13 @@ func (p *Pool) take(deadline time.Time) (*pooledLab, error) {
 func (p *Pool) start(t testing.TB) (*pooledLab, error) {
 	begin := time.Now()
 	l, bins, keep, err := launch(t, p.topo, func(project string) string { return "pool:" + project }, "pool-"+p.name, os.Getenv(ProjectEnv))
+	return p.adopt(l, startedLab{lab: l, bins: bins, keepEnv: keep}, begin, err)
+}
+
+// adopt takes l, which the pool counted in p.labs and began starting at
+// begin, once it has snapshotted its clean state; a lab whose start (err)
+// or snapshot failed is torn down and counted out.
+func (p *Pool) adopt(l *Lab, ops pooledOps, begin time.Time, err error) (*pooledLab, error) {
 	var clean *Snapshot
 	if err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -250,14 +283,14 @@ func (p *Pool) start(t testing.TB) (*pooledLab, error) {
 	p.mu.Lock()
 	p.stats.Started++
 	p.mu.Unlock()
-	return &pooledLab{lab: l, ops: startedLab{lab: l, bins: bins, keepEnv: keep}, clean: clean, took: time.Since(begin)}, nil
+	return &pooledLab{lab: l, ops: ops, clean: clean, took: time.Since(begin)}, nil
 }
 
-// giveBack resets the test's lab and puts it back, or retires it when the
-// test failed or the reset didn't hold. What the reset found to undo goes
-// to the test's log after the names of the tests that had the lab before,
-// so a failure that depends on their order can be traced.
-func (p *Pool) giveBack(t testing.TB, pl *pooledLab, since time.Time) {
+// giveBack resets the lab t had and puts it back, or retires it when t
+// failed or the reset didn't hold. What the reset found to undo goes to
+// t's log after the names of the users that had the lab before, so a
+// failure that depends on their order can be traced.
+func (p *Pool) giveBack(t labUser, pl *pooledLab, since time.Time) {
 	before := slices.Clone(pl.users)
 	pl.users = append(pl.users, t.Name())
 	if t.Failed() {
@@ -303,7 +336,7 @@ func (p *Pool) giveBack(t testing.TB, pl *pooledLab, since time.Time) {
 	p.idle = append(p.idle, pl)
 }
 
-func (p *Pool) retire(t testing.TB, pl *pooledLab, why string) {
+func (p *Pool) retire(t labUser, pl *pooledLab, why string) {
 	notePool("retire", pl.ops.name(), fmt.Sprintf("%s: %s", t.Name(), why))
 	p.mu.Lock()
 	p.stats.Retired = append(p.stats.Retired, fmt.Sprintf("%s (%s)", t.Name(), why))
@@ -383,33 +416,53 @@ func (p *Pool) Stats() PoolStats {
 	return s
 }
 
-// closePools tears down every pool's idle labs, waits for those already
-// going, and writes each used pool's stats to w.
+// closePools closes every pool (close) at once.
 func closePools(w io.Writer) {
 	poolsMu.Lock()
 	all := slices.Clone(pools)
 	poolsMu.Unlock()
 	var wg sync.WaitGroup
 	for _, p := range all {
-		p.mu.Lock()
-		p.closed = true
-		idle := p.idle
-		p.idle = nil
-		p.labs -= len(idle)
-		for _, pl := range idle {
-			pl.timer.Stop()
-			wg.Go(func() { p.teardown(pl, "end of the run") })
-		}
-		p.mu.Unlock()
+		p.closeIdle(&wg)
 	}
 	wg.Wait()
 	for _, p := range all {
-		p.down.Wait()
-		if s := p.Stats(); s.Uses > 0 {
-			_, _ = fmt.Fprintf(w, "lab pool %s: %d labs started for %d tests, %d retired\n", p.name, s.Started, s.Uses, len(s.Retired))
-			for _, r := range s.Retired {
-				_, _ = fmt.Fprintf(w, "lab pool %s: retired after %s\n", p.name, r)
-			}
+		p.report(w, "tests")
+	}
+}
+
+// close tears down the pool's idle labs, waits for those already going,
+// and writes its stats to w, counting its users as users: the pool takes
+// no lab back after.
+func (p *Pool) close(w io.Writer, users string) {
+	var wg sync.WaitGroup
+	p.closeIdle(&wg)
+	wg.Wait()
+	p.report(w, users)
+}
+
+// closeIdle closes the pool and tears its idle labs down in wg.
+func (p *Pool) closeIdle(wg *sync.WaitGroup) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closed = true
+	idle := p.idle
+	p.idle = nil
+	p.labs -= len(idle)
+	for _, pl := range idle {
+		pl.timer.Stop()
+		wg.Go(func() { p.teardown(pl, "end of the run") })
+	}
+}
+
+// report waits for the idle labs going down, then writes the pool's stats
+// to w, if it was used.
+func (p *Pool) report(w io.Writer, users string) {
+	p.down.Wait()
+	if s := p.Stats(); s.Uses > 0 {
+		_, _ = fmt.Fprintf(w, "lab pool %s: %d labs started for %d %s, %d retired\n", p.name, s.Started, s.Uses, users, len(s.Retired))
+		for _, r := range s.Retired {
+			_, _ = fmt.Fprintf(w, "lab pool %s: retired after %s\n", p.name, r)
 		}
 	}
 }

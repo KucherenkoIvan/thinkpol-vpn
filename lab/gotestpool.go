@@ -1,0 +1,107 @@
+package lab
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// nodePool is the node phase's pool of GoTestTopology labs (GoTestEach):
+// its packages take turns in them, each lab reset and checked between two
+// packages (Pool).
+type nodePool struct {
+	*Pool
+	project func(i int) string // the Compose project of the pool's i-th lab
+	started atomic.Int64
+}
+
+// newNodePool is a pool of up to size labs.
+func newNodePool(size int, project func(i int) string) *nodePool {
+	return &nodePool{Pool: newPool(GoTestTopology(), size), project: project}
+}
+
+// goTest runs run in the node of one of the pool's labs, an idle one or
+// one it starts, then gives the lab back: reset for the next package, or
+// retired when the package failed (run's testErr) or the reset didn't
+// hold. user names the package in the pool's log lines, which go to w.
+// The phases are timed from queued (LabPhases).
+func (p *nodePool) goTest(ctx context.Context, queued time.Time, root, user string, w io.Writer, run func(n *Node) freshRun) (res freshRun) {
+	timer := labTimer{queued: queued, began: time.Now()}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(labBudget.wait)
+	}
+	pl, err := p.acquire(deadline, func() (*pooledLab, error) {
+		begin := time.Now()
+		l, err := up(ctx, timer.startClock(), root, p.project(int(p.started.Add(1))), GoTestTopology(), "", runInputs)
+		return p.adopt(l, nodeLab{l}, begin, err)
+	})
+	timer.started = time.Now()
+	if err != nil {
+		res.labErr = err
+		res.phases = timer.phases(time.Now())
+		return res
+	}
+	fmt.Fprintf(w, "lab %s (pool %s, use %d)\n", pl.lab.Project, p.name, pl.uses)
+	res = run(pl.lab.Node("gotest"))
+	timer.tested = time.Now()
+	u := &packageUser{name: user, failed: res.testErr != nil, w: w}
+	p.giveBack(u, pl, timer.started)
+	res.labErr = errors.Join(res.labErr, errors.Join(u.errs...))
+	res.phases = timer.phases(time.Now())
+	return res
+}
+
+// nodeLab is a lab of the node phase's pool. Like a fresh node-phase lab,
+// a failed package's lab is torn down, never kept.
+type nodeLab struct{ lab *Lab }
+
+func (n nodeLab) name() string { return n.lab.Project }
+
+func (n nodeLab) reset(ctx context.Context, clean *Snapshot, logf func(format string, args ...any)) error {
+	return n.lab.Reset(ctx, clean, logf)
+}
+
+func (n nodeLab) cleanup(u labUser, _ time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), labBudget.teardown)
+	defer cancel()
+	if err := n.lab.Down(ctx); err != nil {
+		u.Errorf("lab %s: tear down: %v", n.lab.Project, err)
+	}
+}
+
+func (n nodeLab) keep(labUser) bool { return false }
+
+func (n nodeLab) down(ctx context.Context) error { return n.lab.Down(ctx) }
+
+// packageUser is a node-phase package as the user of a pool's lab: the
+// pool's log lines go to the package's output, and an error (a tear-down
+// that failed) is the run's lab error.
+type packageUser struct {
+	name   string
+	failed bool
+	mu     sync.Mutex
+	w      io.Writer
+	errs   []error
+}
+
+func (u *packageUser) Name() string { return u.name }
+func (u *packageUser) Failed() bool { return u.failed }
+
+func (u *packageUser) Logf(format string, args ...any) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	_, _ = fmt.Fprintf(u.w, format+"\n", args...)
+}
+
+func (u *packageUser) Errorf(format string, args ...any) {
+	err := fmt.Errorf(format, args...)
+	u.mu.Lock()
+	u.errs = append(u.errs, err)
+	u.mu.Unlock()
+	u.Logf("%v", err)
+}
