@@ -92,6 +92,7 @@ type nodeStatus struct {
 type neighborStatus struct {
 	NodeID string `json:"node_id"`
 	Up     bool   `json:"up"`
+	UpFor  string `json:"up_for"`
 }
 
 // errSchemaVersion: the status is of a schema the lab doesn't read; no

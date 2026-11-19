@@ -12,15 +12,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"golang.zx2c4.com/wireguard/device"
-
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
-	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/udp"
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab/censor"
 )
@@ -1191,37 +1188,32 @@ func withRowSettings(configs []censor.ModuleConfig, overrides map[string]map[str
 	return out, nil
 }
 
-// TestFirstWireGuardMessage: a udp tunnel the censor saw from its first
-// datagram starts with device-a's handshake initiation, path probes before
-// it; one it joined already up starts with WireGuard's data or keepalives,
-// or with server-1's reply.
-func TestFirstWireGuardMessage(t *testing.T) {
+// TestSeenBeforeUp: a censor that saw a udp tunnel's first datagram has
+// a line on it from before device-a's link came up; one that joined later
+// has its first line, either way, after.
+func TestSeenBeforeUp(t *testing.T) {
 	dev := netip.MustParseAddr("192.0.2.2")
 	tunnel := func(k censor.FlowKey) bool { return k.Proto == censor.ProtoUDP && k.Src == dev }
+	up := time.Date(2026, 11, 19, 0, 0, 10, 0, time.UTC)
 	out := "udp 192.0.2.2:40000->192.0.2.10:4500"
 	back := "udp 192.0.2.10:4500->192.0.2.2:40000"
 	other := "udp 192.0.2.3:40000->192.0.2.10:4500"
-	sealed := func(n int) int { return udp.Overhead + path.HeaderSize + n }
-	probe := udp.Overhead + 10
-	trace := func(lines ...string) string { return strings.Join(lines, "\n") + "\n" }
-	rec := func(flow string, size int) string {
-		return fmt.Sprintf(`{"flow":%q,"end":"2026-11-19T00:00:00Z","size":%d}`, flow, size)
+	line := func(flow string, at time.Duration) string {
+		return fmt.Sprintf(`{"time":%q,"event":"decision","flow":%q,"packets":1,"bytes":84,"verdict":"accept"}`, up.Add(at).Format(time.RFC3339Nano), flow)
 	}
 	for _, tc := range []struct {
-		name  string
-		trace string
-		ok    bool
+		name string
+		log  []string
+		ok   bool
 	}{
-		{"from the start", trace(rec(out, probe), rec(back, probe), rec(out, sealed(device.MessageInitiationSize)), rec(back, sealed(device.MessageResponseSize))), true},
-		{"other flows and a flag line first", trace(rec(other, sealed(device.MessageKeepaliveSize)), rec(out, 0), rec(out, sealed(device.MessageInitiationSize))), true},
-		{"joined: data first", trace(rec(out, probe), rec(out, sealed(device.MessageTransportSize+96)), rec(out, sealed(device.MessageInitiationSize))), false},
-		{"joined: a keepalive first", trace(rec(out, sealed(device.MessageKeepaliveSize))), false},
-		{"joined: server-1's message first", trace(rec(back, sealed(device.MessageResponseSize)), rec(out, sealed(device.MessageInitiationSize))), false},
-		{"server-1's initiation", trace(rec(back, sealed(device.MessageInitiationSize))), false},
-		{"probes only", trace(rec(out, probe), rec(back, probe)), false},
-		{"no trace", "", false},
+		{"from the start", []string{line(other, -time.Second), line(out, -time.Millisecond), line(back, -time.Millisecond/2)}, true},
+		{"at the instant", []string{line(out, 0)}, true},
+		{"joined: device-a's datagram after", []string{line(other, -time.Second), line(out, 300*time.Millisecond)}, false},
+		{"joined: server-1's datagram after", []string{line(back, time.Millisecond), line(out, 2*time.Millisecond)}, false},
+		{"another flow only", []string{line(other, -time.Second)}, false},
+		{"empty", nil, false},
 	} {
-		err := firstWireGuardMessage(tc.trace, tunnel)
+		err := seenBeforeUp(strings.Join(tc.log, "\n"), tunnel, up)
 		if (err == nil) != tc.ok {
 			t.Errorf("%s: %v, want ok %v", tc.name, err, tc.ok)
 		}
@@ -1469,6 +1461,9 @@ var deferredDevices sync.Map // *lab.Lab → *deferredDevice
 type deferredDevice struct {
 	once sync.Once
 	err  error
+	// upBy is the latest its link to server-1 can have come up, on the
+	// lab's clock (linkUpBy).
+	upBy time.Time
 }
 
 // deferDevice leaves device-a's agent, installed, to the cell's deviceUp.
@@ -1506,6 +1501,7 @@ func deviceUp(t *testing.T, l *lab.Lab, b probeBudget) error {
 			_, err := statusWithin(dev, 2*time.Second, nil, linkUp)
 			switch {
 			case err == nil:
+				d.upBy, d.err = linkUpBy(dev)
 				return
 			case errors.Is(err, errSchemaVersion):
 				d.err = err
@@ -1540,12 +1536,49 @@ func holdWithDevice(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, i
 	holdTunnel(t, l, to, d, idle, blocks)
 }
 
-// judgedFromTheStart checks that the held cell's module read the row's
+// linkUpBy reads when device-a's link to server-1 came up at the latest:
+// the node's clock after its status, less the neighbor's up_for then.
+// Containers share the kernel's clock, the router's censor too.
+func linkUpBy(dev *lab.Node) (time.Time, error) {
+	out, err := execRead(dev, pollTimeout, "sh", "-c", "thinkpol status -json && date +%s.%N")
+	if err != nil {
+		return time.Time{}, err
+	}
+	out = strings.TrimSpace(out)
+	i := strings.LastIndexByte(out, '\n')
+	if i < 0 {
+		return time.Time{}, fmt.Errorf("status and clock: %q", out)
+	}
+	st, err := parseStatus(out[:i])
+	if err != nil {
+		return time.Time{}, err
+	}
+	sec, nsec, ok := strings.Cut(out[i+1:], ".")
+	secs, err1 := strconv.ParseInt(sec, 10, 64)
+	ns, err2 := strconv.ParseInt(nsec, 10, 64)
+	if !ok || err1 != nil || err2 != nil {
+		return time.Time{}, fmt.Errorf("device-a's clock: %q", out[i+1:])
+	}
+	if st.DataPlane != nil {
+		for _, n := range st.DataPlane.Neighbors {
+			if n.Up {
+				upFor, err := time.ParseDuration(n.UpFor)
+				if err != nil {
+					return time.Time{}, fmt.Errorf("up_for %q: %w", n.UpFor, err)
+				}
+				return time.Unix(secs, ns).Add(-upFor), nil
+			}
+		}
+	}
+	return time.Time{}, fmt.Errorf("no neighbor up: %s", st.raw)
+}
+
+// judgedFromTheStart checks that the held cell's censor read the row's
 // held connection (transport.tunnel) from its first packet, without which
-// a pass would mean nothing: it never tagged a TCP one "stream not
-// framed" (not TLS, or joined midstream), and a UDP one, which has no
-// stream to frame, starts in the module's trace with device-a's
-// handshake (firstWireGuardMessage).
+// a pass would mean nothing: the module never tagged a TCP one "stream
+// not framed" (not TLS, or joined midstream), and the censor saw a UDP
+// one, which has no stream to frame, before device-a's link came up
+// (seenBeforeUp).
 func judgedFromTheStart(t *testing.T, l *lab.Lab, c *censorRun, cc censorCase, tr transport) error {
 	if tr.tunnel == nil {
 		return fmt.Errorf("%s is held, but names no flow for its tunnel (transport.tunnel)", tr.name)
@@ -1558,50 +1591,42 @@ func judgedFromTheStart(t *testing.T, l *lab.Lab, c *censorRun, cc censorCase, t
 	if !tr.udp {
 		return nil
 	}
-	if cc.trace == "" {
-		return fmt.Errorf("censor case %q holds %s, a UDP row, with no trace to read its tunnel's start from", cc.name, tr.name)
+	v, ok := deferredDevices.Load(l)
+	if !ok {
+		return fmt.Errorf("%s didn't defer device-a: nothing says when its link came up", tr.name)
 	}
-	out, err := execRead(c.router, pollTimeout, "cat", cc.trace)
+	log, err := c.caughtUp()
 	if err != nil {
-		return fmt.Errorf("reading %s's trace: %w", cc.watch, err)
+		return err
 	}
-	return firstWireGuardMessage(completeLines(out), func(k censor.FlowKey) bool { return tr.tunnel(l, k) })
+	return seenBeforeUp(log, func(k censor.FlowKey) bool { return tr.tunnel(l, k) }, v.(*deferredDevice).upBy)
 }
 
-// firstWireGuardMessage checks, from wireguard-rhythm's trace, that the
-// censor saw a udp tunnel (its flows from device-a: tunnel) from its
-// first datagram: the first record either way that carries a WireGuard
-// message is device-a's handshake initiation. Before it the link sends
-// only path probes and their replies, shorter than any WireGuard message,
-// and WireGuard sends nothing before its handshake, so a censor that
-// joined a tunnel already up sees transport data or a keepalive first,
-// unless it joined between a link's start and its handshake. The sizes
-// are unpadded: m0.yaml pads nothing.
-func firstWireGuardMessage(trace string, tunnel func(censor.FlowKey) bool) error {
-	smallest := udp.Overhead + path.HeaderSize + device.MessageKeepaliveSize
-	initiation := udp.Overhead + path.HeaderSize + device.MessageInitiationSize
-	for _, line := range strings.Split(trace, "\n") {
-		if line == "" {
-			continue
+// seenBeforeUp checks, from the verdict log, that the censor saw a udp
+// tunnel (its flows from device-a: tunnel) from its first datagram: the
+// log's first line on it, either way, comes no later than upBy, when
+// device-a's link came up at the latest. The link is up once a reply to
+// its probe came back, so the censor saw that probe first; one that joined
+// a link already up saw it later.
+func seenBeforeUp(log string, tunnel func(censor.FlowKey) bool, upBy time.Time) error {
+	var first verdictLine
+	found, err := matchVerdicts(log, func(e verdictLine) bool {
+		if tunnel(e.Key) || tunnel(e.Key.Reverse()) {
+			first = e
+			return true
 		}
-		var tl censor.WGTraceLine
-		if err := json.Unmarshal([]byte(line), &tl); err != nil {
-			return fmt.Errorf("trace line %q: %w", line, err)
-		}
-		k, err := censor.ParseFlowKey(tl.Flow)
-		if err != nil {
-			continue
-		}
-		fromDevice := tunnel(k)
-		if !fromDevice && !tunnel(k.Reverse()) || tl.Size < smallest {
-			continue
-		}
-		if fromDevice && tl.Size == initiation {
-			return nil
-		}
-		return fmt.Errorf("the censor joined the tunnel already up: the first WireGuard message it saw is a %d-byte datagram on %s, not device-a's %d-byte handshake initiation", tl.Size, tl.Flow, initiation)
+		return false
+	})
+	switch {
+	case err != nil:
+		return err
+	case !found:
+		return fmt.Errorf("no line on the tunnel in the verdict log")
+	case first.Time.After(upBy):
+		return fmt.Errorf("the censor joined the tunnel already up: its first line on it (%s, %s) is %v after device-a's link came up",
+			first.Flow, first.Time.Format(time.RFC3339Nano), first.Time.Sub(upBy))
 	}
-	return fmt.Errorf("no WireGuard message on the tunnel in the trace")
+	return nil
 }
 
 // probeUDP pings server-1's overlay addresses, IPv4 and IPv6, through the
