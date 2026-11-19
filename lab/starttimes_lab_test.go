@@ -84,11 +84,11 @@ type startSample struct {
 
 func (s startSample) String() string {
 	return fmt.Sprintf("sealed %v (created %v, inspected %v, bridged %v); up: networks %v, containers created %v..%v, started %v..%v, returned %v",
-		ms(s.sealed), ms(s.created), ms(s.inspected), ms(s.bridged),
-		ms(s.netsCreated), ms(s.firstCreated), ms(s.lastCreated), ms(s.firstStarted), ms(s.lastStarted), ms(s.upDone))
+		roundSample(s.sealed), roundSample(s.created), roundSample(s.inspected), roundSample(s.bridged),
+		roundSample(s.netsCreated), roundSample(s.firstCreated), roundSample(s.lastCreated), roundSample(s.firstStarted), roundSample(s.lastStarted), roundSample(s.upDone))
 }
 
-func ms(d time.Duration) time.Duration { return d.Round(10 * time.Millisecond) }
+func roundSample(d time.Duration) time.Duration { return d.Round(10 * time.Millisecond) }
 
 func medianSample(all []startSample) startSample {
 	med := func(f func(startSample) time.Duration) time.Duration {
