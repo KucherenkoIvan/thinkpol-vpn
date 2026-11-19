@@ -69,10 +69,13 @@ func (t *Transport) openListener(ctx context.Context, cfg transport.ListenConfig
 		return nil, ls, err
 	}
 	// REALITY's detection verifies the target against the system roots,
-	// as verifyTarget does without targetRoots; crypto/x509 reads them from
-	// disk once per process, on first use, which on a loaded disk can take
-	// longer than the bounds below allow the target.
-	_, _ = x509.SystemCertPool()
+	// as verifyTarget does without targetRoots; on Linux and the BSDs
+	// crypto/x509 reads them from disk once per process, on first use,
+	// which on a loaded disk can take longer than the bounds below allow
+	// the target.
+	if err := readSystemRoots(ctx); err != nil {
+		return nil, ls, err
+	}
 	if err := verifyTarget(ctx, ls.target.String(), ls.names, t.targetRoots, detectWait, t.control); err != nil {
 		return nil, ls, err
 	}
@@ -85,6 +88,33 @@ func (t *Transport) openListener(ctx context.Context, cfg transport.ListenConfig
 		return nil, ls, fmt.Errorf("reality: %w", err)
 	}
 	return ln, ls, nil
+}
+
+// systemRoots is the process's first read of the system roots: done is
+// closed once it ended, after took is set (tests log it).
+var systemRoots = struct {
+	once sync.Once
+	done chan struct{}
+	took time.Duration
+}{done: make(chan struct{})}
+
+// readSystemRoots has crypto/x509 read the system roots, with no bound;
+// if ctx ends first it returns, the read going on.
+func readSystemRoots(ctx context.Context) error {
+	systemRoots.once.Do(func() {
+		go func() {
+			start := time.Now()
+			_, _ = x509.SystemCertPool()
+			systemRoots.took = time.Since(start)
+			close(systemRoots.done)
+		}()
+	})
+	select {
+	case <-systemRoots.done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("reality: reading the system roots: %w", context.Cause(ctx))
+	}
 }
 
 // newListener is a listener on ln (nil for a worker's Handoff, which is

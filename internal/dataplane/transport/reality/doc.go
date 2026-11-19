@@ -140,7 +140,13 @@
 // connection REALITY refuses and splices, so a legitimate hello at the
 // window's edge that REALITY refuses is cut after 15 s (known).
 //
-// Listen first completes a TLS 1.3 handshake with the target for each
+// Before checking the target, Listen has crypto/x509 read the system
+// roots, which on Linux and the BSDs it does from disk once per process,
+// on first use, with no bound: neither of the 10 s bounds below counts
+// that read, which can take longer than that on a loaded disk. A Listen
+// whose context ends during the read returns then; the read goes on.
+//
+// Listen then completes a TLS 1.3 handshake with the target for each
 // server name, through Control, within 10 s, and fails, naming the target
 // and the reason, unless the target's certificate verifies against the
 // system roots: REALITY's detection of the target's records stores the
@@ -155,16 +161,21 @@
 //
 // Then Listen has REALITY learn the target's post-handshake records and
 // waits for that, up to 10 s; REALITY dials the target for that without
-// the Control hook, and verifies it against the system roots. Before
-// either, Listen has crypto/x509 read the system roots, which it does from
-// disk once per process, on first use, with no bound: neither 10 s counts
-// that read, which can take longer than that on a loaded disk. Besides the
+// the Control hook, and verifies it against the system roots. Besides the
 // records, REALITY's detection learns how many ChangeCipherSpec records in
-// a row the target tolerates, by sending it 2, then 15, then 16 of them a
-// second apart on one more connection per server name and ALPN: a site
-// like nginx refuses the first burst and logs "unexpected ccs message" at
-// each detection, so the target's operator, and whoever sees the
-// server-to-target leg, can see a listener open (RR31). Listen fails if
+// a row the target tolerates: on one more connection per server name and
+// ALPN it sends the target 2 of them, then, unless the target alerted
+// within a second, 15, then 16. It runs once per process for each target,
+// server name and ALPN, and again only when a Listen re-runs a stalled
+// detection (below): not at every Listen, never for a handoff worker, and
+// nothing a client or prober sends triggers it. A site that refuses the
+// records, like nginx, gets only the first 2 and logs "unexpected ccs
+// message" with the client's address, which is the server's: the site's
+// operator learns the address of every server using it as camouflage, at
+// each restart, and whoever watches the server's uplink sees the
+// ChangeCipherSpec records in the clear and the detection's Go-fingerprinted
+// ClientHellos (RR66). Stock REALITY does the same, so this marks a
+// REALITY server, not thinkpol in particular. Listen fails if
 // REALITY's detection didn't end (the target stalled): REALITY keeps what
 // it learned per process, and would otherwise hold every authenticated
 // handshake for good. REALITY's detection runs on after Listen gave up on
