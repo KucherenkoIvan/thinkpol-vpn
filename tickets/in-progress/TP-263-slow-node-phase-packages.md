@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: agent-tp-263
+branch: tp-263-slow-node-packages
 ---
 
 ## Goal
@@ -28,3 +28,4 @@ Cold, internal/dataplane/packettest took 8m31s, internal/dataplane/routetable 7m
 
 ## Log
 - 2026-11-19 created in backlog (full-lab measurement on rewrite cb0348d6)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-263
