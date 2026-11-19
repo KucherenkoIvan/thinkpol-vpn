@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: agent-tp-258
+branch: tp-258-udp-link-after-censor
 ---
 
 ## Goal
@@ -32,3 +32,4 @@ setupUDP (lab/results_test.go ~:1407-1412) starts both agents and waits for link
 
 ## Log
 - 2026-11-19 created in backlog (TP-252 review)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-258
