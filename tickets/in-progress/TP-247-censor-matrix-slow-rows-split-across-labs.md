@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: [TP-239, TP-241, TP-236]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-247"
+branch: "tp-247-split-matrix-rows"
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ The owner wants a full lab to take at most 15 minutes on the remote runner (2026
 
 ## Log
 - 2026-11-19 created in backlog (lab-speed follow-ups)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-247
