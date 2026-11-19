@@ -92,7 +92,8 @@ type nodeStatus struct {
 type neighborStatus struct {
 	NodeID string `json:"node_id"`
 	Up     bool   `json:"up"`
-	UpFor  string `json:"up_for"`
+	// UpSince is zero while down (`null`).
+	UpSince time.Time `json:"up_since"`
 }
 
 // errSchemaVersion: the status is of a schema the lab doesn't read; no

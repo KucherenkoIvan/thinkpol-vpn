@@ -14,12 +14,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab/censor"
 )
@@ -586,6 +586,9 @@ func checkMatrix(cases []censorCase, rows []transport) error {
 				return fmt.Errorf("%s sets settings of %q, which is no censor module", tr.name, module)
 			}
 		}
+		if tr.hold != nil && tr.tunnel == nil {
+			return fmt.Errorf("%s is held, but names no flow for its tunnel (transport.tunnel): judgedFromTheStart couldn't read it", tr.name)
+		}
 	}
 	for _, cc := range cases[1:] {
 		if cc.modules == nil {
@@ -696,16 +699,18 @@ func TestCheckMatrix(t *testing.T) {
 		return []censorCase{{name: "off"}, {name: "held", modules: on, hold: time.Minute, expect: expect, blocker: "wireguard-rhythm"}}
 	}
 	hold := func(*testing.T, *lab.Lab, probeTarget, time.Duration, bool, func() int) {}
+	tunnel := func(*lab.Lab, censor.FlowKey) bool { return true }
 	for _, c := range []struct {
 		name    string
 		cases   []censorCase
 		rows    []transport
 		wantErr bool
 	}{
-		{"control held, expected to fail", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowUDP, udp: true, hold: hold}}, false},
-		{"control expected to pass", held(nil), []transport{{name: rowUDP, udp: true, hold: hold}}, true},
+		{"control held, expected to fail", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowUDP, udp: true, hold: hold, tunnel: tunnel}}, false},
+		{"control expected to pass", held(nil), []transport{{name: rowUDP, udp: true, hold: hold, tunnel: tunnel}}, true},
 		{"control not held", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowUDP, udp: true}}, true},
-		{"no control row", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowReality, hold: hold}}, true},
+		{"no control row", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowReality, hold: hold, tunnel: tunnel}}, true},
+		{"held row names no tunnel", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowUDP, udp: true, hold: hold}}, true},
 	} {
 		if err := checkMatrix(c.cases, c.rows); (err != nil) != c.wantErr {
 			t.Errorf("%s: %v, want an error %v", c.name, err, c.wantErr)
@@ -1484,7 +1489,8 @@ func withRowSettings(configs []censor.ModuleConfig, overrides map[string]map[str
 
 // TestSeenBeforeUp: a censor that saw a udp tunnel's first datagram has
 // a line on it from before device-a's link came up; one that joined later
-// has its first line after.
+// has its first line after. A line on the tunnel after it came up (a
+// verdict on a later datagram) doesn't undo the first.
 func TestSeenBeforeUp(t *testing.T) {
 	dev := netip.MustParseAddr("192.0.2.2")
 	tunnel := func(k censor.FlowKey) bool { return k.Proto == censor.ProtoUDP && k.Src == dev }
@@ -1503,6 +1509,7 @@ func TestSeenBeforeUp(t *testing.T) {
 		{"from the start", []string{line(other, -time.Second), line(out, -time.Millisecond), line(back, -time.Millisecond/2)}, true},
 		{"server-1's datagram doesn't count", []string{line(back, -time.Millisecond), line(out, time.Millisecond)}, false},
 		{"at the instant", []string{line(out, 0)}, true},
+		{"the first line decides, not the last", []string{line(out, -time.Millisecond), line(out, time.Second)}, true},
 		{"joined: device-a's datagram after", []string{line(other, -time.Second), line(out, 300*time.Millisecond)}, false},
 		{"another flow only", []string{line(other, -time.Second)}, false},
 		{"empty", nil, false},
@@ -1510,6 +1517,40 @@ func TestSeenBeforeUp(t *testing.T) {
 		err := seenBeforeUp(strings.Join(tc.log, "\n"), tunnel, up)
 		if (err == nil) != tc.ok {
 			t.Errorf("%s: %v, want ok %v", tc.name, err, tc.ok)
+		}
+	}
+}
+
+// TestUpSince: the link-up time is server-1's neighbor's, by node id, not
+// the first neighbor up's; without it the error says it wasn't read.
+func TestUpSince(t *testing.T) {
+	status := func(neighbors string) nodeStatus {
+		st, err := parseStatus(fmt.Sprintf(`{"schema_version": %d, "data_plane": {"neighbors": [%s]}}`, localapi.SchemaVersion, neighbors))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	other := `{"node_id": "bb", "up": true, "up_since": "2026-11-19T10:00:00Z"}`
+	server1 := `{"node_id": "aa", "up": true, "up_since": "2026-11-19T10:00:05.5Z"}`
+	down := `{"node_id": "aa", "up": false, "up_since": null}`
+	for _, tc := range []struct {
+		name string
+		d    *deferredDevice
+		want time.Time
+	}{
+		{"server-1's, not the first up", &deferredDevice{server1: "aa", up: status(other + "," + server1)}, time.Date(2026, 11, 19, 10, 0, 5, 5e8, time.UTC)},
+		{"server-1 down", &deferredDevice{server1: "aa", up: status(other + "," + down)}, time.Time{}},
+		{"server-1 absent", &deferredDevice{server1: "aa", up: status(other)}, time.Time{}},
+		{"no server-1 id", &deferredDevice{up: status(server1)}, time.Time{}},
+		{"never up", &deferredDevice{server1: "aa"}, time.Time{}},
+	} {
+		got, err := tc.d.upSince()
+		switch {
+		case tc.want.IsZero() && (err == nil || !strings.Contains(err.Error(), "link-up time wasn't read")):
+			t.Errorf("%s: %v, %v; want the link-up time unread", tc.name, got, err)
+		case !tc.want.IsZero() && (err != nil || !got.Equal(tc.want)):
+			t.Errorf("%s: %v, %v; want %v", tc.name, got, err, tc.want)
 		}
 	}
 }
@@ -1741,7 +1782,7 @@ func setupUDP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	if _, err := statusWithin(server, 60*time.Second, nil, mapApplied(version)); err != nil {
 		return probeTarget{}, err
 	}
-	deferDevice(t, l)
+	deferDevice(t, l).server1 = space.nodeID(t, "server-1")
 	o4, o6 := space.overlay(1)
 	return probeTarget{o4, o6}, nil
 }
@@ -1755,15 +1796,41 @@ var deferredDevices sync.Map // *lab.Lab → *deferredDevice
 type deferredDevice struct {
 	once sync.Once
 	err  error
-	// upBy is the latest its link to server-1 can have come up, on the
-	// lab's clock (linkUpBy).
-	upBy time.Time
+	// server1 is server-1's node id, set by a row whose held cells read
+	// when the link came up (upSince).
+	server1 string
+	// up is the status that showed the link up.
+	up nodeStatus
 }
 
 // deferDevice leaves device-a's agent, installed, to the cell's deviceUp.
-func deferDevice(t *testing.T, l *lab.Lab) {
-	deferredDevices.Store(l, &deferredDevice{})
+func deferDevice(t *testing.T, l *lab.Lab) *deferredDevice {
+	d := &deferredDevice{}
+	deferredDevices.Store(l, d)
 	t.Cleanup(func() { deferredDevices.Delete(l) })
+	return d
+}
+
+// upSince is when device-a's link to server-1 came up, the engine's own
+// instant (`up_since`) from the status deviceUp's poll ended on: no read
+// of its own to fail.
+func (d *deferredDevice) upSince() (time.Time, error) {
+	switch {
+	case d.server1 == "":
+		return time.Time{}, fmt.Errorf("device-a's link-up time wasn't read: the row names no server-1 node id")
+	case d.up.raw == "":
+		return time.Time{}, fmt.Errorf("device-a's link-up time wasn't read: its link never showed up")
+	}
+	for _, n := range d.up.DataPlane.Neighbors {
+		if n.NodeID != d.server1 {
+			continue
+		}
+		if !n.Up || n.UpSince.IsZero() {
+			return time.Time{}, fmt.Errorf("device-a's link-up time wasn't read: server-1 (%s) isn't up since a time in the status that showed the link up:\n%s", d.server1, d.up.raw)
+		}
+		return n.UpSince, nil
+	}
+	return time.Time{}, fmt.Errorf("device-a's link-up time wasn't read: server-1 (%s) isn't a neighbor in the status that showed the link up:\n%s", d.server1, d.up.raw)
 }
 
 // deviceUp starts device-a's agent once per lab and waits for its link,
@@ -1779,6 +1846,10 @@ func deviceUp(t *testing.T, l *lab.Lab, b probeBudget) error {
 	d := v.(*deferredDevice)
 	d.once.Do(func() {
 		dev := l.Node(lab.DeviceA)
+		start := time.Now()
+		defer func() {
+			t.Logf("deviceUp: %v after device-a's start (err %v)", time.Since(start).Round(time.Millisecond), d.err)
+		}()
 		startUp(t, dev)
 		deadline := time.Now().Add(60 * time.Second)
 		var watch func() func() bool
@@ -1792,10 +1863,10 @@ func deviceUp(t *testing.T, l *lab.Lab, b probeBudget) error {
 			if watch != nil {
 				blocked = watch()
 			}
-			_, err := statusWithin(dev, 2*time.Second, nil, linkUp)
+			st, err := statusWithin(dev, 2*time.Second, nil, linkUp)
 			switch {
 			case err == nil:
-				d.upBy, d.err = linkUpBy(dev)
+				d.up = st
 				return
 			case errors.Is(err, errSchemaVersion):
 				d.err = err
@@ -1830,49 +1901,12 @@ func holdWithDevice(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, i
 	holdTunnel(t, l, to, d, idle, blocks)
 }
 
-// linkUpBy reads when device-a's link to server-1 came up at the latest:
-// the node's clock after its status, less the neighbor's up_for then.
-// Containers share the kernel's clock, the router's censor too.
-func linkUpBy(dev *lab.Node) (time.Time, error) {
-	out, err := execRead(dev, pollTimeout, "sh", "-c", "thinkpol status -json && date +%s.%N")
-	if err != nil {
-		return time.Time{}, err
-	}
-	out = strings.TrimSpace(out)
-	i := strings.LastIndexByte(out, '\n')
-	if i < 0 {
-		return time.Time{}, fmt.Errorf("status and clock: %q", out)
-	}
-	st, err := parseStatus(out[:i])
-	if err != nil {
-		return time.Time{}, err
-	}
-	sec, nsec, ok := strings.Cut(out[i+1:], ".")
-	secs, err1 := strconv.ParseInt(sec, 10, 64)
-	ns, err2 := strconv.ParseInt(nsec, 10, 64)
-	if !ok || err1 != nil || err2 != nil {
-		return time.Time{}, fmt.Errorf("device-a's clock: %q", out[i+1:])
-	}
-	if st.DataPlane != nil {
-		for _, n := range st.DataPlane.Neighbors {
-			if n.Up {
-				upFor, err := time.ParseDuration(n.UpFor)
-				if err != nil {
-					return time.Time{}, fmt.Errorf("up_for %q: %w", n.UpFor, err)
-				}
-				return time.Unix(secs, ns).Add(-upFor), nil
-			}
-		}
-	}
-	return time.Time{}, fmt.Errorf("no neighbor up: %s", st.raw)
-}
-
 // judgedFromTheStart checks that the held cell's censor read the row's
 // held connection (transport.tunnel) from its first packet, without which
 // a pass would mean nothing: the module never tagged a TCP one "stream
 // not framed" (not TLS, or joined midstream), and the censor saw a UDP
 // one, which has no stream to frame, before device-a's link came up
-// (seenBeforeUp).
+// (seenBeforeUp, deferredDevice.upSince).
 func judgedFromTheStart(t *testing.T, l *lab.Lab, c *censorRun, cc censorCase, tr transport) error {
 	if tr.tunnel == nil {
 		return fmt.Errorf("%s is held, but names no flow for its tunnel (transport.tunnel)", tr.name)
@@ -1889,20 +1923,26 @@ func judgedFromTheStart(t *testing.T, l *lab.Lab, c *censorRun, cc censorCase, t
 	if !ok {
 		return fmt.Errorf("%s didn't defer device-a: nothing says when its link came up", tr.name)
 	}
+	upSince, err := v.(*deferredDevice).upSince()
+	if err != nil {
+		return err
+	}
 	log, err := c.caughtUp()
 	if err != nil {
 		return err
 	}
-	return seenBeforeUp(log, func(k censor.FlowKey) bool { return tr.tunnel(l, k) }, v.(*deferredDevice).upBy)
+	return seenBeforeUp(log, func(k censor.FlowKey) bool { return tr.tunnel(l, k) }, upSince)
 }
 
 // seenBeforeUp checks, from the verdict log, that the censor saw a udp
 // tunnel (its flows from device-a: tunnel) from its first datagram: the
-// log's first line on it comes no later than upBy, when device-a's link
-// came up at the latest. The link is up once a reply to its probe came
-// back, so the censor saw that probe first; one that joined a link
-// already up saw it later.
-func seenBeforeUp(log string, tunnel func(censor.FlowKey) bool, upBy time.Time) error {
+// log's first line on it comes no later than upSince, when device-a's
+// link came up. The link is up once a reply to its probe came back, and
+// the censor stamps a line when it judges the packet, before forwarding
+// it, so a censor that saw the probe has a line from before; one that
+// joined a link already up has its first after. Containers share the
+// kernel's clock.
+func seenBeforeUp(log string, tunnel func(censor.FlowKey) bool, upSince time.Time) error {
 	var first verdictLine
 	found, err := matchVerdicts(log, func(e verdictLine) bool {
 		if tunnel(e.Key) {
@@ -1916,9 +1956,9 @@ func seenBeforeUp(log string, tunnel func(censor.FlowKey) bool, upBy time.Time) 
 		return err
 	case !found:
 		return fmt.Errorf("no line on the tunnel in the verdict log")
-	case first.Time.After(upBy):
+	case first.Time.After(upSince):
 		return fmt.Errorf("the censor joined the tunnel already up: its first line on it (%s, %s) is %v after device-a's link came up",
-			first.Flow, first.Time.Format(time.RFC3339Nano), first.Time.Sub(upBy))
+			first.Flow, first.Time.Format(time.RFC3339Nano), first.Time.Sub(upSince))
 	}
 	return nil
 }
