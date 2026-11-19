@@ -34,6 +34,11 @@ In `lab/censor/modules_prober.go` (`upstreamTally.unattributable`, `shortBaselin
 - Old code at c9d0f06f, lab-gotest of the reality row × off and active prober, 3 runs: 2 not judged (long baseline), 1 pass ("9 dials in 7.551s of probes, 7 in 4.399s outside them, a baseline shorter than the probing, ...").
 - New code at f0416e9c, lab-gotest of reality lab 2 × off and active prober, COUNT=10, alongside two other sessions' full labs (load 10 to 31 on the runner): 10 of 10 not judged. 7 were unattributable (outside 8.07 to 8.25 s), and 3 had a short baseline (4.20, 4.45 and 5.02 s outside against 5.60, 7.56 and 7.54 s of probing), which the old code would have scored pass.
 
+## Review findings
+- [x] R1.1 `unjudged` matched the short-baseline words in a flag-mode block's text too (relay-tcp): only accept verdicts count now, so a block's cell can't read not judged (TestUnjudged case + mutation).
+- [x] R1.2 `unattributable`'s comment: the baseline before the first probe is however long setup took (about 4 to 8 s in the lab), not a second or two.
+- [x] R1.3 lab/censor/doc.go: a long baseline (past about 11 s) still scores a reported tell pass; points to TP-264.
+
 ## Log
 - 2026-11-19 created in backlog (TP-247 review)
 - 2026-11-19 backlog → in-progress, owner: agent-tp-255
@@ -44,3 +49,5 @@ In `lab/censor/modules_prober.go` (`upstreamTally.unattributable`, `shortBaselin
 - 2026-11-19 make lint and make test pass at b75c677d (rewrite merged in); lab-gotest at b75c677d of relay-tcp and reality lab 2 × off and active prober: relay-tcp fails as expected, flagged on the tell over a short baseline (8 dials in 5.53 s of probes, 1 in 1.12 s outside); reality not judged (unattributable, 8 in 5.53 s against 8 in 8.12 s). No full lab: the brief asked for none, and only TestCensorMatrix's scoring and the prober's text constants changed
 - 2026-11-19 not verified: a long baseline past about 11 s (setup much slower than in any run so far) would read pass; see Notes
 - 2026-11-19 in-progress → review
+- 2026-11-19 review round 1: nits R1.1–R1.3, merge
+- 2026-11-19 R1.1 mutation, killed: unjudged without the accept-only filter (TestUnjudged, "a flag-mode block over a short baseline")

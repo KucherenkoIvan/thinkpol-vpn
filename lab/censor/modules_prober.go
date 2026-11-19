@@ -564,9 +564,10 @@ type upstreamTally struct {
 // unattributable says whether the host connects to the reference outside
 // its probes at least half as often as during them: then the probes
 // didn't clearly cause the connections, which may be the host's own. A
-// baseline shorter than the probing is too little evidence for that: the
-// censor starts right before the first probe, so an entry's dial for the
-// very client the censor suspects lands in a baseline of a second or two.
+// baseline shorter than the probing is too little evidence for that: an
+// entry dials for the very client the censor suspects, and censord starts
+// right before the transport's setup, so the baseline before the first
+// probe is however long setup took (about 4 to 8 s in the lab).
 func (u upstreamTally) unattributable() bool {
 	// between/outside >= during/probing / 2, in integers.
 	return !u.shortBaseline() && u.between > 0 && 2*int64(u.between)*int64(u.probing) >= int64(u.during)*int64(u.outside)
