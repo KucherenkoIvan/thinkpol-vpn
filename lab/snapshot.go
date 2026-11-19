@@ -353,13 +353,12 @@ const (
 
 // Snapshot records every node's state, and a copy of its /etc, as the
 // state Reset puts the lab back in. Take it when nothing runs in the lab
-// but what is meant to stay; it waits first until every node's command
-// has started (it waits for the seal in a loop of its own, whose sleeps a
-// snapshot must not record: Reset would kill the command for them).
+// but what is meant to stay; it waits first until every node has settled
+// (Node.waitSettled).
 func (l *Lab) Snapshot(ctx context.Context) (*Snapshot, error) {
 	s := &Snapshot{nodes: map[string]nodeState{}, etc: fmt.Sprintf("/run/lab/snapshot-%d.tar", snapshots.Add(1))}
 	err := l.eachNode(func(n *Node) error {
-		if err := n.waitCommand(ctx); err != nil {
+		if err := n.waitSettled(ctx); err != nil {
 			return err
 		}
 		_, err := n.read(ctx, resetExec, "tar", "-C", "/", "-cf", s.etc, "etc")
@@ -385,24 +384,37 @@ func (l *Lab) DropSnapshot(ctx context.Context, s *Snapshot) error {
 	})
 }
 
-// waitCommand waits until no process of n is still the wait for the seal
-// its command starts with (compose.go).
-func (n *Node) waitCommand(ctx context.Context) error {
+// waitSettled waits until n's command has started and no IPv6 address
+// of n is tentative. Its command waits for the seal in a loop of its own,
+// whose sleeps a snapshot must not record (Reset would kill the command
+// for them); an address still in duplicate address detection gets its
+// local routes from the kernel when it is done, which a snapshot taken
+// before would have Reset delete.
+func (n *Node) waitSettled(ctx context.Context) error {
 	for {
-		out, err := n.read(ctx, resetExec, "ps", "-eo", "args=")
+		out, err := n.read(ctx, resetExec, "sh", "-c", "ps -eo args= && echo "+settledSep+" && ip -6 -o addr show tentative")
 		if err != nil {
 			return err
 		}
-		if !waitsForSeal(out) {
+		ps, tentative, _ := strings.Cut(out, settledSep+"\n")
+		var why string
+		switch {
+		case waitsForSeal(ps):
+			why = "its command still waits for the seal"
+		case strings.TrimSpace(tentative) != "":
+			why = "an address is still tentative: " + strings.TrimSpace(tentative)
+		default:
 			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%s: its command still waits for the seal: %w", n.Name, ctx.Err())
+			return fmt.Errorf("%s: %s: %w", n.Name, why, ctx.Err())
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }
+
+const settledSep = "--settled--"
 
 // waitsForSeal says whether ps's args (one process a line) have the
 // shell that waits for the seal: docker-init, which started it, keeps it
