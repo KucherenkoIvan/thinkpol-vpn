@@ -31,7 +31,7 @@ const rowReality = "reality"
 // connection from the first byte.
 var realityRow = transport{
 	name: rowReality, setup: setupReality, probe: probeWithDevice, sawFlows: sawReality,
-	hold: holdWithDevice, tunnel: realityFlow, tls: true,
+	hold: holdWithDevice, tunnel: realityFlow, tls: true, labs: 3, cellTime: 20 * time.Second,
 	// One link, over whichever of server-1's endpoints came up first.
 	oneUnderlay: true,
 	// REALITY dials its target on every connection it doesn't recognize:

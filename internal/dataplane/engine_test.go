@@ -126,6 +126,13 @@ func (nd *node) start(t *testing.T, net *memory.Network) {
 	}
 	nd.engine = e
 	nd.stack = newStack(t, ch)
+	t.Cleanup(func() { _ = e.Close() })
+	// Applied before listening, so the listener admits the section's
+	// inbound links from its first dial: a running listener learns of a
+	// table change on its own goroutine, and a dial that comes first gets
+	// a link nothing answers, which only the dialer's DeadAfter on its path
+	// clock closes (never, while a test holds that clock still).
+	nd.apply(t)
 	if nd.listen.IsValid() {
 		l, err := net.Listen(context.Background(), transport.ListenConfig{Address: nd.listen.String()}, transport.Admission{Peers: e.Inbound(memory.Name)})
 		if err != nil {
@@ -138,8 +145,6 @@ func (nd *node) start(t *testing.T, net *memory.Network) {
 		}()
 		t.Cleanup(func() { _ = l.Close(); <-served })
 	}
-	t.Cleanup(func() { _ = e.Close() })
-	nd.apply(t)
 }
 
 func (nd *node) apply(t *testing.T) {

@@ -3,6 +3,7 @@
 package lab_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,32 +26,35 @@ import (
 
 // TestCensorMatrix scores every transport against every censor module (PRD
 // C4, success metric 1) and regenerates lab/RESULTS.md. Each transport's
-// row runs in one lab of its own (router, device-a, server-1 and
-// camouflage, holding its own lab slot, lab.StartOwnSlot), the rows in
-// parallel and a row's cells one after another: a transport passes when
-// its data crossed the censor in the lab router over IPv4 and over IPv6,
-// fails when it crossed over neither, and is partial when only one family
-// crossed, which only a row that varies (censorCase.varies) or a known
+// row runs in a lab of its own, or a slow row's cells split across a few
+// (transport.labs, rowLabs), each lab with router, device-a, server-1 and
+// camouflage, holding its own lab slot (lab.StartOwnSlot), the labs in
+// parallel, the longest expected started first (matrixLabs), and a lab's
+// cells one after another: a transport passes when its data crossed the
+// censor in the lab router over IPv4 and over IPv6, fails when it crossed
+// over neither, and is partial when only one family crossed, which only a row that varies (censorCase.varies) or a known
 // flake (censorCase.flakes) may be. A cell whose outcome contradicts what
 // its censor means to produce fails the test, and a cell whose censor
 // can't be trusted (censord died, the kernel dropped queued packets, an
 // active module missed a snapshot, the verdict log doesn't show the
 // probe's flows, the module the cell quotes didn't compare what it must)
-// is an error. RESULTS.md is written only by a
-// complete run with no error.
+// is an error. RESULTS.md is written only by a complete run with no error.
 //
-// Every cell sets its transport up afresh, and after it the row's lab is
+// Every cell sets its transport up afresh, and after it the cell's lab is
 // reset to the state it came up in (matrixRow.reset): the cell's
-// processes, censord with them, stopped, the links, addresses, routes,
+// processes, censord with them, stopped, its TCP connections aborted
+// (and none left, matrixRow.abortTCP), the links, addresses, routes,
 // policy rules, tables and files it left removed, the router's censor
-// table and conntrack cleared, the verdict log gone. A reset that didn't hold makes the cell
-// an error, and every later cell of its row.
+// table and conntrack cleared, the verdict log gone. A reset that didn't
+// hold makes the cell an error, and every later cell of its lab.
 //
-// A transport's off cell (no censor) runs first and the censored cells
-// read its result: a transport must pass without a censor before it is
-// judged against one. A censored cell without a passing off cell is an
-// error and fails fast, whether the off cell didn't run (a -run filter can
-// select the cell alone) or it failed.
+// A transport's off cell (no censor) runs first in each of its labs and
+// the lab's censored cells read its result: a transport must pass without
+// a censor before it is judged against one, in the lab that judges it.
+// The row's first lab records the off cell; in the others it is only the
+// gate. A censored cell without a passing off cell is an error and fails
+// fast, whether the off cell didn't run (a -run filter can select the cell
+// alone) or it failed.
 //
 // The held cells (heldCell: a row holding its tunnel through three of
 // WireGuard's rekeys, rhythmHold) are the long stream's (lab.StreamLong),
@@ -86,18 +91,21 @@ func TestCensorMatrix(t *testing.T) {
 	})
 
 	// runCell probes one cell, resets the row's lab after it, and records
-	// it: t.Fatal below ends the function before its return, the cleanup
-	// is what survives.
-	runCell := func(t *testing.T, row *matrixRow, tr transport, cc censorCase) matrixCell {
+	// it unless it ran only as its lab's gate (a row's off cell in its
+	// other labs): t.Fatal below ends the function before its return, the
+	// cleanup is what survives.
+	runCell := func(t *testing.T, row *matrixRow, tr transport, cc censorCase, recorded bool) matrixCell {
 		cell := &matrixCell{transport: tr.name, censor: cc.name, result: "error"}
 		// Registered first, so it runs after the cleanups that stop the
 		// cell's processes.
 		t.Cleanup(func() {
-			if err := row.reset(); err != nil {
+			if err := row.reset(t.Logf); err != nil {
 				cell.result, cell.detail = "error", "the lab's reset after the cell didn't hold"
 				t.Errorf("%s against %s: %s: %v", tr.name, cc.name, cell.detail, err)
 			}
-			record(*cell)
+			if recorded {
+				record(*cell)
+			}
 		})
 
 		l := row.lab
@@ -229,44 +237,307 @@ func TestCensorMatrix(t *testing.T) {
 	if err := checkMatrix(censorCases, transports); err != nil {
 		t.Fatal(err)
 	}
-	off, censored := censorCases[0], censorCases[1:]
-	for _, tr := range transports {
-		if stream == lab.StreamLong && !slices.ContainsFunc(censored, func(cc censorCase) bool { return heldCell(tr, cc) }) {
-			continue
-		}
-		t.Run(tr.name, func(t *testing.T) {
+	for _, ml := range matrixLabs(stream, transports, censorCases) {
+		tr := ml.tr
+		t.Run(ml.name(), func(t *testing.T) {
 			t.Parallel()
 			row := startRow(t)
+			gate, cells := ml.cells[0], ml.cells[1:]
 			offResult := "" // the off cell's result; "" when it didn't run
-			t.Run(off.name, func(t *testing.T) {
+			t.Run(gate.cc.name, func(t *testing.T) {
 				// runCell records the cell even when t.Fatal stops it,
 				// but the assignment would not happen: claim that the
 				// cell ran before it can fail.
 				offResult = "error"
-				offResult = runCell(t, row, tr, off).result
+				offResult = runCell(t, row, tr, gate.cc, gate.record).result
 			})
-			for _, cc := range censored {
-				if !inStream(stream, tr, cc) {
-					continue
-				}
-				t.Run(cc.name, func(t *testing.T) {
-					gate := ""
+			for _, lc := range cells {
+				t.Run(lc.cc.name, func(t *testing.T) {
+					reason := ""
 					switch {
 					case offResult == "":
-						gate = gateNotRun
+						reason = gateNotRun
 					case offResult != "pass":
-						gate = gateNotPassed
+						reason = gateNotPassed
 					case row.broken != nil:
-						gate = row.broken.Error()
+						reason = row.broken.Error()
 					}
-					if gate != "" {
-						record(matrixCell{transport: tr.name, censor: cc.name, result: "error", detail: gate})
-						t.Fatal(gate)
+					if reason != "" {
+						if lc.record {
+							record(matrixCell{transport: tr.name, censor: lc.cc.name, result: "error", detail: reason})
+						}
+						t.Fatal(reason)
 					}
-					runCell(t, row, tr, cc)
+					runCell(t, row, tr, lc.cc, lc.record)
 				})
 			}
 		})
+	}
+}
+
+// matrixLab is one of a row's labs in a stream: its cells one after
+// another, the row's off cell first, as the lab's gate.
+type matrixLab struct {
+	tr    transport
+	part  int       // the lab's index among the row's labs in the stream
+	cells []labCell // cells[0] is the off cell
+}
+
+// labCell is a cell a lab runs, and whether the lab records it: a row's
+// off cell is recorded by its first lab only, the others run it only as
+// their gate.
+type labCell struct {
+	cc     censorCase
+	record bool
+}
+
+// name is the lab's subtest: the row's name for its first lab, "<row> lab
+// <n>" for the others.
+func (ml matrixLab) name() string {
+	if ml.part == 0 {
+		return ml.tr.name
+	}
+	return fmt.Sprintf("%s lab %d", ml.tr.name, ml.part+1)
+}
+
+// expected is how long the lab's cells take on a quiet machine: the row's
+// cellTime each, and a held cell's hold on top.
+func (ml matrixLab) expected() time.Duration {
+	var d time.Duration
+	for _, lc := range ml.cells {
+		d += ml.tr.cellTime
+		if heldCell(ml.tr, lc.cc) {
+			d += lc.cc.hold
+		}
+	}
+	return d
+}
+
+// matrixLabs is every row's labs in the stream (rowLabs), the longest
+// expected first: go test starts parallel subtests in about this order as
+// -parallel slots free up (fewer than the lab slots), so a long lab
+// started last would set the matrix's wall time.
+func matrixLabs(stream string, rows []transport, cases []censorCase) []matrixLab {
+	var labs []matrixLab
+	for _, tr := range rows {
+		labs = append(labs, rowLabs(stream, tr, cases)...)
+	}
+	slices.SortStableFunc(labs, func(a, b matrixLab) int { return cmp.Compare(b.expected(), a.expected()) })
+	return labs
+}
+
+// rowLabs is the row's labs in the stream, each starting with the off
+// cell (cases[0]) as its gate: the stream's censored cells, in cases'
+// order, held cells (heldCell) in the row's first lab, the rest dealt in
+// turn across the other labs, or across all of them when none is held, up
+// to transport.labs labs (fewer when the row has fewer cells). Only the
+// first lab records the off cell, so every cell is recorded once, and
+// the held cells are in the lab named after the row, the one make
+// lab-test-rhythm-real selects. A stream with none of the row's censored
+// cells starts no lab for it, except that the default stream (and no
+// stream) runs the off cell in one lab of its own.
+func rowLabs(stream string, tr transport, cases []censorCase) []matrixLab {
+	off := cases[0]
+	var cells []censorCase
+	for _, cc := range cases[1:] {
+		if inStream(stream, tr, cc) {
+			cells = append(cells, cc)
+		}
+	}
+	if len(cells) == 0 && stream == lab.StreamLong {
+		return nil
+	}
+	n := min(max(tr.labs, 1), max(len(cells), 1))
+	labs := make([]matrixLab, n)
+	for i := range labs {
+		labs[i] = matrixLab{tr: tr, part: i, cells: []labCell{{cc: off, record: i == 0}}}
+	}
+	first := 0
+	if n > 1 && slices.ContainsFunc(cells, func(cc censorCase) bool { return heldCell(tr, cc) }) {
+		first = 1
+	}
+	dealt := 0
+	for _, cc := range cells {
+		i := 0
+		if !heldCell(tr, cc) {
+			i = first + dealt%(n-first)
+			dealt++
+		}
+		labs[i].cells = append(labs[i].cells, labCell{cc: cc, record: true})
+	}
+	return labs
+}
+
+// TestRowLabs: in each stream, every row's cells of the stream are in
+// exactly one of its labs, each lab with at least one of them (a default
+// stream's row with none has one lab, for its off cell), named apart, no
+// more labs than the row asks for; every lab runs the off cell first and
+// its cells in censorCases' order, and one lab records the off cell (the
+// long stream's share leaves it out, matrixShareOf), so the labs record
+// the stream's cells once each; a held cell is in the row's first lab,
+// alone when the row has more; the long stream starts labs only for held
+// rows. A split row splits its default stream's cells evenly, and the
+// labs start longest expected first.
+func TestRowLabs(t *testing.T) {
+	split := false
+	order := map[string]int{}
+	for i, cc := range censorCases {
+		order[cc.name] = i
+	}
+	for _, stream := range []string{"", lab.StreamDefault, lab.StreamLong} {
+		names := map[string]bool{}
+		recorded := 0
+		labs := matrixLabs(stream, transports, censorCases)
+		for i := 1; i < len(labs); i++ {
+			if labs[i].expected() > labs[i-1].expected() {
+				t.Errorf("%q stream: %s (%v expected) starts after %s (%v)", stream, labs[i].name(), labs[i].expected(), labs[i-1].name(), labs[i-1].expected())
+			}
+		}
+		for _, ml := range labs {
+			if names[ml.name()] {
+				t.Errorf("%q stream: two labs named %q", stream, ml.name())
+			}
+			names[ml.name()] = true
+			if len(ml.cells) == 0 || ml.cells[0].cc.name != censorCases[0].name {
+				t.Errorf("%q stream: %s doesn't run the off cell first", stream, ml.name())
+				continue
+			}
+			for i := 1; i < len(ml.cells); i++ {
+				if order[ml.cells[i].cc.name] <= order[ml.cells[i-1].cc.name] {
+					t.Errorf("%q stream: %s runs %q after %q, against censorCases' order", stream, ml.name(), ml.cells[i].cc.name, ml.cells[i-1].cc.name)
+				}
+			}
+			for _, lc := range ml.cells {
+				if lc.record && (stream != lab.StreamLong || lc.cc.name != censorCases[0].name) {
+					recorded++
+				}
+			}
+		}
+		for _, tr := range transports {
+			var rowLabs []matrixLab
+			for _, ml := range labs {
+				if ml.tr.name == tr.name {
+					rowLabs = append(rowLabs, ml)
+				}
+			}
+			slices.SortFunc(rowLabs, func(a, b matrixLab) int { return cmp.Compare(a.part, b.part) })
+			got, offs := map[string]int{}, 0
+			for i, ml := range rowLabs {
+				labHolds := slices.ContainsFunc(ml.cells, func(lc labCell) bool { return heldCell(tr, lc.cc) })
+				if ml.part != i {
+					t.Errorf("%q stream, %s: lab %d says part %d", stream, tr.name, i, ml.part)
+				}
+				if len(ml.cells) < 2 && len(rowLabs) > 1 {
+					t.Errorf("%q stream: %s has no cell", stream, ml.name())
+				}
+				for j, lc := range ml.cells {
+					if j == 0 {
+						if lc.record {
+							offs++
+						}
+						continue
+					}
+					got[lc.cc.name]++
+					if !lc.record {
+						t.Errorf("%q stream: %s doesn't record %s", stream, ml.name(), lc.cc.name)
+					}
+					if heldCell(tr, lc.cc) && ml.part != 0 {
+						t.Errorf("%q stream: held cell %s / %s in %s, not the row's first lab", stream, tr.name, lc.cc.name, ml.name())
+					}
+					if !heldCell(tr, lc.cc) && labHolds && len(rowLabs) > 1 {
+						t.Errorf("%q stream: %s / %s beside a held cell in %s, though the row has other labs", stream, tr.name, lc.cc.name, ml.name())
+					}
+				}
+			}
+			if len(rowLabs) > 0 && offs != 1 {
+				t.Errorf("%q stream: %s's labs record its off cell %d times", stream, tr.name, offs)
+			}
+			if len(rowLabs) > max(tr.labs, 1) {
+				t.Errorf("%q stream: %s has %d labs, asks for %d", stream, tr.name, len(rowLabs), tr.labs)
+			}
+			if tr.cellTime <= 0 {
+				t.Errorf("%s has no cellTime to order its labs by", tr.name)
+			}
+			want := 0
+			for _, cc := range censorCases[1:] {
+				if !inStream(stream, tr, cc) {
+					continue
+				}
+				want++
+				if got[cc.name] != 1 {
+					t.Errorf("%q stream: %s / %s is in %d labs, want 1", stream, tr.name, cc.name, got[cc.name])
+				}
+			}
+			if n := len(got); n != want {
+				t.Errorf("%q stream: %s's labs have %d cells, want %d", stream, tr.name, n, want)
+			}
+			if stream == lab.StreamLong && (len(rowLabs) > 0) != (want > 0) {
+				t.Errorf("long stream: %s has %d labs for %d held cells", tr.name, len(rowLabs), want)
+			}
+			if stream == lab.StreamDefault && len(rowLabs) > 1 {
+				split = true
+				for _, ml := range rowLabs {
+					if d := len(ml.cells) - len(rowLabs[0].cells); d < -1 || d > 1 {
+						t.Errorf("%s: lab %q has %d cells, its first lab %d", tr.name, ml.name(), len(ml.cells), len(rowLabs[0].cells))
+					}
+				}
+			}
+		}
+		if recorded != streamCells(stream) {
+			t.Errorf("%q stream: its labs record %d cells, the stream has %d", stream, recorded, streamCells(stream))
+		}
+	}
+	if !split {
+		t.Error("no row splits its default stream's cells across labs")
+	}
+}
+
+// TestRhythmRealTarget: make lab-test-rhythm-real's -run filter, matched
+// as go test matches it, selects every held cell and the off cell of its
+// lab, and no other cell or lab, in the run without a stream it makes.
+func TestRhythmRealTarget(t *testing.T) {
+	mk, err := os.ReadFile("../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^lab-test-rhythm-real: ##.*\n\t.*-run '([^']*)'`).FindSubmatch(mk)
+	if m == nil {
+		t.Fatal("no -run filter in make lab-test-rhythm-real's recipe")
+	}
+	filter := strings.ReplaceAll(string(m[1]), "$$", "$")
+	var res []*regexp.Regexp
+	for _, part := range strings.Split(filter, "/") {
+		res = append(res, regexp.MustCompile(part))
+	}
+	if len(res) != 3 || !res[0].MatchString("TestCensorMatrix") {
+		t.Fatalf("filter %q: want TestCensorMatrix/<lab>/<cell>", filter)
+	}
+	// go test's subtest names: spaces become underscores.
+	matches := func(re *regexp.Regexp, name string) bool { return re.MatchString(strings.ReplaceAll(name, " ", "_")) }
+	held := 0
+	for _, ml := range matrixLabs("", transports, censorCases) {
+		labHolds := slices.ContainsFunc(ml.cells, func(lc labCell) bool { return heldCell(ml.tr, lc.cc) })
+		if !matches(res[1], ml.name()) {
+			if labHolds {
+				t.Errorf("filter %q leaves out %s, which has a held cell", filter, ml.name())
+			}
+			continue
+		}
+		if !labHolds {
+			t.Errorf("filter %q starts %s, which has no held cell", filter, ml.name())
+		}
+		for i, lc := range ml.cells {
+			want := i == 0 || heldCell(ml.tr, lc.cc)
+			if got := matches(res[2], lc.cc.name); got != want {
+				t.Errorf("filter %q: %s / %s selected %v, want %v", filter, ml.name(), lc.cc.name, got, want)
+			}
+			if i > 0 && heldCell(ml.tr, lc.cc) {
+				held++
+			}
+		}
+	}
+	if held == 0 {
+		t.Error("the filter selects no held cell")
 	}
 }
 
@@ -1161,6 +1432,13 @@ type transport struct {
 	// tunnel, on a held row, matches the held connection's flows from
 	// device-a to server-1, either family: what judgedFromTheStart reads.
 	tunnel func(l *lab.Lab, k censor.FlowKey) bool
+	// labs splits the row's cells of a stream across this many labs, run
+	// in parallel (rowLabs); 0 is one. Each lab costs 4 container starts
+	// and its own off cell, and shortens the row to its longest lab.
+	labs int
+	// cellTime is the row's mean time per cell, held cells' holds aside,
+	// measured on a quiet machine: what matrixLabs orders the labs by.
+	cellTime time.Duration
 }
 
 // withRowSettings is the case's module configs with a row's overrides
@@ -1269,23 +1547,23 @@ func TestWithRowSettings(t *testing.T) {
 	}
 }
 
-// transports is the matrix's rows, longest first: go test starts parallel
-// rows in this order as slots free up, so the rows that hold their tunnel
-// for wireguard-rhythm (rhythmHold; at real time 7.5 minutes, reality
-// about 865 s, udp) never wait behind short ones, and the matrix takes
-// about as long as its longest row (RESULTS.md sorts the rows by name).
-// Under make lab-test the holds run in the long stream, a lab per held
-// row, and the default stream's rows are all short.
+// transports is the matrix's rows (RESULTS.md sorts them by name; the
+// labs start in matrixLabs' order). Under make lab-test the holds
+// (rhythmHold; at real time 7.5 minutes) run in the long stream, a lab per
+// held row, and the default stream's rows are all short; the slowest of
+// those split their cells across labs (labs), so no default-stream lab
+// runs much past its start and 1 to 2 minutes of cells. cellTime is from
+// a targeted default-stream matrix run (2026-11-19).
 var transports = []transport{
 	realityRow,
-	{name: rowUDP, setup: setupUDP, probe: probeWithDevice, sawFlows: sawUDP, udp: true, oneUnderlay: true, hold: holdWithDevice, tunnel: udpFlow},
-	{name: rowPlainTCP, setup: setupPlainTCP, probe: probePlainTCP, sawFlows: sawPlainTCP},
-	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPSOn(443), sawFlows: sawHTTPS, tls: true},
-	{name: rowWireGuard, setup: setupWireGuard, probe: probeUDP, sawFlows: sawWireGuard, udp: true},
-	{name: rowOpenVPNUDP, setup: openVPN{"udp"}.setup, probe: openVPN{"udp"}.probe, sawFlows: openVPN{"udp"}.sawFlows, udp: true},
-	{name: rowOpenVPNTCP, setup: openVPN{"tcp"}.setup, probe: openVPN{"tcp"}.probe, sawFlows: openVPN{"tcp"}.sawFlows},
-	{name: rowRandomTCP, setup: setupRandom, probe: probeRandom, sawFlows: sawRandom},
-	{name: rowRelayTCP, setup: setupRelay, probe: probeHTTPSOn(relayRowPort), sawFlows: sawRelay, tls: true},
+	{name: rowUDP, setup: setupUDP, probe: probeWithDevice, sawFlows: sawUDP, udp: true, oneUnderlay: true, hold: holdWithDevice, tunnel: udpFlow, labs: 2, cellTime: 16 * time.Second},
+	{name: rowPlainTCP, setup: setupPlainTCP, probe: probePlainTCP, sawFlows: sawPlainTCP, cellTime: 8 * time.Second},
+	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPSOn(443), sawFlows: sawHTTPS, tls: true, cellTime: 11 * time.Second},
+	{name: rowWireGuard, setup: setupWireGuard, probe: probeUDP, sawFlows: sawWireGuard, udp: true, cellTime: 11 * time.Second},
+	{name: rowOpenVPNUDP, setup: openVPN{"udp"}.setup, probe: openVPN{"udp"}.probe, sawFlows: openVPN{"udp"}.sawFlows, udp: true, labs: 2, cellTime: 15 * time.Second},
+	{name: rowOpenVPNTCP, setup: openVPN{"tcp"}.setup, probe: openVPN{"tcp"}.probe, sawFlows: openVPN{"tcp"}.sawFlows, labs: 2, cellTime: 14 * time.Second},
+	{name: rowRandomTCP, setup: setupRandom, probe: probeRandom, sawFlows: sawRandom, labs: 2, cellTime: 12 * time.Second},
+	{name: rowRelayTCP, setup: setupRelay, probe: probeHTTPSOn(relayRowPort), sawFlows: sawRelay, tls: true, cellTime: 11 * time.Second},
 }
 
 // probeWindow is how long a probe retries a family that should cross; one
@@ -2129,6 +2407,39 @@ func matchVerdicts(log string, match func(verdictLine) bool) (bool, error) {
 	return false, nil
 }
 
+// recordedTwice is a cell recorded more than once, if any: two labs
+// recording one cell would count toward a complete matrix in place of a
+// cell that didn't run.
+func recordedTwice(cells []matrixCell) (matrixCell, bool) {
+	seen := map[[2]string]bool{}
+	for _, c := range cells {
+		key := [2]string{c.transport, c.censor}
+		if seen[key] {
+			return c, true
+		}
+		seen[key] = true
+	}
+	return matrixCell{}, false
+}
+
+// TestRecordedTwice: a cell recorded twice is found, whatever its result;
+// one transport's cells against different censors, and one censor's
+// against different transports, are not.
+func TestRecordedTwice(t *testing.T) {
+	cells := []matrixCell{
+		{transport: rowUDP, censor: "off", result: "pass"},
+		{transport: rowUDP, censor: "fully-encrypted", result: "fail"},
+		{transport: rowReality, censor: "off", result: "pass"},
+	}
+	if c, ok := recordedTwice(cells); ok {
+		t.Errorf("distinct cells: %s / %s found twice", c.transport, c.censor)
+	}
+	twice := append(slices.Clone(cells), matrixCell{transport: rowUDP, censor: "fully-encrypted", result: "error"})
+	if c, ok := recordedTwice(twice); !ok || c.transport != rowUDP || c.censor != "fully-encrypted" {
+		t.Errorf("udp / fully-encrypted recorded twice: got %s / %s, %v", c.transport, c.censor, ok)
+	}
+}
+
 // flakedCells are the known flakes among cells, "<transport> / <censor>"
 // each, sorted.
 func flakedCells(cells []matrixCell) []string {
@@ -2156,6 +2467,10 @@ func knownFlakes(cells []matrixCell) string {
 // WireGuard's timers sped up by scale.
 func writeResults(t *testing.T, cells []matrixCell, expected, scale int) {
 	t.Helper()
+	if c, ok := recordedTwice(cells); ok {
+		t.Errorf("cell %s / %s recorded twice: RESULTS.md not written", c.transport, c.censor)
+		return
+	}
 	if len(cells) < expected {
 		t.Logf("partial matrix run (%d of %d cells): RESULTS.md not written", len(cells), expected)
 		return
