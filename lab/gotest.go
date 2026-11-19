@@ -179,6 +179,7 @@ type GoTestResult struct {
 	Failed     bool
 	Cached     bool // not run: a recorded pass (GoTestCache)
 	Tests      TestTally
+	Elapsed    time.Duration // from its lab's start to its end: 0 when cached
 }
 
 // GoTestEach runs each package's tests in a fresh lab of its own
@@ -272,6 +273,7 @@ func goTestPackage(ctx context.Context, root, project string, pkg GoPackage, out
 	}
 	start := out.Len()
 	run := goTestFresh(ctx, root, project, pkg, out, env, runArgs, entry != nil)
+	res.Elapsed = time.Since(started)
 	res.Failed = run.testErr != nil
 	res.Tests = TallyTests(out.Bytes()[start:])
 	if run.testErr != nil {
@@ -426,8 +428,9 @@ func GoTestLabTagged(ctx context.Context, root string, pkg GoPackage, w io.Write
 	var out syncBuffer
 	cmd.Stdout = io.MultiWriter(w, &out)
 	cmd.Stderr = cmd.Stdout
+	started := time.Now()
 	err := cmd.Run()
-	res := GoTestResult{ImportPath: pkg.ImportPath, Failed: err != nil, Tests: TallyTests([]byte(out.String()))}
+	res := GoTestResult{ImportPath: pkg.ImportPath, Failed: err != nil, Tests: TallyTests([]byte(out.String())), Elapsed: time.Since(started)}
 	if err != nil {
 		return res, fmt.Errorf("lab: lab tests in %s: %w", pkg.ImportPath, err)
 	}
