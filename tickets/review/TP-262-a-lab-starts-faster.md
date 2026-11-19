@@ -75,4 +75,5 @@ Inside `docker compose up` (Docker's events, medians):
 - 2026-11-19 full make lab-test on 289bd442: tests passed, wall 2804 s, default stream 46m43s over its 15m budget (another full lab ran at the same time); slot → lock 0.00 s in all 111 starts
 - 2026-11-19 not verified: the halving (not reached, see Notes); load-matched comparison for 1 and 7 nodes (only the 4-node A/B is interleaved)
 - 2026-11-19 out of scope, for the board: in-node labs without a Docker network (needs a stand-in uplink for supervisor's isolation test); tear-down holds the slot 2–35 s median; TestHarnessAnotherRunFromTheCheckoutBuildsItsOwnBinaries took 16m19s in the full lab
+- 2026-11-19 merged rewrite 02574d94 (TP-258: lab tests and the local API, no harness file): make lint, make test green on b1676c35; the full lab above is on 289bd442, before that merge
 - 2026-11-19 in-progress → review (with TP-267)
