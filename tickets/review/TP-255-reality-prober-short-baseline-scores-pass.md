@@ -51,3 +51,4 @@ In `lab/censor/modules_prober.go` (`upstreamTally.unattributable`, `shortBaselin
 - 2026-11-19 in-progress → review
 - 2026-11-19 review round 1: nits R1.1–R1.3, merge
 - 2026-11-19 R1.1 mutation, killed: unjudged without the accept-only filter (TestUnjudged, "a flag-mode block over a short baseline")
+- 2026-11-19 make lint and make test pass at 807c5fda; lab-gotest at 807c5fda of relay-tcp and reality (all three labs) × off and active prober: pass; relay-tcp fails as expected, flagged on the tell over a short baseline (8 dials in 7.52 s of probes, 1 in 0.92 s outside), not "not judged"; reality not judged (unattributable, 9 in 7.52 s against 9 in 13.09 s)
