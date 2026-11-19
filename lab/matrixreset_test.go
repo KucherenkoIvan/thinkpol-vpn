@@ -478,7 +478,11 @@ func (r *matrixRow) check() error {
 	if err != nil {
 		errs = append(errs, err)
 	} else if n := strings.TrimSpace(count); n != "0" {
-		errs = append(errs, fmt.Errorf("router: %s conntrack entries outlived the reset", n))
+		entries, err := execRead(router, pollTimeout, "censord", "-conntrack")
+		if err != nil {
+			entries = fmt.Sprintf("(couldn't list them: %v)", err)
+		}
+		errs = append(errs, fmt.Errorf("router: %s conntrack entries outlived the reset:\n%s", n, strings.TrimSpace(entries)))
 	}
 	return errors.Join(errs...)
 }
