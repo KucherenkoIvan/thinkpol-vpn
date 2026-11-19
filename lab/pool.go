@@ -162,6 +162,7 @@ func (p *Pool) take(deadline time.Time) (*pooledLab, error) {
 	ch := make(chan *pooledLab, 1)
 	p.waiters = append(p.waiters, ch)
 	p.mu.Unlock()
+	from := time.Now()
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	select {
@@ -174,7 +175,7 @@ func (p *Pool) take(deadline time.Time) (*pooledLab, error) {
 		p.waiters = slices.Delete(p.waiters, i, i+1)
 		p.stats.Uses--
 		p.mu.Unlock()
-		return nil, fmt.Errorf("lab: pool %s: no lab came back within %v", p.name, time.Until(deadline).Round(time.Second))
+		return nil, fmt.Errorf("lab: pool %s: no lab came back within %v", p.name, time.Since(from).Round(time.Second))
 	}
 	p.mu.Unlock()
 	return <-ch, nil // handed on meanwhile
