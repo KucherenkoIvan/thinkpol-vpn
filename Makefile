@@ -336,9 +336,11 @@ lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1, its lab-ta
 
 # The lab's thinkpol runs WireGuard's timers sped up (lab/README.md,
 # "WireGuard's timers"); this runs the censor matrix's rhythm cells, and
-# their rows' off cells, at real time, for changes to transport shaping or
+# their labs' off cells, at real time, for changes to transport shaping or
 # the rhythm rules; a full lab at real time is
-# THINKPOL_LAB_WG_TIMER_SCALE=1 make lab-test.
+# THINKPOL_LAB_WG_TIMER_SCALE=1 make lab-test. A held cell is in its row's
+# first lab, the subtest named after the row (rowLabs); TestRhythmRealTarget
+# checks that the filter selects those cells and nothing else.
 lab-test-rhythm-real: export THINKPOL_LAB_WG_TIMER_SCALE = 1
 lab-test-rhythm-real: ## the censor matrix's wireguard-rhythm cells with WireGuard's real timers (10 to 15 minutes)
 	$(LABCTL) gotest -v -tagged -fail-skipped -run 'TestCensorMatrix/^(udp|reality)$$/^(off|wireguard-rhythm)$$' ./lab
