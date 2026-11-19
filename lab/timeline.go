@@ -8,7 +8,7 @@ import (
 )
 
 // TimelineEnv names a file each lab start appends lines to: how long it
-// waited for its lab slot, and when it asked for the subnet allocation
+// waited for its lab slot (and whether it gave up on the slot queue), and when it asked for the subnet allocation
 // lock, held it, and ran docker compose up. Runs
 // that share the file give one timeline of how their labs' start-ups
 // overlap.
