@@ -58,6 +58,16 @@ func (s *m0Space) build(t *testing.T) ([]byte, string) {
 	return s.file(t, "map.bin"), v[1]
 }
 
+// nodeID is the node id of name's key, as the status names its neighbors.
+func (s *m0Space) nodeID(t *testing.T, name string) string {
+	t.Helper()
+	m := regexp.MustCompile(`node-id: "([0-9a-f]+)"`).FindSubmatch(s.file(t, "keys/"+name+".pub"))
+	if m == nil {
+		t.Fatalf("no node id for %s", name)
+	}
+	return string(m[1])
+}
+
 func (s *m0Space) file(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := base64.StdEncoding.DecodeString(s.builder.MustExec(t, "base64", "-w0", "/tmp/m0/"+name))

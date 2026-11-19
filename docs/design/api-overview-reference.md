@@ -239,7 +239,7 @@ Other lines appear when they apply:
 `status -json` (the same device, abridged: the counters, and most of the zero values). The convention is the localapi package doc's "JSON", the same as `diag`'s:
 
 - the schema's own field names, snake_case, the same as the local API's `Status`, so the tray reading the API and a script reading the CLI see the same names;
-- every field present: an unset one as its zero value, or `null` for a message (`data_plane` while the data plane is down, `uplink` on a device, a peer's `last_handshake` before the first);
+- every field present: an unset one as its zero value, or `null` for a message (`data_plane` while the data plane is down, `uplink` on a device, a peer's `last_handshake` before the first, a neighbor's `up_since` while it is down);
 - `schema_version` (2), the CLI's own, in every document whatever the service sent: bumped when a field is removed or renamed or changes type or meaning, not when one is added. Enumerated values (enums, health problems) may grow without a bump, and counters come and go (a missing one is 0). With a service older than the CLI, a field the service never sends reads as its zero value under the CLI's version;
 - enum values in lower snake_case without their type's prefix, as the text view spells them (`connected`, `ok`, `device`; the zero value is `unspecified`); otherwise protojson's value spelling: 64-bit integers as strings, timestamps in RFC 3339 UTC, durations as seconds with 0, 3, 6 or 9 fractional digits, as protojson writes them (`"3s"`, `"3.200s"`, `"0.027600s"`); an enum value the CLI's schema doesn't know (a newer service's) is `unknown`, as in the text view;
 - two-space indent, the same bytes for the same state; with `-watch`, one compact object per line (NDJSON), for line readers.
@@ -294,7 +294,8 @@ Other lines appear when they apply:
             "bytes_out": "530",
             "queue_full": "0"
           }
-        ]
+        ],
+        "up_since": "2026-10-28T11:50:13.100Z"
       }
     ],
     "egresses": [ ... ],

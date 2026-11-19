@@ -303,7 +303,7 @@
 //   - every field present: an unset one as its zero value (`false`, `0`,
 //     `""`, `[]`, `{}`) or, a message's, `null` (`data_plane` while the
 //     data plane is down, `uplink` on a device, a peer's `last_handshake`
-//     before the first);
+//     before the first, a neighbor's `up_since` while it is down);
 //   - a top-level `schema_version`, [SchemaVersion], the one number for
 //     every document, and always the CLI's: the CLI decides the JSON's
 //     names and spellings, so the version is the CLI's whatever the

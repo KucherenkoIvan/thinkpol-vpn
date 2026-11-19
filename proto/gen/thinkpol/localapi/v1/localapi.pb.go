@@ -4075,8 +4075,12 @@ type Neighbor struct {
 	UpFor  *durationpb.Duration   `protobuf:"bytes,3,opt,name=up_for,json=upFor,proto3" json:"up_for,omitempty"`
 	Rtt    *durationpb.Duration   `protobuf:"bytes,4,opt,name=rtt,proto3" json:"rtt,omitempty"`
 	// This node dials it.
-	Dialed        bool    `protobuf:"varint,5,opt,name=dialed,proto3" json:"dialed,omitempty"`
-	Links         []*Link `protobuf:"bytes,6,rep,name=links,proto3" json:"links,omitempty"`
+	Dialed bool    `protobuf:"varint,5,opt,name=dialed,proto3" json:"dialed,omitempty"`
+	Links  []*Link `protobuf:"bytes,6,rep,name=links,proto3" json:"links,omitempty"`
+	// When it came up (up_for before the status was taken), on the node's
+	// clock; unset while down. Compare it with other instants rather than
+	// subtracting up_for from a later clock reading.
+	UpSince       *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=up_since,json=upSince,proto3" json:"up_since,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4149,6 +4153,13 @@ func (x *Neighbor) GetDialed() bool {
 func (x *Neighbor) GetLinks() []*Link {
 	if x != nil {
 		return x.Links
+	}
+	return nil
+}
+
+func (x *Neighbor) GetUpSince() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpSince
 	}
 	return nil
 }
@@ -4962,14 +4973,15 @@ const file_thinkpol_localapi_v1_localapi_proto_rawDesc = "" +
 	"\tfirst_hop\x18\x04 \x01(\tR\bfirstHop\x12A\n" +
 	"\x0elast_handshake\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\rlastHandshake\x12\x19\n" +
 	"\brx_bytes\x18\x06 \x01(\x04R\arxBytes\x12\x19\n" +
-	"\btx_bytes\x18\a \x01(\x04R\atxBytes\"\xdc\x01\n" +
+	"\btx_bytes\x18\a \x01(\x04R\atxBytes\"\x93\x02\n" +
 	"\bNeighbor\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x0e\n" +
 	"\x02up\x18\x02 \x01(\bR\x02up\x120\n" +
 	"\x06up_for\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\x05upFor\x12+\n" +
 	"\x03rtt\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\x03rtt\x12\x16\n" +
 	"\x06dialed\x18\x05 \x01(\bR\x06dialed\x120\n" +
-	"\x05links\x18\x06 \x03(\v2\x1a.thinkpol.localapi.v1.LinkR\x05links\"\xf6\x02\n" +
+	"\x05links\x18\x06 \x03(\v2\x1a.thinkpol.localapi.v1.LinkR\x05links\x125\n" +
+	"\bup_since\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\aupSince\"\xf6\x02\n" +
 	"\x04Link\x12\x1c\n" +
 	"\ttransport\x18\x01 \x01(\tR\ttransport\x12\x16\n" +
 	"\x06dialed\x18\x02 \x01(\bR\x06dialed\x12\x1a\n" +
@@ -5200,37 +5212,38 @@ var file_thinkpol_localapi_v1_localapi_proto_depIdxs = []int32{
 	66, // 62: thinkpol.localapi.v1.Neighbor.up_for:type_name -> google.protobuf.Duration
 	66, // 63: thinkpol.localapi.v1.Neighbor.rtt:type_name -> google.protobuf.Duration
 	60, // 64: thinkpol.localapi.v1.Neighbor.links:type_name -> thinkpol.localapi.v1.Link
-	66, // 65: thinkpol.localapi.v1.Link.up_for:type_name -> google.protobuf.Duration
-	66, // 66: thinkpol.localapi.v1.Link.rtt:type_name -> google.protobuf.Duration
-	67, // 67: thinkpol.localapi.v1.Worker.ready_since:type_name -> google.protobuf.Timestamp
-	67, // 68: thinkpol.localapi.v1.Worker.restart_at:type_name -> google.protobuf.Timestamp
-	3,  // 69: thinkpol.localapi.v1.LocalService.GetStatus:input_type -> thinkpol.localapi.v1.GetStatusRequest
-	5,  // 70: thinkpol.localapi.v1.LocalService.WatchStatus:input_type -> thinkpol.localapi.v1.WatchStatusRequest
-	7,  // 71: thinkpol.localapi.v1.LocalService.Connect:input_type -> thinkpol.localapi.v1.ConnectRequest
-	9,  // 72: thinkpol.localapi.v1.LocalService.Disconnect:input_type -> thinkpol.localapi.v1.DisconnectRequest
-	11, // 73: thinkpol.localapi.v1.LocalService.ListSpaces:input_type -> thinkpol.localapi.v1.ListSpacesRequest
-	13, // 74: thinkpol.localapi.v1.LocalService.SetRulePreset:input_type -> thinkpol.localapi.v1.SetRulePresetRequest
-	15, // 75: thinkpol.localapi.v1.LocalService.SetConnectOnBoot:input_type -> thinkpol.localapi.v1.SetConnectOnBootRequest
-	17, // 76: thinkpol.localapi.v1.LocalService.SetKillSwitch:input_type -> thinkpol.localapi.v1.SetKillSwitchRequest
-	19, // 77: thinkpol.localapi.v1.LocalService.SetAllowLAN:input_type -> thinkpol.localapi.v1.SetAllowLANRequest
-	21, // 78: thinkpol.localapi.v1.LocalService.TailLogs:input_type -> thinkpol.localapi.v1.TailLogsRequest
-	23, // 79: thinkpol.localapi.v1.LocalService.Diagnose:input_type -> thinkpol.localapi.v1.DiagnoseRequest
-	4,  // 80: thinkpol.localapi.v1.LocalService.GetStatus:output_type -> thinkpol.localapi.v1.GetStatusResponse
-	6,  // 81: thinkpol.localapi.v1.LocalService.WatchStatus:output_type -> thinkpol.localapi.v1.WatchStatusResponse
-	8,  // 82: thinkpol.localapi.v1.LocalService.Connect:output_type -> thinkpol.localapi.v1.ConnectResponse
-	10, // 83: thinkpol.localapi.v1.LocalService.Disconnect:output_type -> thinkpol.localapi.v1.DisconnectResponse
-	12, // 84: thinkpol.localapi.v1.LocalService.ListSpaces:output_type -> thinkpol.localapi.v1.ListSpacesResponse
-	14, // 85: thinkpol.localapi.v1.LocalService.SetRulePreset:output_type -> thinkpol.localapi.v1.SetRulePresetResponse
-	16, // 86: thinkpol.localapi.v1.LocalService.SetConnectOnBoot:output_type -> thinkpol.localapi.v1.SetConnectOnBootResponse
-	18, // 87: thinkpol.localapi.v1.LocalService.SetKillSwitch:output_type -> thinkpol.localapi.v1.SetKillSwitchResponse
-	20, // 88: thinkpol.localapi.v1.LocalService.SetAllowLAN:output_type -> thinkpol.localapi.v1.SetAllowLANResponse
-	22, // 89: thinkpol.localapi.v1.LocalService.TailLogs:output_type -> thinkpol.localapi.v1.TailLogsResponse
-	24, // 90: thinkpol.localapi.v1.LocalService.Diagnose:output_type -> thinkpol.localapi.v1.DiagnoseResponse
-	80, // [80:91] is the sub-list for method output_type
-	69, // [69:80] is the sub-list for method input_type
-	69, // [69:69] is the sub-list for extension type_name
-	69, // [69:69] is the sub-list for extension extendee
-	0,  // [0:69] is the sub-list for field type_name
+	67, // 65: thinkpol.localapi.v1.Neighbor.up_since:type_name -> google.protobuf.Timestamp
+	66, // 66: thinkpol.localapi.v1.Link.up_for:type_name -> google.protobuf.Duration
+	66, // 67: thinkpol.localapi.v1.Link.rtt:type_name -> google.protobuf.Duration
+	67, // 68: thinkpol.localapi.v1.Worker.ready_since:type_name -> google.protobuf.Timestamp
+	67, // 69: thinkpol.localapi.v1.Worker.restart_at:type_name -> google.protobuf.Timestamp
+	3,  // 70: thinkpol.localapi.v1.LocalService.GetStatus:input_type -> thinkpol.localapi.v1.GetStatusRequest
+	5,  // 71: thinkpol.localapi.v1.LocalService.WatchStatus:input_type -> thinkpol.localapi.v1.WatchStatusRequest
+	7,  // 72: thinkpol.localapi.v1.LocalService.Connect:input_type -> thinkpol.localapi.v1.ConnectRequest
+	9,  // 73: thinkpol.localapi.v1.LocalService.Disconnect:input_type -> thinkpol.localapi.v1.DisconnectRequest
+	11, // 74: thinkpol.localapi.v1.LocalService.ListSpaces:input_type -> thinkpol.localapi.v1.ListSpacesRequest
+	13, // 75: thinkpol.localapi.v1.LocalService.SetRulePreset:input_type -> thinkpol.localapi.v1.SetRulePresetRequest
+	15, // 76: thinkpol.localapi.v1.LocalService.SetConnectOnBoot:input_type -> thinkpol.localapi.v1.SetConnectOnBootRequest
+	17, // 77: thinkpol.localapi.v1.LocalService.SetKillSwitch:input_type -> thinkpol.localapi.v1.SetKillSwitchRequest
+	19, // 78: thinkpol.localapi.v1.LocalService.SetAllowLAN:input_type -> thinkpol.localapi.v1.SetAllowLANRequest
+	21, // 79: thinkpol.localapi.v1.LocalService.TailLogs:input_type -> thinkpol.localapi.v1.TailLogsRequest
+	23, // 80: thinkpol.localapi.v1.LocalService.Diagnose:input_type -> thinkpol.localapi.v1.DiagnoseRequest
+	4,  // 81: thinkpol.localapi.v1.LocalService.GetStatus:output_type -> thinkpol.localapi.v1.GetStatusResponse
+	6,  // 82: thinkpol.localapi.v1.LocalService.WatchStatus:output_type -> thinkpol.localapi.v1.WatchStatusResponse
+	8,  // 83: thinkpol.localapi.v1.LocalService.Connect:output_type -> thinkpol.localapi.v1.ConnectResponse
+	10, // 84: thinkpol.localapi.v1.LocalService.Disconnect:output_type -> thinkpol.localapi.v1.DisconnectResponse
+	12, // 85: thinkpol.localapi.v1.LocalService.ListSpaces:output_type -> thinkpol.localapi.v1.ListSpacesResponse
+	14, // 86: thinkpol.localapi.v1.LocalService.SetRulePreset:output_type -> thinkpol.localapi.v1.SetRulePresetResponse
+	16, // 87: thinkpol.localapi.v1.LocalService.SetConnectOnBoot:output_type -> thinkpol.localapi.v1.SetConnectOnBootResponse
+	18, // 88: thinkpol.localapi.v1.LocalService.SetKillSwitch:output_type -> thinkpol.localapi.v1.SetKillSwitchResponse
+	20, // 89: thinkpol.localapi.v1.LocalService.SetAllowLAN:output_type -> thinkpol.localapi.v1.SetAllowLANResponse
+	22, // 90: thinkpol.localapi.v1.LocalService.TailLogs:output_type -> thinkpol.localapi.v1.TailLogsResponse
+	24, // 91: thinkpol.localapi.v1.LocalService.Diagnose:output_type -> thinkpol.localapi.v1.DiagnoseResponse
+	81, // [81:92] is the sub-list for method output_type
+	70, // [70:81] is the sub-list for method input_type
+	70, // [70:70] is the sub-list for extension type_name
+	70, // [70:70] is the sub-list for extension extendee
+	0,  // [0:70] is the sub-list for field type_name
 }
 
 func init() { file_thinkpol_localapi_v1_localapi_proto_init() }
