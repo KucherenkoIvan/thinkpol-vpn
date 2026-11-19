@@ -240,6 +240,7 @@ type testLog struct {
 	mem  []byte
 	file *os.File
 	size int64
+	what string // what writeTo says it cut; "": this test's output
 }
 
 func (l *testLog) Write(b []byte) (int, error) {
@@ -284,7 +285,7 @@ func (l *testLog) writeTo(w io.Writer, whole bool) error {
 	if _, err := io.Copy(w, io.NewSectionReader(r, 0, testLogKeep)); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "\n... (%d bytes of this test's output cut) ...\n", l.size-2*testLogKeep); err != nil {
+	if _, err := fmt.Fprintf(w, "\n... (%d bytes of %s cut) ...\n", l.size-2*testLogKeep, cmp.Or(l.what, "this test's output")); err != nil {
 		return err
 	}
 	_, err := io.Copy(w, io.NewSectionReader(r, l.size-testLogKeep, testLogKeep))
@@ -301,13 +302,13 @@ func (l *testLog) close() {
 
 // WriteTestTimes writes times to a file, one "seconds<TAB>name" line each,
 // followed for a node-phase package by "<TAB>" and its phases' seconds:
-// slot wait, lab start, tests and teardown, space-separated.
+// queue, slot wait, lab start, tests and teardown, space-separated.
 func WriteTestTimes(name string, times []TestTime) error {
 	var b strings.Builder
 	for _, t := range times {
 		fmt.Fprintf(&b, "%.3f\t%s", t.Elapsed.Seconds(), t.Name)
 		if p := t.Phases; !p.IsZero() {
-			fmt.Fprintf(&b, "\t%.3f %.3f %.3f %.3f", p.SlotWait.Seconds(), p.Start.Seconds(), p.Tests.Seconds(), p.Teardown.Seconds())
+			fmt.Fprintf(&b, "\t%.3f %.3f %.3f %.3f %.3f", p.Queue.Seconds(), p.SlotWait.Seconds(), p.Start.Seconds(), p.Tests.Seconds(), p.Teardown.Seconds())
 		}
 		b.WriteByte('\n')
 	}
@@ -346,10 +347,10 @@ func parseTestTime(line string) (TestTime, error) {
 		return t, nil
 	}
 	f := strings.Split(phases, " ")
-	if len(f) != 4 {
-		return TestTime{}, errors.New("want four phases")
+	if len(f) != 5 {
+		return TestTime{}, errors.New("want five phases")
 	}
-	for i, d := range []*time.Duration{&t.Phases.SlotWait, &t.Phases.Start, &t.Phases.Tests, &t.Phases.Teardown} {
+	for i, d := range []*time.Duration{&t.Phases.Queue, &t.Phases.SlotWait, &t.Phases.Start, &t.Phases.Tests, &t.Phases.Teardown} {
 		if *d, err = parseSeconds(f[i]); err != nil {
 			return TestTime{}, err
 		}
@@ -435,6 +436,7 @@ func CheckBudget(w io.Writer, stream string, took, budget time.Duration, times [
 	for _, t := range times {
 		if !t.Phases.IsZero() {
 			labs++
+			sum.Queue += t.Phases.Queue
 			sum.SlotWait += t.Phases.SlotWait
 			sum.Start += t.Phases.Start
 			sum.Tests += t.Phases.Tests

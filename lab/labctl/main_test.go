@@ -389,15 +389,22 @@ func TestGotestRunsNodelessPackagesOnTheHost(t *testing.T) {
 }
 
 // TestHostRunsNodeless: packages that need no node run on the host only
-// on Linux, and never in a perf run.
+// on Linux, never as root and never in a perf run.
 func TestHostRunsNodeless(t *testing.T) {
 	for _, tc := range []struct {
 		goos string
+		euid int
 		perf bool
 		want bool
-	}{{"linux", false, true}, {"linux", true, false}, {"darwin", false, false}, {"windows", false, false}} {
-		if got := hostRunsNodeless(tc.goos, tc.perf); got != tc.want {
-			t.Errorf("hostRunsNodeless(%q, %v) = %v, want %v", tc.goos, tc.perf, got, tc.want)
+	}{
+		{"linux", 1000, false, true},
+		{"linux", 0, false, false}, // root: the host's own namespaces
+		{"linux", 1000, true, false},
+		{"darwin", 1000, false, false},
+		{"windows", 1000, false, false},
+	} {
+		if got := hostRunsNodeless(tc.goos, tc.euid, tc.perf); got != tc.want {
+			t.Errorf("hostRunsNodeless(%q, euid %d, perf %v) = %v, want %v", tc.goos, tc.euid, tc.perf, got, tc.want)
 		}
 	}
 }
@@ -406,7 +413,7 @@ func TestHostRunsNodeless(t *testing.T) {
 // times file the budget reads.
 func TestWriteGotestTimesKeepsPhases(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "times")
-	p := lab.LabPhases{SlotWait: time.Minute, Start: 20 * time.Second, Tests: 5 * time.Second, Teardown: 3 * time.Second}
+	p := lab.LabPhases{Queue: 4 * time.Second, SlotWait: time.Minute, Start: 20 * time.Second, Tests: 5 * time.Second, Teardown: 3 * time.Second}
 	results := []lab.GoTestResult{
 		{ImportPath: "example.net/m/node", Elapsed: 88 * time.Second, Phases: p},
 		{ImportPath: "example.net/m/cached", Cached: true},

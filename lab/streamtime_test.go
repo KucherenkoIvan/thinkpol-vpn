@@ -243,11 +243,11 @@ func TestTestTimesRoundTrip(t *testing.T) {
 
 // TestTestTimesRoundTripPhases: a node-phase package's phases go through
 // the times file beside lines without them; a line with phases other than
-// four is refused.
+// five is refused.
 func TestTestTimesRoundTripPhases(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "times")
 	in := []TestTime{
-		{Name: "example.net/m/pkg", Elapsed: 90 * time.Second, Phases: LabPhases{SlotWait: time.Minute, Start: 20 * time.Second, Tests: 7500 * time.Millisecond, Teardown: 2500 * time.Millisecond}},
+		{Name: "example.net/m/pkg", Elapsed: 90 * time.Second, Phases: LabPhases{Queue: 7 * time.Second, SlotWait: time.Minute, Start: 20 * time.Second, Tests: 7500 * time.Millisecond, Teardown: 2500 * time.Millisecond}},
 		{Name: "lab TestA", Elapsed: 1500 * time.Millisecond},
 	}
 	if err := WriteTestTimes(f, in); err != nil {
@@ -257,7 +257,7 @@ func TestTestTimesRoundTripPhases(t *testing.T) {
 	if err != nil || !slices.Equal(got, in) {
 		t.Fatalf("read %+v, %v; want %+v", got, err, in)
 	}
-	for _, bad := range []string{"1.000\tx\t1 2 3\n", "1.000\tx\t1 2 3 soon\n", "1.000\n"} {
+	for _, bad := range []string{"1.000\tx\t1 2 3 4\n", "1.000\tx\t1 2 3 4 soon\n", "1.000\n"} {
 		if err := os.WriteFile(f, []byte(bad), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -273,17 +273,17 @@ func TestTestTimesRoundTripPhases(t *testing.T) {
 func TestCheckBudgetPhases(t *testing.T) {
 	times := []TestTime{
 		{Name: "lab TestA", Elapsed: 4 * time.Minute},
-		{Name: "pkg/b", Elapsed: 5 * time.Minute, Phases: LabPhases{SlotWait: 4 * time.Minute, Start: 40 * time.Second, Tests: 15 * time.Second, Teardown: 5 * time.Second}},
-		{Name: "pkg/c", Elapsed: time.Minute, Phases: LabPhases{SlotWait: 30 * time.Second, Start: 20 * time.Second, Tests: 5 * time.Second, Teardown: 5 * time.Second}},
+		{Name: "pkg/b", Elapsed: 5 * time.Minute, Phases: LabPhases{Queue: 20 * time.Second, SlotWait: 3*time.Minute + 40*time.Second, Start: 40 * time.Second, Tests: 15 * time.Second, Teardown: 5 * time.Second}},
+		{Name: "pkg/c", Elapsed: time.Minute, Phases: LabPhases{Queue: 10 * time.Second, SlotWait: 20 * time.Second, Start: 20 * time.Second, Tests: 5 * time.Second, Teardown: 5 * time.Second}},
 	}
-	sum := "  node phase, 2 packages in labs, summed: slot wait 4m30s, lab start 1m0s, tests 20s, teardown 10s\n"
+	sum := "  node phase, 2 packages in labs, summed: queue 30s, slot wait 4m0s, lab start 1m0s, tests 20s, teardown 10s\n"
 	var w bytes.Buffer
 	if err := CheckBudget(&w, "default", 10*time.Minute, 15*time.Minute, times, 3); err != nil || w.String() != "the default stream took 10m0s of its 15m0s budget\n"+sum {
 		t.Errorf("within budget: %v, %q", err, w.String())
 	}
 	w.Reset()
 	if err := CheckBudget(&w, "default", 16*time.Minute, 15*time.Minute, times, 3); err == nil ||
-		!strings.Contains(w.String(), "pkg/b (slot wait 4m0s, lab start 40s, tests 15s, teardown 5s)\n") ||
+		!strings.Contains(w.String(), "pkg/b (queue 20s, slot wait 3m40s, lab start 40s, tests 15s, teardown 5s)\n") ||
 		!strings.Contains(w.String(), "lab TestA\n") || !strings.HasSuffix(w.String(), sum) {
 		t.Errorf("over budget: %v, report:\n%s", err, w.String())
 	}

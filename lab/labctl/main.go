@@ -211,7 +211,7 @@ func runGotest(ctx context.Context, root string, args []string) (err error) {
 	if *timeout != "" {
 		testArgs = append(testArgs, "-test.timeout="+*timeout)
 	}
-	opt := gotestOptions{concurrency: lab.GoTestConcurrency{Labs: *parallel, Builds: *builds, BuildAllFirst: *perf}, tagged: *tagged, failSkipped: *failSkipped, times: *times, nodeFor: nodeFor, hostFor: hostFor, nodelessOnHost: hostRunsNodeless(runtime.GOOS, *perf)}
+	opt := gotestOptions{concurrency: lab.GoTestConcurrency{Labs: *parallel, Builds: *builds, BuildAllFirst: *perf}, tagged: *tagged, failSkipped: *failSkipped, times: *times, nodeFor: nodeFor, hostFor: hostFor, nodelessOnHost: hostRunsNodeless(runtime.GOOS, os.Geteuid(), *perf)}
 	if useCache(*count, *perf) {
 		opt.cache = lab.NewGoTestCache(os.Stdout)
 	}
@@ -346,10 +346,10 @@ func gotest(ctx context.Context, root string, opt gotestOptions, env, args, patt
 	return errors.Join(gotestVerdict(results, opt.failSkipped), writeGotestTimes(opt.times, results))
 }
 
-// nodePhase runs each package's tests in a lab node of its own, except, on
-// a Linux machine, those that need no node (lab.HostTestsFile), which run
-// there under one go test beside the labs. A perf run keeps every package
-// in a node: nothing else may load the host while it measures.
+// nodePhase runs each package's tests in a lab node of its own, except
+// those that need no node (lab.HostTestsFile) when opt.nodelessOnHost:
+// they run on this machine under one go test beside the labs, compiling
+// as many packages at once as the nodes' builds do.
 func nodePhase(ctx context.Context, root string, pkgs []lab.GoPackage, opt gotestOptions, env, args []string) ([]lab.GoTestResult, error) {
 	var inNodes, onHost []lab.GoPackage
 	for _, p := range pkgs {
@@ -365,7 +365,7 @@ func nodePhase(ctx context.Context, root string, pkgs []lab.GoPackage, opt gotes
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		hostResults, hostErr = lab.GoTestOnHost(ctx, root, onHost, w, env, args...)
+		hostResults, hostErr = lab.GoTestOnHost(ctx, root, onHost, opt.concurrency.Builds, w, env, args...)
 	}()
 	var results []lab.GoTestResult
 	var labErr error
@@ -379,10 +379,13 @@ func nodePhase(ctx context.Context, root string, pkgs []lab.GoPackage, opt gotes
 }
 
 // hostRunsNodeless says whether packages that need no node run on this
-// machine: only on Linux, where they build as they would in a node, and
-// not in a perf run.
-func hostRunsNodeless(goos string, perf bool) bool {
-	return goos == "linux" && !perf
+// machine: only on Linux, where they build as they would in a node; never
+// as root (euid 0), where a test reaching code that mounts, pivots or
+// changes the network would do it to the host's own namespaces, not a
+// node's; and not in a perf run, where nothing else may load the host
+// while it measures.
+func hostRunsNodeless(goos string, euid int, perf bool) bool {
+	return goos == "linux" && euid != 0 && !perf
 }
 
 // lockedWriter keeps the node phase's packages' outputs, each one Write,

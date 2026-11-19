@@ -39,7 +39,7 @@ func (s *gateSteps) build(needsLab bool) func() bool {
 	}
 }
 
-func (s *gateSteps) labRun() {
+func (s *gateSteps) labRun(time.Time) {
 	raise(&s.maxLab, s.inLab.Add(1))
 	time.Sleep(s.labHold)
 	s.inLab.Add(-1)
@@ -88,7 +88,7 @@ func TestGoTestGatesBuildTokenFreeDuringLab(t *testing.T) {
 	secondBuilt, inLab := make(chan struct{}), make(chan struct{})
 	first := make(chan error, 1)
 	go func() {
-		first <- g.run(ctx, func() error { return nil }, func() bool { return true }, func() {
+		first <- g.run(ctx, func() error { return nil }, func() bool { return true }, func(time.Time) {
 			close(inLab)
 			select {
 			case <-secondBuilt:
@@ -98,7 +98,7 @@ func TestGoTestGatesBuildTokenFreeDuringLab(t *testing.T) {
 		})
 	}()
 	<-inLab
-	if err := g.run(ctx, func() error { return nil }, func() bool { close(secondBuilt); return false }, func() {}); err != nil {
+	if err := g.run(ctx, func() error { return nil }, func() bool { close(secondBuilt); return false }, func(time.Time) {}); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-first; err != nil {
@@ -115,7 +115,7 @@ func TestGoTestGatesCachedPackageTakesNoLab(t *testing.T) {
 	inLab := make(chan struct{})
 	first := make(chan error, 1)
 	go func() {
-		first <- g.run(ctx, func() error { return nil }, func() bool { return true }, func() {
+		first <- g.run(ctx, func() error { return nil }, func() bool { return true }, func(time.Time) {
 			close(inLab)
 			select {
 			case <-cachedDone:
@@ -126,7 +126,7 @@ func TestGoTestGatesCachedPackageTakesNoLab(t *testing.T) {
 	}()
 	<-inLab
 	ranLab := false
-	if err := g.run(ctx, func() error { return nil }, func() bool { return false }, func() { ranLab = true }); err != nil {
+	if err := g.run(ctx, func() error { return nil }, func() bool { return false }, func(time.Time) { ranLab = true }); err != nil {
 		t.Fatal(err)
 	}
 	close(cachedDone)
@@ -144,14 +144,14 @@ func TestGoTestGatesFailedBuildReturnsToken(t *testing.T) {
 	g := newGoTestGates(GoTestConcurrency{Labs: 1, Builds: 1}, 3)
 	ctx := bounded(t)
 	broken := errors.New("prepare failed")
-	if err := g.run(ctx, func() error { return broken }, func() bool { t.Error("built after a failed prepare"); return true }, func() {}); !errors.Is(err, broken) {
+	if err := g.run(ctx, func() error { return broken }, func() bool { t.Error("built after a failed prepare"); return true }, func(time.Time) {}); !errors.Is(err, broken) {
 		t.Fatalf("a failed prepare: %v, want its error", err)
 	}
-	if err := g.run(ctx, func() error { return nil }, func() bool { return false }, func() {}); err != nil { // a failed build: no lab
+	if err := g.run(ctx, func() error { return nil }, func() bool { return false }, func(time.Time) {}); err != nil { // a failed build: no lab
 		t.Fatalf("after a failed prepare: %v", err)
 	}
 	built := false
-	if err := g.run(ctx, func() error { return nil }, func() bool { built = true; return false }, func() {}); err != nil || !built {
+	if err := g.run(ctx, func() error { return nil }, func() bool { built = true; return false }, func(time.Time) {}); err != nil || !built {
 		t.Fatalf("after a failed build: %v, built %v", err, built)
 	}
 }
@@ -165,10 +165,10 @@ func TestGoTestGatesQueuedPackageStopsWithContext(t *testing.T) {
 			ctx, cancel := context.WithCancel(bounded(t))
 			held, release := make(chan struct{}), make(chan struct{})
 			holder := make(chan error, 1)
-			hold := func() { close(held); <-release }
+			hold := func(time.Time) { close(held); <-release }
 			go func() {
 				if phase == "build" {
-					holder <- g.run(ctx, func() error { return nil }, func() bool { hold(); return false }, func() {})
+					holder <- g.run(ctx, func() error { return nil }, func() bool { hold(time.Time{}); return false }, func(time.Time) {})
 				} else {
 					holder <- g.run(ctx, func() error { return nil }, func() bool { return true }, hold)
 				}
@@ -179,7 +179,7 @@ func TestGoTestGatesQueuedPackageStopsWithContext(t *testing.T) {
 			var prepared, ranLab atomic.Bool
 			queued := make(chan error, 1)
 			go func() {
-				queued <- g.run(ctx, func() error { prepared.Store(true); return nil }, func() bool { return true }, func() { ranLab.Store(true) })
+				queued <- g.run(ctx, func() error { prepared.Store(true); return nil }, func() bool { return true }, func(time.Time) { ranLab.Store(true) })
 			}()
 			var err error
 			select {
@@ -209,11 +209,11 @@ func TestGoTestGatesBuildAllFirst(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range packages {
 		wg.Go(func() {
-			lab := func() {
+			lab := func(queued time.Time) {
 				if got := s.builds.Load(); got != packages-1 { // the failed prepare never builds
 					t.Errorf("a lab started with %d of %d builds done", got, packages-1)
 				}
-				s.labRun()
+				s.labRun(queued)
 			}
 			prepare := s.prepare
 			if i == 0 {
@@ -225,5 +225,32 @@ func TestGoTestGatesBuildAllFirst(t *testing.T) {
 	wg.Wait()
 	if got := s.labRuns.Load(); got != 2 { // i = 2, 4
 		t.Errorf("%d lab runs, want 2", got)
+	}
+}
+
+// labRun gets when its package began to queue for a lab token: with the
+// only lab held, the second package's queue spans the hold.
+func TestGoTestGatesTimeTheLabQueue(t *testing.T) {
+	g := newGoTestGates(GoTestConcurrency{Labs: 1, Builds: 2}, 2)
+	ctx := bounded(t)
+	const hold = 200 * time.Millisecond
+	inLab := make(chan struct{})
+	first := make(chan error, 1)
+	go func() {
+		first <- g.run(ctx, func() error { return nil }, func() bool { return true }, func(time.Time) {
+			close(inLab)
+			time.Sleep(hold)
+		})
+	}()
+	<-inLab
+	var queuedFor time.Duration
+	if err := g.run(ctx, func() error { return nil }, func() bool { return true }, func(queued time.Time) { queuedFor = time.Since(queued) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if queuedFor < hold/2 {
+		t.Errorf("queued %v behind a lab held %v", queuedFor, hold)
 	}
 }
