@@ -74,6 +74,36 @@ func holdSlot(t *testing.T, ctx context.Context) func() {
 	return release
 }
 
+type acquired struct {
+	release func()
+	err     error
+}
+
+// acquireInBackground waits for a slot in a goroutine. The wait ends with
+// the test, and a slot it got that the test didn't take is given back.
+func acquireInBackground(t *testing.T) <-chan acquired {
+	ctx, cancel := context.WithCancel(context.Background())
+	got := make(chan acquired, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		release, err := acquireHostSlot(ctx)
+		got <- acquired{release, err}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		select {
+		case a := <-got:
+			if a.release != nil {
+				a.release()
+			}
+		default:
+		}
+	})
+	return got
+}
+
 const slotWaiterEnv = "THINKPOL_LAB_TEST_SLOT_WAITER"
 
 // startSlotWaiter runs TestSlotWaiterProcess in a child sharing this
@@ -146,6 +176,9 @@ func TestSlotsGoInArrivalOrder(t *testing.T) {
 
 	var children []*exec.Cmd
 	var inProcess sync.WaitGroup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer inProcess.Wait()
+	defer cancel()
 	const waiters = 8
 	for i := range waiters {
 		id := fmt.Sprint(i)
@@ -153,7 +186,7 @@ func TestSlotsGoInArrivalOrder(t *testing.T) {
 			children = append(children, startSlotWaiter(t, id, order, false))
 		} else {
 			inProcess.Go(func() {
-				release, err := acquireHostSlot(t.Context())
+				release, err := acquireHostSlot(ctx)
 				if err != nil {
 					t.Error(err)
 					return
@@ -193,14 +226,7 @@ func TestKilledWaiterLeavesNoGap(t *testing.T) {
 
 	killed := startSlotWaiter(t, "killed", filepath.Join(t.TempDir(), "order"), false)
 	waitForTickets(t, dir, 1)
-	got := make(chan func(), 1)
-	go func() {
-		release, err := acquireHostSlot(t.Context())
-		if err != nil {
-			t.Error(err)
-		}
-		got <- release
-	}()
+	got := acquireInBackground(t)
 	waitForTickets(t, dir, 2)
 	if err := killed.Process.Kill(); err != nil {
 		t.Fatal(err)
@@ -209,13 +235,15 @@ func TestKilledWaiterLeavesNoGap(t *testing.T) {
 	release()
 
 	select {
-	case release := <-got:
-		if release == nil {
-			return
+	case a := <-got:
+		if a.err != nil {
+			t.Fatal(a.err)
 		}
-		release()
-	case <-time.After(time.Minute):
-		t.Fatal("the waiter behind a killed one never got the slot")
+		a.release()
+	case <-time.After(slotQueueStale / 2):
+		// Sooner than a stale ticket is passed over: the dead one's lock is
+		// what lets the waiter behind it on.
+		t.Fatal("the waiter behind a killed one didn't get the slot")
 	}
 	if left := queueTickets(t, dir); len(left) != 0 {
 		t.Errorf("the killed waiter's ticket is still queued: %v", left)
@@ -235,6 +263,15 @@ func TestWaiterPastDeadlineLeavesQueue(t *testing.T) {
 	dir := oneSlotHost(t)
 	release := holdSlot(t, t.Context())
 
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := acquireHostSlot(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a wait for a held slot: %v, want it to run out", err)
+	}
+	if left := queueTickets(t, dir); len(left) != 0 {
+		t.Fatalf("a wait that ran out left its ticket: %v", left)
+	}
+
 	first, giveUp := context.WithCancel(t.Context())
 	defer giveUp()
 	firstErr := make(chan error, 1)
@@ -243,14 +280,7 @@ func TestWaiterPastDeadlineLeavesQueue(t *testing.T) {
 		firstErr <- err
 	}()
 	waitForTickets(t, dir, 1)
-	got := make(chan func(), 1)
-	go func() {
-		release, err := acquireHostSlot(t.Context())
-		if err != nil {
-			t.Error(err)
-		}
-		got <- release
-	}()
+	got := acquireInBackground(t)
 	waitForTickets(t, dir, 2)
 
 	giveUp()
@@ -260,10 +290,11 @@ func TestWaiterPastDeadlineLeavesQueue(t *testing.T) {
 	waitForTickets(t, dir, 1)
 	release()
 	select {
-	case release := <-got:
-		if release != nil {
-			release()
+	case a := <-got:
+		if a.err != nil {
+			t.Fatal(a.err)
 		}
+		a.release()
 	case <-time.After(time.Minute):
 		t.Fatal("the waiter behind one that gave up never got the slot")
 	}
