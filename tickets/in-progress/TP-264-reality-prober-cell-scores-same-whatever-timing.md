@@ -9,8 +9,8 @@ size: S
 depends_on: [TP-255]
 refs: []
 needs_human: decision
-owner: ""
-branch: ""
+owner: "agent-tp-264"
+branch: "tp-264-prober-cell-deterministic"
 ---
 
 ## Goal
@@ -36,3 +36,4 @@ Either way, count `NOT JUDGED: n (cells)` in RESULTS.md's header and in `make la
 
 ## Log
 - 2026-11-19 created in backlog (TP-255 review)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-264
