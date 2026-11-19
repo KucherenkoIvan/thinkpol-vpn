@@ -576,6 +576,17 @@ func (u upstreamTally) unattributable() bool {
 // probes for less time than it probed.
 func (u upstreamTally) shortBaseline() bool { return u.outside < u.probing }
 
+// What an upstream tell's verdict says when the prober couldn't judge
+// whether its probes caused the host's connections to the reference: the
+// host dialed as often outside them (unattributable), or the prober
+// watched it outside them for less time than it probed (a short
+// baseline, which the prober's start makes a race with the first
+// suspect). A reported tell with either is not judged.
+const (
+	UpstreamTellUnattributable = "upstream tell: unattributable"
+	UpstreamTellShortBaseline  = "a baseline shorter than the probing, too short to call the tell unattributable"
+)
+
 // upstreamTell judges the connections from server's host to the
 // reference: a line for the report, or a difference when the tell flags.
 func (m *prober) upstreamTell(server netip.Addr, u upstreamTally) (report, diff string) {
@@ -585,14 +596,14 @@ func (m *prober) upstreamTell(server netip.Addr, u upstreamTally) (report, diff 
 	}
 	base := fmt.Sprintf("%d dials in %s of probes, %d in %s outside them", u.during, u.probing.Round(time.Millisecond), u.between, u.outside.Round(time.Millisecond))
 	if u.shortBaseline() {
-		base += ", a baseline shorter than the probing, too short to call the tell unattributable"
+		base += ", " + UpstreamTellShortBaseline
 	}
 	tell := fmt.Sprintf("upstream tell: a connection from %s to the reference during every probe (%d of %d; %s)", from, u.probes, u.total, base)
 	switch {
 	case u.total < 2 || u.probes < u.total:
 		return fmt.Sprintf("connections to the reference during %d of %d probes", u.probes, u.total), ""
 	case u.unattributable():
-		return fmt.Sprintf("upstream tell: unattributable (%s, at least half the rate; a connection from %s to the reference during %d of %d probes)", base, from, u.probes, u.total), ""
+		return fmt.Sprintf("%s (%s, at least half the rate; a connection from %s to the reference during %d of %d probes)", UpstreamTellUnattributable, base, from, u.probes, u.total), ""
 	case m.reportTell:
 		return tell + ", reported, not flagged", ""
 	}

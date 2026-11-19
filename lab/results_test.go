@@ -1032,37 +1032,43 @@ func (k knownTell) covers(reasons []string) error {
 }
 
 // unjudged finds a flag that couldn't judge what its cell is for: the
-// prober's upstream tell, unattributable. Such a cell is "not judged",
-// never a pass.
+// prober's upstream tell, unattributable or seen over a baseline shorter
+// than the probing (whose length is a race between censord's start and
+// the first probe). Such a cell is "not judged", never a pass.
 func unjudged(flags []judgment) (string, bool) {
 	for _, f := range flags {
-		if strings.Contains(f.why, "upstream tell: unattributable") {
+		if strings.Contains(f.why, censor.UpstreamTellUnattributable) || strings.Contains(f.why, censor.UpstreamTellShortBaseline) {
 			return f.why, true
 		}
 	}
 	return "", false
 }
 
-// TestUnjudged: a flag whose upstream tell is unattributable, on either
-// family, makes the cell not judged; a tell shown or absent doesn't.
+// TestUnjudged: a flag whose upstream tell is unattributable, or was seen
+// over a short baseline (the reality cell's pass in about 3 runs of 10
+// before TP-255), on either family, makes the cell not judged; a tell
+// shown over a long baseline, or absent, doesn't.
 func TestUnjudged(t *testing.T) {
 	const (
 		shown  = "accept, server 192.0.2.9:443 answers like the reference: upstream tell: a connection from 192.0.2.9 to the reference during every probe (7 of 7; 8 dials in 4s of probes, 1 in 30s outside them), reported, not flagged"
 		unsure = "accept, server [2001:db8::9]:443 answers like the reference: upstream tell: unattributable (8 dials in 4s of probes, 30 in 30s outside them, at least half the rate; a connection from 2001:db8::9 to the reference during 7 of 7 probes)"
+		short  = "accept, server 192.0.2.9:443 answers like the reference: upstream tell: a connection from 192.0.2.9 or another address of its host to the reference during every probe (7 of 7; 9 dials in 7.551s of probes, 7 in 4.399s outside them, a baseline shorter than the probing, too short to call the tell unattributable), reported, not flagged"
 		absent = "accept, server 192.0.2.9:443 answers like the reference: connections to the reference during 0 of 7 probes"
 	)
 	for _, c := range []struct {
 		name  string
 		flags []judgment
-		want  bool
+		want  string
 	}{
-		{"shown", []judgment{{true, shown}}, false},
-		{"absent", []judgment{{true, absent}}, false},
-		{"unattributable on IPv6", []judgment{{true, shown}, {false, unsure}}, true},
-		{"no flag", nil, false},
+		{"shown", []judgment{{true, shown}}, ""},
+		{"absent", []judgment{{true, absent}}, ""},
+		{"unattributable on IPv6", []judgment{{true, shown}, {false, unsure}}, unsure},
+		{"a short baseline", []judgment{{true, short}}, short},
+		{"a short baseline on IPv6", []judgment{{true, shown}, {false, short}}, short},
+		{"no flag", nil, ""},
 	} {
-		if why, ok := unjudged(c.flags); ok != c.want || ok && why != unsure {
-			t.Errorf("%s: %q, %v, want %v", c.name, why, ok, c.want)
+		if why, ok := unjudged(c.flags); ok != (c.want != "") || why != c.want {
+			t.Errorf("%s: %q, %v, want %q", c.name, why, ok, c.want)
 		}
 	}
 }
@@ -1268,8 +1274,10 @@ var censorCases = []censorCase{
 	// 2026-11-09: REALITY's design can't avoid it), and its verdict must
 	// judge the tell: shown on every probe (n of n), or unattributable
 	// when server-1 dialed the site outside the probes at half their rate
-	// or more (device-a's own connections make it dial), which scores the
-	// cell not judged, never a pass. reality's target is one IPv4 address, so
+	// or more (device-a's own connections make it dial), or seen over a
+	// baseline shorter than the probing, which a race between censord's
+	// start and the first probe decides: either scores the cell not
+	// judged, never a pass. reality's target is one IPv4 address, so
 	// a link over IPv6 dials it from server-1's IPv4 address: the prober
 	// is told server-1's two addresses are one host, as a censor that
 	// knows them would (RR31), so the tell shows over either family.
@@ -2301,7 +2309,8 @@ func resultsMarkdown(cells []matrixCell, scale int) string {
 		"A cell of the active prober or server-hello quotes the module's verdict on the row's first connection to server-1. " +
 		"A cell whose detail says `varies` is chance by nature, and says why: it shows what this run got, and only a `(reference)` row may vary. " +
 		"A cell whose detail starts `KNOWN FLAKE` was expected to fail and let one family through by a known chance, which its ticket measured: it is reported, not a failure, and the run counts it. " +
-		"A cell `not judged` crossed, but its module couldn't judge what the cell is for: the prober's upstream tell, unattributable when server-1 dialed the site outside the probes at half their rate or more.\n\n")
+		"A cell `not judged` crossed, but its module couldn't judge what the cell is for: the prober's upstream tell, unattributable when server-1 dialed the site outside the probes at half their rate or more, " +
+		"or seen over a baseline (the time the prober watched server-1 outside its probes) shorter than the probing.\n\n")
 	fmt.Fprintf(&b, "This run: %s (`%s`, lab/README.md \"WireGuard's timers\"); the `wireguard-rhythm` cells held their tunnels %v, a ping every %v, the module's rekey period %v.\n\n",
 		wgTimersHow(scale), lab.WGTimerScaleEnv, rhythmHold(scale), rhythmPing(scale), censor.WGRekeyAfterTime/time.Duration(scale))
 	if flakes := knownFlakes(cells); flakes != "" {
