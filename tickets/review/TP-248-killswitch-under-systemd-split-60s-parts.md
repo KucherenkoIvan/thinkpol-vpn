@@ -60,11 +60,11 @@ The 3 s refusal limit's flake: TP-246.
   16. on failure, the agent's log and the ruleset in the test log: every part.
 
 ## Review findings
-- [ ] R1.1 (should-fix) the uninstall ran in `live-agent`, on an agent that never crashed; moved to the end of `crash-posture`, after its crashes and restarts ("whatever left it").
-- [ ] R1.2 (should-fix) `crash-posture` and `live-agent` started with kill_switch unset (the node's default), not a member's explicit false as in the original; each starts with `kill-switch off` again, Notes items 13/14 say so.
-- [ ] R1.3 (should-fix) the repair clock started after `nft delete` returned; it now starts before the delete.
-- [ ] R1.4 (nit) the `len(backIn) != 4` failure has a message of its own; the delete's stderr stays in the output.
-- [ ] R1.5 (nits) the pointless `rm node.json` dropped; lab/README.md keeps the general rule, without naming this test.
+- [x] R1.1 (should-fix) the uninstall ran in `live-agent`, on an agent that never crashed; moved to the end of `crash-posture`, after its crashes and restarts ("whatever left it").
+- [x] R1.2 (should-fix) `crash-posture` and `live-agent` started with kill_switch unset (the node's default), not a member's explicit false as in the original; each starts with `kill-switch off` again, Notes items 13/14 say so.
+- [x] R1.3 (should-fix) the repair clock started after `nft delete` returned; it now starts before the delete.
+- [x] R1.4 (nit) the `len(backIn) != 4` failure has a message of its own; the delete's stderr stays in the output.
+- [x] R1.5 (nits) the pointless `rm node.json` dropped; lab/README.md keeps the general rule, without naming this test.
 
 ## Log
 - 2026-11-19 created in backlog (lab-speed follow-ups)
@@ -77,3 +77,4 @@ The 3 s refusal limit's flake: TP-246.
 - 2026-11-19 final head 833dd47d: `make lab-gotest PKG=./lab RUN=TestKillSwitchUnderSystemd` passed (128 s, parts 25.4 to 32.5 s in use), `make lint` and `make test` green
 - 2026-11-19 in-progress → review
 - 2026-11-19 review round 1: fix R1.1–R1.5, merge
+- 2026-11-19 review round 1 done (47455541): the uninstall moved to the end of `crash-posture`, after its crashes and restarts; `live-agent` and `crash-posture` start with an explicit `kill-switch off`; the repair clock starts before the delete; the loop's wrong count has a message of its own; `rm node.json` dropped (nothing after it reads node.json: the agent read it at its restart, and uninstall leaves the state directory alone). `make lint`, `make test` green; `make lab-gotest PKG=./lab RUN='^TestKillSwitchUnderSystemd$'` COUNT=3 passed (433 s, load 0.9 to 21, lab starts 39 s to 2 min 19 s), in use: `down` 21.5/20.9/18.0 s, `crash-and-stop` 25.1/25.2/21.3 s, `live-agent` 27.2/24.1/24.1 s, `crash-posture` 26.1/28.8/25.2 s
