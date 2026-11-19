@@ -26,9 +26,10 @@ import (
 // A pool holds at most size labs, each with a lab slot of its own for as
 // long as it lives: a test that finds none idle starts one while the pool
 // has fewer, or waits for one to come back, first come first served. An
-// idle lab is torn down once it has waited as long as its start took
-// (poolIdle), so it doesn't sit on a slot another run waits for; Main
-// tears down what the pools still hold.
+// idle lab stays while no lab start waits for a slot, since the slot it
+// holds then costs nobody anything; once one waits, the idle lab goes when
+// it has waited as long as its start took (poolIdle). Main tears down what
+// the pools still hold.
 type Pool struct {
 	topo Topology
 	size int
@@ -57,17 +58,26 @@ type pooledLab struct {
 	clean *Snapshot
 	uses  int
 	took  time.Duration // its start, the slot wait included
-	timer *time.Timer   // while idle
+	timer *time.Timer   // while idle: the next idle check
+	since time.Time     // idle since
 }
 
-// poolIdle is how long an idle lab waits for its next test: as long as
-// its own start took (the slot wait included), within bounds. Waiting
-// longer would cost the slot more than a new start costs the next test;
-// tearing it down sooner throws away a start the next test of the
-// topology, a minute or two behind under load, would have used.
+// poolIdle is how long an idle lab waits for its next test while another
+// lab start waits for a slot: as long as its own start took (the slot wait
+// included), within bounds. Waiting longer would cost the slot more than a
+// new start costs the next test; tearing it down sooner throws away a
+// start the next test of the topology, a minute or two behind under load,
+// would have used.
 func poolIdle(started time.Duration) time.Duration {
 	return min(max(started, 15*time.Second), 3*time.Minute)
 }
+
+// poolIdleCheck is how often an idle lab looks whether a slot is wanted;
+// poolIdleMax is how long it stays idle when none ever is.
+const (
+	poolIdleCheck = 2 * time.Second
+	poolIdleMax   = 10 * time.Minute
+)
 
 var (
 	poolsMu sync.Mutex
@@ -140,7 +150,7 @@ func (p *Pool) take(deadline time.Time) (*pooledLab, error) {
 	if n := len(p.idle); n > 0 {
 		pl := p.idle[n-1]
 		p.idle = p.idle[:n-1]
-		pl.timer.Stop() // one that fired finds pl taken (expire)
+		pl.timer.Stop() // one that fired finds pl taken (idleCheck)
 		p.mu.Unlock()
 		return pl, nil
 	}
@@ -224,7 +234,8 @@ func (p *Pool) giveBack(t testing.TB, pl *pooledLab, since time.Time) {
 	if p.handOn(pl) {
 		return
 	}
-	pl.timer = time.AfterFunc(poolIdle(pl.took), func() { p.expire(pl) })
+	pl.since = time.Now()
+	pl.timer = time.AfterFunc(poolIdleCheck, func() { p.idleCheck(pl) })
 	p.idle = append(p.idle, pl)
 }
 
@@ -259,11 +270,21 @@ func (p *Pool) handOn(pl *pooledLab) bool {
 	return true
 }
 
-// expire tears down pl if it is still idle.
-func (p *Pool) expire(pl *pooledLab) {
+// idleCheck tears down pl if it is still idle and has been for long
+// enough (poolIdle, poolIdleMax), or looks again later.
+func (p *Pool) idleCheck(pl *pooledLab) {
+	wanted := true
+	if dir, err := lockDir(); err == nil {
+		wanted = slotWanted(dir, time.Now())
+	}
 	p.mu.Lock()
 	i := slices.Index(p.idle, pl)
 	if i < 0 {
+		p.mu.Unlock()
+		return
+	}
+	if idle := time.Since(pl.since); idle < poolIdle(pl.took) || !wanted && idle < poolIdleMax {
+		pl.timer = time.AfterFunc(poolIdleCheck, func() { p.idleCheck(pl) })
 		p.mu.Unlock()
 		return
 	}

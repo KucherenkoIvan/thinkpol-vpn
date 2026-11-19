@@ -1,6 +1,8 @@
 package lab
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -128,5 +130,37 @@ func TestPoolIdle(t *testing.T) {
 		if got := poolIdle(took); got != want {
 			t.Errorf("poolIdle(%v) = %v, want %v", took, got, want)
 		}
+	}
+}
+
+// TestSlotWanted: a slot is wanted while the slot queue holds a ticket
+// refreshed within the stale limit; an old ticket, another file or a
+// directory named like a ticket isn't one, and no queue means nobody
+// waits.
+func TestSlotWanted(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	if slotWanted(dir, now) {
+		t.Error("no queue: wanted")
+	}
+	q := filepath.Join(dir, "slot-queue")
+	if err := os.MkdirAll(filepath.Join(q, "00000000000000000001-1-00000000"+slotQueueSuffix), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ticket := filepath.Join(q, "00000000000000000002-1-00000000"+slotQueueSuffix)
+	for _, f := range []string{filepath.Join(q, "notes"), ticket} {
+		if err := os.WriteFile(f, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !slotWanted(dir, now) {
+		t.Error("a fresh ticket: not wanted")
+	}
+	old := now.Add(-slotQueueTimes.stale - time.Second)
+	if err := os.Chtimes(ticket, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if slotWanted(dir, now) {
+		t.Error("only a stale ticket, a directory and another file: wanted")
 	}
 }
