@@ -125,12 +125,14 @@ const (
 	passTest = "package %s\n\nimport \"testing\"\n\nfunc TestPass(t *testing.T) {}\n"
 	labTest  = "package %s\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestNeedsTheLab(t *testing.T) {\n\tif os.Getenv(\"THINKPOL_LAB\") == \"\" {\n\t\tt.Skip(\"needs the lab\")\n\t}\n}\n"
 	failTest = "package %s\n\nimport \"testing\"\n\nfunc TestFail(t *testing.T) { t.Fatal(\"broken\") }\n"
+	subTest  = "package %s\n\nimport \"testing\"\n\nfunc TestCases(t *testing.T) {\n\tt.Run(\"unsupported\", func(t *testing.T) { t.Skip(\"not this transport\") })\n}\n"
 )
 
 // TestGoTestOnHost: packages run on the host pass or fail as their tests
 // do; one whose test skips for want of the lab fails, though the run's
 // own environment has THINKPOL_LAB set (a node's, or a user's): a package
-// that needs a node can't pass on the host unseen.
+// that needs a node can't pass on the host unseen. A subtest that skips
+// (a conformance case a transport doesn't have) fails nothing.
 func TestGoTestOnHost(t *testing.T) {
 	needGoTool(t)
 	isolateGoEnv(t)
@@ -139,11 +141,13 @@ func TestGoTestOnHost(t *testing.T) {
 		"pass/pass_test.go": pkgFile(passTest, "pass"),
 		"lab/lab_test.go":   pkgFile(labTest, "lab"),
 		"fail/fail_test.go": pkgFile(failTest, "fail"),
+		"sub/sub_test.go":   pkgFile(subTest, "sub"),
 	})
 	pkgs := []GoPackage{
 		{ImportPath: "example.net/tagged/pass", Dir: "pass", NeedsNoNode: true},
 		{ImportPath: "example.net/tagged/lab", Dir: "lab", NeedsNoNode: true},
 		{ImportPath: "example.net/tagged/fail", Dir: "fail", NeedsNoNode: true},
+		{ImportPath: "example.net/tagged/sub", Dir: "sub", NeedsNoNode: true},
 	}
 	var out syncBuffer
 	results, err := GoTestOnHost(t.Context(), root, pkgs, &out, nil, "-test.count=1")
@@ -163,6 +167,9 @@ func TestGoTestOnHost(t *testing.T) {
 	if r := got["example.net/tagged/fail"]; !r.Failed || r.Tests != (TestTally{Failed: 1}) {
 		t.Errorf("fail: %+v", r)
 	}
+	if r := got["example.net/tagged/sub"]; r.Failed || r.Tests != (TestTally{Passed: 1}) {
+		t.Errorf("a subtest skipping, its test passing: %+v, want a pass", r)
+	}
 	s := out.String()
 	for _, want := range []string{
 		"=== lab gotest (on the host) example.net/tagged/pass\n",
@@ -174,15 +181,16 @@ func TestGoTestOnHost(t *testing.T) {
 			t.Errorf("output lacks %q:\n%s", want, s)
 		}
 	}
-	if len(results) != 3 {
-		t.Errorf("%d results, want 3: %+v", len(results), results)
+	if len(results) != 4 {
+		t.Errorf("%d results, want 4: %+v", len(results), results)
 	}
 }
 
 // TestHostRunReadsGoTestJSON: a package's events become one block of
-// output and a result: a cached pass has no time, a build failure fails
-// its package and shows its output, and lines that aren't events pass
-// through.
+// output and a result: its top-level tests counted (a subtest that skips,
+// whose "--- SKIP" go test -json prints unindented, isn't), a cached pass
+// without a time, a build failure failing its package with its output;
+// lines that aren't events pass through.
 func TestHostRunReadsGoTestJSON(t *testing.T) {
 	in := `{"Action":"start","Package":"x/a"}
 {"Action":"run","Package":"x/a","Test":"TestA"}
@@ -198,7 +206,10 @@ func TestHostRunReadsGoTestJSON(t *testing.T) {
 {"Action":"fail","Package":"x/b","Elapsed":0,"FailedBuild":"x/b [x/b.test]"}
 go: downloading example.net/m v1.0.0
 {"Action":"start","Package":"x/c"}
-{"Action":"output","Package":"x/c","Output":"--- PASS: TestC (1.00s)\n"}
+{"Action":"output","Package":"x/c","Test":"TestC/sub","Output":"--- SKIP: TestC/sub (0.00s)\n"}
+{"Action":"skip","Package":"x/c","Test":"TestC/sub","Elapsed":0}
+{"Action":"output","Package":"x/c","Test":"TestC","Output":"--- PASS: TestC (1.00s)\n"}
+{"Action":"pass","Package":"x/c","Test":"TestC","Elapsed":1}
 {"Action":"pass","Package":"x/c","Elapsed":1.5}
 `
 	var w strings.Builder

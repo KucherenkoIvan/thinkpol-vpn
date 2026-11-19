@@ -87,8 +87,9 @@ type hostEvent struct {
 }
 
 type hostOutput struct {
-	b   strings.Builder
-	cut int // bytes not held: over hostOutputLimit
+	b     strings.Builder
+	cut   int // bytes not held: over hostOutputLimit
+	tally TestTally
 }
 
 func (o *hostOutput) add(s string) {
@@ -149,8 +150,26 @@ func (h *hostRun) line(line []byte) {
 	case e.Package == "" || e.Action == "build-fail":
 	case e.Action == "output":
 		h.out(e.Package).add(e.Output)
-	case e.Test == "" && (e.Action == "pass" || e.Action == "fail" || e.Action == "skip"):
-		h.end(e)
+	case e.Action == "pass" || e.Action == "fail" || e.Action == "skip":
+		switch {
+		case e.Test == "":
+			h.end(e)
+		case !strings.Contains(e.Test, "/"):
+			// From the events, not the output's "--- " lines: go test
+			// -json prints a subtest's unindented.
+			h.out(e.Package).count(e.Action)
+		}
+	}
+}
+
+func (o *hostOutput) count(action string) {
+	switch action {
+	case "pass":
+		o.tally.Passed++
+	case "fail":
+		o.tally.Failed++
+	case "skip":
+		o.tally.Skipped++
 	}
 }
 
@@ -159,7 +178,7 @@ func (h *hostRun) end(e hostEvent) {
 	o := h.out(e.Package)
 	delete(h.outs, e.Package)
 	out := o.b.String()
-	res := GoTestResult{ImportPath: e.Package, Failed: e.Action == "fail", Tests: TallyTests([]byte(out))}
+	res := GoTestResult{ImportPath: e.Package, Failed: e.Action == "fail", Tests: o.tally}
 	res.Cached = strings.Contains(out, "\t(cached)")
 	if !res.Cached {
 		res.Elapsed = time.Duration(e.Elapsed * float64(time.Second))
