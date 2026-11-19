@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-269"
+branch: "tp-269-node-phase-pool"
 ---
 
 ## Goal
@@ -36,3 +36,4 @@ A cold node phase still runs ~23 packages in a node, each in a freshly started l
 
 ## Log
 - 2026-11-19 created in backlog (owner: do 1-2)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-269
