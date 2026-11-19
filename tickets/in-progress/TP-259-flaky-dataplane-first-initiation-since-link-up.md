@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-259"
+branch: "tp-259-first-initiation-flake"
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ internal/dataplane's TestTheFirstInitiationSinceLinkUpIsFromTheNeighborsUpSince 
 
 ## Log
 - 2026-11-19 created in backlog (TP-252 review)
+- 2026-11-19 backlog → in-progress, owner: agent-tp-259
