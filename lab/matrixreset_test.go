@@ -16,11 +16,11 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
 
-// A matrix row runs all its cells in one lab, one after another, so each
-// cell must start from the state the first one did: after a cell, the lab
-// is reset to the state recorded when the row's lab came up (cleanLab),
-// and the reset is checked. A cell whose reset didn't hold is an error,
-// and so is every later cell of its row.
+// A matrix row runs its cells in one lab or a few (rowLabs), each lab's
+// one after another, so each cell must start from the state the lab's
+// first one did: after a cell, the lab is reset to the state recorded when
+// it came up (cleanLab), and the reset is checked. A cell whose reset
+// didn't hold is an error, and so is every later cell of its lab.
 
 // nodeStateScript prints what a cell may leave behind in a node, one
 // "<kind> <what>" line each: its processes (but the script's own), links,
@@ -198,7 +198,8 @@ func TestNodeState(t *testing.T) {
 	}
 }
 
-// matrixRow is a row's lab and the state each of its cells starts from.
+// matrixRow is one of a row's labs and the state each of its cells starts
+// from.
 type matrixRow struct {
 	lab   *lab.Lab
 	clean map[string]nodeState // by node name
@@ -220,7 +221,18 @@ type matrixRow struct {
 // the space and not the censor, where the thinkpol rows' maps are built.
 // No cell reaches device-b, server-2 or internet, so they aren't started.
 func startRow(t *testing.T) *matrixRow {
+	begin := time.Now()
+	var up, cellsDone time.Time
+	// Registered first, so it runs last, after the lab's tear-down: what
+	// the lab's start and tear-down cost next to its cells is what
+	// splitting a row trades (transport.labs).
+	t.Cleanup(func() {
+		if !up.IsZero() && !cellsDone.IsZero() {
+			t.Logf("lab: up in %v, cells %v, down in %v", up.Sub(begin).Round(time.Second), cellsDone.Sub(up).Round(time.Second), time.Since(cellsDone).Round(time.Second))
+		}
+	})
 	l := lab.StartOwnSlot(t, lab.Upstream().Only(lab.Router, lab.DeviceA, lab.Server1, lab.Camouflage))
+	t.Cleanup(func() { cellsDone = time.Now() })
 	lab.StartCamouflage(t, l)
 	if _, err := execRead(l.Node(lab.Router), execTimeout, "censord", "-reset"); err != nil {
 		t.Fatal(err)
@@ -231,6 +243,7 @@ func startRow(t *testing.T) *matrixRow {
 		t.Fatal(err)
 	}
 	row.clean = states
+	up = time.Now()
 	return row
 }
 

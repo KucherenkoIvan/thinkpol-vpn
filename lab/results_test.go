@@ -78,9 +78,10 @@ func TestCensorMatrix(t *testing.T) {
 	})
 
 	// runCell probes one cell, resets the row's lab after it, and records
-	// it: t.Fatal below ends the function before its return, the cleanup
-	// is what survives.
-	runCell := func(t *testing.T, row *matrixRow, tr transport, cc censorCase) matrixCell {
+	// it unless it ran only as its lab's gate (a row's off cell in its
+	// other labs): t.Fatal below ends the function before its return, the
+	// cleanup is what survives.
+	runCell := func(t *testing.T, row *matrixRow, tr transport, cc censorCase, recorded bool) matrixCell {
 		cell := &matrixCell{transport: tr.name, censor: cc.name, result: "error"}
 		// Registered first, so it runs after the cleanups that stop the
 		// cell's processes.
@@ -89,7 +90,9 @@ func TestCensorMatrix(t *testing.T) {
 				cell.result, cell.detail = "error", "the lab's reset after the cell didn't hold"
 				t.Errorf("%s against %s: %s: %v", tr.name, cc.name, cell.detail, err)
 			}
-			record(*cell)
+			if recorded {
+				record(*cell)
+			}
 		})
 
 		l := row.lab
@@ -227,42 +230,154 @@ func TestCensorMatrix(t *testing.T) {
 	}
 	off, censored := censorCases[0], censorCases[1:]
 	for _, tr := range transports {
-		if stream == lab.StreamLong && !slices.ContainsFunc(censored, func(cc censorCase) bool { return heldCell(tr, cc) }) {
-			continue
-		}
-		t.Run(tr.name, func(t *testing.T) {
-			t.Parallel()
-			row := startRow(t)
-			offResult := "" // the off cell's result; "" when it didn't run
-			t.Run(off.name, func(t *testing.T) {
-				// runCell records the cell even when t.Fatal stops it,
-				// but the assignment would not happen: claim that the
-				// cell ran before it can fail.
-				offResult = "error"
-				offResult = runCell(t, row, tr, off).result
+		for _, ml := range rowLabs(stream, tr, censored) {
+			t.Run(ml.name(), func(t *testing.T) {
+				t.Parallel()
+				row := startRow(t)
+				offResult := "" // the off cell's result; "" when it didn't run
+				t.Run(off.name, func(t *testing.T) {
+					// runCell records the cell even when t.Fatal stops it,
+					// but the assignment would not happen: claim that the
+					// cell ran before it can fail.
+					offResult = "error"
+					offResult = runCell(t, row, tr, off, ml.part == 0).result
+				})
+				for _, cc := range ml.cells {
+					t.Run(cc.name, func(t *testing.T) {
+						gate := ""
+						switch {
+						case offResult == "":
+							gate = gateNotRun
+						case offResult != "pass":
+							gate = gateNotPassed
+						case row.broken != nil:
+							gate = row.broken.Error()
+						}
+						if gate != "" {
+							record(matrixCell{transport: tr.name, censor: cc.name, result: "error", detail: gate})
+							t.Fatal(gate)
+						}
+						runCell(t, row, tr, cc, true)
+					})
+				}
 			})
+		}
+	}
+}
+
+// matrixLab is one of a row's labs in a stream: its off cell, then cells,
+// one after another.
+type matrixLab struct {
+	tr    transport
+	part  int // the lab's index among the row's labs in the stream
+	cells []censorCase
+}
+
+// name is the lab's subtest: the row's name for its first lab, which
+// records the off cell, "<row> lab <n>" for the others.
+func (ml matrixLab) name() string {
+	if ml.part == 0 {
+		return ml.tr.name
+	}
+	return fmt.Sprintf("%s lab %d", ml.tr.name, ml.part+1)
+}
+
+// rowLabs is the row's labs in the stream: the stream's censored cells
+// dealt in turn across transport.labs labs (fewer when the row has fewer
+// cells), each lab starting with the off cell as its gate. Only the
+// first lab records the off cell, so every cell is recorded once. A
+// stream with none of the row's censored cells starts no lab for it,
+// except that the default stream (and no stream) runs the off cell in
+// one lab of its own.
+func rowLabs(stream string, tr transport, censored []censorCase) []matrixLab {
+	var cells []censorCase
+	for _, cc := range censored {
+		if inStream(stream, tr, cc) {
+			cells = append(cells, cc)
+		}
+	}
+	if len(cells) == 0 && stream == lab.StreamLong {
+		return nil
+	}
+	n := min(max(tr.labs, 1), max(len(cells), 1))
+	labs := make([]matrixLab, n)
+	for i := range labs {
+		labs[i] = matrixLab{tr: tr, part: i}
+	}
+	for i, cc := range cells {
+		labs[i%n].cells = append(labs[i%n].cells, cc)
+	}
+	return labs
+}
+
+// TestRowLabs: in each stream, every row's cells of the stream are in
+// exactly one of its labs, each lab with at least one of them (a default
+// stream's row with none has one lab, for its off cell), named apart, no
+// more labs than the row asks for, and only the first lab records the off
+// cell; the long stream starts labs only for held rows. A split row
+// splits its default stream's cells evenly.
+func TestRowLabs(t *testing.T) {
+	split := false
+	censored := censorCases[1:]
+	for _, stream := range []string{"", lab.StreamDefault, lab.StreamLong} {
+		names := map[string]bool{}
+		recorded := 0
+		for _, tr := range transports {
+			labs := rowLabs(stream, tr, censored)
+			got := map[string]int{}
+			for i, ml := range labs {
+				if ml.part != i || ml.tr.name != tr.name {
+					t.Errorf("%q stream, %s: lab %d says part %d of %s", stream, tr.name, i, ml.part, ml.tr.name)
+				}
+				if names[ml.name()] {
+					t.Errorf("%q stream: two labs named %q", stream, ml.name())
+				}
+				names[ml.name()] = true
+				if len(ml.cells) == 0 && len(labs) > 1 {
+					t.Errorf("%q stream: %s has no cell", stream, ml.name())
+				}
+				for _, cc := range ml.cells {
+					got[cc.name]++
+				}
+			}
+			if len(labs) > 0 && stream != lab.StreamLong {
+				recorded++ // the first lab's off cell
+			}
+			if len(labs) > max(tr.labs, 1) {
+				t.Errorf("%q stream: %s has %d labs, asks for %d", stream, tr.name, len(labs), tr.labs)
+			}
+			want := 0
 			for _, cc := range censored {
 				if !inStream(stream, tr, cc) {
 					continue
 				}
-				t.Run(cc.name, func(t *testing.T) {
-					gate := ""
-					switch {
-					case offResult == "":
-						gate = gateNotRun
-					case offResult != "pass":
-						gate = gateNotPassed
-					case row.broken != nil:
-						gate = row.broken.Error()
-					}
-					if gate != "" {
-						record(matrixCell{transport: tr.name, censor: cc.name, result: "error", detail: gate})
-						t.Fatal(gate)
-					}
-					runCell(t, row, tr, cc)
-				})
+				want++
+				if got[cc.name] != 1 {
+					t.Errorf("%q stream: %s / %s is in %d labs, want 1", stream, tr.name, cc.name, got[cc.name])
+				}
 			}
-		})
+			recorded += want
+			if n := len(got); n != want {
+				t.Errorf("%q stream: %s's labs have %d cells, want %d", stream, tr.name, n, want)
+			}
+			if stream == lab.StreamLong && (len(labs) > 0) != (want > 0) {
+				t.Errorf("long stream: %s has %d labs for %d held cells", tr.name, len(labs), want)
+			}
+			if stream == lab.StreamDefault && len(labs) > 1 {
+				split = true
+				for _, ml := range labs {
+					if d := len(ml.cells) - len(labs[0].cells); d < -1 || d > 1 {
+						t.Errorf("%s: lab %q has %d cells, its first lab %d", tr.name, ml.name(), len(ml.cells), len(labs[0].cells))
+					}
+				}
+			}
+		}
+		if recorded != streamCells(stream) {
+			t.Errorf("%q stream: its labs record %d cells, the stream has %d", stream, recorded, streamCells(stream))
+		}
+	}
+	if !split {
+		t.Error("no row splits its default stream's cells across labs")
 	}
 }
 
@@ -937,6 +1052,10 @@ type transport struct {
 	// hold, if set, keeps the transport up for a while (a case's hold)
 	// before the probe: in use, or idle.
 	hold func(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool)
+	// labs splits the row's cells of a stream across this many labs, run
+	// in parallel (rowLabs); 0 is one. Each lab costs 4 container starts
+	// and its own off cell, and shortens the row to its longest lab.
+	labs int
 }
 
 // withRowSettings is the case's module configs with a row's overrides
@@ -1022,13 +1141,13 @@ func TestWithRowSettings(t *testing.T) {
 // are all short.
 var transports = []transport{
 	realityRow,
-	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP, udp: true, oneUnderlay: true, hold: holdTunnel},
+	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP, udp: true, oneUnderlay: true, hold: holdTunnel, labs: 2},
 	{name: rowPlainTCP, setup: setupPlainTCP, probe: probePlainTCP, sawFlows: sawPlainTCP},
 	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPSOn(443), sawFlows: sawHTTPS, tls: true},
 	{name: rowWireGuard, setup: setupWireGuard, probe: probeUDP, sawFlows: sawWireGuard, udp: true},
-	{name: rowOpenVPNUDP, setup: openVPN{"udp"}.setup, probe: openVPN{"udp"}.probe, sawFlows: openVPN{"udp"}.sawFlows, udp: true},
-	{name: rowOpenVPNTCP, setup: openVPN{"tcp"}.setup, probe: openVPN{"tcp"}.probe, sawFlows: openVPN{"tcp"}.sawFlows},
-	{name: rowRandomTCP, setup: setupRandom, probe: probeRandom, sawFlows: sawRandom},
+	{name: rowOpenVPNUDP, setup: openVPN{"udp"}.setup, probe: openVPN{"udp"}.probe, sawFlows: openVPN{"udp"}.sawFlows, udp: true, labs: 2},
+	{name: rowOpenVPNTCP, setup: openVPN{"tcp"}.setup, probe: openVPN{"tcp"}.probe, sawFlows: openVPN{"tcp"}.sawFlows, labs: 2},
+	{name: rowRandomTCP, setup: setupRandom, probe: probeRandom, sawFlows: sawRandom, labs: 2},
 	{name: rowRelayTCP, setup: setupRelay, probe: probeHTTPSOn(relayRowPort), sawFlows: sawRelay, tls: true},
 }
 
