@@ -281,9 +281,10 @@ func (r *matrixRow) eachNode(f func(n *lab.Node) error) error {
 
 // reset puts the lab back in its clean state after a cell, whose own
 // cleanups have stopped its processes and censord, and checks it held:
-// it kills what still runs, then (nothing running to make new flows)
-// removes the links, policy rules, tables and files the cell left (the
-// verdict log with /run/censor), then the routes and addresses left on
+// it kills what still runs and aborts every TCP connection left (orphaned
+// or held by a clean-state process), then (nothing left to make new
+// flows) removes the links, policy rules, tables and files the cell left
+// (the verdict log with /run/censor), then the routes and addresses left on
 // the links that remain, clears the router's censor table and conntrack
 // (censord -reset, clearRouter), and reads every node back.
 func (r *matrixRow) reset() error {
@@ -314,6 +315,20 @@ func (r *matrixRow) reset() error {
 			time.Sleep(200 * time.Millisecond)
 		}
 	})
+	if err == nil {
+		// A killed process's TCP sockets live on as orphans, and a peer
+		// left running (the camouflage site's nginx) keeps its end:
+		// either retransmits for minutes, each time the censor dropped
+		// it, and a retransmission after the router's flush makes a
+		// conntrack entry the check finds (reality's handshakes with its
+		// target, cut by ip-blocklist). The clean state has listeners
+		// only, so every other TCP socket goes; an RST from the abort
+		// makes no entry of its own.
+		err = r.eachNode(func(n *lab.Node) error {
+			_, err := execRead(n, pollTimeout, "ss", "-K", "-t", "state", "connected")
+			return err
+		})
+	}
 	if err == nil {
 		err = r.eachNode(func(n *lab.Node) error {
 			extra, err := r.leftovers(n)
