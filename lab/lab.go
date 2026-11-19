@@ -283,6 +283,18 @@ func (c startClock) run(ctx context.Context, project string, p startPhase, f fun
 	return fmt.Errorf("lab %s: %s: %w", project, what, err)
 }
 
+// waitForSlot is a lab start's wait for its slot (acquireSlot) under
+// clock's bound, noted in the timeline whether or not it got one.
+func waitForSlot(ctx context.Context, clock startClock, project, slotKey string) (release func(), err error) {
+	from := time.Now()
+	err = clock.run(ctx, project, phaseSlotWait, func(ctx context.Context) (err error) {
+		release, err = acquireSlot(ctx, slotKey)
+		return err
+	})
+	noteSlotWait(project, from, time.Now(), err)
+	return release, err
+}
+
 // labInputs builds the image and the binaries a lab runs, and returns the
 // directory it mounts at BinDir; stateDir is the lab's lab/.run/<project>.
 type labInputs func(ctx context.Context, root, stateDir string) (image, string, error)
@@ -329,16 +341,10 @@ func up(ctx context.Context, clock startClock, root, project string, topo Topolo
 	if err != nil {
 		return nil, err
 	}
-	var release func()
-	slotWait := time.Now()
-	err = clock.run(ctx, project, phaseSlotWait, func(ctx context.Context) (err error) {
-		release, err = acquireSlot(ctx, slotKey)
-		return err
-	})
+	release, err := waitForSlot(ctx, clock, project, slotKey)
 	if err != nil {
 		return nil, errors.Join(err, os.RemoveAll(stateDir))
 	}
-	noteSlotWait(project, slotWait, time.Now())
 	l := &Lab{
 		Project:  project,
 		Topology: topo,

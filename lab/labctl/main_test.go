@@ -336,3 +336,14 @@ func TestGotestTimesWhenALabFails(t *testing.T) {
 		t.Fatalf("times: %v, %v; want the file, empty", got, err)
 	}
 }
+
+// labctl gotest refuses -p or -build-p below one before it lists or starts
+// anything, instead of running with a cap of its own choosing.
+func TestGotestRejectsConcurrencyBelowOne(t *testing.T) {
+	for _, args := range [][]string{{"-p", "0"}, {"-build-p", "0"}, {"-p", "-1"}} {
+		err := runGotest(t.Context(), t.TempDir(), append(args, "./..."))
+		if err == nil || !strings.Contains(err.Error(), "want 1 or more") {
+			t.Errorf("gotest %v: %v, want a want-1-or-more error", args, err)
+		}
+	}
+}

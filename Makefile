@@ -168,7 +168,13 @@ LAB_LONG_TESTS := ^TestCensorMatrix$$
 # binaries from the checkout as it goes.
 LAB_HARNESS_RUN := ^TestHarness
 LAB_HARNESS_CACHE ?= $(HOME)/.cache/thinkpol-lab/harness
-LAB_HARNESS_GOTEST = go test -tags lab -count=1 -parallel $(LAB_SLOTS) -timeout $(LAB_TIMEOUT) -run '$(LAB_HARNESS_RUN)' ./lab
+# The harness phase's -parallel: LAB_SLOTS, but at least 4. It counts
+# tests running at once, not labs (the slots bound those), and
+# TestHarnessLabStartsOverlapOnDistinctSubnets needs 4 to start its four
+# labs together; under 4 it skips, the run isn't remembered and every
+# make lab-test runs the harness again.
+LAB_HARNESS_PARALLEL = $(if $(filter 1 2 3,$(LAB_SLOTS)),4,$(LAB_SLOTS))
+LAB_HARNESS_GOTEST = go test -tags lab -count=1 -parallel $(LAB_HARNESS_PARALLEL) -timeout $(LAB_TIMEOUT) -run '$(LAB_HARNESS_RUN)' ./lab
 LAB_HARNESS_FILES = $(shell find lab -name '*.go' ! -name '*_test.go' | LC_ALL=C sort) $(sort $(wildcard lab/harness*_test.go)) $(sort $(wildcard lab/ip/*_test.go)) lab/Dockerfile lab/seccomp.json go.mod go.sum
 # Hashed from a file, not a pipe: a read that fails inside a pipe fails
 # only the pipe's subshell, and the partial input would still hash.
