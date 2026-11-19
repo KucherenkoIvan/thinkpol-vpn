@@ -133,9 +133,9 @@ const (
 //     even both ways the difference of the record counts each way, read
 //     whenever the connection carried no record for wgCountSettle, steps
 //     by the same amount at each rekey and stays flat in between. A
-//     difference read off the level is a step once a reading finds it
-//     again wgCountHold after the records that took it there, so an
-//     answer that comes late is none. A step is timed as a span, from
+//     difference read off the level is a step once the readings have
+//     found it, unchanged, wgCountHold after the records that took it
+//     there, so an answer that comes late is none. A step is timed as a span, from
 //     the records that took the difference off the level to those that
 //     took it to the value it stepped to, so it holds the handshake's
 //     records however busy the connection was around them. It shows the
@@ -221,11 +221,11 @@ type wgSpan struct{ start, end time.Time }
 
 // wgMove is a difference read off the level and not yet a step: when the
 // records that took it off began (zero while it reads the level), and
-// the first and the latest value it was read at, each with when the
-// records that took it to that value ended.
+// the latest value it was read at, with when the records that took it to
+// that value ended.
 type wgMove struct {
-	start         time.Time
-	first, latest wgMoveValue
+	start  time.Time
+	latest wgMoveValue
 }
 
 type wgMoveValue struct {
@@ -687,15 +687,17 @@ func (m *wgRhythm) window() time.Duration {
 // readCount reads the difference of the record counts each way, the
 // connection having carried no record for wgCountSettle, at now. A
 // difference off the level is a move: a step once a reading finds the
-// first or the latest value the move was read at again, wgCountHold or
-// more after the records that took it to that value ended. Any other
-// value off the level is the move's latest (a request whose answer is
-// still to come, on top of the move or not); one back on the level ends
-// the move, no step. A step is timed as the span from the records that
-// took the difference off the level (or those the reading on the level
-// before read, when they ended within wgPairWindow before: an answer in
-// flight then can have hidden the move) to the records that took it to
-// the value it stepped to. It flags the connection when the level has
+// latest value the move was read at again, wgCountHold or more after the
+// records that took it to that value ended. Any other value off the
+// level is the move's latest (a request whose answer is still to come,
+// on top of the move or not), even one the move was read at before: a
+// late answer can take the count back to that value, and it would
+// confirm a step the request's answer then undoes. One back on the level
+// ends the move, no step. A step is timed as the span from the records
+// that took the difference off the level (or those the reading on the
+// level before read, when they ended within wgPairWindow before: an
+// answer in flight then can have hidden the move) to the records that
+// took it to the value it stepped to. It flags the connection when the level has
 // stepped by one amount wgRekeys times in a row, a rekey period apart,
 // with no other change.
 func (m *wgRhythm) readCount(c *wgConn, now time.Time) {
@@ -715,23 +717,17 @@ func (m *wgRhythm) readCount(c *wgConn, now time.Time) {
 		if !k.onLevel.end.IsZero() && read.start.Sub(k.onLevel.end) <= wgPairWindow {
 			start = k.onLevel.start
 		}
-		v := wgMoveValue{d, read.end}
-		k.move = wgMove{start, v, v}
+		k.move = wgMove{start, wgMoveValue{d, read.end}}
 	}
 	mv := &k.move
-	var to wgMoveValue
 	switch {
-	case d == mv.first.d && now.Sub(mv.first.end) >= wgCountHold:
-		to = mv.first
-	case d == mv.latest.d && now.Sub(mv.latest.end) >= wgCountHold:
-		to = mv.latest
 	case d != mv.latest.d:
 		mv.latest = wgMoveValue{d, read.end}
 		return
-	default:
+	case now.Sub(mv.latest.end) < wgCountHold:
 		return
 	}
-	step, span := d-k.level, wgSpan{mv.start, to.end}
+	step, span := d-k.level, wgSpan{mv.start, mv.latest.end}
 	k.level, k.move, k.onLevel = d, wgMove{}, read
 	if step != k.chain.delta {
 		k.chain = wgCountChain{delta: step}
