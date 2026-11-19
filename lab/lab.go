@@ -73,6 +73,9 @@ func start(t testing.TB, topo Topology, slotKey string) *Lab {
 // startAs is start with override in ProjectEnv's place (checkoutProject).
 func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 	t.Helper()
+	if err := mainCalled(); err != nil {
+		t.Fatal(err)
+	}
 	l, bins, keep, err := launch(t, topo, func(string) string { return slotKey }, t.Name(), override)
 	if l != nil {
 		t.Cleanup(func() { l.cleanup(t, bins, keep, time.Time{}) })
@@ -90,8 +93,8 @@ func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 // a lab returned with an error still needs its clean-up.
 func launch(t testing.TB, topo Topology, slotKey func(project string) string, name, override string) (*Lab, *runBinaries, bool, error) {
 	t.Helper()
-	if !mainInstalled.Load() {
-		return nil, nil, false, errors.New("lab: this package's TestMain must call lab.Main(m), or the binaries its labs run are never removed")
+	if err := mainCalled(); err != nil {
+		return nil, nil, false, err
 	}
 	root, err := Root()
 	if err != nil {
@@ -132,6 +135,14 @@ func launch(t testing.TB, topo Topology, slotKey func(project string) string, na
 	}
 	l, err := up(context.Background(), clock, root, project, topo, slotKey(project), runInputs)
 	return l, p.bin, keep, err
+}
+
+// mainCalled is an error unless the test binary runs through Main.
+func mainCalled() error {
+	if !mainInstalled.Load() {
+		return errors.New("lab: this package's TestMain must call lab.Main(m), or the binaries its labs run are never removed")
+	}
+	return nil
 }
 
 var (
