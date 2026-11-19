@@ -1190,7 +1190,7 @@ func withRowSettings(configs []censor.ModuleConfig, overrides map[string]map[str
 
 // TestSeenBeforeUp: a censor that saw a udp tunnel's first datagram has
 // a line on it from before device-a's link came up; one that joined later
-// has its first line, either way, after.
+// has its first line after.
 func TestSeenBeforeUp(t *testing.T) {
 	dev := netip.MustParseAddr("192.0.2.2")
 	tunnel := func(k censor.FlowKey) bool { return k.Proto == censor.ProtoUDP && k.Src == dev }
@@ -1207,9 +1207,9 @@ func TestSeenBeforeUp(t *testing.T) {
 		ok   bool
 	}{
 		{"from the start", []string{line(other, -time.Second), line(out, -time.Millisecond), line(back, -time.Millisecond/2)}, true},
+		{"server-1's datagram doesn't count", []string{line(back, -time.Millisecond), line(out, time.Millisecond)}, false},
 		{"at the instant", []string{line(out, 0)}, true},
 		{"joined: device-a's datagram after", []string{line(other, -time.Second), line(out, 300*time.Millisecond)}, false},
-		{"joined: server-1's datagram after", []string{line(back, time.Millisecond), line(out, 2*time.Millisecond)}, false},
 		{"another flow only", []string{line(other, -time.Second)}, false},
 		{"empty", nil, false},
 	} {
@@ -1604,14 +1604,14 @@ func judgedFromTheStart(t *testing.T, l *lab.Lab, c *censorRun, cc censorCase, t
 
 // seenBeforeUp checks, from the verdict log, that the censor saw a udp
 // tunnel (its flows from device-a: tunnel) from its first datagram: the
-// log's first line on it, either way, comes no later than upBy, when
-// device-a's link came up at the latest. The link is up once a reply to
-// its probe came back, so the censor saw that probe first; one that joined
-// a link already up saw it later.
+// log's first line on it comes no later than upBy, when device-a's link
+// came up at the latest. The link is up once a reply to its probe came
+// back, so the censor saw that probe first; one that joined a link
+// already up saw it later.
 func seenBeforeUp(log string, tunnel func(censor.FlowKey) bool, upBy time.Time) error {
 	var first verdictLine
 	found, err := matchVerdicts(log, func(e verdictLine) bool {
-		if tunnel(e.Key) || tunnel(e.Key.Reverse()) {
+		if tunnel(e.Key) {
 			first = e
 			return true
 		}
