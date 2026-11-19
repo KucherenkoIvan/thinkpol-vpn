@@ -69,3 +69,4 @@ Four reviewers (one of another model family) agree the fix (the system pool read
 - 2026-11-19 filed TP-256 (start-up detection without the CCS probe) and TP-257 (handoff workers' ChangeCipherSpec tolerance) on rewrite; TP-256's refs gain RR66 in this branch, where RR66 lands
 - 2026-11-19 has-errors → review
 - 2026-11-19 review round 2: nits R2.1–R2.2, merge
+- 2026-11-19 runs on 3b2ef906: go test ./internal/dataplane/transport/reality/... -count=3 and the two SystemRoots tests -count=10 pass; make lint, make test green. R2.2 not mutation-checked: the failure needs a load-timed gap, which no mutation reproduces deterministically
