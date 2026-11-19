@@ -3,15 +3,17 @@ package lab
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
 // TimelineEnv names a file each lab start appends lines to: how long its
 // read of the daemon's subnets took, before the slot; how long it waited
-// for its lab slot; when it asked for the subnet allocation lock,
-// held it, and ran docker compose up; how long each step from the slot to
-// the sealed lab took; and how long its tear-down took. Runs that share
-// the file give one timeline of how their labs' start-ups overlap.
+// for its lab slot (and whether it gave up on the slot queue); when it
+// asked for the subnet allocation lock, held it, and ran docker compose
+// up; how long each step from the slot to the sealed lab took; and how
+// long its tear-down took. Runs that share the file give one timeline of
+// how their labs' start-ups overlap.
 const TimelineEnv = "THINKPOL_LAB_TIMELINE"
 
 func noteTimeline(project string, attempt int, r *reservation, upFrom, upTo time.Time, upErr error) {
@@ -33,6 +35,16 @@ func noteSlotWait(project string, from, to time.Time, err error) {
 		return
 	}
 	appendTimeline(path, fmt.Sprintf("%s slot-wait %s %s %s\n", timelineStamp(from), to.Sub(from).Round(time.Millisecond), timelineResult(err), project))
+}
+
+// noteSlotUnqueued appends to the timeline that a lab's slot wait gave up
+// on the slot queue (reason) and polls the slots in no order.
+func noteSlotUnqueued(reason error) {
+	path := os.Getenv(TimelineEnv)
+	if path == "" {
+		return
+	}
+	appendTimeline(path, fmt.Sprintf("%s slot-wait unqueued: %s\n", timelineStamp(time.Now()), strings.ReplaceAll(reason.Error(), "\n", " ")))
 }
 
 // noteStart appends a lab's start once it held its slot: the whole of it,
