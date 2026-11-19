@@ -7,11 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -277,4 +279,93 @@ func runNFT(t *testing.T, rule string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("nft: %v: %s", err, out)
 	}
+}
+
+// TestRunStartsUnderTraffic starts the censor again and again while the
+// node floods its own output with datagrams the queue rule takes: a start
+// must not fail because packets reach the queue while it is being set up
+// (TP-252: "netlink validate: mismatched sequence in netlink reply").
+func TestRunStartsUnderTraffic(t *testing.T) {
+	if os.Getenv("THINKPOL_LAB") == "" {
+		t.Skip("needs the lab")
+	}
+	const queue = 205
+	sink, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.2")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sink.Close() }()
+	c, err := net.DialUDP("udp", nil, sink.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	stop := make(chan struct{})
+	var flooding sync.WaitGroup
+	for range 2 {
+		flooding.Add(1)
+		go func() {
+			defer flooding.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_, _ = c.Write([]byte("x")) // EPERM while the rule queues to no one
+			}
+		}()
+	}
+	defer func() { close(stop); flooding.Wait() }()
+	defer log.SetOutput(os.Stderr)
+
+	const starts = 20
+	for i := range starts {
+		ready := make(chan struct{})
+		log.SetOutput(&readyWriter{ready: ready})
+		ctx, cancel := context.WithCancel(context.Background())
+		errc := make(chan error, 1)
+		go func() { errc <- run(ctx, Config{Queue: queue}, NewEngine(nil, nil, nil), "output") }()
+		select {
+		case <-ready:
+		case err := <-errc:
+			cancel()
+			t.Fatalf("start %d of %d: %v", i+1, starts, err)
+		case <-time.After(10 * time.Second):
+			cancel()
+			t.Fatalf("start %d of %d: not ready within 10 s (%v)", i+1, starts, <-errc)
+		}
+		// The flood must reach the queue, or the start proved nothing.
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			proc, err := os.ReadFile("/proc/net/netfilter/nfnetlink_queue")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stats, err := ParseQueueStats(string(proc), queue); err == nil && stats.Sequence > 0 {
+				break
+			} else if time.Now().After(deadline) {
+				cancel()
+				t.Fatalf("start %d of %d: the flood never reached queue %d (%+v, %v)", i+1, starts, queue, stats, err)
+			}
+		}
+		cancel()
+		if err := <-errc; err != nil {
+			t.Fatalf("start %d of %d: %v", i+1, starts, err)
+		}
+	}
+}
+
+// readyWriter is the log's output during a start: it closes ready at the
+// line censord's caller waits for, and passes every line on to stderr.
+type readyWriter struct {
+	once  sync.Once
+	ready chan struct{}
+}
+
+func (w *readyWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("censor ready")) {
+		w.once.Do(func() { close(w.ready) })
+		return len(p), nil
+	}
+	return os.Stderr.Write(p)
 }

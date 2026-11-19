@@ -23,7 +23,13 @@ const table = "censor"
 // queue with the engine until ctx is done, and removes the rule after. It
 // logs "censor ready" once packets are being served.
 func Run(ctx context.Context, cfg Config, eng *Engine) error {
-	if err := installQueueRule(cfg.Queue); err != nil {
+	return run(ctx, cfg, eng, "forward")
+}
+
+// run is Run with the queue rule on hook: the router's forward; tests
+// queue a node's own output, which forward never sees.
+func run(ctx context.Context, cfg Config, eng *Engine, hook string) error {
+	if err := installQueueRule(cfg.Queue, hook); err != nil {
 		return err
 	}
 	defer removeQueueRule()
@@ -150,19 +156,19 @@ func setVerdict(nf *nfqueue.Nfqueue, id uint32, v Verdict) {
 // arrives escaped reassembly and is dropped, counted; the masks leave DF
 // out, which nearly every TCP segment carries. The router forwards only the
 // lab's own traffic, so the rule needs no match of its own.
-func installQueueRule(queue uint16) error {
+func installQueueRule(queue uint16, hook string) error {
 	removeQueueRule()
 	rule := fmt.Sprintf(`
 table inet %s {
-  chain forward {
-    type filter hook forward priority filter; policy accept;
+  chain queue {
+    type filter hook %s priority filter; policy accept;
     ct state invalid counter
     ip frag-off & 0x3fff != 0 counter drop
     exthdr frag exists counter drop
     queue num %d
   }
 }
-`, table, queue)
+`, table, hook, queue)
 	cmd := exec.Command("nft", "-f", "-")
 	cmd.Stdin = strings.NewReader(rule)
 	if out, err := cmd.CombinedOutput(); err != nil {
