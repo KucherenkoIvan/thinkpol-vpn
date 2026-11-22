@@ -40,3 +40,4 @@ The orchestrator's per-item list for the macOS IPv6 box. The owner's proxy rule 
 - 2026-11-16 created in backlog (from the M2 gate review)
 - 2026-11-22 backlog → in-progress, owner: agent-tp-225
 - 2026-11-22 docs changed per Acceptance, each checked against the code at the branch's base 5c0685dd; docs only (one package doc.go comment), no lab-tested code, so no lab run; `make lint` and `python3 tickets/board.py --check` pass
+- 2026-11-22 in-progress → review
