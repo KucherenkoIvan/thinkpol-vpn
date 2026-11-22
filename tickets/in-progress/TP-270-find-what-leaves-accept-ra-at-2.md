@@ -49,3 +49,4 @@ Round 1 (2026-11-22).
 - 2026-11-22 make lint and make test green on 6de23b4f
 - 2026-11-22 in-progress → review
 - 2026-11-22 review → has-errors (round 1: R1.1–R1.5)
+- 2026-11-22 has-errors → in-progress, owner: agent-tp-270
