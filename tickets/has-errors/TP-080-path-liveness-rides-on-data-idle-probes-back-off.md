@@ -38,6 +38,20 @@ The path package doc (internal/dataplane/path/doc.go) has the 6 s dead interval;
 - **Widened 2026-11-16:** the original goal, not declaring a link dead while authenticated data still arrives (device run 3), is the first Scope bullet: received traffic proves a link alive.
 - TP-031's Notes already ask for jittered probe intervals and skipping probes on links that carried data recently; this ticket does that for every link.
 - Related shaping work: TP-237 (reality hides WireGuard's handshake rhythm with cover records).
+- **Owner decisions (2026-11-22, review r1):** (1) the steady-exchange signal is made stricter, so a chance fire on thinkpol's own idle draws is ≤ ~1 in 10⁷ per matrix run on udp (lower on reality), while the lab's fixed-interval TLS pinger is still caught within the cell's hold; (2) the receive-only end of a one-way-broken reality link closing by the idle rule (10–19 s, bound 26 s) is accepted.
+
+## Review findings
+- [ ] R1.1 udp re-attach acks a stale seq: a link re-attached with a new random seq (a redial after a blip whose close notice was lost, a device waking from suspend) lands on the far end's still-open link (udp's links carry on across a redial); recv only moves forward (liveness.go onFrame), so half the time the far end acks the old seq for up to 2³¹ frames and the new end probes every 0.75–2.5 s under traffic for the link's life. Detect a new far end (a large backward jump, or the far end's first-seq marker) or carry an epoch; unit test that fails on f99efac0 (both ends re-attaching), a lab check if cheap.
+- [ ] R1.2 The default stream took 17m14s (exit 3) on 02ceea31, not the head. One full lab on the final head with the harness phase cached: ≤ 15 min, else move tests to the long stream (say which) and re-run once.
+- [ ] R1.3 lab/liveness_test.go checkBusyBound fails only past 8 s (today's rule and the slack): assert the busy bound (4.5 s) plus the load's slack, failing under a named mutation; rename and document it accordingly.
+- [ ] R1.4 lab/liveness_test.go: the receive-only end on udp is judged against the idle bound; judge it against the busy bound, the slack and a trip (the close notice), the idle bound only on reality; failing under a named mutation.
+- [ ] R1.5 The follower flaps to an idle link after that link's idle exchange (pick takes the highest lastAnswer, probe replies included): an extra suspect probe 0.75–2.5 s later. Follow the link the leader's data arrived on (lastRecv); test.
+- [ ] R1.6 answeredLocked draws under a node-wide lock and reads crypto/rand per answered packet: a generator per link seeded once; tests with an injected Rand stay deterministic; make lab-perf on the branch and on rewrite, both reported.
+- [ ] R1.7 A pure one-way upload over reality whose TCP send buffer holds more than ~2 s: the suspect probe waits behind the data and T (2 s) closes a working link (today 6 s). Document it in the design and RR65 at least.
+- [ ] R1.8 The steady-exchange signal made stricter (owner, 2026-11-22): a chance fire on thinkpol's idle draws ≤ ~10⁻⁷ per matrix run on udp (lower on reality), the lab's fixed-interval TLS pinger still caught within the cell's hold; figures in lab/censor/doc.go, RR65 and lab/README.md; a run spread past the band restarts from its longest suffix that fits.
+- [ ] R1.9 Restore the lab item "reality under netem rides out a 1 s blackout" under traffic (no false dead); long stream if long.
+- [ ] R1.10 Style: path doc.go "Probe tokens are random" (an older probe's first four bytes are the first seq less one); ProbesSent/ProbesReceived count replies and notices too → ControlSent/ControlReceived (path.control_*); sleeps in liveness_fixture_test.go → sync on the frames in flight; the lab test TestBusyLinksSendNoProbes also covers dead-under-traffic → split or rename; fixture_test.go:23/37 comments wrong; liveness_fixture_test.go:238 comment.
+- [ ] R1.11 Nits: stampLocked's doc; neighbor.active's comment; behaviour test names; TestReceiveOnlyEnd's notice case over udp; t.Helper; `close := 0` shadows the builtin; ticket ids in comments; 6·10⁻⁶ vs 6.4·10⁻⁶; comment reflow; one name for the older format (V1); lv.newer → lv.acks; the closeWhy method shadows the field; draw panics on a failing Rand; probe tokens from the draws, not crypto/rand; Range's doc (Max included); design "D" wording (twice this end's MaxDelay); censor doc "nine intervals (ten exchanges)".
 
 ## Log
 - 2026-10-15 created in backlog (device run 3 and 4 findings)
@@ -74,3 +88,4 @@ The path package doc (internal/dataplane/path/doc.go) has the 6 s dead interval;
 - 2026-11-22 02b1d5e6: reality's idle check reads 20 intervals, not 31 (by chance under the spread check 2.2·10⁻⁹): lab-gotest RUN=^TestIdleLinksProbeAtRandom$/^reality$ passed in 322 s (481 s at 31); no second full lab (one per brief), so the full lab's commit is 02ceea31 and the final head differs from it by that test and docs
 - 2026-11-22 make lint and make test passed on 5dabdfe9
 - 2026-11-22 in-progress → review
+- 2026-11-22 review → has-errors: R1.1–R1.11 (four reviewers, two model families: fix first; owner decisions in Notes)
