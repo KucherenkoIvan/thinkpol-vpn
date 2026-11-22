@@ -30,6 +30,10 @@ branch: tp-274-lab-gotest-run-anchors
 ## Notes
 - Cause: `lab-gotest: export LAB_RUN = $(RUN)` (Makefile): a variable set on make's command line or taken from the environment is recursively expanded, so expanding `$(RUN)` expands `$` and `$/` inside its value too. `$(value RUN)` (and `$(value SKIP)`) hands over the text as given; the recipe passes it on in double quotes (`-run "$$LAB_RUN"`), which the shell doesn't touch further.
 
+## Review findings
+- [ ] R1.1 lab/labgotestrun_test.go: the inner make inherits the outer make's MAKEFLAGS (and MFLAGS, MAKELEVEL, GNUMAKEFLAGS) plus RUN/SKIP from the environment, because labctl passes the environment to go test. Run as `make lab-gotest PKG=./lab RUN=TestMakefileLabGotestPassesRunVerbatim`, the outer RUN reaches the inner make through MAKEFLAGS as a command-line value and beats the environment case: false failure. Strip MAKEFLAGS, MFLAGS, MAKELEVEL, GNUMAKEFLAGS, RUN and SKIP from the inner make's environment before setting the case's own; prove that exact command passes in the lab and the mutation (no stripping) fails it.
+- [ ] R1.2 lab/labgotestrun_test.go: `out, _ := cmd.Output()` drops stderr, so a make that breaks for another reason shows only `got ""`. Include make's stderr in the failure message while still comparing only the value lines.
+
 ## Log
 - 2026-11-22 created in backlog (final-lab small fixes)
 - 2026-11-22 backlog → in-progress, owner: agent-tp-274
@@ -38,3 +42,4 @@ branch: tp-274-lab-gotest-run-anchors
 - 2026-11-22 145f9d9b end to end in the lab: make lab-gotest PKG=./internal/agent/supervisor/ RUN='^TestEgressNotWorthAllowing$|^TestEgressErrorIsACode$' ran exactly those two tests, green; the same command on the unfixed Makefile failed with "labctl: gotest: no test ran" (`$|` eaten). A lone trailing `$` survives GNU make unfixed, a mid-pattern `$` doesn't; the test's patterns have both
 - 2026-11-22 145f9d9b: make lint and make test green. No full lab: the change is the lab-gotest target only
 - 2026-11-22 in-progress → review
+- 2026-11-22 review → has-errors (R1.1–R1.2)
