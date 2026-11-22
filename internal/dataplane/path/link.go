@@ -392,7 +392,8 @@ func (l *link) writeLoop() {
 		f := *b
 		var err error
 		closing := f[0] == kindProbe && f[1]&flagClosing != 0
-		if k := f[0]; k == kindProbe || k == kindProbeReply {
+		control := f[0] == kindProbe || f[0] == kindProbeReply
+		if control {
 			f, err = l.writeControl(f, closing)
 		} else {
 			f, err = l.writePacket(f)
@@ -403,6 +404,9 @@ func (l *link) writeLoop() {
 		case err == nil:
 			l.packetsOut.Add(1)
 			l.bytesOut.Add(uint64(size))
+			if control {
+				l.node.counters.probesSent.Add(1)
+			}
 		case errors.Is(err, net.ErrClosed):
 			l.close("the transport closed it", err)
 			return

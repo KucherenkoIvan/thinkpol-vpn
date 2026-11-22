@@ -516,12 +516,14 @@ func (n *Node) handle(l *link, b *[]byte) {
 	case kindProbe:
 		switch len(f) {
 		case probeSizeV1:
+			n.counters.probesReceived.Add(1)
 			if f[1]&flagReadsAcks != 0 {
 				l.readsAcks(f[2:6], now)
 			}
 			l.reply(b)
 			return
 		case probeSize:
+			n.counters.probesReceived.Add(1)
 			l.onFrame(now, f, probeSizeV1, 0)
 			if f[1]&flagClosing != 0 {
 				putBuf(b)
@@ -533,6 +535,7 @@ func (n *Node) handle(l *link, b *[]byte) {
 		}
 	case kindProbeReply:
 		if len(f) == probeSizeV1 || len(f) == probeSize {
+			n.counters.probesReceived.Add(1)
 			l.onFrame(now, f, seqAck(f), l.awaited(f))
 			putBuf(b)
 			return
@@ -701,6 +704,10 @@ type Counters struct {
 	TooLarge    uint64
 	WriteFailed uint64 // a link's transport failed to write a packet for another reason
 	ReadFailed  uint64 // a link's transport failed a read (a packet lost, the link kept)
+	// Liveness's own frames, not packets: probes, their replies and close
+	// notices written to links, and read from them.
+	ProbesSent     uint64
+	ProbesReceived uint64
 }
 
 type counters struct {
@@ -708,6 +715,7 @@ type counters struct {
 	noRoute, spoofed, hopLimit, noPath, unknownPeer atomic.Uint64
 	queueFull, malformed, otherSpace                atomic.Uint64
 	tooLarge, writeFailed, readFailed               atomic.Uint64
+	probesSent, probesReceived                      atomic.Uint64
 }
 
 // Counters returns the node's counters.
@@ -718,7 +726,7 @@ func (n *Node) Counters() Counters {
 		NoRoute: c.noRoute.Load(), Spoofed: c.spoofed.Load(), HopLimit: c.hopLimit.Load(), NoPath: c.noPath.Load(),
 		UnknownPeer: c.unknownPeer.Load(), QueueFull: c.queueFull.Load(), Malformed: c.malformed.Load(),
 		OtherSpace: c.otherSpace.Load(), TooLarge: c.tooLarge.Load(), WriteFailed: c.writeFailed.Load(),
-		ReadFailed: c.readFailed.Load(),
+		ReadFailed: c.readFailed.Load(), ProbesSent: c.probesSent.Load(), ProbesReceived: c.probesReceived.Load(),
 	}
 }
 

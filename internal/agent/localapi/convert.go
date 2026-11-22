@@ -162,6 +162,8 @@ var dataPlaneCounters = []struct {
 	{"path.too_large", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Path.TooLarge }},
 	{"path.write_failed", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Path.WriteFailed }},
 	{"path.read_failed", dropCounter, func(dp *dataplane.Status) uint64 { return dp.Path.ReadFailed }},
+	{"path.probes_sent", trafficCounter, func(dp *dataplane.Status) uint64 { return dp.Path.ProbesSent }},
+	{"path.probes_received", trafficCounter, func(dp *dataplane.Status) uint64 { return dp.Path.ProbesReceived }},
 	{"interface.reapplies", trafficCounter, func(dp *dataplane.Status) uint64 { return dp.InterfaceReapplies }},
 	{"route_table.routes", routeTableCounter, func(dp *dataplane.Status) uint64 { return uint64(dp.RouteTable.Routes) }},
 	{"route_table.reapplies", routeTableCounter, func(dp *dataplane.Status) uint64 { return dp.RouteTable.Reapplies }},

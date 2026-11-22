@@ -69,6 +69,41 @@ func TestBusyLinksSendNoProbes(t *testing.T) {
 	}
 }
 
+// The probe counters count liveness's own frames, written and read, and
+// nothing else: two-way traffic moves neither, an idle exchange moves
+// both by the probes and replies on the wires.
+func TestProbeCounters(t *testing.T) {
+	h := newHarness(t, nil)
+	la, lb, ab, ba := h.link("udp", transport.Shaping{})
+	counted := func() (sent, read uint64) {
+		a, b := la.node.Counters(), lb.node.Counters()
+		return a.ProbesSent + b.ProbesSent, a.ProbesReceived + b.ProbesReceived
+	}
+	control := func(from time.Duration) uint64 {
+		n := uint64(0)
+		for _, w := range []*wire{ab, ba} {
+			for _, k := range kinds(w, from) {
+				if k[0] == kindProbe || k[0] == kindProbeReply {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	sent0, read0 := counted()
+	h.run(10*time.Second, func() { data(la); data(lb) })
+	if sent, read := counted(); sent != sent0 || read != read0 {
+		t.Fatalf("two-way traffic moved the probe counters: sent %d → %d, read %d → %d", sent0, sent, read0, read)
+	}
+	from := h.elapsed()
+	h.until("an idle exchange", 30*time.Second, func() bool { return probes(ab, from)+probes(ba, from) > 0 }, nil)
+	h.run(time.Second, nil) // the reply is read
+	want := control(from)
+	if sent, read := counted(); want == 0 || sent-sent0 != want || read-read0 != want {
+		t.Fatalf("after an idle exchange of %d probes and replies: sent %d, read %d", want, sent-sent0, read-read0)
+	}
+}
+
 // A seq that wraps keeps counting: two-way traffic across 2³² sends no
 // probes.
 func TestSeqWrapsWithoutProbes(t *testing.T) {
