@@ -896,13 +896,12 @@ func TestWorkersAreSandboxed(t *testing.T) {
 	}
 }
 
-// TestConcurrentWorkerStartsInheritNoFds: workers started at once hold no
-// host file, in particular not the fds through which Go writes another
-// worker's uid_map, setgroups and gid_map just after its clone (forkMu).
-// Each round starts eight workers together; without the serialization 7 of
-// 10 five-round runs saw a leak, so fifteen rounds miss it about 3% of the
-// time.
-func TestConcurrentWorkerStartsInheritNoFds(t *testing.T) {
+// TestConcurrentWorkerStartsInheritNoHostFiles: workers started at once
+// hold no host file, in particular not the fds through which Go writes
+// another worker's uid_map, setgroups and gid_map just after its clone
+// (forkMu). Eight workers per round, 15 rounds: without the lock, about 97%
+// of runs fail.
+func TestConcurrentWorkerStartsInheritNoHostFiles(t *testing.T) {
 	needsLab(t)
 	for round := range 15 {
 		spaces := make([]netmap.SpaceID, 8)

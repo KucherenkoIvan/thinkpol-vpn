@@ -200,8 +200,18 @@ type process struct {
 // /proc/<pid>/{uid_map,setgroups,gid_map} through fds opened without
 // O_CLOEXEC after its clone, and lets several forks run at once
 // (syscall.acquireForkLock), so a worker cloned meanwhile inherits them:
-// another worker's uid_map, open read-write, inside its sandbox.
+// another worker's uid_map, open read-write, inside its sandbox. Every
+// fork in the process with SysProcAttr UidMappings or GidMappings must
+// Start under forkMu. A Start stuck on its exec (a hung filesystem) holds
+// up every worker start until it returns.
 var forkMu sync.Mutex
+
+// startLocked runs cmd.Start under forkMu.
+func startLocked(cmd *exec.Cmd) error {
+	forkMu.Lock()
+	defer forkMu.Unlock()
+	return cmd.Start()
+}
 
 // start starts cmd from a goroutine locked to its OS thread for the
 // process's whole life (the parent-death signal fires when the thread that
@@ -213,9 +223,7 @@ func start(cmd *exec.Cmd) (*process, error) {
 	started := make(chan error, 1)
 	go func() {
 		runtime.LockOSThread()
-		forkMu.Lock()
-		err := cmd.Start()
-		forkMu.Unlock()
+		err := startLocked(cmd)
 		if err != nil {
 			runtime.UnlockOSThread()
 			started <- err

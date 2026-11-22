@@ -25,7 +25,7 @@ branch: tp-273-workers-sandboxed-fd-leak
 
 ## Acceptance
 - [x] The leaked descriptors and their cause, with file:line, in Notes.
-- [x] The cause fixed; the test's leak check unchanged or stricter. (procLeakedFiles unchanged; new TestConcurrentWorkerStartsInheritNoFds applies it to eight workers started at once.)
+- [x] The cause fixed; the test's leak check unchanged or stricter. (procLeakedFiles unchanged; new TestConcurrentWorkerStartsInheritNoHostFiles, named TestConcurrentWorkerStartsInheritNoFds before R1.3, applies it to eight workers started at once.)
 - [x] A test or a reproduction that fails without the fix (mutation named in the Log).
 - [x] 20 consecutive green targeted runs of the test on the final commit. (bc4d1454, COUNT=20 of both tests in one node: 20/20 each.)
 
@@ -51,3 +51,5 @@ branch: tp-273-workers-sandboxed-fd-leak
 - 2026-11-22 not verified: TestWorkersAreSandboxed's own flake rate before the fix (it passed its 3 runs on the unfixed tree; the new test is the reproduction). Code lab-tested by targeted runs only; the full lab is the orchestrator's after merge
 - 2026-11-22 in-progress → review
 - 2026-11-22 review → has-errors: R1.1–R1.4 (review confirmed the cause and the fix)
+- 2026-11-22 has-errors → in-progress
+- 2026-11-22 R1.1–R1.4: forkMu comment (every id-mapped fork Starts under it; a hung exec holds up worker starts), startLocked unlocks with defer, test renamed TestConcurrentWorkerStartsInheritNoHostFiles (comment keeps the constraint only), doc.go sentence after no_new_privs
