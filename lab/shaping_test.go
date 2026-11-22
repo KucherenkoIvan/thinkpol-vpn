@@ -21,8 +21,8 @@ import (
 func TestShapingCapture(t *testing.T) {
 	t.Parallel()
 	const unshapedPort, shapedPort = 4500, 4501
-	// udp's wireguardLikeSizes (87) times labRepeats (3), on each port.
-	const perPort = 261
+	// udp's wireguardLikeSizes (86) times labRepeats (3), on each port.
+	const perPort = 258
 	// labBuckets in udp's tests.
 	buckets := []int{128, 256, 512, 1024, 1452}
 
