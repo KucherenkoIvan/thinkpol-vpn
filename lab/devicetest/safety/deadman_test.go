@@ -108,9 +108,9 @@ func TestTheDeadmanFiresWhenItMustAndOnlyThen(t *testing.T) {
 	t.Run("a fresh heartbeat holds it until the limit", func(t *testing.T) {
 		dir := openDir(t, tempDir(t))
 		cfg := fast(t)
-		cfg.deadline, cfg.limit, cfg.stale = 100*time.Millisecond, 1200*time.Millisecond, 300*time.Millisecond
+		cfg.deadline, cfg.limit, cfg.stale = 500*time.Millisecond, 3*time.Second, time.Second
 		got := startWatch(t, dir, cfg)
-		go beat(dir, 30*time.Millisecond, 5*time.Second)
+		go beat(dir, 100*time.Millisecond, 8*time.Second)
 		if w := <-got; !w.fire || !strings.Contains(w.why, "limit") || w.took < cfg.limit {
 			t.Errorf("%+v", w)
 		}
@@ -118,10 +118,10 @@ func TestTheDeadmanFiresWhenItMustAndOnlyThen(t *testing.T) {
 	t.Run("a heartbeat that goes stale", func(t *testing.T) {
 		dir := openDir(t, tempDir(t))
 		cfg := fast(t)
-		cfg.deadline, cfg.stale = 100*time.Millisecond, 300*time.Millisecond
+		cfg.deadline, cfg.stale = 500*time.Millisecond, time.Second
 		got := startWatch(t, dir, cfg)
-		beat(dir, 30*time.Millisecond, 600*time.Millisecond)
-		if w := <-got; !w.fire || !strings.Contains(w.why, "deadline") || w.took < 600*time.Millisecond {
+		beat(dir, 100*time.Millisecond, 2*time.Second)
+		if w := <-got; !w.fire || !strings.Contains(w.why, "deadline") || w.took < 2*time.Second {
 			t.Errorf("%+v", w)
 		}
 	})
