@@ -52,8 +52,6 @@ const usage = `usage: labctl <command>
   run-id                              print a fresh run id, for ` + lab.RunEnv + `
   testjson [-v] -times file           read go test -json on stdin, print what go test without -v (with
                                       -v: with -v) would have, write how long each test took to file
-                                      (with THINKPOL_LAB_TIMELINE set: each test's start, resume after
-                                      t.Parallel and end to that timeline too)
   budget -stream name -since unix [-budget d] [-over file] [-top n] files...
                                       say how long a stream has taken since its start (unix seconds)
                                       and, with -budget (0: none), fail when it took longer, listing the
@@ -425,8 +423,7 @@ func writeGotestTimes(file string, results []lab.GoTestResult) error {
 
 // testJSON filters go test -json from r into what go test would have
 // printed without -v (with -v: with it), and writes each test's time to
-// -times, and its start, resume and end to TimelineEnv's timeline when set,
-// with StreamEnv's stream (make lab-test sets both for it).
+// -times.
 func testJSON(r io.Reader, w io.Writer, args []string) error {
 	fs := flag.NewFlagSet("testjson", flag.ContinueOnError)
 	times := fs.String("times", "", "write how long each test took to this file")
@@ -437,7 +434,7 @@ func testJSON(r io.Reader, w io.Writer, args []string) error {
 	if *times == "" || fs.NArg() > 0 {
 		return errors.New("testjson: want -times file and no arguments")
 	}
-	got, err := lab.FilterTestJSON(r, w, *verbose, lab.TestTimeline{File: os.Getenv(lab.TimelineEnv), Stream: os.Getenv(lab.StreamEnv)})
+	got, err := lab.FilterTestJSON(r, w, *verbose)
 	// Whatever was read is written: a time file missing makes the budget's
 	// report miss tests, not pass.
 	return errors.Join(err, lab.WriteTestTimes(*times, got))

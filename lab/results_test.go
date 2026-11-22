@@ -65,14 +65,11 @@ import (
 // with lab.StreamEnv unset the test runs every cell and writes RESULTS.md
 // itself.
 func TestCensorMatrix(t *testing.T) {
+	t.Parallel()
 	if wgTimerScaleErr != nil {
 		t.Fatal(wgTimerScaleErr)
 	}
 	stream := lab.SplitStreams(t)
-	labs := matrixLabs(stream, transports, censorCases)
-	// Its rows are the longest lab tests: their labs start before any
-	// other test's (in place of t.Parallel).
-	censorPool.StartFirst(t, len(labs))
 	var (
 		mu    sync.Mutex
 		cells []matrixCell
@@ -242,11 +239,11 @@ func TestCensorMatrix(t *testing.T) {
 	if err := checkMatrix(censorCases, transports); err != nil {
 		t.Fatal(err)
 	}
-	for i, ml := range labs {
+	for _, ml := range matrixLabs(stream, transports, censorCases) {
 		tr := ml.tr
 		t.Run(ml.name(), func(t *testing.T) {
 			t.Parallel()
-			row := startRow(t, i)
+			row := startRow(t)
 			gate, cells := ml.cells[0], ml.cells[1:]
 			offResult := "" // the off cell's result; "" when it didn't run
 			t.Run(gate.cc.name, func(t *testing.T) {
@@ -319,9 +316,9 @@ func (ml matrixLab) expected() time.Duration {
 }
 
 // matrixLabs is every row's labs in the stream (rowLabs), the longest
-// expected first: each takes its lab from the censor pool in this order
-// (startRow), so a long lab started last doesn't set the matrix's wall
-// time.
+// expected first: go test starts parallel subtests in about this order as
+// -parallel slots free up (fewer than the lab slots), so a long lab
+// started last would set the matrix's wall time.
 func matrixLabs(stream string, rows []transport, cases []censorCase) []matrixLab {
 	var labs []matrixLab
 	for _, tr := range rows {

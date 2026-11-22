@@ -79,7 +79,7 @@ func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 	if err := mainCalled(); err != nil {
 		t.Fatal(err)
 	}
-	l, bins, keep, err := launch(context.Background(), t, topo, func(string) string { return slotKey }, t.Name(), override)
+	l, bins, keep, err := launch(t, topo, func(string) string { return slotKey }, t.Name(), override)
 	if l != nil {
 		t.Cleanup(func() { l.cleanup(t, bins, keep, time.Time{}) })
 	}
@@ -93,10 +93,8 @@ func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 // slotKey gives for its project, without tying its tear-down to t: Start
 // ties it to the test, a Pool keeps the lab for the tests after. It
 // returns the run's binaries the lab mounts and whether KeepEnv is set;
-// a lab returned with an error still needs its clean-up. ctx is the
-// start's: it marks a start StartFirst began (asFirstStart) and one whose
-// slot wait may be stopped (withSlotWaitStop).
-func launch(ctx context.Context, t testing.TB, topo Topology, slotKey func(project string) string, name, override string) (*Lab, *runBinaries, bool, error) {
+// a lab returned with an error still needs its clean-up.
+func launch(t testing.TB, topo Topology, slotKey func(project string) string, name, override string) (*Lab, *runBinaries, bool, error) {
 	t.Helper()
 	if err := mainCalled(); err != nil {
 		return nil, nil, false, err
@@ -138,7 +136,7 @@ func launch(ctx context.Context, t testing.TB, topo Topology, slotKey func(proje
 			return nil, nil, false, err
 		}
 	}
-	l, err := up(ctx, clock, root, project, topo, slotKey(project), runInputs)
+	l, err := up(context.Background(), clock, root, project, topo, slotKey(project), runInputs)
 	return l, p.bin, keep, err
 }
 
@@ -327,48 +325,14 @@ func (c startClock) run(ctx context.Context, project string, p startPhase, f fun
 	return fmt.Errorf("lab %s: %s: %w", project, what, err)
 }
 
-// errSlotWaitStopped is a lab start's error when it gave up its slot wait
-// (withSlotWaitStop).
-var errSlotWaitStopped = errors.New("lab: the start was no longer needed, so it left the slot queue")
-
-type slotWaitStopKey struct{}
-
-// withSlotWaitStop marks a lab start's ctx: once stop is closed, its slot
-// wait gives up (leaving the slot queue and the process's share of it)
-// with errSlotWaitStopped, whether it has begun yet or not. A start that
-// holds its slot already goes on.
-func withSlotWaitStop(ctx context.Context, stop <-chan struct{}) context.Context {
-	return context.WithValue(ctx, slotWaitStopKey{}, stop)
-}
-
 // waitForSlot is a lab start's wait for its slot (acquireSlot) under
 // clock's bound, noted in the timeline whether or not it got one.
 func waitForSlot(ctx context.Context, clock startClock, project, slotKey string) (release func(), err error) {
 	from := time.Now()
-	if stop, ok := ctx.Value(slotWaitStopKey{}).(<-chan struct{}); ok {
-		wctx, cancel := context.WithCancelCause(ctx)
-		defer cancel(nil)
-		go func() {
-			select {
-			case <-stop:
-				cancel(errSlotWaitStopped)
-			case <-wctx.Done():
-			}
-		}()
-		select {
-		case <-stop:
-			cancel(errSlotWaitStopped)
-		default:
-		}
-		ctx = wctx
-	}
 	err = clock.run(ctx, project, phaseSlotWait, func(ctx context.Context) (err error) {
 		release, err = acquireSlot(ctx, slotKey)
 		return err
 	})
-	if err != nil && errors.Is(context.Cause(ctx), errSlotWaitStopped) {
-		err = errors.Join(errSlotWaitStopped, err)
-	}
 	to := time.Now()
 	noteSlotWait(project, from, to, err)
 	if clock.slotWait != nil {

@@ -78,7 +78,7 @@ func TestFilterTestJSON(t *testing.T) {
 		endEvent("fail", "", 5),
 	)
 	var w bytes.Buffer
-	times, err := FilterTestJSON(strings.NewReader(in), &w, false, TestTimeline{})
+	times, err := FilterTestJSON(strings.NewReader(in), &w, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,63 +100,13 @@ func TestFilterTestJSON(t *testing.T) {
 	}
 
 	w.Reset()
-	if _, err := FilterTestJSON(strings.NewReader(in), &w, true, TestTimeline{}); err != nil {
+	if _, err := FilterTestJSON(strings.NewReader(in), &w, true); err != nil {
 		t.Fatal(err)
 	}
 	for _, line := range []string{"=== RUN   TestPass\n", "--- PASS: TestFail/sub/deep (0.10s)\n", "--- SKIP: TestSkip (0.00s)\n", "panic: test timed out\n"} {
 		if !strings.Contains(w.String(), line) {
 			t.Errorf("verbose: %q missing from:\n%s", line, w.String())
 		}
-	}
-}
-
-// TestFilterTestJSONTimeline: the timeline gets when each top-level test
-// and direct subtest started (run), got its place after t.Parallel (its
-// first cont: go test writes "=== CONT" again on every switch of -v's
-// output) and ended, with how long it took, at the events' own times and
-// with the stream; nothing of deeper subtests or of output, and nothing
-// without a timeline file.
-func TestFilterTestJSONTimeline(t *testing.T) {
-	at := func(ev testEvent, sec int) testEvent {
-		ev.Time = time.Date(2026, 11, 19, 10, 0, sec, 0, time.UTC)
-		return ev
-	}
-	in := events(t,
-		at(testEvent{Action: "run", Package: "x/lab", Test: "TestLong"}, 1),
-		at(testEvent{Action: "pause", Package: "x/lab", Test: "TestLong"}, 1),
-		at(outEvent("TestLong", "=== CONT  TestLong\n"), 2),
-		at(testEvent{Action: "cont", Package: "x/lab", Test: "TestLong"}, 2),
-		at(testEvent{Action: "run", Package: "x/lab", Test: "TestLong/part"}, 3),
-		at(testEvent{Action: "run", Package: "x/lab", Test: "TestLong/part/cell"}, 4),
-		at(testEvent{Action: "cont", Package: "x/lab", Test: "TestLong"}, 4), // -v's output back to it
-		at(endEvent("pass", "TestLong/part/cell", 1), 5),
-		at(endEvent("fail", "TestLong/part", 2.5), 6),
-		at(endEvent("skip", "TestSkip", 0), 7),
-		at(endEvent("pass", "TestLong", 8.25), 9),
-	)
-	file := filepath.Join(t.TempDir(), "timeline")
-	if _, err := FilterTestJSON(strings.NewReader(in), io.Discard, false, TestTimeline{File: file, Stream: "default"}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "10:00:01.000 test-run default lab TestLong\n" +
-		"10:00:02.000 test-cont default lab TestLong\n" +
-		"10:00:03.000 test-run default lab TestLong/part\n" +
-		"10:00:06.000 test-fail 2.5s default lab TestLong/part\n" +
-		"10:00:07.000 test-skip 0s default lab TestSkip\n" +
-		"10:00:09.000 test-pass 8.25s default lab TestLong\n"
-	if string(got) != want {
-		t.Errorf("timeline:\n%s\nwant:\n%s", got, want)
-	}
-
-	if _, err := FilterTestJSON(strings.NewReader(in), io.Discard, false, TestTimeline{Stream: "default"}); err != nil {
-		t.Fatal(err)
-	}
-	if again, _ := os.ReadFile(file); string(again) != want {
-		t.Errorf("without a timeline file, the timeline changed:\n%s", again)
 	}
 }
 
@@ -177,7 +127,7 @@ func TestFilterTestJSONFailingCellKept(t *testing.T) {
 	}
 	evs = append(evs, endEvent("fail", "TestMatrix/row", 6), endEvent("fail", "TestMatrix", 6))
 	var w bytes.Buffer
-	if _, err := FilterTestJSON(strings.NewReader(events(t, evs...)), &w, false, TestTimeline{}); err != nil {
+	if _, err := FilterTestJSON(strings.NewReader(events(t, evs...)), &w, false); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(w.String(), "THE ERROR") || strings.Contains(w.String(), "bytes of this test's output cut") || w.Len() > 2*testLogKeep {
@@ -201,7 +151,7 @@ func TestFilterTestJSONUnended(t *testing.T) {
 	// when it died, with no "--- FAIL" line from the testing package.
 	evs = append(evs, outEvent("TestKilled", "TestKilled started\n"), outEvent("TestKilled", dump), endEvent("fail", "TestKilled", 0))
 	var w bytes.Buffer
-	times, err := FilterTestJSON(strings.NewReader(events(t, evs...)), &w, false, TestTimeline{})
+	times, err := FilterTestJSON(strings.NewReader(events(t, evs...)), &w, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +179,7 @@ func TestFilterTestJSONUnended(t *testing.T) {
 	}
 
 	w.Reset()
-	if _, err := FilterTestJSON(strings.NewReader(events(t, outEvent("TestHung", "last words\n"))), &w, false, TestTimeline{}); err != nil {
+	if _, err := FilterTestJSON(strings.NewReader(events(t, outEvent("TestHung", "last words\n"))), &w, false); err != nil {
 		t.Fatal(err)
 	}
 	if w.String() != "last words\n" {

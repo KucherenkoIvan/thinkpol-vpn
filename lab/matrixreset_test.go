@@ -41,9 +41,7 @@ type matrixRow struct {
 // with, what the relay-tcp and reality rows splice to, and, being outside
 // the space and not the censor, where the thinkpol rows' maps are built.
 // No cell reaches device-b, server-2 or internet, so they aren't started.
-// The row waits for its lab in its turn among the matrix's labs
-// (matrixLabs: the longest first).
-func startRow(t *testing.T, turn int) *matrixRow {
+func startRow(t *testing.T) *matrixRow {
 	begin := time.Now()
 	var up, cellsDone time.Time
 	// Registered first, so it runs last, after the lab went back to the
@@ -54,7 +52,7 @@ func startRow(t *testing.T, turn int) *matrixRow {
 			t.Logf("lab: up in %v, cells %v, back in %v", up.Sub(begin).Round(time.Second), cellsDone.Sub(up).Round(time.Second), time.Since(cellsDone).Round(time.Second))
 		}
 	})
-	l := censorPool.AcquireInOrder(t, turn)
+	l := censorPool.Acquire(t)
 	t.Cleanup(func() { cellsDone = time.Now() })
 	lab.StartCamouflage(t, l)
 	if _, err := execRead(l.Node(lab.Router), execTimeout, "censord", "-reset"); err != nil {

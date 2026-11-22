@@ -200,8 +200,7 @@ type GoTestResult struct {
 
 // LabPhases is where a package's time in a lab node went: queued for one
 // of the run's own labs (GoTestConcurrency.Labs; with BuildAllFirst, for
-// every package's build too; for a pooled lab another package used,
-// until the package had it), waiting for a lab slot, starting the lab
+// every package's build too), waiting for a lab slot, starting the lab
 // (the rest of its start-up: a leftover lab's removal, docker compose up,
 // sealing the nodes, and for a pooled lab its snapshot; none for a lab
 // another package used), running the tests (and reading their test log

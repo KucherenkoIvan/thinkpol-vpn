@@ -38,7 +38,8 @@ import (
 // opts out of it, and uninstall removes the switch after all that
 // (crash-posture).
 func TestKillSwitchUnderSystemd(t *testing.T) {
-	parts := []struct {
+	t.Parallel()
+	for _, part := range []struct {
 		name string
 		run  func(*killSwitchLab)
 	}{
@@ -46,14 +47,10 @@ func TestKillSwitchUnderSystemd(t *testing.T) {
 		{"crash-and-stop", killSwitchCrashAndStop},
 		{"live-agent", killSwitchLiveAgent},
 		{"crash-posture", killSwitchCrashPosture},
-	}
-	// Among the longest lab tests: its parts' labs start before most
-	// other tests' (in place of t.Parallel).
-	labs := lab.StartFirst(t, killSwitchTopology, len(parts))
-	for _, part := range parts {
+	} {
 		t.Run(part.name, func(t *testing.T) {
 			t.Parallel()
-			part.run(startKillSwitchLab(t, labs))
+			part.run(startKillSwitchLab(t))
 		})
 	}
 }
@@ -273,27 +270,24 @@ type killSwitchLab struct {
 	foreign, entries      []netip.Addr
 }
 
-// killSwitchTopology: device-a runs systemd, so each part starts a fresh
-// lab.
-var killSwitchTopology = lab.Topology{
-	Networks: []lab.Network{{Name: lab.NetDevices}, {Name: lab.NetServers}},
-	Nodes: []lab.NodeSpec{
-		{Name: lab.Router, Networks: []string{lab.NetDevices, lab.NetServers}, Forward: true},
-		{Name: lab.DeviceA, Networks: []string{lab.NetDevices}, Gateway: lab.Router, Systemd: true},
-		{Name: lab.Server1, Networks: []string{lab.NetServers}, Gateway: lab.Router, Forward: true},
-		{Name: lab.Internet, Networks: []string{lab.NetServers}, Gateway: lab.Router},
-	},
-}
-
-func startKillSwitchLab(t *testing.T, labs *lab.FirstLabs) *killSwitchLab {
+func startKillSwitchLab(t *testing.T) *killSwitchLab {
 	t.Helper()
+	topo := lab.Topology{
+		Networks: []lab.Network{{Name: lab.NetDevices}, {Name: lab.NetServers}},
+		Nodes: []lab.NodeSpec{
+			{Name: lab.Router, Networks: []string{lab.NetDevices, lab.NetServers}, Forward: true},
+			{Name: lab.DeviceA, Networks: []string{lab.NetDevices}, Gateway: lab.Router, Systemd: true},
+			{Name: lab.Server1, Networks: []string{lab.NetServers}, Gateway: lab.Router, Forward: true},
+			{Name: lab.Internet, Networks: []string{lab.NetServers}, Gateway: lab.Router},
+		},
+	}
 	asked := time.Now()
-	l := labs.Take(t)
+	l := lab.StartOwnSlot(t, topo)
 	up := time.Now()
-	// What the part held the lab for, the wait for it (a runner's shared
+	// What the part held the lab for, the start (a runner's shared
 	// overhead) apart.
 	t.Cleanup(func() {
-		t.Logf("in use %v, after waiting %v for its lab", time.Since(up).Round(100*time.Millisecond), up.Sub(asked).Round(100*time.Millisecond))
+		t.Logf("in use %v, after a lab start of %v", time.Since(up).Round(100*time.Millisecond), up.Sub(asked).Round(100*time.Millisecond))
 	})
 	k := &killSwitchLab{t: t, dev: l.Node(lab.DeviceA), server: l.Node(lab.Server1), internet: l.Node(lab.Internet)}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)

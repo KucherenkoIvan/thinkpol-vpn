@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"reflect"
 	"slices"
@@ -26,9 +25,7 @@ import (
 //
 // A pool holds at most size labs, each with a lab slot of its own for as
 // long as it lives: a test that finds none idle starts one while the pool
-// has fewer, or waits for one to come back, first come first served
-// (AcquireInOrder: by rank), taking one that comes back while its own
-// start still waits for a slot (startOrTake). An
+// has fewer, or waits for one to come back, first come first served. An
 // idle lab stays while no lab start waits for a slot, since the slot it
 // holds then costs nobody anything; once one waits, the idle lab goes when
 // it has waited as long as its start took (poolIdle). A pool whose users
@@ -41,15 +38,13 @@ type Pool struct {
 	size int
 	name string
 
-	mu       sync.Mutex
-	idle     []*pooledLab
-	labs     int          // started or starting, idle or in use
-	coming   int          // of those, started first (StartFirst) and not up yet
-	waiters  []poolWaiter // by rank, then first come first served
-	starters []poolWaiter // tests whose own start is on its way (take), the same order
-	stats    PoolStats
-	down     sync.WaitGroup // idle labs being torn down, starts no test waits for
-	closed   bool
+	mu      sync.Mutex
+	idle    []*pooledLab
+	labs    int               // started or starting, idle or in use
+	waiters []chan *pooledLab // first come first served; a nil lab: start one
+	stats   PoolStats
+	down    sync.WaitGroup // idle labs being torn down
+	closed  bool
 	// takersKnown: takers counts the users that may still take a lab
 	// (countTakers); without it, the pool can't tell.
 	takers      int
@@ -78,19 +73,6 @@ type pooledLab struct {
 	timer *time.Timer   // while idle: the next idle check
 	since time.Time     // idle since
 }
-
-// poolWaiter is a test waiting for a lab: its channel gets one (a nil
-// lab: start one, and it is a starter from then on; a starter's channel
-// may then get a lab that came back); rank orders it among the waiting
-// (AcquireInOrder). The channel holds two, so a send under p.mu never
-// blocks.
-type poolWaiter struct {
-	ch   chan *pooledLab
-	rank int
-}
-
-// unranked is Acquire's rank: after every test that waits with one.
-const unranked = math.MaxInt
 
 // labUser is who had a pool's lab: a test (testing.TB), or a node-phase
 // package (packageUser).
@@ -205,25 +187,9 @@ func newPool(topo Topology, size int) *Pool {
 // anything that uses the lab.
 func (p *Pool) Acquire(t testing.TB) *Lab {
 	t.Helper()
-	return p.acquireFor(t, unranked)
-}
-
-// AcquireInOrder is Acquire for a test that waits its turn by rank: when
-// no lab is idle, the lab that comes back (or the start the pool can make)
-// goes to the waiting test of the lowest rank, those of one rank first
-// come first served, all of them before the tests waiting in Acquire. A
-// test whose subtests take labs in an order of its own (the censor
-// matrix: its longest rows first) passes each one's place.
-func (p *Pool) AcquireInOrder(t testing.TB, rank int) *Lab {
-	t.Helper()
-	return p.acquireFor(t, min(max(rank, 0), unranked-1))
-}
-
-func (p *Pool) acquireFor(t testing.TB, rank int) *Lab {
-	t.Helper()
 	asked := time.Now()
 	dl, _ := labBudget.begin(testDeadline(t)).deadline(phaseSlotWait)
-	pl, _, err := p.acquire(context.Background(), dl, rank, func(ctx context.Context) (*pooledLab, error) { return p.start(ctx, t) })
+	pl, err := p.acquire(dl, func() (*pooledLab, error) { return p.start(t) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,39 +200,33 @@ func (p *Pool) acquireFor(t testing.TB, rank int) *Lab {
 	return pl.lab
 }
 
-// acquire is an idle lab, or one start starts under ctx (counted in
-// p.labs: it adopts what it starts, or counts it out), waiting until
-// deadline, in rank's place among the waiting, for one to come back when
-// the pool is full; the lab's use is counted. While the start waits for
-// its slot, a lab that comes back may serve instead (startOrTake). own
-// says the lab is the one start brought up.
-func (p *Pool) acquire(ctx context.Context, deadline time.Time, rank int, start func(context.Context) (*pooledLab, error)) (pl *pooledLab, own bool, err error) {
-	pl, starter, err := p.take(deadline, rank)
+// acquire is an idle lab, or one start starts (counted in p.labs: it
+// adopts what it starts), waiting until deadline for one to come back when
+// the pool is full; the lab's use is counted.
+func (p *Pool) acquire(deadline time.Time, start func() (*pooledLab, error)) (*pooledLab, error) {
+	pl, err := p.take(deadline)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	if starter != nil {
-		if pl, own, err = p.startOrTake(ctx, starter, start); err != nil {
-			return nil, false, err
+	if pl == nil {
+		if pl, err = start(); err != nil {
+			return nil, err
 		}
 	}
 	p.mu.Lock()
 	p.stats.Uses++
 	p.mu.Unlock()
 	pl.uses++
-	return pl, own, nil
+	return pl, nil
 }
 
-// take is an idle lab, or, with starter set, leaves the caller to start
-// one (counted in p.labs), waiting until deadline, in rank's place among
-// the waiting, for one to come back when the pool is full. The caller is
-// then a starter (startOrTake) from the moment it was counted, so a lab
-// that comes back before its start began still finds it.
-func (p *Pool) take(deadline time.Time, rank int) (pl *pooledLab, starter chan *pooledLab, err error) {
+// take is an idle lab, or nil for the caller to start one, waiting until
+// deadline for one to come back when the pool is full.
+func (p *Pool) take(deadline time.Time) (*pooledLab, error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return nil, nil, fmt.Errorf("lab: pool %s: closed", p.name)
+		return nil, fmt.Errorf("lab: pool %s: closed", p.name)
 	}
 	p.takers--
 	if n := len(p.idle); n > 0 {
@@ -274,111 +234,39 @@ func (p *Pool) take(deadline time.Time, rank int) (pl *pooledLab, starter chan *
 		p.idle = p.idle[:n-1]
 		pl.timer.Stop() // one that fired finds pl taken (idleCheck)
 		p.mu.Unlock()
-		return pl, nil, nil
+		return pl, nil
 	}
-	w := poolWaiter{ch: make(chan *pooledLab, 2), rank: rank}
-	// A lab started first and still coming is a waiter's to have, not a
-	// reason to start another.
-	if p.labs < p.size && len(p.waiters) >= p.coming {
+	if p.labs < p.size && len(p.waiters) == 0 {
 		p.labs++
-		p.starters = inRank(p.starters, w)
 		p.mu.Unlock()
-		return nil, w.ch, nil
+		return nil, nil
 	}
-	p.waiters = inRank(p.waiters, w)
+	ch := make(chan *pooledLab, 1)
+	p.waiters = append(p.waiters, ch)
 	p.mu.Unlock()
 	from := time.Now()
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	select {
-	case pl = <-w.ch:
+	case pl := <-ch:
+		return pl, nil
 	case <-timer.C:
-		p.mu.Lock()
-		if i := slices.IndexFunc(p.waiters, func(o poolWaiter) bool { return o.ch == w.ch }); i >= 0 {
-			p.waiters = slices.Delete(p.waiters, i, i+1)
-			p.mu.Unlock()
-			return nil, nil, fmt.Errorf("lab: pool %s: no lab came back within %v", p.name, time.Since(from).Round(time.Second))
-		}
-		p.mu.Unlock()
-		pl = <-w.ch // handed on meanwhile
-	}
-	if pl == nil { // handOn made it a starter
-		return nil, w.ch, nil
-	}
-	return pl, nil, nil
-}
-
-// inRank puts w among ws after every one of its rank or lower.
-func inRank(ws []poolWaiter, w poolWaiter) []poolWaiter {
-	at := len(ws)
-	for at > 0 && ws[at-1].rank > w.rank {
-		at--
-	}
-	return slices.Insert(ws, at, w)
-}
-
-// startOrTake runs start, the lab start of the starter take registered
-// (its channel), and returns its lab (own); but a lab that comes back
-// while no test waits in take goes to the starter first. Then the start,
-// no longer needed, leaves the slot queue (withSlotWaitStop) and is
-// counted out; one that holds its slot already goes on, and its lab goes
-// to the pool as any other (spare).
-func (p *Pool) startOrTake(ctx context.Context, starter chan *pooledLab, start func(context.Context) (*pooledLab, error)) (pl *pooledLab, own bool, err error) {
-	done := make(chan poolStart, 1)
-	stop := make(chan struct{})
-	go func() {
-		pl, err := start(withSlotWaitStop(ctx, stop))
-		done <- poolStart{pl, err}
-	}()
-	select {
-	case s := <-done:
-		p.mu.Lock()
-		if i := slices.IndexFunc(p.starters, func(w poolWaiter) bool { return w.ch == starter }); i >= 0 {
-			p.starters = slices.Delete(p.starters, i, i+1)
-			p.mu.Unlock()
-			return s.pl, true, s.err
-		}
-		p.mu.Unlock()
-		pl = <-starter // a lab came back meanwhile as well
-		p.spare(s)
-	case pl = <-starter:
-		close(stop)
-		p.down.Add(1)
-		go func() {
-			defer p.down.Done()
-			p.spare(<-done)
-		}()
-	}
-	notePool("gave-way", pl.ops.name(), "to a test whose own start was on its way")
-	return pl, false, nil
-}
-
-// poolStart is how a pool's lab start ended.
-type poolStart struct {
-	pl  *pooledLab
-	err error
-}
-
-// spare takes in a start no test needs any more: its lab goes to the pool
-// as any other; a start that failed, or left the slot queue, adopt
-// counted out already.
-func (p *Pool) spare(s poolStart) {
-	if s.err != nil {
-		if !errors.Is(s.err, errSlotWaitStopped) {
-			fmt.Fprintf(os.Stderr, "lab pool %s: a lab start no test needed any more: %v\n", p.name, s.err)
-		}
-		return
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.putBack(s.pl)
+	if i := slices.Index(p.waiters, ch); i >= 0 {
+		p.waiters = slices.Delete(p.waiters, i, i+1)
+		p.mu.Unlock()
+		return nil, fmt.Errorf("lab: pool %s: no lab came back within %v", p.name, time.Since(from).Round(time.Second))
+	}
+	p.mu.Unlock()
+	return <-ch, nil // handed on meanwhile
 }
 
 // start brings up a lab for the pool, which the caller counted in
 // p.labs, and snapshots its clean state.
-func (p *Pool) start(ctx context.Context, t testing.TB) (*pooledLab, error) {
+func (p *Pool) start(t testing.TB) (*pooledLab, error) {
 	begin := time.Now()
-	l, bins, keep, err := launch(ctx, t, p.topo, func(project string) string { return "pool:" + project }, "pool-"+p.name, os.Getenv(ProjectEnv))
+	l, bins, keep, err := launch(t, p.topo, func(project string) string { return "pool:" + project }, "pool-"+p.name, os.Getenv(ProjectEnv))
 	return p.adopt(l, startedLab{lab: l, bins: bins, keepEnv: keep}, begin, err)
 }
 
@@ -449,30 +337,13 @@ func (p *Pool) giveBack(t labUser, pl *pooledLab, since time.Time) (back bool) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.putBack(pl)
+	if !p.handOn(pl) {
+		pl.since = time.Now()
+		pl.timer = time.AfterFunc(poolIdleCheck, func() { p.idleCheck(pl) })
+		p.idle = append(p.idle, pl)
+		p.trimIdle()
+	}
 	return true
-}
-
-// putBack gives pl, clean, to the first waiter, or keeps it idle; a
-// closed pool's (a start no test waited for, done after the run) goes.
-// p.mu is held.
-func (p *Pool) putBack(pl *pooledLab) {
-	if p.closed {
-		p.labs--
-		p.down.Add(1)
-		go func() {
-			defer p.down.Done()
-			p.teardown(pl, "end of the run")
-		}()
-		return
-	}
-	if p.handOn(pl) {
-		return
-	}
-	pl.since = time.Now()
-	pl.timer = time.AfterFunc(poolIdleCheck, func() { p.idleCheck(pl) })
-	p.idle = append(p.idle, pl)
-	p.trimIdle()
 }
 
 // countTakers says that takers users may still take one of the pool's
@@ -525,41 +396,19 @@ func (p *Pool) gone() {
 	p.handOn(nil)
 }
 
-// came puts a lab started first (StartFirst) back, or for a start that
-// failed (nil, which adopt counted out), lets the waiters beyond the labs
-// still coming start one. p.mu is held.
-func (p *Pool) came(pl *pooledLab) {
-	p.coming--
-	if pl == nil {
-		for len(p.waiters) > p.coming && p.labs < p.size {
-			p.handOn(nil)
-		}
-		return
-	}
-	p.putBack(pl)
-}
-
-// handOn gives pl (nil: leave to start one, which makes it a starter) to
-// the first waiter, if any, else pl to the first starter, a test whose own
-// start is on its way (startOrTake). p.mu is held.
+// handOn gives pl (nil: leave to start one) to the first waiter, if any.
+// p.mu is held.
 func (p *Pool) handOn(pl *pooledLab) bool {
-	if len(p.waiters) > 0 {
-		w := p.waiters[0]
-		p.waiters = p.waiters[1:]
-		if pl == nil {
-			p.labs++
-			p.starters = inRank(p.starters, w)
-		}
-		w.ch <- pl
-		return true
+	if len(p.waiters) == 0 {
+		return false
 	}
-	if pl != nil && len(p.starters) > 0 {
-		ch := p.starters[0].ch
-		p.starters = p.starters[1:]
-		ch <- pl
-		return true
+	ch := p.waiters[0]
+	p.waiters = p.waiters[1:]
+	if pl == nil {
+		p.labs++
 	}
-	return false
+	ch <- pl
+	return true
 }
 
 // idleCheck tears down pl if it is still idle and has been for long

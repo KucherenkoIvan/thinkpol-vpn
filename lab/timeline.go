@@ -1,8 +1,6 @@
 package lab
 
 import (
-	"cmp"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -14,10 +12,8 @@ import (
 // for its lab slot (and whether it gave up on the slot queue); when it
 // asked for the subnet allocation lock, held it, and ran docker compose
 // up; how long each step from the slot to the sealed lab took; and how
-// long its tear-down took; and, from labctl testjson, when each test
-// started, got its place among the parallel ones (-parallel) and ended.
-// Runs that share the file give one timeline of how their labs' start-ups
-// overlap.
+// long its tear-down took. Runs that share the file give one timeline of
+// how their labs' start-ups overlap.
 const TimelineEnv = "THINKPOL_LAB_TIMELINE"
 
 func noteTimeline(project string, attempt int, r *reservation, upFrom, upTo time.Time, upErr error) {
@@ -32,25 +28,18 @@ func noteTimeline(project string, attempt int, r *reservation, upFrom, upTo time
 }
 
 // noteSlotWait appends to the timeline how long a lab's start waited for
-// its lab slot, from..to, and whether it got one (err nil: ok), gave its
-// wait up because its pool's test took a lab that came back (gave-way,
-// errSlotWaitStopped) or failed.
+// its lab slot, from..to, and whether it got one (err nil).
 func noteSlotWait(project string, from, to time.Time, err error) {
 	path := os.Getenv(TimelineEnv)
 	if path == "" {
 		return
 	}
-	result := timelineResult(err)
-	if errors.Is(err, errSlotWaitStopped) {
-		result = "gave-way"
-	}
-	appendTimeline(path, fmt.Sprintf("%s slot-wait %s %s %s\n", timelineStamp(from), to.Sub(from).Round(time.Millisecond), result, project))
+	appendTimeline(path, fmt.Sprintf("%s slot-wait %s %s %s\n", timelineStamp(from), to.Sub(from).Round(time.Millisecond), timelineResult(err), project))
 }
 
 // notePool appends a pool's event to the timeline: a test taking one of
-// its labs ("take"), a lab that came back going to a test whose own start
-// was on its way ("gave-way", startOrTake), a lab retired after a test
-// ("retire"), a lab torn down ("down").
+// its labs ("take"), a lab retired after a test ("retire"), a lab torn
+// down ("down").
 func notePool(event, project, detail string) {
 	path := os.Getenv(TimelineEnv)
 	if path == "" {
@@ -108,27 +97,6 @@ func noteDown(project string, from, to time.Time, err error) {
 		return
 	}
 	appendTimeline(path, fmt.Sprintf("%s down %s %s %s\n", timelineStamp(from), to.Sub(from).Round(time.Millisecond), timelineResult(err), project))
-}
-
-// TestTimeline is where FilterTestJSON notes the tests' events: the
-// timeline File ("" for none), and the Stream they ran in ("" for none),
-// which tells the streams' runs of one test apart.
-type TestTimeline struct{ File, Stream string }
-
-// noteTest appends a test's event from go test -json: run (its function
-// started), cont (a parallel test got its place and goes on), and pass,
-// fail or skip with how long it took; then the stream ("-" for none), the
-// package and the test.
-func noteTest(tl TestTimeline, ev testEvent) {
-	pkg := ev.Package[strings.LastIndex(ev.Package, "/")+1:]
-	stream := cmp.Or(tl.Stream, "-")
-	switch ev.Action {
-	case "run", "cont":
-		appendTimeline(tl.File, fmt.Sprintf("%s test-%s %s %s %s\n", timelineStamp(ev.Time), ev.Action, stream, pkg, ev.Test))
-	case "pass", "fail", "skip":
-		elapsed := time.Duration(ev.Elapsed * float64(time.Second)).Round(time.Millisecond)
-		appendTimeline(tl.File, fmt.Sprintf("%s test-%s %s %s %s %s\n", timelineStamp(ev.Time), ev.Action, elapsed, stream, pkg, ev.Test))
-	}
 }
 
 func timelineStamp(t time.Time) string { return t.UTC().Format("15:04:05.000") }

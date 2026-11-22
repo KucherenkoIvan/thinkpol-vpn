@@ -40,7 +40,6 @@ type testEvent struct {
 	Test    string
 	Output  string
 	Elapsed float64
-	Time    time.Time
 }
 
 // FilterTestJSON reads go test -json from r and writes to w what go test
@@ -54,11 +53,9 @@ type testEvent struct {
 // package's verdict: test2json fails such a test without the testing
 // package's "--- FAIL" line when its binary dies, or leaves it open. It
 // returns how long each test that ended took: top-level tests and their
-// direct subtests. Those tests' starts, resumes after t.Parallel and ends
-// go to timeline's file too, unless it is "" (noteTest; labctl testjson
-// passes TimelineEnv's and StreamEnv's).
-func FilterTestJSON(r io.Reader, w io.Writer, verbose bool, timeline TestTimeline) ([]TestTime, error) {
-	f := testFilter{w: w, verbose: verbose, logs: map[string]*testLog{}, reported: map[string]bool{}, timeline: timeline, resumed: map[string]bool{}}
+// direct subtests.
+func FilterTestJSON(r io.Reader, w io.Writer, verbose bool) ([]TestTime, error) {
+	f := testFilter{w: w, verbose: verbose, logs: map[string]*testLog{}, reported: map[string]bool{}}
 	defer f.close()
 	br := bufio.NewReaderSize(r, 64<<10)
 	for {
@@ -91,10 +88,6 @@ type testFilter struct {
 	// The tests whose own "--- PASS/FAIL/SKIP" line came: they ended.
 	reported map[string]bool
 	times    []TestTime
-	timeline TestTimeline
-	// The tests whose resume after t.Parallel is noted: go test writes
-	// "=== CONT" again whenever -v's output switches back to a test.
-	resumed map[string]bool
 }
 
 func testKey(pkg, test string) string { return pkg + "\x00" + test }
@@ -121,13 +114,6 @@ func (f *testFilter) event(ev testEvent) error {
 	ended := ev.Action == "pass" || (ev.Action == "fail" && f.reported[key])
 	if ev.Action == "pass" || ev.Action == "fail" || ev.Action == "skip" {
 		defer delete(f.reported, key)
-		defer delete(f.resumed, key)
-	}
-	if f.timeline.File != "" && strings.Count(ev.Test, "/") <= 1 && (ev.Action != "cont" || !f.resumed[key]) {
-		if ev.Action == "cont" {
-			f.resumed[key] = true
-		}
-		noteTest(f.timeline, ev)
 	}
 	if ended && strings.Count(ev.Test, "/") <= 1 {
 		f.times = append(f.times, TestTime{

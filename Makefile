@@ -222,8 +222,7 @@ lab-test-long: LAB_STREAMS = long
 # recipe is one line with $(MAKE) in it, so make -n runs it: don't. The
 # other ./lab/...
 # packages run under go test. labctl testjson prints what go test without
-# -v would have and keeps each test's time for the budget's report (and,
-# with THINKPOL_LAB_TIMELINE, notes each test in the stream's name); its
+# -v would have and keeps each test's time for the budget's report; its
 # exit status fails its phase, and its TMPDIR (only its: the lab slot
 # cap's locks live in TMPDIR) is the run's directory, so the long logs it
 # spills to files go with the run on an abort. Exit
@@ -249,15 +248,15 @@ lab-test lab-test-default lab-test-long:
 	phases=; failed=; both=; \
 	case " $(LAB_STREAMS) " in *" default "*) case " $(LAB_STREAMS) " in *" long "*) both=1;; esac;; esac; \
 	case " $(LAB_STREAMS) " in *" default "*) \
-		( { ( cd lab && THINKPOL_LAB_STREAM=default exec go tool test2json -t -p "$$labpkg" "$$tmp/lab.test" -test.v=test2json -test.paniconexit0 -test.count=1 -test.parallel=$(LAB_TEST_PARALLEL) -test.timeout=$(LAB_TIMEOUT) -test.skip='$(LAB_HARNESS_RUN)' ) 2>&1; echo $$? > "$$tmp/lab.status"; } | { TMPDIR="$$tmp" THINKPOL_LAB_STREAM=default "$$labctl" testjson -times "$$tmp/lab.times" 2>&1; echo $$? > "$$tmp/lab.testjson"; } | awk '{print "[lab]  " $$0; fflush()}' ) & lab=$$!; \
-		( { THINKPOL_LAB_STREAM=default go test -tags lab -json -count=1 -parallel $(LAB_TEST_PARALLEL) -timeout $(LAB_TIMEOUT) -skip '$(LAB_HARNESS_RUN)' $$others 2>&1; echo $$? > "$$tmp/labpkgs.status"; } | { TMPDIR="$$tmp" THINKPOL_LAB_STREAM=default "$$labctl" testjson -times "$$tmp/labpkgs.times" 2>&1; echo $$? > "$$tmp/labpkgs.testjson"; } | awk '{print "[lab]  " $$0; fflush()}' ) & labpkgs=$$!; \
+		( { ( cd lab && THINKPOL_LAB_STREAM=default exec go tool test2json -t -p "$$labpkg" "$$tmp/lab.test" -test.v=test2json -test.paniconexit0 -test.count=1 -test.parallel=$(LAB_TEST_PARALLEL) -test.timeout=$(LAB_TIMEOUT) -test.skip='$(LAB_HARNESS_RUN)' ) 2>&1; echo $$? > "$$tmp/lab.status"; } | { TMPDIR="$$tmp" "$$labctl" testjson -times "$$tmp/lab.times" 2>&1; echo $$? > "$$tmp/lab.testjson"; } | awk '{print "[lab]  " $$0; fflush()}' ) & lab=$$!; \
+		( { THINKPOL_LAB_STREAM=default go test -tags lab -json -count=1 -parallel $(LAB_TEST_PARALLEL) -timeout $(LAB_TIMEOUT) -skip '$(LAB_HARNESS_RUN)' $$others 2>&1; echo $$? > "$$tmp/labpkgs.status"; } | { TMPDIR="$$tmp" "$$labctl" testjson -times "$$tmp/labpkgs.times" 2>&1; echo $$? > "$$tmp/labpkgs.testjson"; } | awk '{print "[lab]  " $$0; fflush()}' ) & labpkgs=$$!; \
 		( { "$$labctl" gotest -p $(LAB_SLOTS) -build-p $(LAB_P) -times "$$tmp/node.times" $(if $(COUNT),-count $(COUNT)) ./...; echo $$? > "$$tmp/node.status"; } 2>&1 | awk '{print "[node] " $$0; fflush()}' ) & node=$$!; \
 		( { $(MAKE) --no-print-directory lab-harness-cached LABCTL="$$labctl" LAB_HARNESS_TIMES="$$tmp/harness.times"; echo $$? > "$$tmp/harness.status"; } 2>&1 | awk '{print "[harness] " $$0; fflush()}' ) & harness=$$!; \
 		phases="lab labpkgs node harness";; \
 	esac; \
 	case " $(LAB_STREAMS) " in *" long "*) \
-		( ( { ( cd lab && THINKPOL_LAB_STREAM=long exec go tool test2json -t -p "$$labpkg" "$$tmp/lab.test" -test.v=test2json -test.paniconexit0 -test.count=1 -test.parallel=$(LAB_TEST_PARALLEL) -test.timeout=$(LAB_TIMEOUT) -test.run='$(LAB_LONG_TESTS)' ) 2>&1; echo $$? > "$$tmp/long.status"; } | { TMPDIR="$$tmp" THINKPOL_LAB_STREAM=long "$$labctl" testjson -times "$$tmp/long.times" 2>&1; echo $$? > "$$tmp/long.testjson"; } | awk '{print "[long] " $$0; fflush()}' ) & \
-		  ( { THINKPOL_LAB_STREAM=long go test -tags lab -json -count=1 -parallel $(LAB_TEST_PARALLEL) -timeout $(LAB_TIMEOUT) -run '$(LAB_LONG_TESTS)' $$others 2>&1; echo $$? > "$$tmp/longpkgs.status"; } | { TMPDIR="$$tmp" THINKPOL_LAB_STREAM=long "$$labctl" testjson -times "$$tmp/longpkgs.times" 2>&1; echo $$? > "$$tmp/longpkgs.testjson"; } | awk '{print "[long] " $$0; fflush()}' ) & \
+		( ( { ( cd lab && THINKPOL_LAB_STREAM=long exec go tool test2json -t -p "$$labpkg" "$$tmp/lab.test" -test.v=test2json -test.paniconexit0 -test.count=1 -test.parallel=$(LAB_TEST_PARALLEL) -test.timeout=$(LAB_TIMEOUT) -test.run='$(LAB_LONG_TESTS)' ) 2>&1; echo $$? > "$$tmp/long.status"; } | { TMPDIR="$$tmp" "$$labctl" testjson -times "$$tmp/long.times" 2>&1; echo $$? > "$$tmp/long.testjson"; } | awk '{print "[long] " $$0; fflush()}' ) & \
+		  ( { THINKPOL_LAB_STREAM=long go test -tags lab -json -count=1 -parallel $(LAB_TEST_PARALLEL) -timeout $(LAB_TIMEOUT) -run '$(LAB_LONG_TESTS)' $$others 2>&1; echo $$? > "$$tmp/longpkgs.status"; } | { TMPDIR="$$tmp" "$$labctl" testjson -times "$$tmp/longpkgs.times" 2>&1; echo $$? > "$$tmp/longpkgs.testjson"; } | awk '{print "[long] " $$0; fflush()}' ) & \
 		  wait; "$$labctl" budget -stream long -since $$start "$$tmp/long.times" "$$tmp/longpkgs.times" || echo 1 > "$$tmp/long.status" ) & \
 		phases="$$phases long longpkgs";; \
 	esac; \

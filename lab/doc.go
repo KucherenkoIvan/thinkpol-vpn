@@ -12,19 +12,14 @@
 // takes a started lab, and when it ends the lab is reset to the state it
 // came up in and checked (Snapshot, Lab.Reset) before the next test gets
 // it; a lab whose check fails, or whose test failed, is torn down (or
-// kept, with KeepEnv). A test whose own start for a pool still waits for
-// its slot takes a lab that comes back meanwhile, and the start leaves the
-// slot queue (withSlotWaitStop). The check reads only what nodeStateScript
-// lists: a test that changes anything else needs a lab of its own (Start).
+// kept, with KeepEnv). The check reads only what nodeStateScript lists: a
+// test that changes anything else needs a lab of its own (Start).
 //
-// Lab starts take lab slots first come first served (the slot queue), so
-// the order tests start in is the order their labs come up. The longest
-// tests call StartFirst (or Pool.StartFirst) in place of t.Parallel: in
-// make lab-test's streams, every other lab start of the process joins the
-// slot queue only after theirs (firstStarts), and a pool's labs go to the
-// tests waiting with a rank (Pool.AcquireInOrder) lowest first. A process
-// stands no more than slotQueueShare of its other starts in the queue at
-// once, so a run's phases, and other runs, take turns as slots free up.
+// Lab starts take lab slots first come first served (the slot queue,
+// slotQueue). A process stands no more than slotQueueShare of its starts
+// in the queue at once, so make lab-test's lab/ phase, which runs every
+// test at once, doesn't queue the whole phase ahead of the run's node
+// phase and of other runs.
 //
 // A run is the processes that share a run id (RunEnv): make lab-test gives
 // its lab tests and its labctl gotest one, and every other process that
