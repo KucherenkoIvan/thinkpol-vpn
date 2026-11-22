@@ -2,7 +2,6 @@ package lab
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -93,7 +92,8 @@ func (o *startOrder) wait(ctx context.Context, dir string) error {
 		return nil
 	case <-w.launched:
 	case <-grace.C:
-		return errors.New("lab: the labs started first never began: a test that starts a lab after StartFirst must call t.Parallel first")
+		return fmt.Errorf("lab: this lab start waited %v for the labs StartFirst counted in, which begin only once every serial test has run: "+
+			"a serial test started a lab in a package that has StartFirst tests; call t.Parallel in that test before its lab start", firstLaunchGrace)
 	case <-ctx.Done():
 		return fmt.Errorf("lab: waiting for the labs started first to join the slot queue: %w", ctx.Err())
 	}
@@ -116,12 +116,11 @@ func asFirstStart(ctx context.Context, joined func()) context.Context {
 
 // slotQueueShare is how many of a process's slot waits, first starts
 // aside, stand in a lock directory's slot queue at once (0: no bound). The
-// queue is first come first served: make lab-test's lab/ phase, which runs
-// every test at once, queued all its labs' starts at once, and its node
-// phase's packages, queued a minute or two later, waited for every one of
-// them (18 minutes). A share per process interleaves the run's phases, and
-// other runs, as slots free up; a process's own waits take their turns
-// among themselves.
+// queue is first come first served, and make lab-test's lab/ phase runs
+// every test at once: without a share, the starts it queues at once would
+// all go before those of its node phase and of other runs. A share per
+// process interleaves them as slots free up; a process's own waits take
+// their turns among themselves.
 var slotQueueShare = 2
 
 var (
@@ -166,16 +165,18 @@ func joinedSlotQueue(ctx context.Context) {
 	}
 }
 
-// startFirst counts n first starts in, in t's serial part, then calls
+// startFirst counts in, in t's serial part, the first starts count says
+// (it is called once nothing can fail t before them), then calls
 // t.Parallel, and runs each start (launch then joined) once t resumes. It
-// returns when every start ended; without a stream, at once.
-func startFirst(t *testing.T, n int, start func(ctx context.Context)) (wait func()) {
+// returns a func that waits for every start to end; without a stream,
+// count isn't called and nothing starts.
+func startFirst(t *testing.T, count func() int, start func(ctx context.Context)) (wait func()) {
 	t.Helper()
 	s, err := Stream()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s == "" || n < 1 {
+	if s == "" {
 		t.Parallel()
 		return func() {}
 	}
@@ -183,6 +184,7 @@ func startFirst(t *testing.T, n int, start func(ctx context.Context)) (wait func
 	if err != nil {
 		t.Fatal(err)
 	}
+	n := max(count(), 0)
 	type held struct{ launch, joined func() }
 	holds := make([]held, n)
 	for i := range holds {
@@ -230,10 +232,12 @@ func StartFirst(t *testing.T, topo Topology, n int) *FirstLabs {
 		t.Fatal(err)
 	}
 	f := &FirstLabs{topo: topo, n: n}
-	if s, _ := Stream(); s != "" && n > 0 {
-		f.started = make(chan firstLab, n)
-	}
-	wait := startFirst(t, n, func(ctx context.Context) {
+	wait := startFirst(t, func() int {
+		if n > 0 {
+			f.started = make(chan firstLab, n)
+		}
+		return n
+	}, func(ctx context.Context) {
 		l, bins, keep, err := launch(ctx, t, topo, func(project string) string { return "first:" + project }, t.Name(), os.Getenv(ProjectEnv))
 		f.started <- firstLab{l, bins, keep, err}
 	})
@@ -287,17 +291,17 @@ func (f *FirstLabs) Take(t testing.TB) *Lab {
 // Outside a stream it starts nothing.
 func (p *Pool) StartFirst(t *testing.T, n int) {
 	t.Helper()
-	p.mu.Lock()
-	n = min(n, p.size-p.labs)
-	if p.closed {
-		n = 0
-	}
-	if s, _ := Stream(); s != "" && n > 0 {
+	wait := startFirst(t, func() int {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.closed {
+			return 0
+		}
+		n = max(min(n, p.size-p.labs), 0)
 		p.labs += n
 		p.coming += n
-	}
-	p.mu.Unlock()
-	wait := startFirst(t, n, func(ctx context.Context) {
+		return n
+	}, func(ctx context.Context) {
 		pl, err := p.start(ctx, t)
 		if err != nil {
 			t.Errorf("lab pool %s: a lab started first: %v", p.name, err)

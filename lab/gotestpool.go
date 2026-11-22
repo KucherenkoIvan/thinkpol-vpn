@@ -56,18 +56,19 @@ func (p *nodePool) goTest(ctx context.Context, queued time.Time, root, user stri
 		deadline = time.Now().Add(labBudget.wait)
 	}
 	// The start may go on after the package took a lab that came back
-	// meanwhile (startOrTake), so its slot wait is the package's only
-	// when it is done by then.
-	var slotWait atomic.Int64
-	pl, err := p.acquire(ctx, deadline, unranked, func(ctx context.Context) (*pooledLab, error) {
+	// meanwhile (startOrTake), so it has a timer of its own.
+	var start labTimer
+	pl, own, err := p.acquire(ctx, deadline, unranked, func(ctx context.Context) (*pooledLab, error) {
 		begin := time.Now()
-		var st labTimer
-		l, err := up(ctx, st.startClock(), root, p.project(int(p.seq.Add(1))), GoTestTopology(), "", runInputs)
-		slotWait.Store(int64(st.slotWait))
+		l, err := up(ctx, start.startClock(), root, p.project(int(p.seq.Add(1))), GoTestTopology(), "", runInputs)
 		return p.adopt(l, nodeLab{l}, begin, err)
 	})
 	timer.started = time.Now()
-	timer.slotWait = time.Duration(slotWait.Load())
+	if own || err != nil {
+		timer.slotWait = start.slotWait
+	} else {
+		timer.began = timer.started // it waited for a lab of the pool's
+	}
 	if err != nil {
 		res.labErr = err
 		res.phases = timer.phases(time.Now())

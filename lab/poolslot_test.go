@@ -5,6 +5,9 @@ package lab
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,12 +24,11 @@ func TestPoolStartGivesWayToALabThatCameBack(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	held := holdSlot(t, ctx)
-	p := &Pool{size: 2, name: "router"}
+	timeline := filepath.Join(t.TempDir(), "timeline")
+	t.Setenv(TimelineEnv, timeline)
+	p := &Pool{size: 2, name: "router", labs: 1} // one lab in use
 	far := time.Now().Add(time.Minute)
-	if pl, err := p.take(far, unranked); pl != nil || err != nil {
-		t.Fatalf("the first test: %v, %v: want leave to start one", pl, err)
-	}
-	inUse := &pooledLab{}
+	inUse := &pooledLab{ops: &fakeLab{project: "lab-in-use"}}
 	startErr := make(chan error, 1)
 	start := func(ctx context.Context) (*pooledLab, error) {
 		release, err := waitForSlot(ctx, labBudget.begin(time.Time{}), "tplab-pool-test", "")
@@ -39,32 +41,22 @@ func TestPoolStartGivesWayToALabThatCameBack(t *testing.T) {
 	}
 	starting := make(chan *pooledLab, 1)
 	go func() {
-		pl, err := p.acquire(ctx, far, unranked, start)
-		if err != nil {
-			t.Error(err)
+		pl, own, err := p.acquire(ctx, far, unranked, start)
+		if err != nil || own {
+			t.Errorf("acquire: own %v, %v: want a lab that came back", own, err)
 		}
 		starting <- pl
 	}()
 	waitForTickets(t, dir, 1) // its start waits for the slot
 	waiting := make(chan *pooledLab, 1)
 	go func() {
-		pl, err := p.take(far, unranked)
+		pl, _, err := p.take(far, unranked)
 		if err != nil {
 			t.Error(err)
 		}
 		waiting <- pl
 	}()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
-		p.mu.Lock()
-		n := len(p.waiters)
-		p.mu.Unlock()
-		if n == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d waiters, want 1: the pool is full", n)
-		}
-	}
+	poolCountIs(t, p, "waiters (the pool is full)", 1, func() int { return len(p.waiters) })
 	receive := func(ch chan *pooledLab, who string) *pooledLab {
 		t.Helper()
 		select {
@@ -102,6 +94,16 @@ func TestPoolStartGivesWayToALabThatCameBack(t *testing.T) {
 	}
 	waitForTickets(t, dir, 0)
 	p.down.Wait()
+	// The timeline shows that the start gave way, and to which lab.
+	lines, err := os.ReadFile(timeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{" slot-wait ", " gave-way tplab-pool-test\n", " pool-gave-way lab-in-use "} {
+		if !strings.Contains(string(lines), want) {
+			t.Errorf("the timeline has no %q:\n%s", want, lines)
+		}
+	}
 	p.mu.Lock()
 	labs, idle := p.labs, len(p.idle)
 	p.mu.Unlock()
@@ -122,5 +124,37 @@ func TestPoolStartGivesWayToALabThatCameBack(t *testing.T) {
 	held()
 	if release := <-got; release != nil {
 		release()
+	}
+}
+
+// TestAStoppedStartTakesNoFreeSlot: a lab start whose slot wait was
+// stopped before it began (its pool's test took a lab that came back)
+// takes no slot, not even a free one, whether the process's share of the
+// slot queue held it back or not and whether the queue can be used or
+// not, so no lab starts that nobody waits for.
+func TestAStoppedStartTakesNoFreeSlot(t *testing.T) {
+	for _, c := range []struct {
+		share    int
+		unusable bool // slot-queue is a file: the wait polls the slots
+	}{{0, false}, {1, false}, {0, true}} {
+		dir := oneSlotHost(t)
+		queueShareOf(t, c.share)
+		if c.unusable {
+			if err := os.WriteFile(filepath.Join(dir, "slot-queue"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		stop := make(chan struct{})
+		close(stop)
+		release, err := waitForSlot(withSlotWaitStop(t.Context(), stop), labBudget.begin(time.Time{}), "tplab-stopped", "")
+		if release != nil {
+			release()
+		}
+		if !errors.Is(err, errSlotWaitStopped) {
+			t.Errorf("%+v: the stopped start's wait ended with %v (a slot: %v), want it to have left", c, err, release != nil)
+		}
+		if !c.unusable {
+			waitForTickets(t, dir, 0)
+		}
 	}
 }

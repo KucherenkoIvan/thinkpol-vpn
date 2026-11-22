@@ -206,6 +206,9 @@ func acquireSlotLock(ctx context.Context, dir string) (func(), error) {
 	// falls back to polling the slots, as every waiter did before the queue
 	// (and as waitLock, it tries them once with no time left).
 	unqueued := func(reason error) (func(), error) {
+		if err := slotWaitStopped(ctx); err != nil {
+			return nil, err
+		}
 		if ctx.Err() == nil {
 			noteSlotUnqueued(reason)
 		}
@@ -228,6 +231,9 @@ func acquireSlotLock(ctx context.Context, dir string) (func(), error) {
 			q.leave()
 			return unqueued(err)
 		case head:
+			if err := slotWaitStopped(ctx); err != nil {
+				return nil, err
+			}
 			for _, p := range paths {
 				f, ok, err := tryLockMode(p, true)
 				if err != nil {
@@ -244,6 +250,16 @@ func acquireSlotLock(ctx context.Context, dir string) (func(), error) {
 		case <-tick.C:
 		}
 	}
+}
+
+// slotWaitStopped is errSlotWaitStopped once ctx's start no longer needs
+// its slot (withSlotWaitStop): it tries none then, not even the one try a
+// wait gets with no time left, which would start a lab nobody waits for.
+func slotWaitStopped(ctx context.Context) error {
+	if errors.Is(context.Cause(ctx), errSlotWaitStopped) {
+		return errSlotWaitStopped
+	}
+	return nil
 }
 
 // slotQueueTiming is how the slot queue paces itself; tests shorten it.

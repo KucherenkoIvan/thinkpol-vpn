@@ -2,6 +2,7 @@ package lab
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -31,18 +32,25 @@ func noteTimeline(project string, attempt int, r *reservation, upFrom, upTo time
 }
 
 // noteSlotWait appends to the timeline how long a lab's start waited for
-// its lab slot, from..to, and whether it got one (err nil).
+// its lab slot, from..to, and whether it got one (err nil: ok), gave its
+// wait up because its pool's test took a lab that came back (gave-way,
+// errSlotWaitStopped) or failed.
 func noteSlotWait(project string, from, to time.Time, err error) {
 	path := os.Getenv(TimelineEnv)
 	if path == "" {
 		return
 	}
-	appendTimeline(path, fmt.Sprintf("%s slot-wait %s %s %s\n", timelineStamp(from), to.Sub(from).Round(time.Millisecond), timelineResult(err), project))
+	result := timelineResult(err)
+	if errors.Is(err, errSlotWaitStopped) {
+		result = "gave-way"
+	}
+	appendTimeline(path, fmt.Sprintf("%s slot-wait %s %s %s\n", timelineStamp(from), to.Sub(from).Round(time.Millisecond), result, project))
 }
 
 // notePool appends a pool's event to the timeline: a test taking one of
-// its labs ("take"), a lab retired after a test ("retire"), a lab torn
-// down ("down").
+// its labs ("take"), a lab that came back going to a test whose own start
+// was on its way ("gave-way", startOrTake), a lab retired after a test
+// ("retire"), a lab torn down ("down").
 func notePool(event, project, detail string) {
 	path := os.Getenv(TimelineEnv)
 	if path == "" {

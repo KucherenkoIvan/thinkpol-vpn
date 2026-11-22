@@ -70,7 +70,7 @@ func TestSlotWaitsBehindFirstStarts(t *testing.T) {
 	firstLaunchGrace = 50 * time.Millisecond
 	t.Cleanup(func() { firstLaunchGrace = savedGrace })
 	firstStarts.hold(dir) // never launched: its test never resumed
-	if _, err := acquireHostSlot(ctx); err == nil || !strings.Contains(err.Error(), "must call t.Parallel first") {
+	if _, err := acquireHostSlot(ctx); err == nil || !strings.Contains(err.Error(), "call t.Parallel in that test before its lab start") {
 		t.Fatalf("behind first starts that never began: %v", err)
 	}
 	short, cancelShort := context.WithTimeout(ctx, 50*time.Millisecond)
@@ -82,10 +82,10 @@ func TestSlotWaitsBehindFirstStarts(t *testing.T) {
 	}
 }
 
-// TestSlotQueueShare: a process stands no more than its share of slot
+// TestAProcessStandsAtMostItsShareInTheSlotQueue: a process stands no more than its share of slot
 // waits in the slot queue at once; the next joins as one of them leaves
 // it (with the slot), and a first start isn't counted in the share.
-func TestSlotQueueShare(t *testing.T) {
+func TestAProcessStandsAtMostItsShareInTheSlotQueue(t *testing.T) {
 	dir := oneSlotHost(t)
 	queueShareOf(t, 2)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)

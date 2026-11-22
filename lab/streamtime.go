@@ -58,7 +58,7 @@ type testEvent struct {
 // go to timeline's file too, unless it is "" (noteTest; labctl testjson
 // passes TimelineEnv's and StreamEnv's).
 func FilterTestJSON(r io.Reader, w io.Writer, verbose bool, timeline TestTimeline) ([]TestTime, error) {
-	f := testFilter{w: w, verbose: verbose, logs: map[string]*testLog{}, reported: map[string]bool{}, timeline: timeline}
+	f := testFilter{w: w, verbose: verbose, logs: map[string]*testLog{}, reported: map[string]bool{}, timeline: timeline, resumed: map[string]bool{}}
 	defer f.close()
 	br := bufio.NewReaderSize(r, 64<<10)
 	for {
@@ -92,6 +92,9 @@ type testFilter struct {
 	reported map[string]bool
 	times    []TestTime
 	timeline TestTimeline
+	// The tests whose resume after t.Parallel is noted: go test writes
+	// "=== CONT" again whenever -v's output switches back to a test.
+	resumed map[string]bool
 }
 
 func testKey(pkg, test string) string { return pkg + "\x00" + test }
@@ -118,8 +121,12 @@ func (f *testFilter) event(ev testEvent) error {
 	ended := ev.Action == "pass" || (ev.Action == "fail" && f.reported[key])
 	if ev.Action == "pass" || ev.Action == "fail" || ev.Action == "skip" {
 		defer delete(f.reported, key)
+		defer delete(f.resumed, key)
 	}
-	if f.timeline.File != "" && strings.Count(ev.Test, "/") <= 1 {
+	if f.timeline.File != "" && strings.Count(ev.Test, "/") <= 1 && !(ev.Action == "cont" && f.resumed[key]) {
+		if ev.Action == "cont" {
+			f.resumed[key] = true
+		}
 		noteTest(f.timeline, ev)
 	}
 	if ended && strings.Count(ev.Test, "/") <= 1 {

@@ -65,14 +65,14 @@ import (
 // with lab.StreamEnv unset the test runs every cell and writes RESULTS.md
 // itself.
 func TestCensorMatrix(t *testing.T) {
+	if wgTimerScaleErr != nil {
+		t.Fatal(wgTimerScaleErr)
+	}
 	stream := lab.SplitStreams(t)
 	labs := matrixLabs(stream, transports, censorCases)
 	// Its rows are the longest lab tests: their labs start before any
 	// other test's (in place of t.Parallel).
 	censorPool.StartFirst(t, len(labs))
-	if wgTimerScaleErr != nil {
-		t.Fatal(wgTimerScaleErr)
-	}
 	var (
 		mu    sync.Mutex
 		cells []matrixCell

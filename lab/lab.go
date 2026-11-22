@@ -93,8 +93,9 @@ func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
 // slotKey gives for its project, without tying its tear-down to t: Start
 // ties it to the test, a Pool keeps the lab for the tests after. It
 // returns the run's binaries the lab mounts and whether KeepEnv is set;
-// a lab returned with an error still needs its clean-up. ctx carries
-// whether StartFirst began the start (asFirstStart).
+// a lab returned with an error still needs its clean-up. ctx is the
+// start's: it marks a start StartFirst began (asFirstStart) and one whose
+// slot wait may be stopped (withSlotWaitStop).
 func launch(ctx context.Context, t testing.TB, topo Topology, slotKey func(project string) string, name, override string) (*Lab, *runBinaries, bool, error) {
 	t.Helper()
 	if err := mainCalled(); err != nil {
@@ -365,7 +366,7 @@ func waitForSlot(ctx context.Context, clock startClock, project, slotKey string)
 		release, err = acquireSlot(ctx, slotKey)
 		return err
 	})
-	if err != nil && context.Cause(ctx) == errSlotWaitStopped {
+	if err != nil && errors.Is(context.Cause(ctx), errSlotWaitStopped) {
 		err = errors.Join(errSlotWaitStopped, err)
 	}
 	to := time.Now()

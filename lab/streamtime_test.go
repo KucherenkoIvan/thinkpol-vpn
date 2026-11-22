@@ -111,9 +111,10 @@ func TestFilterTestJSON(t *testing.T) {
 }
 
 // TestFilterTestJSONTimeline: the timeline gets when each top-level test
-// and direct subtest started (run), got its place after t.Parallel (cont)
-// and ended, with how long it took, at the events' own times and with
-// the stream; nothing of deeper subtests or of output, and nothing
+// and direct subtest started (run), got its place after t.Parallel (its
+// first cont: go test writes "=== CONT" again on every switch of -v's
+// output) and ended, with how long it took, at the events' own times and
+// with the stream; nothing of deeper subtests or of output, and nothing
 // without a timeline file.
 func TestFilterTestJSONTimeline(t *testing.T) {
 	at := func(ev testEvent, sec int) testEvent {
@@ -127,6 +128,7 @@ func TestFilterTestJSONTimeline(t *testing.T) {
 		at(testEvent{Action: "cont", Package: "x/lab", Test: "TestLong"}, 2),
 		at(testEvent{Action: "run", Package: "x/lab", Test: "TestLong/part"}, 3),
 		at(testEvent{Action: "run", Package: "x/lab", Test: "TestLong/part/cell"}, 4),
+		at(testEvent{Action: "cont", Package: "x/lab", Test: "TestLong"}, 4), // -v's output back to it
 		at(endEvent("pass", "TestLong/part/cell", 1), 5),
 		at(endEvent("fail", "TestLong/part", 2.5), 6),
 		at(endEvent("skip", "TestSkip", 0), 7),
