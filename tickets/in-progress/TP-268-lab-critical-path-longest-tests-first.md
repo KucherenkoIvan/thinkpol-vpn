@@ -75,3 +75,4 @@ All tests passed in every run (no lab retired outside the harness's deliberate c
 - 2026-11-19 runs on d39cbd58: make lint, make test passed; four full labs, all tests passed, all over budget: 16m43s (cold node phase, harness run), 25m35s, 18m45s, 20m6s (warm), another session's labs on the same slots during each; critical path before/after in Notes; the warm target (≥ 2 min faster) not met (Notes: pooled tests behind their own late lab starts, the share against a run without it)
 - 2026-11-19 out of scope: TestGotestRunsNodelessPackagesOnTheHost (lab/labctl) fails on a Mac (go test on the host finds no package under the temporary directory), passes on Linux; a pool test that started its own lab waits for its slot even when its pool's other lab comes back idle (final3: 14m25s, Notes "Next steps")
 - 2026-11-19 in-progress → review
+- 2026-11-22 review → in-progress, owner: agent-tp-268 (fix round: a pooled test behind its own lab start, then a quiet A/B)
