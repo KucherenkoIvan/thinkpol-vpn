@@ -25,10 +25,10 @@ The lab image builds again, so `make lab-test` and `make lab-gotest` run. `lab/D
 - Making the build survive future replacements (e.g. snapshot.debian.org): a separate ticket if wanted.
 
 ## Acceptance
-- [ ] Every pin in `lab/Dockerfile` installs from the pinned base image's apt.
-- [ ] The lab image builds through the repo's make targets.
-- [ ] A targeted `make lab-gotest PKG=./internal/dataplane/transport/reality/...` passes (the camouflage nginx starts).
-- [ ] `make lint` passes.
+- [x] Every pin in `lab/Dockerfile` installs from the pinned base image's apt. (apt-cache policy in the pinned base: nginx offers only deb12u11 and deb12u9; openvpn 2.6.14-0+deb12u2 still offered.)
+- [x] The lab image builds through the repo's make targets. (`make lab-gotest` at 9978aa72 built the new tag; in it `dpkg-query` shows nginx 1.22.1-9+deb12u11, openvpn 2.6.14-0+deb12u2.)
+- [x] A targeted `make lab-gotest PKG=./internal/dataplane/transport/reality/...` passes (the camouflage nginx starts). (9978aa72: ok, 220 PASS, 0 FAIL, 1m23.6s.)
+- [x] `make lint` passes. (9978aa72; `make test` green too.)
 
 ## Notes
 - nginx `1.22.1-9+deb12u10` → `1.22.1-9+deb12u11`: a Debian security revision of the same upstream nginx 1.22.1, so the camouflage site's behaviour the prober and server-hello rows were scored against is unchanged.
@@ -36,3 +36,4 @@ The lab image builds again, so `make lab-test` and `make lab-gotest` run. `lab/D
 
 ## Log
 - 2026-11-22 filed and backlog → in-progress, owner: agent-tp-275
+- 2026-11-22 nginx 1.22.1-9+deb12u10 → 1.22.1-9+deb12u11 (same upstream 1.22.1); openvpn pin unchanged; lab image built by make lab-gotest, reality package ok in a lab node, make lint and make test green, all at 9978aa72; no new tests (a Dockerfile pin), so no mutations; no full lab run (the orchestrator runs it on rewrite after the merge)
