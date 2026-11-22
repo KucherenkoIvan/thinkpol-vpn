@@ -131,6 +131,25 @@ func (k *livenessLink) counters(t *testing.T) (sent, read uint64) {
 	return sent, read
 }
 
+// pathSentIn is how many packets device-a's path sent over d.
+func (k *livenessLink) pathSentIn(t *testing.T, d time.Duration) uint64 {
+	t.Helper()
+	read := func() uint64 {
+		st, err := readStatus(k.dev, pollTimeout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, ok := st.counter("path.sent")
+		if !ok {
+			t.Fatalf("device-a's status has no path.sent:\n%s", st.raw)
+		}
+		return n
+	}
+	before := read()
+	time.Sleep(d)
+	return read() - before
+}
+
 // carrying says whether a captured packet carries a frame: a udp datagram,
 // or a TCP segment with data.
 func carrying(p lab.Packet) bool { return len(p.Payload) > 0 }
@@ -301,10 +320,14 @@ func deadUnderTraffic(t *testing.T, k *livenessLink) {
 	k.server.Start(t, "socat", "-u", "UDP-RECV:9999", "OPEN:/dev/null")
 	streamCtx, stop := context.WithCancel(context.Background())
 	defer stop()
+	// Unconnected (UDP-SENDTO): an ICMP error back doesn't stop it.
 	go func() {
-		_, _ = k.dev.Exec(streamCtx, "timeout", "30", "sh", "-c", "while :; do echo stream; sleep 0.02; done | socat -u - UDP:"+k.target.String()+":9999")
+		_, _ = k.dev.Exec(streamCtx, "timeout", "30", "sh", "-c", "while :; do echo stream; sleep 0.02; done | socat -u - UDP-SENDTO:"+k.target.String()+":9999")
 	}()
-	time.Sleep(3 * time.Second)
+	time.Sleep(2 * time.Second)
+	if n := k.pathSentIn(t, time.Second); n < 20 {
+		t.Fatalf("device-a's one-way stream isn't flowing: %d packets sent in 1 s", n)
+	}
 	devFrom, serverFrom = len(k.devUp.Output()), len(k.serverUp.Output())
 	lift = k.blackhole(t, false)
 	defer lift()
