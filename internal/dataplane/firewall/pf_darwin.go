@@ -121,7 +121,7 @@ func (pe *pfEnabler) enabled(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return parseEnabled(out.stdout)
+	return ParsePfEnabled(out.stdout)
 }
 
 // references reads `pfctl -s References` (parseReferences).

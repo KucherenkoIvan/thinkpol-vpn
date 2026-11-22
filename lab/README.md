@@ -195,6 +195,16 @@ A perf test checks `THINKPOL_LAB_PERF` itself (packages under `internal/` can't 
 
 Several checkouts, and several runs from one checkout, can run `make lab-test` (or `make lab-gotest`) at once, and `make lab-down` only removes its own checkout's labs.
 
+## What else is here
+
+| Path | What |
+|---|---|
+| [`labctl`](labctl/main.go) | the lab's command (`make lab-*`) |
+| [`pcap`](pcap/pcap.go), [`ip`](ip/ip.go) | the pcap reader and IP decoder every capture is read with: the lab's and the device-test harness's |
+| [`censor`](censor/doc.go), `censord` | the censor framework and its daemon |
+| `labdns` | the stand-in for resolvers out in the world |
+| [`devicetest`](devicetest/doc.go), `devicetest/devicetest-root` | the device-test harness for real Macs, run by the owner only: what a run guarantees, how a plan is written; its root side, a binary of its own linking only the frozen core in [`devicetest/safety`](devicetest/safety/doc.go). The core's root tests run in lab nodes like any package's |
+
 ## Environment
 
 | Variable | Effect |
@@ -222,5 +232,6 @@ Several checkouts, and several runs from one checkout, can run `make lab-test` (
 - A run's clean-up removes only its own labs, so the labs a killed run left up (Ctrl-C during `make lab-test` leaks the labs its tests had running) stay until `make lab-down`: another run's clean-up, the next `make lab-test`'s included, leaves them. After an interrupted run, run `make lab-down` (once no other run from the checkout is going: it removes all of the checkout's labs).
 - Lab networks are not Docker `internal` networks on purpose: Docker drops forwarded IPv4 between internal networks, which would break the router. The sealing above keeps the lab closed instead.
 - Lab networks use Docker's `routed` gateway mode. In the default `nat` mode Docker 28 and later drop, in the host's raw `PREROUTING`, every packet to a container's address that didn't arrive on that container's own bridge; on a host with `br_netfilter` loaded that catches the frames a node sends to the router for a node on another lab network, so nothing crosses the router. `routed` has no such rule and no NAT; Docker 27.0 and later accept it, while `nat-unprotected`, the other mode without that rule, needs 28. The networks also keep `enable_ip_masquerade=false`, redundant with `routed`, as a second guard.
+- `lab/devicetest/safety` refuses group-writable directories, its tests' temp directories included: run a plain `go test ./lab/devicetest/...` under `umask 022` (the Makefile's test recipes set it).
 - `getent hosts <node>` prefers IPv6; use `getent ahostsv4` for the IPv4 address.
 - The image's tags accumulate as the Dockerfile changes; remove old ones with `docker image rm thinkpol-lab:<tag>`.
