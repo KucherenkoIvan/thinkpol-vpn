@@ -1815,8 +1815,10 @@ func every(first, step time.Duration, n int) []time.Duration {
 // after it has passed (on the next packet); intervals spread by more than
 // wgSteadyJitter, an exchange of other sizes, a second record before the
 // quiet, an answer outside the pair window, another record between
-// exchanges or an unanswered one after the quiet each keep a run short of
-// ten; a third record in an exchange starts the run over at the next.
+// exchanges, an unanswered one after the quiet or an exchange of three
+// records each keep a run short of ten. An exchange is judged only once
+// the quiet after it has passed: a bare acknowledgement right after the
+// tenth's answer doesn't flag it.
 func TestWGRhythmSteadyExchanges(t *testing.T) {
 	s, ms := time.Second, time.Millisecond
 	jittered := every(6*s, 6*s, 12)
@@ -1839,10 +1841,10 @@ func TestWGRhythmSteadyExchanges(t *testing.T) {
 	between = append(between, wireRecord{33 * s, true, 300}) // a record halfway, before the quiet
 	lone := pinger(every(12*s, 12*s, 12), 30*ms, 40, 40)
 	lone = append(lone, wireRecord{66 * s, false, 40}) // an unanswered record after the quiet, halfway
-	// A third record in the fifth exchange, then exchanges 12 s apart:
-	// the run starts over at the first of those, its tenth at 150 s.
-	third := pinger(slices.Concat(every(6*s, 6*s, 5), every(42*s, 12*s, 11)), 30*ms, 40, 40)
-	third = append(third, wireRecord{30*s + 60*ms, true, 40})
+	// An exchange of three records halfway between two 12 s apart.
+	third := pinger(every(12*s, 12*s, 12), 30*ms, 40, 40)
+	third = append(third, pinger([]time.Duration{66 * s}, 30*ms, 40, 40)...)
+	third = append(third, wireRecord{66*s + 60*ms, true, 40})
 	for _, c := range []struct {
 		name string
 		recs []wireRecord
@@ -1863,7 +1865,7 @@ func TestWGRhythmSteadyExchanges(t *testing.T) {
 		{"an answer outside the pair window", late, 0},
 		{"a record between exchanges", between, 0},
 		{"an unanswered record after the quiet", lone, 0},
-		{"a third record in an exchange", third, 162 * s},
+		{"a third record in an exchange", third, 0},
 	} {
 		recs := slices.Clone(c.recs)
 		slices.SortStableFunc(recs, func(a, b wireRecord) int { return int(a.at - b.at) })
@@ -1878,6 +1880,14 @@ func TestWGRhythmSteadyExchanges(t *testing.T) {
 		case c.at != 0 && (a.at != c.at || !strings.HasPrefix(a.Reason, WGRhythmBySteady+": 10 idle exchanges of 40 and 40 bytes")):
 			t.Errorf("%s: blocked at %s for %q, want at %s for ten steady exchanges", c.name, a.at, a.Reason, c.at)
 		}
+	}
+	acked := newWGRun(t, `{}`, 1400)
+	for _, w := range pinger(every(6*s, 6*s, 12), 30*ms, 40, 40) {
+		acked.carry([]wireRecord{w})
+		acked.ack(w.at+5*ms, !w.toServer)
+	}
+	if a, blocked := acked.firstBlocked(); !blocked || a.at != 66*s {
+		t.Errorf("a pinger acknowledged: first blocked %+v (blocked %v), want at 66 s, past the quiet after the tenth", a, blocked)
 	}
 	// The run started over at the exchange before the spread interval:
 	// its tenth is spread[17], judged at spread[18].
