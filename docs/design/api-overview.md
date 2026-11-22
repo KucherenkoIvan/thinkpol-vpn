@@ -6,19 +6,19 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 
 ## Summary
 
-**What exists.**
+**What exists** (updated 2026-11-22; the findings below are the 2026-10-28 snapshot's).
 
-- **One binary, `thinkpol`, with 19 visible commands and one hidden one.** There are four groups:
-  - the node: `up`;
-  - local API clients: `status`, `connect`, `disconnect`, `spaces`, `rules preset`, `logs`, `diag`;
-  - the service: `service install|uninstall|connect-on-boot`;
+- **One binary, `thinkpol`, with 22 visible commands and two hidden ones.** There are four groups:
+  - the node: `up`, `rollback`;
+  - local API clients: `status`, `connect`, `disconnect`, `spaces`, `rules preset`, `connect-on-boot`, `kill-switch`, `allow-lan`, `logs`, `diag`;
+  - the service: `service install|uninstall`;
   - development tooling: `dev keygen|map|lists …`.
   
-  Plus `version` and the hidden `worker`.
-- **A gRPC local API, `LocalService`, with 8 calls,** over a Unix socket in a directory that only root and the `thinkpol` group can reach. The group may call everything except `TailLogs`. `Diagnose` gives the group its snapshot without the host parts.
-- **Configuration is environment plus flags.** There are 14 `THINKPOL_*` keys, all on `up`, and no config file; a lab node's `thinkpol` also reads two lab variables (below). The installed service sets exactly one of them, `THINKPOL_CONNECT_ON_BOOT`.
+  Plus `version`, the hidden `worker`, and the hidden `service connect-on-boot`, kept only to refuse with a message (TP-166).
+- **A gRPC local API, `LocalService`, with 11 calls,** over a Unix socket in a directory that only root and the `thinkpol` group can reach. The group may call everything except `TailLogs`. `Diagnose` gives the group its snapshot without the host parts.
+- **Configuration is flags, environment and a node file.** There are 17 `THINKPOL_*` keys, all read by `up`, and `THINKPOL_API_SOCKET` by every local API client too; `up` reads them over the root-owned node file `node.json` in the state directory, which can carry 11 of them (TP-166, [Configuration](configuration.md)); a member's toggles live in `device.json`. A lab node's `thinkpol` also reads two lab variables (below). The installed service runs `thinkpol up -service` and sets none of them.
 - **On-disk state:**
-  - the state directory: `node.key`, `space.pub`, `map.bin`, `blobs/`, `rules.local`;
+  - the state directory: `node.key`, `space.pub`, `map.bin`, `blobs/`, `node.json`, `device.json` (an old `rules.local` is carried into it and removed), and a device's `crash-trace`;
   - runtime locks and records under `/run/thinkpol` (macOS: `/private/var/db/thinkpol`);
   - the API's socket directory;
   - the service unit or plist;
@@ -232,7 +232,7 @@ There is no captive-portal pause (owner, 2026-11-12): behind a portal the member
 |---|---|
 | file | `crash-trace` in the state directory, chosen over the runtime directory because it survives a reboot (`/run` is a tmpfs on Linux) and exists before the agent makes any directory, so the manager can open it. A device's `service install` creates it 0600 root (exclusively, not through a symlink) before the service starts. A start that finds it wider, or someone else's, fixes it and logs what it fixed; one with another link isn't read (emptied, removed, the run's stderr sent to the null device); one it can't fix, cut or empty stops the start without writing to it. Holds what the runtime writes to stderr and the error `up` exits with, never the log (which then goes only to the ring) and nothing on a clean stop. A start reads its head (64 KiB, kept in memory as valid UTF-8) and cuts the file to it; the node empties it once it has the trace, so a start that fails before keeps the trace and adds its error |
 | service definition | a device's plist gets `StandardErrorPath`, its unit `StandardError=append:` (systemd 240+; an older one ignores the line and keeps no trace); a server's is unchanged. `service install` picks one by the mode the node will run in: the node file's; with none, a device's only while the map shows the node as one, else a server's, with a warning (TP-111). An agent that runs as a server under a device's definition detaches from the file and removes it, and warns to reinstall; right after reading it, before anything else can fail, unless the node is known to be a device (its node file says so, or sets no mode and its map shows a device), so a failing start of a server, or of a node the map makes a server or doesn't hold, adds nothing to it |
-| `diag` | `last_run`: `unreadable`, `lines` (the trace's head, line by line) and `truncated`. Root only: the group's snapshot has it unreadable, "root only", when there is one. Still schema 1 |
+| `diag` | `last_run`: `unreadable`, `lines` (the trace's head, line by line) and `truncated`. Root only: the group's snapshot has it unreadable, "root only", when there is one. Schema 2 at head (`localapi.SchemaVersion`) |
 | `status` | `last_run_crashed` and `last_run_unreadable` (`-json`), and a `last run:` line in the text for each. No health problem: health is the node's state now, and a code would hold until the next restart |
 
 Answered: the path (`crash-trace`), the field names (`last_run`, `last_run_crashed`, `last_run_unreadable`, F5), no problem code, and the file's size bound: its head and one run's output, never the log.
