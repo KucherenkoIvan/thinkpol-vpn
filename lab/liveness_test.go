@@ -231,8 +231,9 @@ func closed(t *testing.T, p *lab.Process, name string, from int, within time.Dur
 	return d, m[1]
 }
 
-// TestLinksUnderTraffic: device-a's link to server-1 while data flows,
-// over reality and over udp, one lab each, in turn:
+// TestLinksUnderTraffic (long stream, for the default stream's budget):
+// device-a's link to server-1 while data flows, over reality and over
+// udp, one lab each, in turn:
 //   - no probes (busyLinksSendNoProbes): under pings both ways, no probe,
 //     reply or notice either way;
 //   - on reality, a 1 s blackout ridden out (blackoutRiddenOut);
@@ -244,6 +245,7 @@ func closed(t *testing.T, p *lab.Process, name string, from int, within time.Dur
 //     device-a's close notice), within the idle bound on reality (owner,
 //     2026-11-22: the notice waits behind the stalled stream there).
 func TestLinksUnderTraffic(t *testing.T) {
+	lab.LongTest(t)
 	t.Parallel()
 	for _, transport := range []string{"reality", "udp"} {
 		t.Run(transport, func(t *testing.T) {
