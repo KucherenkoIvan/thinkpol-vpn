@@ -134,7 +134,7 @@ The operator creates it, or the dev runbook does. It must be owned by root or th
 | `connect` | node, under the service: the boot's connect choice; `rollback`, recording it down | 0600 | node at start, under `agent.lock` |
 | `netcfg/<dev>-<ino>.<owner>.lock` (Linux) | node: one configurator per owner and namespace | 0600 | node |
 | `netcfg/` lock and route record per owner (macOS) | node | — | node; `diag` |
-| `forwarding.json` | a server's supervisor, only when it turned forwarding on | 0600 | the next supervisor, after a crash |
+| `forwarding.json` | a server's supervisor, while it turns, or has turned, forwarding on (or accept_ra it couldn't put back stays 2) | 0600 | the next supervisor, after a crash |
 | `pf-guard.token` (macOS only) | node: the guard's `pfctl -E` reference | — | node; `diag` |
 
 A server's worker gets a private tmpfs mounted at `/run/thinkpol` inside its sandbox (`internal/agent/worker/sandbox_linux.go`). Its netcfg locks go there, and nothing of the host's `/run` is visible. `service uninstall` removes locks, boot records and sockets from this directory and from the socket directory, and lists anything else it leaves.

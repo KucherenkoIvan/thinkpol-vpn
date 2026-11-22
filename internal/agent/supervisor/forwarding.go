@@ -77,18 +77,31 @@ const forwardingFile = "forwarding.json"
 // router advertisements on interfaces with accept_ra 1, which would cost an
 // RA-configured VPS its IPv6 default route; those get accept_ra 2 first. A
 // value is put back only if it still holds what the supervisor left there.
+//
+// Every write is recorded before it is made, so a crash at any point leaves
+// a record that names it: the accept_ra values before they are written, the
+// switch (with the side values it is about to reset) before it is flipped.
+// A record that can't be saved fails the attempt, which puts back what it
+// wrote. An accept_ra value that can't be put back stays in the record,
+// for the next try or a successor.
 type rootForwarding struct {
 	mu   sync.Mutex
 	sys  netSysctls
 	file string
-	fams [2]*forwardingChange // IPv4, IPv6; nil when not the supervisor's
+	// fams are what the supervisor changed, IPv4 then IPv6: nil when
+	// nothing, and not its forwarding (owned) until Main.Written is set.
+	fams [2]*forwardingChange
 }
 
 type forwardingChange struct {
-	// Main is the family's forwarding switch.
+	// Main is the family's forwarding switch. Its Written is empty until
+	// the switch is about to be written, and again once it is put back
+	// with accept_ra values left to put back: such a family is never
+	// adopted.
 	Main sysctlChange `json:"main"`
 	// Side are what writing Main resets (to be set back after Main is);
 	// Before what the supervisor changed before it (accept_ra).
+	// A Side entry's Written is empty until the switch is written.
 	Side   []sysctlChange `json:"side,omitempty"`
 	Before []sysctlChange `json:"before,omitempty"`
 }
@@ -122,8 +135,15 @@ func (f *rootForwarding) sideKeys(fam int) ([]string, error) {
 	return keys, nil
 }
 
+// switched reports whether c's switch is the supervisor's: written, or
+// about to be.
+func (c *forwardingChange) switched() bool { return c != nil && c.Main.Written != "" }
+
 // load adopts the record a predecessor left: the families whose switch
-// still holds what it wrote.
+// still holds what it wrote. A family it doesn't adopt (its switch never
+// flipped, or turned off since) gets back the accept_ra values that still
+// hold what the predecessor wrote; the rest of it isn't the supervisor's
+// any more.
 func (f *rootForwarding) load(dir string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -139,14 +159,24 @@ func (f *rootForwarding) load(dir string) error {
 	if err := json.Unmarshal(b, &rec); err != nil {
 		return fmt.Errorf("%s: %w", f.file, err)
 	}
+	var errs []error
 	for i, c := range rec {
-		if c != nil && c.Main.Key == forwardingKeys[i] {
-			if v, err := f.sys.Read(c.Main.Key); err == nil && v == c.Main.Written {
-				f.fams[i] = c
-			}
+		if c == nil || c.Main.Key != forwardingKeys[i] {
+			continue
 		}
+		if !f.held(c.Main) {
+			var err error
+			f.fams[i], err = f.putBackBefore(c)
+			errs = append(errs, err)
+			continue
+		}
+		// The predecessor died after flipping the switch and before
+		// recording what it reset: those still hold what the switch left,
+		// as far as anyone can tell.
+		f.recordSide(c)
+		f.fams[i] = c
 	}
-	return f.save()
+	return errors.Join(append(errs, f.save())...)
 }
 
 // save writes the record, or removes it when nothing is the supervisor's.
@@ -178,7 +208,7 @@ func (f *rootForwarding) save() error {
 func (f *rootForwarding) owned() [2]bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return [2]bool{f.fams[0] != nil, f.fams[1] != nil}
+	return [2]bool{f.fams[0].switched(), f.fams[1].switched()}
 }
 
 // willOwn are the families the supervisor will own once want is ensured:
@@ -189,7 +219,7 @@ func (f *rootForwarding) willOwn(want [2]bool) [2]bool {
 	defer f.mu.Unlock()
 	var out [2]bool
 	for i := range out {
-		out[i] = f.fams[i] != nil
+		out[i] = f.fams[i].switched()
 		if want[i] && !out[i] {
 			v, err := f.sys.Read(forwardingKeys[i])
 			out[i] = err == nil && v != "1"
@@ -206,7 +236,7 @@ func (f *rootForwarding) ensure(want [2]bool) error {
 	var errs []error
 	for i := range want {
 		switch {
-		case want[i] && f.fams[i] == nil:
+		case want[i] && !f.fams[i].switched():
 			if err := f.enable(i); err != nil {
 				errs = append(errs, err)
 			}
@@ -224,23 +254,27 @@ func (f *rootForwarding) enable(fam int) error {
 	if err != nil || was == "1" {
 		return err
 	}
-	c := &forwardingChange{Main: sysctlChange{Key: main, Original: was, Written: "1"}}
+	c := &forwardingChange{Main: sysctlChange{Key: main, Original: was}}
+	if left := f.fams[fam]; left != nil {
+		// accept_ra values an earlier put-back failed on: those still at
+		// 2, which this attempt wants anyway, stay its own.
+		c.Before = slices.DeleteFunc(left.Before, func(s sysctlChange) bool { return !f.held(s) })
+	}
+	f.fams[fam] = c
 	// undo puts back the accept_ra values this attempt wrote, or they'd
-	// outlive it unrecorded. Before the switch is flipped nothing else is
-	// the supervisor's: a switch at 1 now is someone else's, left alone.
+	// outlive it, and gives the family up: before the switch is flipped
+	// nothing else is the supervisor's, and a switch at 1 now is someone
+	// else's, left alone. The caller's save drops the family's record, or
+	// keeps what couldn't be put back.
 	undo := func(err error) error {
-		errs := []error{err}
-		for _, s := range c.Before {
-			if f.held(s) {
-				errs = append(errs, f.sys.Write(s.Key, s.Original))
-			}
-		}
-		return errors.Join(errs...)
+		left, perr := f.putBackBefore(c)
+		f.fams[fam] = left
+		return errors.Join(err, perr)
 	}
 	if fam == 1 {
 		dirs, err := f.sys.Glob("net/ipv6/conf/*")
 		if err != nil {
-			return err
+			return undo(err)
 		}
 		for _, d := range dirs {
 			dev := filepath.Base(d)
@@ -249,10 +283,17 @@ func (f *rootForwarding) enable(fam int) error {
 			}
 			key := "net/ipv6/conf/" + dev + "/accept_ra"
 			if v, err := f.sys.Read(key); err == nil && v == "1" {
-				if err := f.sys.Write(key, "2"); err != nil {
-					return undo(err)
-				}
 				c.Before = append(c.Before, sysctlChange{Key: key, Original: "1", Written: "2"})
+			}
+		}
+		if len(c.Before) > 0 {
+			if err := f.save(); err != nil {
+				return undo(err)
+			}
+		}
+		for _, s := range c.Before {
+			if err := f.sys.Write(s.Key, s.Written); err != nil {
+				return undo(err)
 			}
 		}
 	}
@@ -260,24 +301,59 @@ func (f *rootForwarding) enable(fam int) error {
 	if err != nil {
 		return undo(err)
 	}
-	before := map[string]string{}
 	for _, k := range keys {
-		if v, err := f.sys.Read(k); err == nil {
-			before[k] = v
+		// Every one, changed or not: writing the switch back resets them
+		// all again.
+		if v, err := f.sys.Read(k); err == nil && v != "" {
+			c.Side = append(c.Side, sysctlChange{Key: k, Original: v})
 		}
+	}
+	c.Main.Written = "1"
+	if err := f.save(); err != nil {
+		return undo(err)
 	}
 	if err := f.sys.Write(main, "1"); err != nil {
 		return undo(err)
 	}
-	for _, k := range keys {
-		// Every one, changed or not: writing the switch back resets them
-		// all again.
-		if v, err := f.sys.Read(k); err == nil && before[k] != "" {
-			c.Side = append(c.Side, sysctlChange{Key: k, Original: before[k], Written: v})
+	f.recordSide(c)
+	return nil
+}
+
+// recordSide sets the Written of c's Side entries that have none to what
+// they hold now; one that can't be read is dropped, nothing to put back.
+func (f *rootForwarding) recordSide(c *forwardingChange) {
+	for i, s := range c.Side {
+		if s.Written != "" {
+			continue
+		}
+		if v, err := f.sys.Read(s.Key); err == nil {
+			c.Side[i].Written = v
+		} // unreadable: dropped below
+	}
+	c.Side = slices.DeleteFunc(c.Side, func(s sysctlChange) bool { return s.Written == "" })
+}
+
+// putBackBefore puts back c's accept_ra values that still hold what the
+// supervisor wrote. What it returns is what is left of c: nil, or the
+// entries whose write failed, under a switch that isn't the supervisor's
+// (never adopted), to be tried again.
+func (f *rootForwarding) putBackBefore(c *forwardingChange) (*forwardingChange, error) {
+	var failed []sysctlChange
+	var errs []error
+	for _, s := range c.Before {
+		if !f.held(s) {
+			continue
+		}
+		if err := f.sys.Write(s.Key, s.Original); err != nil {
+			failed = append(failed, s)
+			errs = append(errs, err)
 		}
 	}
-	f.fams[fam] = c
-	return nil
+	if len(failed) == 0 {
+		return nil, errors.Join(errs...)
+	}
+	left := &forwardingChange{Main: sysctlChange{Key: c.Main.Key, Original: c.Main.Original}, Before: failed}
+	return left, errors.Join(errs...)
 }
 
 // restoreFamily puts back what enable changed: the switch, then what writing
@@ -301,13 +377,9 @@ func (f *rootForwarding) restoreFamily(fam int) error {
 			errs = append(errs, f.sys.Write(s.Key, s.Original))
 		}
 	}
-	for _, s := range c.Before {
-		if f.held(s) {
-			errs = append(errs, f.sys.Write(s.Key, s.Original))
-		}
-	}
-	f.fams[fam] = nil
-	return errors.Join(errs...)
+	left, err := f.putBackBefore(c)
+	f.fams[fam] = left
+	return errors.Join(append(errs, err)...)
 }
 
 // held reports whether s's sysctl still holds what the supervisor wrote:

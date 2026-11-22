@@ -47,7 +47,7 @@ func ClearLeftovers(opts Options) ([]string, error) {
 		}
 		f := rootForwarding{sys: opts.sysctls}
 		if err := f.load(opts.RuntimeDir); err != nil {
-			return fmt.Errorf("the forwarding record can't be read, so the isolation tables stay: %w", err)
+			return fmt.Errorf("the forwarding record can't be read or acted on, so the isolation tables stay: %w", err)
 		}
 		adopted := f.owned()
 		err = f.restore()
