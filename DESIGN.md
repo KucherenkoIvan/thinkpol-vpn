@@ -56,7 +56,7 @@ Each package's `doc.go` holds its mechanism; this table is the way in.
 | [`dataplane/rules`](internal/dataplane/rules/doc.go) | matchers, presets, compilation into prefixes |
 | [`dataplane/routetable`](internal/dataplane/routetable/doc.go), [`dataplane/netcfg`](internal/dataplane/netcfg/doc.go) | route-table mode on Linux and macOS; routes and rules |
 | [`dataplane/ifbind`](internal/dataplane/ifbind/doc.go), [`dataplane/trusteddir`](internal/dataplane/trusteddir/doc.go), [`dataplane/nsthread`](internal/dataplane/nsthread/doc.go) | socket binding; trusted directories; namespace threads |
-| [`dataplane/firewall`](internal/dataplane/firewall/doc.go) | the IPv6 leak guard (nftables, pf); later the kill switch |
+| [`dataplane/firewall`](internal/dataplane/firewall/doc.go) | the IPv6 leak guard and the kill switch (nftables, pf) |
 | [`dataplane/egress`](internal/dataplane/egress/doc.go) | a server's uplink |
 | [`dataplane/dns`](internal/dataplane/dns/doc.go) | the resolver; pointing the OS at it |
 | [`dataplane/blobs`](internal/dataplane/blobs/doc.go), [`lists`](internal/lists/doc.go) | lists and their distribution |
