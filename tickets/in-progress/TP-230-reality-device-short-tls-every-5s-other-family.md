@@ -123,3 +123,4 @@ Recommendation pending the lab evidence; the leaning is 3 if (b), else 1.
 - 2026-11-22 in-progress → review
 - 2026-11-22 merged origin/rewrite again (d9df4152: TP-270, TP-273, supervisor and tests, no reality code); make lint and make test green there; the lab runs at c0cb3fd0 were not repeated.
 - 2026-11-22 review → has-errors: R1.1–R1.6 (four reviewers, two model families, found the fix sound)
+- 2026-11-22 has-errors → in-progress, owner: agent-tp-230
