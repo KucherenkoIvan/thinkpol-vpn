@@ -225,11 +225,17 @@ func (f *rootForwarding) enable(fam int) error {
 		return err
 	}
 	c := &forwardingChange{Main: sysctlChange{Key: main, Original: was, Written: "1"}}
-	// Any failure before the switch is flipped puts back the accept_ra
-	// values already written, or they'd outlive the attempt unrecorded.
-	fail := func(err error) error {
-		f.fams[fam] = c
-		return errors.Join(err, f.restoreFamily(fam))
+	// undo puts back the accept_ra values this attempt wrote, or they'd
+	// outlive it unrecorded. Before the switch is flipped nothing else is
+	// the supervisor's: a switch at 1 now is someone else's, left alone.
+	undo := func(err error) error {
+		errs := []error{err}
+		for _, s := range c.Before {
+			if f.held(s) {
+				errs = append(errs, f.sys.Write(s.Key, s.Original))
+			}
+		}
+		return errors.Join(errs...)
 	}
 	if fam == 1 {
 		dirs, err := f.sys.Glob("net/ipv6/conf/*")
@@ -244,7 +250,7 @@ func (f *rootForwarding) enable(fam int) error {
 			key := "net/ipv6/conf/" + dev + "/accept_ra"
 			if v, err := f.sys.Read(key); err == nil && v == "1" {
 				if err := f.sys.Write(key, "2"); err != nil {
-					return fail(err)
+					return undo(err)
 				}
 				c.Before = append(c.Before, sysctlChange{Key: key, Original: "1", Written: "2"})
 			}
@@ -252,7 +258,7 @@ func (f *rootForwarding) enable(fam int) error {
 	}
 	keys, err := f.sideKeys(fam)
 	if err != nil {
-		return fail(err)
+		return undo(err)
 	}
 	before := map[string]string{}
 	for _, k := range keys {
@@ -261,7 +267,7 @@ func (f *rootForwarding) enable(fam int) error {
 		}
 	}
 	if err := f.sys.Write(main, "1"); err != nil {
-		return fail(err)
+		return undo(err)
 	}
 	for _, k := range keys {
 		// Every one, changed or not: writing the switch back resets them
@@ -285,13 +291,9 @@ func (f *rootForwarding) restoreFamily(fam int) error {
 	if c == nil {
 		return nil
 	}
-	held := func(s sysctlChange) bool {
-		v, err := f.sys.Read(s.Key)
-		return err == nil && v == s.Written
-	}
-	side := slices.DeleteFunc(slices.Clone(c.Side), func(s sysctlChange) bool { return !held(s) })
+	side := slices.DeleteFunc(slices.Clone(c.Side), func(s sysctlChange) bool { return !f.held(s) })
 	var errs []error
-	if held(c.Main) {
+	if f.held(c.Main) {
 		if err := f.sys.Write(c.Main.Key, c.Main.Original); err != nil {
 			return err
 		}
@@ -300,12 +302,19 @@ func (f *rootForwarding) restoreFamily(fam int) error {
 		}
 	}
 	for _, s := range c.Before {
-		if held(s) {
+		if f.held(s) {
 			errs = append(errs, f.sys.Write(s.Key, s.Original))
 		}
 	}
 	f.fams[fam] = nil
 	return errors.Join(errs...)
+}
+
+// held reports whether s's sysctl still holds what the supervisor wrote:
+// only then is it the supervisor's to put back.
+func (f *rootForwarding) held(s sysctlChange) bool {
+	v, err := f.sys.Read(s.Key)
+	return err == nil && v == s.Written
 }
 
 // restore puts back everything the supervisor changed (Close).

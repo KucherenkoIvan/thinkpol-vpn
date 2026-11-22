@@ -64,7 +64,7 @@ func leftByADeadSupervisor(t *testing.T, run string) *hookSysctls {
 		}
 		for key, was := range acceptRA {
 			if v, err := realSysctl(key); err == nil && v != was {
-				t.Errorf("%s %s after the dead supervisor's leftovers were cleared, was %s", key, v, was)
+				t.Errorf("%s = %s after the dead supervisor's leftovers were cleared, want %s", key, v, was)
 			}
 		}
 	})

@@ -32,9 +32,18 @@ func (h *hookSysctls) Write(key, value string) error {
 }
 
 // fakeKernelSys is hookSysctls with the kernel's side effects of writing
-// the forwarding switches.
+// the forwarding switches. A Glob for refuseGlob fails; it is set before
+// the sysctls are used.
 type fakeKernelSys struct {
 	hookSysctls
+	refuseGlob string
+}
+
+func (f *fakeKernelSys) Glob(pattern string) ([]string, error) {
+	if pattern == f.refuseGlob {
+		return nil, errors.New("refused")
+	}
+	return f.hookSysctls.Glob(pattern)
 }
 
 func (f *fakeKernelSys) Write(key, value string) error {
@@ -94,7 +103,7 @@ func fakeProcSys(t *testing.T) (*fakeKernelSys, func(key string) string) {
 			t.Fatal(err)
 		}
 	}
-	sys := &fakeKernelSys{hookSysctls{procSysFS: procSysFS{root: dir}}}
+	sys := &fakeKernelSys{hookSysctls: hookSysctls{procSysFS: procSysFS{root: dir}}}
 	return sys, func(key string) string {
 		v, err := sys.Read(key)
 		if err != nil {
@@ -280,43 +289,65 @@ func TestForwardingThatCannotBeTurnedOffStaysRecorded(t *testing.T) {
 }
 
 // An IPv6 forwarding attempt that fails before its switch is flipped puts
-// back the accept_ra values it already wrote: nothing is left changed, or
-// recorded.
+// back the accept_ra values it already wrote and touches nothing else: a
+// switch someone else turned on meanwhile stays on, and isn't the
+// supervisor's. Nothing is left changed, or recorded.
 func TestForwardingThatFailsToTurnOnLeavesAcceptRAAsItWas(t *testing.T) {
+	eth0RA := "net/ipv6/conf/eth0/accept_ra"
 	for _, tc := range []struct {
-		name   string
-		refuse func(key, value string) bool
+		name string
+		// hook runs before every write, with the fake's own setter.
+		hook       func(sys *fakeKernelSys, key, value string) error
+		refuseGlob string
+		wantSwitch string
 	}{
-		{"an accept_ra write refused", func(key, value string) bool { return key == "net/ipv6/conf/eth0/accept_ra" && value == "2" }},
-		{"the switch refused", func(key, value string) bool { return key == forwardingKeys[1] && value == "1" }},
+		{name: "an accept_ra write refused", hook: func(_ *fakeKernelSys, key, value string) error {
+			if key == eth0RA && value == "2" {
+				return errors.New("refused")
+			}
+			return nil
+		}, wantSwitch: "0"},
+		{name: "the side sysctls unreadable", refuseGlob: "net/ipv6/conf/*/forwarding", wantSwitch: "0"},
+		{name: "the switch refused", hook: func(_ *fakeKernelSys, key, value string) error {
+			if key == forwardingKeys[1] && value == "1" {
+				return errors.New("refused")
+			}
+			return nil
+		}, wantSwitch: "0"},
+		{name: "someone else's forwarding turned on meanwhile", hook: func(sys *fakeKernelSys, key, value string) error {
+			if key == eth0RA && value == "2" {
+				sys.set("net/ipv6/conf/*/forwarding", "1") // as a container runtime would
+				return errors.New("refused")
+			}
+			return nil
+		}, wantSwitch: "1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sys, get := fakeProcSys(t)
+			sys.refuseGlob = tc.refuseGlob
 			run := t.TempDir()
 			f := rootForwarding{sys: sys}
 			if err := f.load(run); err != nil {
 				t.Fatal(err)
 			}
-			sys.arm(func(key, value string) error {
-				if tc.refuse(key, value) {
-					return errors.New("refused")
-				}
-				return nil
-			})
+			if tc.hook != nil {
+				sys.arm(func(key, value string) error { return tc.hook(sys, key, value) })
+			}
 			if err := f.ensure([2]bool{false, true}); err == nil {
 				t.Fatal("ensure returned nil with IPv6 forwarding refused")
 			}
 			sys.disarm()
+			sys.refuseGlob = ""
 			if f.owned() != [2]bool{} {
-				t.Errorf("owned %v after a failed attempt", f.owned())
+				t.Errorf("owned = %v after the failed attempt, want none", f.owned())
 			}
-			for _, key := range []string{"net/ipv6/conf/default/accept_ra", "net/ipv6/conf/eth0/accept_ra"} {
+			for _, key := range []string{"net/ipv6/conf/default/accept_ra", eth0RA} {
 				if got := get(key); got != "1" {
 					t.Errorf("%s = %s after the failed attempt, want 1", key, got)
 				}
 			}
-			if got := get(forwardingKeys[1]); got != "0" {
-				t.Errorf("IPv6 forwarding %s after the failed attempt", got)
+			if got := get(forwardingKeys[1]); got != tc.wantSwitch {
+				t.Errorf("IPv6 forwarding = %s after the failed attempt, want %s", got, tc.wantSwitch)
 			}
 			if _, err := os.Stat(filepath.Join(run, forwardingFile)); !os.IsNotExist(err) {
 				t.Errorf("a record of the failed attempt: %v", err)
