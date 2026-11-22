@@ -467,7 +467,8 @@ func TestAServerRefusesConnect(t *testing.T) {
 			t.Fatalf("got %v, want ErrServerMode", err)
 		}
 	}
-	if st := n.Status(); st.Connection != Serving || st.Mode != ModeServer {
+	// Not running, it serves nothing yet.
+	if st := n.Status(); st.Connection != Connecting || st.Mode != ModeServer {
 		t.Fatalf("status %+v", st)
 	}
 }
