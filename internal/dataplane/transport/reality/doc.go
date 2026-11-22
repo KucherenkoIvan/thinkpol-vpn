@@ -159,23 +159,26 @@
 // half of 10 s, doubling with each failure in a row up to 2 minutes, per
 // target and server names for the transport's life; until then Listen
 // fails at once with the last check's error, dialling nothing. So a
-// failing target isn't dialled at every retry. A held check runs again
-// only when a retry calls Listen after the wait ended, 0 to 7 s after it
-// ends: 5 to 17 s after the first failure, then 10 to 27 s, 20 to 47 s, 40
-// to 87 s and, at the cap, 60 to 127 s apart. Those gaps are not multiples
-// of one period, so folding the re-check times by any period doesn't line
-// them up; a censor still sees the series itself, short hellos to one
-// target whose gaps grow to 1 to 2 minutes and stay there while the target
-// stays down (RESIDUAL-RISKS.md RR66). The cap is a
-// trade-off: a server that started before its uplink (or its target) came
-// up serves within about 2 minutes of the target becoming reachable, and a
-// target that stays down is dialled about once every 1 to 2 minutes from
-// the server's address for as long as it stays down. Each re-check sends
-// one hello per server name, and after a check whose detection stalled it
-// re-runs REALITY's detection for the stalled keys (up to 6 connections
-// per server name, with ChangeCipherSpec records). A check that passed
-// isn't repeated: the agent keeps a listener that opened across its
-// retries, until the map changes it.
+// failing target isn't dialled at every retry. The wait starts once the
+// check ended, and a held check runs again only when a retry calls Listen
+// after the wait ended, 0 to 7 s after it ends: 5 to 17 s after the first
+// failure, then 10 to 27 s, 20 to 47 s, 40 to 87 s and, at the cap, 60 to
+// 127 s apart, plus the check's own time, up to 10 s (20 s if detection
+// stalls). Those gaps are not multiples of one period (a check time that
+// stays the same adds a constant to a random gap, which brings none back),
+// so folding the re-check times by any period doesn't line them up; a
+// censor still sees the series itself, short hellos to one target (only
+// SYNs, from a target that silently drops packets) whose gaps grow to 1 to
+// 2 minutes and stay there while the target stays down (RESIDUAL-RISKS.md
+// RR66). The cap is a trade-off: a server that started before its uplink
+// (or its target) came up serves within about 2 minutes of the target
+// becoming reachable, and a target that stays down is dialled about once
+// every 1 to 2 minutes from the server's address for as long as it stays
+// down. Each re-check sends one hello per server name, and after a check
+// whose detection stalled it re-runs REALITY's detection for the stalled
+// keys (up to 6 connections per server name, with ChangeCipherSpec
+// records). A check that passed isn't repeated: the agent keeps a listener
+// that opened across its retries, until the map changes it.
 //
 // Before checking the target, Listen has crypto/x509 read the system
 // roots, which on Linux and the BSDs it does from disk once per process,

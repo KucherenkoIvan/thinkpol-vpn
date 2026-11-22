@@ -1108,10 +1108,10 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 
 // retryIn starts the wait before a failed apply is retried and says how
 // long it is: drawn uniformly from 60% to 140% of retryAfter (3 to 7 s
-// for RetryAfter), so on average no longer than retryAfter. A reality
-// target whose check failed is checked again only by the first retry
-// after its own wait ends (RR66): on a fixed period, those re-checks would
-// all be whole periods apart.
+// for RetryAfter), averaging retryAfter. A reality target whose check
+// failed is checked again only by the first retry after its own wait ends
+// (RR66): on a fixed period, those re-checks would all be whole periods
+// apart.
 func (s *serverSpaces) retryIn() (<-chan time.Time, time.Duration) {
 	d := s.retryAfter*3/5 + rand.N(s.retryAfter*4/5+1)
 	after := s.after

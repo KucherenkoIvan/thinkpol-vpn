@@ -22,17 +22,19 @@ import (
 // A reality listener whose target's check keeps failing is retried by the
 // server's apply retry, and its target is checked again only by the first
 // retry after reality's wait ends (RR66). On a fake clock, over 25 checks,
-// the gaps between checks are on no grid: for no period P from 1 s to 10 s
-// (in 10 ms steps) is every gap within 50 ms of a multiple of P. A fixed
-// 5 s retry puts every gap on a multiple of 5 s exactly. Each gap is at
-// least the least wait reality draws after that many failures in a row
-// (half of 10 s doubling, at most 2 min: reality's checkBackoff) and at
-// most that wait's top plus one retry. The retry waits themselves spread
-// over 3 to 7 s and average 5 s, as RetryAfter did.
+// the gaps between checks are on no grid: for no period P from 100 ms to
+// 10 s (in 10 ms steps) is every gap within 10 ms of a multiple of P. A
+// fixed 5 s retry puts every gap on a multiple of 5 s exactly, and a
+// jitter in 500 ms steps on multiples of 500 ms. Each gap is at least the
+// least wait reality draws after that many failures in a row (half of
+// 10 s doubling, at most 2 min: reality's checkBackoff) and at most that
+// wait's top plus one retry. Every retry, the first apply's too, waits on
+// the retry's timer, and the waits spread over 3 to 7 s and average 5 s,
+// as RetryAfter did.
 //
-// With random retries a gap lands within 50 ms of a multiple of P with
-// odds of at most 0.1 (P = 1 s), so all 24 doing so for some P has odds
-// under 900 × 1e-24.
+// With random retries a gap lands within 10 ms of a multiple of P with
+// odds of at most 0.2 (P = 100 ms), so all 24 doing so for some P of the
+// 991 has odds under 1e-13.
 func TestAHeldTargetIsCheckedAgainOffTheRetryGrid(t *testing.T) {
 	const checksWanted = 25
 	var (
@@ -40,6 +42,9 @@ func TestAHeldTargetIsCheckedAgainOffTheRetryGrid(t *testing.T) {
 		now    = time.Date(2026, 11, 22, 0, 0, 0, 0, time.UTC)
 		checks []time.Time // when the target was dialled
 		waits  []time.Duration
+		// listens and timed count the Listen calls and the retry timers
+		// started.
+		listens, timed int
 	)
 	clock := func() time.Time {
 		mu.Lock()
@@ -78,6 +83,12 @@ func TestAHeldTargetIsCheckedAgainOffTheRetryGrid(t *testing.T) {
 	}
 	tr := reality.New(reality.Options{Now: clock})
 	sup := &fakeSupervisor{listen: func([]supervisor.Listener) error {
+		mu.Lock()
+		if timed != listens {
+			t.Errorf("Listen call %d came after %d retry timers", listens+1, timed)
+		}
+		listens++
+		mu.Unlock()
 		l, err := tr.Listen(context.Background(), transport.ListenConfig{Address: "127.0.0.1:0", Settings: settings}, transport.Admission{})
 		if err == nil {
 			_ = l.Close()
@@ -90,6 +101,7 @@ func TestAHeldTargetIsCheckedAgainOffTheRetryGrid(t *testing.T) {
 	after := func(d time.Duration) <-chan time.Time {
 		mu.Lock()
 		defer mu.Unlock()
+		timed++
 		if len(checks) >= checksWanted {
 			return nil
 		}
@@ -115,15 +127,15 @@ func TestAHeldTargetIsCheckedAgainOffTheRetryGrid(t *testing.T) {
 	}
 	t.Logf("%d retries; gaps between checks %v", len(retries), gaps)
 	maxRetry := RetryAfter * 7 / 5
-	least := 10 * time.Second
+	top := 10 * time.Second
 	for i, gap := range gaps {
-		if gap < least/2 || gap > least+maxRetry {
-			t.Errorf("gap %d after %d failed checks is %v, want %v to %v", i, i+1, gap, least/2, least+maxRetry)
+		if gap < top/2 || gap > top+maxRetry {
+			t.Errorf("gap %d after %d failed checks is %v, want %v to %v", i, i+1, gap, top/2, top+maxRetry)
 		}
-		least = min(2*least, 2*time.Minute)
+		top = min(2*top, 2*time.Minute)
 	}
-	const tolerance = 50 * time.Millisecond
-	for p := time.Second; p <= 10*time.Second; p += 10 * time.Millisecond {
+	const tolerance = 10 * time.Millisecond
+	for p := 100 * time.Millisecond; p <= 10*time.Second; p += 10 * time.Millisecond {
 		onGrid := true
 		for _, gap := range gaps {
 			off := gap % p
@@ -145,9 +157,10 @@ func TestAHeldTargetIsCheckedAgainOffTheRetryGrid(t *testing.T) {
 		sum += w
 	}
 	// The mean of n waits uniform over 3 to 7 s has a standard deviation
-	// of 1.15 s/√n (about 0.05 s for the ~400 retries here).
+	// of sigma/√n (about 0.05 s for the ~400 retries here).
+	const sigma = 1.155 // 4 s/√12, uniform over 3 to 7 s
 	mean := sum / time.Duration(len(retries))
-	if bound := time.Duration(5 * 1.155 / math.Sqrt(float64(len(retries))) * float64(time.Second)); (mean - RetryAfter).Abs() > bound {
+	if bound := time.Duration(5 * sigma / math.Sqrt(float64(len(retries))) * float64(time.Second)); (mean - RetryAfter).Abs() > bound {
 		t.Errorf("the %d retries average %v, want %v ± %v", len(retries), mean, RetryAfter, bound)
 	}
 	if lo, hi := slices.Min(retries), slices.Max(retries); lo > 3500*time.Millisecond || hi < 6500*time.Millisecond {
