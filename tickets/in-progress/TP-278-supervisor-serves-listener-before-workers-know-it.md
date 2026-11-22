@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: agent-tp-278
+branch: tp-278-serve-after-workers-know
 ---
 
 ## Goal
@@ -34,3 +34,4 @@ A shared listener the supervisor opens is served only once every worker knows it
 
 ## Log
 - 2026-11-22 created in backlog (from TP-230's review)
+- 2026-11-22 backlog → in-progress, owner: agent-tp-278
