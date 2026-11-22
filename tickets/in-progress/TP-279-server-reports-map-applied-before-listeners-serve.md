@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: agent-tp-279
+branch: tp-279-applied-means-serving
 ---
 
 ## Goal
@@ -29,6 +29,8 @@ A server's status, and its "map applied" log line, say the map is applied only o
 
 ## Notes
 - Found in TP-230 (2026-11-22).
+- Built on TP-278 (branch `tp-279-applied-means-serving` starts from TP-278's): merge TP-278 first. Not in `depends_on`, since the board allows backlog → in-progress only once every dependency is done.
 
 ## Log
 - 2026-11-22 created in backlog (from TP-230's review)
+- 2026-11-22 backlog → in-progress, owner: agent-tp-279
