@@ -232,32 +232,71 @@ func TestFreshLabMarksSayWhat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	marks, err := freshLabMarks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var marked []string
-	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	for _, m := range marks {
+		marked = append(marked, filepath.ToSlash(filepath.Dir(m.rel)))
+		if m.problem != "" {
+			t.Errorf("%s: %s", m.rel, m.problem)
+		}
+	}
+	t.Logf("packages on fresh labs: %v", marked)
+}
+
+// TestFreshLabMarksSkipTheRunBinaries: the walk for FreshLabFile stays out
+// of lab/bin. The run's other phases write there while ./lab's in-node pass
+// runs, and a directory the pass listed that changed during it keeps the
+// pass from being recorded in the node phase's cache.
+func TestFreshLabMarksSkipTheRunBinaries(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"pkg", filepath.Join("lab", "bin", "run-x", "tests")} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, dir, FreshLabFile), []byte("package x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marks, err := freshLabMarks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rels []string
+	for _, m := range marks {
+		rels = append(rels, filepath.ToSlash(m.rel))
+	}
+	if want := []string{"pkg/" + FreshLabFile}; !slices.Equal(rels, want) {
+		t.Errorf("marks found %v, want %v", rels, want)
+	}
+}
+
+type freshLabMark struct{ rel, problem string }
+
+// freshLabMarks reads every FreshLabFile in the checkout at root.
+func freshLabMarks(root string) ([]freshLabMark, error) {
+	var marks []freshLabMark
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() && path != root && (strings.HasPrefix(d.Name(), ".") || d.Name() == "testdata") {
+		if d.IsDir() && path != root && (strings.HasPrefix(d.Name(), ".") || d.Name() == "testdata" || path == binRoot(root)) {
 			return filepath.SkipDir
 		}
 		if d.Name() != FreshLabFile {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, path)
-		marked = append(marked, filepath.ToSlash(filepath.Dir(rel)))
 		src, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		if p := freshLabMarkProblem(src); p != "" {
-			t.Errorf("%s: %s", rel, p)
-		}
+		marks = append(marks, freshLabMark{rel, freshLabMarkProblem(src)})
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("packages on fresh labs: %v", marked)
+	return marks, err
 }
 
 func TestFreshLabMarkProblem(t *testing.T) {
