@@ -259,18 +259,28 @@ func assertStoppedBySelfTest(t *testing.T, got labRun, why string, tries int) {
 	if got.err == nil || got.record.SelfTest == "ok" || !strings.Contains(got.record.SelfTest, why) || got.record.Steps != 0 {
 		t.Fatalf("run: %v %+v\n%s", got.err, got.record, got.term)
 	}
-	// Budget: the self-test's 10 s, plus the helper's start and the
-	// restore, which have nothing to do with the capture.
 	b, _ := os.ReadFile(filepath.Join(got.path, "selftest", "selftest.json"))
 	var st struct {
+		Took    string       `json:"took"`
 		Capture captureCheck `json:"capture"`
 	}
 	if err := json.Unmarshal(b, &st); err != nil {
 		t.Fatalf("selftest.json: %s %v", b, err)
 	}
+	// The check's own Took and the self-test's took are measured by the
+	// code under test; got.took is this test's clock around the whole run
+	// (helper start and restore included), so a Took that leaves part of
+	// the check out can't pass.
 	if took, err := time.ParseDuration(st.Capture.Took); err != nil || took > selfTestBudget {
 		t.Errorf("the failing check took %s", st.Capture.Took)
 	}
+	if took, err := time.ParseDuration(st.Took); err != nil || took > selfTestBudget {
+		t.Errorf("the self-test took %s", st.Took)
+	}
+	if got.took > selfTestBudget {
+		t.Errorf("the whole run took %v, over the self-test's %v", got.took, selfTestBudget)
+	}
+	t.Logf("the whole run took %v; the self-test %s, its capture check %s", got.took.Round(time.Millisecond), st.Took, st.Capture.Took)
 	if st.Capture.Tries != tries {
 		t.Errorf("tries %d, want %d (markers sent: see captures/markers.jsonl)", st.Capture.Tries, tries)
 	}
