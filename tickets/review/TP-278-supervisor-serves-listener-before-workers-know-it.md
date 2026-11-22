@@ -26,8 +26,8 @@ A shared listener the supervisor opens is served only once every worker knows it
 - A server's status and "map applied" line coming before its listeners serve: TP-279.
 
 ## Acceptance
-- [ ] A test connects during a multi-listener open (a connection accepted on the first listener while later ones are still opening) and is served, not closed as an unknown listener; it fails on the current code.
-- [ ] The supervisor's package doc says when a listener starts serving.
+- [x] A test connects during a multi-listener open (a connection accepted on the first listener while later ones are still opening) and is served, not closed as an unknown listener; it fails on the current code. (`TestConnectionDuringOpenWaitsForTheWorkers`, `internal/agent/supervisor/shared_test.go`: the second listener's open is held while a member connects to the first; it fails with the old serve-in-`open` restored, M1 in the Log.)
+- [x] The supervisor's package doc says when a listener starts serving. (`internal/agent/supervisor/doc.go` "Shared listeners"; the ipc and worker package docs gained the ListenersKnown answer.)
 
 ## Notes
 - Found in TP-230's fix round (2026-11-22).
@@ -42,3 +42,8 @@ A shared listener the supervisor opens is served only once every worker knows it
 - 2026-11-22 created in backlog (from TP-230's review)
 - 2026-11-22 backlog → in-progress, owner: agent-tp-278
 - 2026-11-22 implemented (b3e2e8d3), unit tests and mutations on the Mac green; remote lint/test and lab runs pending a quiet runner (handoff: run them, tick the boxes, move to review)
+- 2026-11-22 done: workers answer each Listeners with the ids they hold (ipc.KindListenersKnown, protocol version 6); SetListeners opens without serving and serves each new listener once every attached worker that may be routed it has answered (StopTimeout bound, then served); a worker process is attached only once it has answered for every listener it may be routed, and killed if a Listeners goes unanswered for StopTimeout. Tests: TestConnectionDuringOpenWaitsForTheWorkers, TestWorkerAttachedOnceItKnowsTheListeners, TestUnacknowledgingWorkerHoldsUpNothingLong, TestListenerClosedWhileWaitingIsNotServed, TestListenersKnownRoundTrip
+- 2026-11-22 mutations (each fails a new test, then restored): M1 open serves at once (the old behaviour) → TestConnectionDuringOpen…, TestUnacknowledging…, TestListenerClosed… fail; M2 serveOpened never waits → TestUnacknowledging…, TestListenerClosed… fail; M3 attachKnowing ignores the acknowledgement → TestWorkerAttachedOnce… fails; M4 the ack timeout returns without serving → TestUnacknowledging… fails; M5 openListeners doesn't wake the waiter → TestListenerClosed… fails
+- 2026-11-22 runs on 17180e58 (rewrite 883b150c merged): make lint 0 issues and make test pass (exit 0); make lab-gotest PKG='./internal/agent/supervisor/... ./internal/dataplane/transport/reality/... ./internal/dataplane/transport/udp/...' ok (supervisor 54.6 s, reality 1m22.6 s, udp a cached pass of the same binary, run 1m6.1 s on b3e2e8d3); make lab-gotest PKG=./lab RUN='^TestCensorMatrix$/^(udp|reality)' ok in 214.7 s, all five labs PASS, reality × active prober NOT JUDGED (the upstream tell's baseline too short to attribute; reported, not a gate check). The same runs passed on b3e2e8d3 before the merge (matrix 257.4 s, same NOT JUDGED cell)
+- 2026-11-22 not verified by a dedicated test: the session side in a real worker process (the ack timer's kill, a worker restarting mid-update, attach after a resend); the supervisor's lab tests with real workers (TestTwoSpacesShareAListener, TestRealitySpacesShareAListener, TestDeafWorkerHoldsNothingUp) and the matrix rows pass through it. No full make lab-test (brief: targeted runs only; the orchestrator runs full labs on rewrite)
+- 2026-11-22 in-progress → review
