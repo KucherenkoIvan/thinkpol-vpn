@@ -37,6 +37,7 @@ type Transport struct {
 	// now.Sub(start), but for tests that move a fake clock.
 	elapsed     func(start, now time.Time) time.Duration
 	targetRoots *x509.CertPool // nil: the system roots
+	checks      *targetChecks
 	sent        *transport.SendMeter
 }
 
@@ -44,7 +45,7 @@ var _ transport.Transport = (*Transport)(nil)
 
 // New returns the reality adapter.
 func New(o Options) *Transport {
-	t := &Transport{control: o.Control, now: o.Now, targetRoots: o.TrustTargetRoots, sent: &transport.SendMeter{}, elapsed: func(start, now time.Time) time.Duration { return now.Sub(start) }}
+	t := &Transport{control: o.Control, now: o.Now, targetRoots: o.TrustTargetRoots, checks: newTargetChecks(), sent: &transport.SendMeter{}, elapsed: func(start, now time.Time) time.Duration { return now.Sub(start) }}
 	if t.now == nil {
 		t.now = time.Now
 	}
