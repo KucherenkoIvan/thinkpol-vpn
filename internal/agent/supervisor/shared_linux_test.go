@@ -794,3 +794,42 @@ func sharedOf(s *supervisor.Supervisor, space netmap.SpaceID) supervisor.SharedC
 	}
 	return supervisor.SharedCounters{}
 }
+
+// A worker reads ready only once the shared listeners route to it: one
+// that answers its Listeners slowAck late isn't ready until then, though
+// it reported Ready at once.
+func TestWorkerIsReadyOnceRoutedTo(t *testing.T) {
+	needsLab(t)
+	opts := sharedOptions()
+	opts.Env = append(opts.Env, envSlowAck+"=1")
+	space := netmap.NewSpaceID()
+	s, err := supervisor.New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.SetSpaces([]supervisor.Space{{ID: space, Config: []byte("config")}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetListeners([]supervisor.Listener{{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort)}}); err != nil {
+		t.Fatal(err)
+	}
+	var started time.Time
+	for started.IsZero() || time.Since(started) < slowAck/2 {
+		w, _ := info(s, space)
+		if w.PID != 0 && started.IsZero() {
+			started = time.Now()
+		}
+		if w.Ready {
+			t.Fatalf("ready %v after its process started, before it acknowledged the listeners: %+v", time.Since(started), w)
+		}
+		if w.LastExit != "" {
+			t.Fatalf("the worker ended: %s", w.LastExit)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitReady(t, s, space)
+	if w, _ := info(s, space); w.Starts != 1 {
+		t.Fatalf("restarted: %+v", w)
+	}
+}

@@ -59,6 +59,8 @@ func TestMain(m *testing.M) {
 		os.Exit(runBadKindWorker())
 	case os.Getenv("SUPERVISOR_TEST_DEAF") != "":
 		os.Exit(runDeafWorker())
+	case os.Getenv(envSlowAck) != "":
+		os.Exit(runSlowAckWorker())
 	case os.Getenv(envWorker) != "":
 		os.Exit(runTestWorker())
 	case os.Getenv(envSupervisor) != "":
@@ -499,6 +501,56 @@ func runDeafWorker() int {
 	}
 	time.Sleep(time.Hour) // alive, reading nothing, until the test kills it
 	return 0
+}
+
+const (
+	envSlowAck = "SUPERVISOR_TEST_SLOW_ACK"
+	// slowAck is how long runSlowAckWorker takes to answer a Listeners
+	// message: within options' StopTimeout.
+	slowAck = 2 * time.Second
+)
+
+// runSlowAckWorker is a worker that reports Ready at once (it does not
+// sandbox), then answers each Listeners message only after slowAck.
+func runSlowAckWorker() int {
+	cf := os.NewFile(uintptr(ipc.ControlFD), "control")
+	c, err := ipc.FromFile(cf)
+	_ = cf.Close()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if _, err := c.Receive(); err != nil { // Init
+		return 1
+	}
+	if err := c.Send(ipc.Message{Kind: ipc.KindReady}); err != nil {
+		return 1
+	}
+	for {
+		m, err := c.Receive()
+		if err != nil {
+			return 0
+		}
+		m.CloseFiles()
+		switch m.Kind {
+		case ipc.KindStop:
+			return 0
+		case ipc.KindListeners:
+			ls, err := ipc.DecodeListeners(m)
+			if err != nil {
+				return 1
+			}
+			ids := make([]uint32, len(ls))
+			for i, l := range ls {
+				ids[i] = l.ID
+			}
+			time.Sleep(slowAck)
+			known, _ := ipc.ListenersKnownMessage(ids)
+			if err := c.Send(known); err != nil {
+				return 1
+			}
+		}
+	}
 }
 
 // A worker that stops reading its control socket is killed once a control
