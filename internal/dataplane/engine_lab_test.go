@@ -291,7 +291,7 @@ func TestNamespacesPingOverTheOverlay(t *testing.T) {
 	if err := nodes[a].engine.Apply(context.Background(), a.section); err != nil {
 		t.Fatal(err)
 	}
-	if st := nodes[a].engine.Status(); st.IPv6 || st.MTU != 1000-74-18-32 {
+	if st := nodes[a].engine.Status(); st.IPv6 || st.MTU != 1000-74-26-32 {
 		t.Fatalf("shaped: status %+v, want IPv4 only", st)
 	}
 	if out, err := inNamespace(nodes[a].ns, "ip", "-o", "addr", "show", "dev", tun.DefaultName); err != nil || strings.Contains(string(out), a.v6.String()) || !strings.Contains(string(out), a.v4.String()) {
