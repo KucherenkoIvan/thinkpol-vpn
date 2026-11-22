@@ -412,7 +412,7 @@ func TestIdleLinksProbeAtRandom(t *testing.T) {
 				}
 			}
 			// Spread: 31 intervals all within 3 s of each other would be
-			// a fixed rhythm. Drawn, that happens about 10⁻⁸ of the time
+			// a fixed rhythm. Drawn, that happens about 3·10⁻⁸ of the time
 			// on udp (the earlier of two draws crowds I's bottom: 56% of
 			// them fall in its first 3 s) and far less on reality.
 			if hi-lo < 3*time.Second {
