@@ -1,80 +1,84 @@
 # thinkpol-vpn — Path liveness design
 
-How a node tells that a link to an adjacent node is alive (TP-080). Draft: waits for review and the owner; the code still does what [`path`](../../internal/dataplane/path/doc.go) "Liveness" says. The entry point is [DESIGN.md](../../DESIGN.md); `RRn` are rows of [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md).
+How a node tells that a link to an adjacent node works (TP-080). Draft r2, reviewed; waits for the owner. Until then the code does what [`path`](../../internal/dataplane/path/doc.go) "Liveness" says. `RRn`: rows of [RESIDUAL-RISKS.md](../../RESIDUAL-RISKS.md).
 
-**Today.** Each end probes every link whose last proof is older than 2 s (`Options.ProbeInterval`, `node.go:67`), and only a reply to its own probe counts as proof (`link.go:488`). A link with no proof for 6 s (`DeadAfter`) is closed (`link.go:440`); the watcher looks every 500 ms (`node.go:72`). So a link that dies under traffic closes 3.5 to 6.5 s later, and an idle link shows one fixed exchange every 1 to 2 s, forever: 507-byte records on `reality`, 84-byte datagrams on `udp`, 367 each way in 7.5 idle minutes (TP-223). Owner, 2026-11-16: "if liveness checks piggyback on data it's nearly instant. slower dead-link detection when idle is acceptable."
+**Today** (`link.go:438`, `node.go:67-72`): both ends probe every 2 s and close a link 6 s after its last reply, checked every 500 ms. A break is found 4.0–6.5 s later; an idle link shows a fixed exchange every 1–2 s (TP-223). Owner, 2026-11-16: "if liveness checks piggyback on data it's nearly instant. slower dead-link detection when idle is acceptable."
 
-## The rule
+## Acks in the frames
 
-Each end judges its own link, one direction at a time. **Any frame the link delivers proves the far-to-near direction**: the transport authenticated it (the `udp` seal, `reality`'s TLS), so it is as good as a probe reply (RR33 applies to both alike). This means data, probes, replies, late replies and frame kinds this node doesn't know. **The near-to-far direction is proven only by what comes back.** So the clock starts at the first frame sent after the last one received, not at the last proof:
+Each frame carries its sequence number and the highest one received from the far end, inside the transport's seal:
 
-| Name | Value | Meaning and reason |
-|---|---|---|
-| Suspect | 1 s | Something was sent and nothing has arrived for 1 s since the first such send. A frame's answer (a TCP ACK inside the tunnel, a reply) takes one round trip, and 1 s is well above a normal one. A suspect link sends a standalone probe now, and another every 0.75–1.25 s (1 s ± 25 %) until something arrives. |
-| Dead | 4 s after that first unanswered send | Nothing arrived: the link is closed and redialed (backoff unchanged, 250 ms to 5 s). This allows three probes, the first with 3 s to come back: that covers two `MaxControlHold`s (1 s, probe and reply, `transport.go:112`) plus a 2 s round trip. |
-| Watcher | every 250 ms | The suspect clock is read four times a second. |
-| **Dead under traffic** | **≤ 4.25 s** | Measured from the first packet sent into the dead link. Under steady traffic that packet goes out within milliseconds of the death, so the bound is 4.25 s after the death. Today it is 6.5 s, so the new bound is never slower. |
+```
+packet:       kind=6 | hop limit | destination [8] | source [8] | seq [4] | ack [4] | WireGuard message
+probe, reply: kind=2, 3 | flags | token [8] | seq [4] | ack [4]
+```
 
-**While data flows both ways, every send is answered within the suspect window and no standalone probe goes out.** A one-way flow (a relay forwarding a UDP stream, say) has its sender probe about once a second among the data, because answers are the only proof that its frames arrive. A WireGuard keepalive (a 32-byte transport message, which the Bind can tell by its size) doesn't start the suspect clock: WireGuard never answers one, and a probe after each keepalive would put a fixed exchange 1 s after every idle start.
+An **answer** is a frame whose ack covers a frame of ours still waiting, or a reply to a probe still waiting. Probe replies and WireGuard keepalives (packets with a 32-byte message, told by length at every relay) expect none. A frame without a newer ack proves nothing about our direction, so a deaf far end that keeps sending (a redialing `udp` dialer) can't keep a link up. Numbers start at random per link; an ack for a frame the link never wrote is ignored.
 
-**One-way failures.** If near-to-far breaks while far-to-near still delivers, the far end is the deaf one. It suspects, probes, gets no answer and closes the link within 4.25 s. The near end then hears nothing, and if it is sending it closes 4.25 s after that. So the second end closes within 8.5 s, sooner if it redials first.
+**Older nodes.** A link's first probe is today's 10-byte probe with flag bit 0 ("reads acks") set; the link moves to the new frames once the far end's own probe sets it (older nodes' replies copy the flags back). Toward an older node a link keeps kinds 1–3 and stays up on probes. The TUN loses 8 bytes of MTU.
 
-The dial timeout stays 6 s, and `FollowFor` stays 6 s. Both are `DeadAfter` today. Neither is about liveness: a `reality` dial is a TCP connection plus a TLS handshake, and following is for leader packets that are 6 s old.
+## Busy links
+
+| Term | Rule |
+|---|---|
+| Clock | Runs from the write (the handoff to the transport) of the oldest frame still waiting for an answer, accurate to 10 ms. An answer moves the clock to the next unanswered frame. |
+| Suspect | A frame queued ≥ S after the clock's start, or a write still blocked at that point, is unanswered R later. S is drawn per clock from 0.5–1.5 s. |
+| Probing | A probe at once and another T/2 later; the second also goes to each sibling. |
+| Dead | No answer within T of suspect: the link closes, and a dialed link redials. |
+
+R and T are chains' terms. R = clamp(srtt + 4·rttvar, 250 ms, 1 s) from probe round trips, at the cap until measured. T = 2·`MaxControlHold` (500 ms, `transport.go:112`) + the link's delay bound (both ends' `Shaping.MaxDelay`) + R, which gives 1.25–2 s.
+
+**A link that dies under traffic is found ≤ S + R + T after the break: 2.0–4.5 s, plus 20 ms of timers (today 4.0–6.5 s).** This holds at every end that keeps sending, whichever direction broke. Nothing written after the break is acked, and a late ack moves the clock no further than the break.
+
+- **B1.** Neither replies nor keepalives start a clock.
+- **B2.** A burst's lone last frame (a TCP ACK) starts a clock nothing follows: no probe, the link turns idle. A burst after a short pause is answered within R. A one-way UDP stream inside makes its sender probe every S + R (1–3 s, drawn); a TCP download isn't one-way, its ACKs carry acks.
+- **B3.** An end that only receives is **hinted**: a frame on another of the neighbor's links, or the peer's packets through another hop, while the current link has heard nothing for R, makes the current link suspect. The far end's sibling probe comes within S + R + T/2, so it finds the break within 5.5 s plus the one-way delay (6.5 s plus that path's delay when the way back runs through another node); unhinted, by the idle rule.
+- **Up** means answered once and not closed since. A dial that never yields a link is down at its first failure or at `DialTimeout` (6 s), as today.
+- **Pick.** Among one neighbor's links the lower node id leads, sticky while up; the higher id sends on the link its latest answer came by. After a one-sided failover they agree within one frame.
 
 ## Idle
 
-A link is **idle** once no data frame has crossed it either way for the first idle draw (2–6 s). Keepalives and probes don't count as data. If an idle link has received nothing for its current interval, counted from the later of its last received frame and its last probe sent, it sends one probe. The reply proves both directions.
+Each end probes once no answer has come for I, drawn afresh for each wait: **8–24 s on `reality`, 5–14 s on `udp`** (question 2). Probes carry acks, so one end's probe answers the other end and restarts its wait. That makes one exchange per min(two draws): every 13.3 s on average on `reality`, every 8 s on `udp`. **A dead idle link is found within I_max + T: 26 s on `reality`, 16 s on `udp`.** Data sent into a dead idle link finds the break within the busy bound.
 
-- **Schedule:** the nominal interval starts at 4 s, doubles at each idle exchange and stops at 16 s. Each interval is drawn uniformly from 0.5 to 1.5 times its nominal value, which gives 2–6 s, 4–12 s, then 8–24 s for as long as the link stays idle. Draws come from `crypto/rand`, the probe tokens' source, so neither the far end nor a censor can predict them. Any data frame either way resets the schedule to its start.
-- **Why 16 s, never above 24 s:** a `udp` link from behind a NAT has to send at least every 25 s, the interval WireGuard recommends for persistent keepalives, or its mapping can expire and pushes to the device get lost. One idle schedule for every transport keeps the code and the lab simple (question 2).
-- **One end probes at a time.** A probe arriving at the far end is a frame received there, so it restarts the far end's interval too. Each idle exchange moves both ends one step. An exchange comes every min(draw A, draw B): 8–24 s, 13.3 s on average.
-- **Dead idle:** an idle probe is a send, so the suspect rule takes over: probes at about 1 s, dead 4 s after the idle probe. **A dead idle link is found within 28.25 s** (a 24 s draw, 4 s, the watcher's 250 ms).
-- **Data on a dead idle link:** the first packet starts the suspect clock, so **the link is found within 4.25 s of the first packet that needs it**, whatever its idle proof said.
+- **NAT.** The dialer sends at most I_max + a round trip + `MaxControlHold` apart, about 15 s on `udp`, which is chains' warm cap. The assumption: idle UDP mappings last ≥ 15 s, and TCP mappings last minutes.
+- **One draw, not r1's 2–6/4–12/8–24 s ladder:** its short draws found a death sooner only in idle's first seconds, when nothing needs the link, at six exchanges per burst in a learnable pattern.
+- **Still a tell (RR65):** a long-lived connection exchanging one record each way of one size (507 bytes on `reality`, 92 on `udp`), never closer than the range's floor. WireGuard's passive keepalive (10 s after the last data) carries an ack and restarts the far end's wait.
+
+## Double failure, bufferbloat
+
+With its second probe a suspect link probes each **sibling** once: the neighbor's other links and the next up candidate of each peer or route on this hop (a one-way flow's first probe is answered, so none). A backup that died idle is found within T/2 of the current link: **double failure ≤ S + R + T + T/2 = 5.5 s**, against 9 s without.
+
+Acks prove frames arrive, not how fast: a draining queue (saturated uplink, deep TCP buffer) never looks dead. **Accepted:** a `reality` TCP stall of S + R + T (a retransmission timeout, a radio stall) closes and redials the link, as today past 4–6.5 s; R above its cap reports `slow_link`, as in chains.
 
 ## What a censor sees
 
-| State | Records of thinkpol's own | Rhythm left |
+| State | thinkpol's own records | Rhythm left |
 |---|---|---|
-| Data both ways | none | WireGuard's busy rekey: 3 records against 2 every 2 minutes (RR65 (1), TP-237) |
-| Data one way | a probe and its reply about every 1 s ± 25 %, among the data | none apart from the data |
-| Link lost under traffic | 3–4 probes about 1 s apart | once, at the loss |
-| Idle | one exchange (507 bytes each way on `reality`, 84 on `udp`) every 2–6 s, then 4–12 s, then 8–24 s | no fixed interval: consecutive intervals differ by up to 3×. What stays fixed is the exchange's shape, one record each way of one size, and how long the connection lives |
+| Data both ways | none | WireGuard's 2-minute rekey (RR65 (1), TP-237) |
+| A burst, then quiet | none | as idle |
+| One-way stream inside | a probe and reply every 1–3 s, drawn | one reverse record size (RR65) |
+| Break under traffic | 2 probes + 1 per sibling | once |
+| Idle | one exchange per 8–24 s (`reality`) or 5–14 s (`udp`) | no fixed interval; the exchange's shape (RR65) |
 
-On `reality` the idle cost falls from 367 records each way to about 34 in 7.5 minutes. What still shows: a long-lived TLS connection that exchanges one equal pair of records every 8–24 s, like a WebSocket ping. `reality`'s 512-byte floor (RR65 (2)) makes those pairs unlike the under-100-byte pings of HTTP/2. `udp`'s probe datagrams keep one fixed size (RR30: `udp` is trivially profiled anyway).
+Idle `reality`: about 34 records each way per 7.5 minutes, down from 367. **The matrix's idle case** (pulled by TP-223) returns with a **steady-exchange signal** in `wireguard-rhythm`: ten exchanges in a row of one equal-size record each way after quiet, answered within 2 s, consecutive intervals within 1 s. Today's probes trip it (TP-223's trace is its test data); the draws, under once in 10⁶ on `reality`, about once in 10⁵ on `udp`. Known false positives, listed in `lab/censor/doc.go`: gRPC keepalive PINGs, WebSocket pings, HTTP polling at a fixed interval under a minute. WireGuard's timers don't change (RR65); its 15 s deadline is slower than the busy bound. Cover records (TP-237) carry acks like any frame.
 
-**The matrix's idle case** (TP-223 pulled it) can't prove this as it stands. The `wireguard-rhythm` module already passes today's 1.2 s probes on `reality` held idle (TP-223's measurement). Its keepalive signal needs unanswered records, and the probes are answered. So TP-080 adds a **steady-exchange signal** to the module: one record each way of one size, answered within 2 s, recurring 10 times with consecutive intervals within 1 s of each other (the module's existing steadiness choice). It flags today's probes: TP-223's idle trace becomes its test data. It passes the 8–24 s draws: the chance that nine intervals in a row each fall within 1 s of the one before is under 10⁻⁶. The idle hold runs on the path layer's real timers, 7.5 minutes, whatever the lab's WireGuard timer factor. What the case's control should be is question 1.
+## Chains (docs/design/chains.md, M3 design branch)
 
-**Cover records (TP-237)** don't change this design, and this design doesn't wait for them. A transport that sends cover may fold a probe into a cover record (`WriteControl`, up to 500 ms held, already allowed for above). Cover arriving from the far end proves the far-to-near direction like any frame, so busy-side cover would only make probes rarer.
+1. **Sending deadline:** D drops from 6 s to S + R + T (≤ 4.5 s), so B1 → 5.5 s and B2 → 10 s (the member's exit link carries the device's data).
+2. **"Proof is never WireGuard traffic"** still holds: the proof is the ack the adjacent node writes inside the seal.
+3. **Vouches** (2 s ± 25 % in the 30 s sending window) stay chains' rhythm, as path proof; a vouch reply counts as an answer.
+4. **Warm cadence:** a warm backup is an idle link, at 8–24 s on `reality` (chains: 10–30 s) and 5–14 s on `udp` (within chains' 15 s cap). RR69's idle bound drops from 92 s to 26 s, and from 47 s to 16 s on `udp`.
+5. **Clock restart:** counting from a cadence change without minting proof is this clock's rule; a promotion's burst probe is a sibling probe.
 
-## The WireGuard side
+## Code and tests
 
-thinkpol sets no persistent keepalive (`internal/dataplane/wg`), and wireguard-go's timers (`device/constants.go`) leave the following. This design removes none of it:
-
-- **The busy rekey.** While traffic flows, the session rekeys every 2 minutes (REKEY_AFTER_TIME), a 3-against-2 burst. This is RR65 (1)'s accepted tell, TP-237's to hide.
-- **The passive keepalive.** 10 s after the last data is received (KEEPALIVE_TIMEOUT), the receiving end sends one 32-byte keepalive. It comes once per idle start, not as a rhythm.
-- **Handshake retries.** While the peer can't be reached, initiations go every 5 s plus 0–334 ms (REKEY_TIMEOUT and its jitter) for up to 90 s. That is a near-fixed rhythm, during outages only. After a failover the session goes on over the new link, so it lasts no longer than the switch.
-- **WireGuard's own deadline,** a new handshake 15 s after unanswered data (KEEPALIVE_TIMEOUT + REKEY_TIMEOUT), is slower than 4.25 s, so links always fail over first.
-
-## Path switching
-
-`Failover`, the follower rule and the 20 s hold-down stay as they are. They read "up", and **up now means proven once and not yet dead** by the rules above. A link no longer drops at a fixed 6 s from its last proof. Among one neighbor's links, `pick` prefers the up link that received last. A sending node therefore switches its first hop or next hop within 4.25 s of its first packet into a dead link. A backup that was idle may be up on proof up to 24 s old. If it turns out dead after a switch, its own 4.25 s clock finds that, so a double failure costs 8.5 s. `Neighbors` reports a never-linked dial as down after its first failed attempt, or 4.25 s after the dial started.
-
-**Where the chains design (docs/design/chains.md, M3 design branch, not approved) must line up:**
-
-1. **The sending deadline.** Chains keeps 6 s for a sending link (`DeadAfter`), and its switch bounds B1 7 s and B2 11.5 s rest on that. With TP-080 the sending deadline becomes 4 s from the first unanswered send. Chains takes that value and its bounds shrink by 2 s, or it says why it keeps 6.
-2. **Vouch probes.** Chains sends vouch probes in place of link probes, every 2 s ± 25 % while the device is sending. TP-080 sends no link probes while data flows both ways. Vouches are path probes and stay chains' own to pace. Sent amid data they leave no idle rhythm. On an idle link they should follow this idle schedule.
-3. **The idle and warm cadence.** Chains uses 10–30 s with a 90 s deadline and an idle bound of 92 s (47 s on `udp`). TP-080 uses 8–24 s with a 28.25 s idle bound. One schedule should serve both, so a warm backup is an idle link and chains' idle bound (RR69) becomes 28.25 s.
-4. **Server-to-server links.** Chains keeps them at a fixed 2 s ± 25 % because vouches report them. TP-080 backs every idle link off (question 3). A vouch then reports an idle member-to-exit link with proof up to 24 s old. The member's link to the exit carries the device's own data, so it is found dead within 4.25 s once the device sends.
-5. **Clock restart.** Chains counts a new deadline from a change of cadence without minting proof. That is TP-080's rule already: the clock starts at the first unanswered send. Chains' immediate burst probe at a promotion can come before the 1 s suspect probe without conflict.
-
-## Tests
-
-- **Unit, fake clock (`path`):** a link with data both ways sends no probe frames. A one-way flow probes at 0.75–1.25 s. A link blackholed under traffic closes within 4.25 s of its first unanswered send. The idle schedule's draws stay within 2–6, 4–12 and 8–24 s, cover their ranges and reset on data. A dead idle link closes within 28.25 s, and data on it closes it within 4.25 s. The far end's probe restarts the near end's interval. A keepalive-sized packet starts no suspect clock. Each test gets a mutation check.
-- **Lab:** (1) Capture under two-way traffic. On `udp`, probes are told apart by their fixed 84-byte size: none appears. On `reality`, new per-link probe counters in the status stay at zero. (2) Dead under traffic: the link is blackholed mid-stream with a backup present, and the test reports the time to failover, which must be ≤ 4.25 s. (3) Idle: a 7.5-minute hold where each interval between exchanges lies within its draw's range, then a blackhole that must be found within 28.25 s. (4) The matrix's idle case comes back with the steady-exchange signal: `reality` passes, and the control as question 1 settles.
-- **What the lab can't show:** real NAT and carrier mapping timeouts (the 25 s assumption); mobile radio stalls, and TCP's retransmission backoff on real networks against the 4 s deadline; a real censor's classifier; sleep and wake on a Mac (`needs_human: macos`, a device checklist item: a link that dies during sleep is found within 4.25 s of the first packet after wake).
+- **One timer per link**, set to its earliest deadline. The write path re-arms it only when a clock starts, and answers only store atomics. The 250 ms watcher and its tick go.
+- **`Options`** drops `ProbeInterval` and `DeadAfter` for `SuspectMin`/`Max` (0.5/1.5 s), `AnswerMin`/`Max` (R's clamp, 250 ms/1 s), `IdleMin`/`Max` (8/24 s), `DatagramIdleMin`/`Max` (5/14 s), `DialTimeout` (6 s), `FollowFor` (6 s, its own default) and `Rand` (crypto/rand). Validation: each pair positive with min ≤ max. `Status` adds per link: suspect, probes sent, probes answered.
+- **Unit tests**, fake clock and injected `Rand`: one per rule above, each mutation-checked; idle draws checked for spread on their own long stream, not only range (under half of 30 consecutive pairs within 1 s; about 1 in 6 expected).
+- **Lab:** (1) no probes under two-way traffic, by size on `udp` and counters on `reality`; (2) a blackhole each way fails over within 4.5 s; (3) `reality` under netem survives a 1 s blackout and closes on S + R + T + 1 s; (4) 7.5 minutes idle in its own lab stream, then a blackhole found within 26 s; (5) the matrix's idle case. Beyond the lab: real NAT timeouts, radio stalls, a real classifier, Mac sleep (`needs_human: macos`).
 
 ## Questions for the owner
 
-1. **What is the idle case's control?** `udp` can't be caught idle once its probes back off too, and an idle thinkpol tunnel sends no WireGuard rhythm (TP-223). The options: (a) a kernel WireGuard reference row with a 25 s persistent keepalive, held idle and caught by the keepalive signal, while `udp` and `reality` are held idle and expected to pass; the steady-exchange signal is pinned on TP-223's idle trace of today's probes. (b) Keep `udp` as the control by giving it a fixed probe interval, a test-only knob. **Recommended: (a).** It is the ticket's "udp as the control" reworded, with no test-only product setting.
-2. **How long may the idle interval get?** (a) 8–24 s, found dead within 28.25 s, NAT mappings kept alive on `udp`. (b) 15–45 s, about 18 records each way in 7.5 minutes instead of 34, found dead within 50 s, with `udp` capped at 24 s by a per-transport rule. **Recommended: (a)**, also because one schedule with chains' warm backup keeps their bounds equal.
-3. **Do server-to-server links back off when idle?** (a) Yes, like every link. Chains' vouches then report server links on their real proof age. (b) Keep server links at a fixed 2 s ± 25 %, as chains asks, at the cost of a steady rhythm between servers. **Recommended: (a).** The ticket says every link, and under traffic a server link is held to 4.25 s anyway.
+1. **What is the idle case's control row?** (a) A lab TLS pinger, one fixed record each way at a fixed interval, flagged while `reality` and `udp` pass. Cost: a lab-only program, and acceptance reworded: item 5 "passes for `reality` and `udp`, with a lab fixed-interval TLS pinger as the control"; item 2's "lab capture" becomes "capture on `udp`, probe counters on `reality`". (b) `udp` stays the control with a fixed idle interval. Cost: a product setting only a test uses. **Recommended: (a).**
+2. **How far may idle probing back off?** (a) 8–24 s on `reality`, 5–14 s on `udp`: `reality` makes about 270 exchanges an hour, dead idle within 26 s. (b) 5–14 s everywhere: one setting, 16 s, but about 450 an hour on `reality`. **Recommended: (a)**: TCP mappings last minutes, and chains splits its warm cadence the same way.
+3. **Should server-to-server links back off when idle?** (a) Yes: a dead idle server link is found within 16 s (`udp`); a device that starts sending through a member whose exit link died unnoticed loses up to B2, 10 s. (b) No: the engine gives server-to-server links a fixed 1.5–2.5 s idle range, so a dead one is known within 4.5 s. Cost: a fixed rhythm between servers, over `udp`, whose timing RR30 already concedes. Under traffic B2 is 10 s either way. **Recommended: (b) while server links are `udp`, (a) once they move to `reality`.**

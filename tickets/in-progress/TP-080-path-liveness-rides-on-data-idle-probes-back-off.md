@@ -52,3 +52,4 @@ The path package doc (internal/dataplane/path/doc.go) has the 6 s dead interval;
 - 2026-11-22 backlog → in-progress, owner: agent-tp-080, branch: tp-080-path-liveness
 - 2026-11-22 acceptance approved (owner)
 - 2026-11-22 design section written (docs/design/path-liveness.md; linked from DESIGN.md and the path package doc), waits for review and the owner
+- 2026-11-22 design r2 after review (go-paranoid, pocket-torvalds, Grok: fix first): acks in frames (seq/ack) settle B1–B3; drawn suspect rule, one idle draw per transport, sibling probes, RTT-sized T, chains reconciled; three owner questions rewritten with costs
