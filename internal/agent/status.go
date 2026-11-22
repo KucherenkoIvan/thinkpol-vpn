@@ -110,11 +110,15 @@ const (
 	// Disconnected: a device whose data plane is down on purpose.
 	Disconnected Connection = iota
 	// Connecting: a device meant to be connected whose data plane isn't up
-	// (removed from its space, or its start failed and is retried).
+	// (removed from its space, or its start failed and is retried), or a
+	// server whose first serve of its map hasn't ended: its listeners don't
+	// all serve yet.
 	Connecting
 	// Connected: a device's data plane is up.
 	Connected
-	// Serving: a server, which serves its spaces whenever it runs.
+	// Serving: a server, once its first serve of its map has ended (each
+	// listener served, or retried: Retrying). A later map's version shows
+	// once it is served the same way.
 	Serving
 )
 
@@ -209,6 +213,9 @@ type report struct {
 	// retrying: a start, an Apply (a connected device's too) or a
 	// server's map waits to be retried.
 	retrying bool
+	// serving: a running server's first serve of its map has ended, its
+	// listeners served (or retried).
+	serving bool
 	// engine is a device's running engine; it is cleared before the engine
 	// closes, and Status calls it under mu, so it is never used closed.
 	engine    *dataplane.Engine
@@ -298,8 +305,10 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		s.KillSwitch = p.killSwitch
 	}
 	switch {
-	case p.mode == ModeServer:
+	case p.mode == ModeServer && p.serving:
 		s.Connection = Serving
+	case p.mode == ModeServer:
+		s.Connection = Connecting
 	case p.conn == connConnected:
 		s.Connection = Connected
 	case p.conn != connDisconnected:

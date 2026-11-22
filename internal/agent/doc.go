@@ -279,7 +279,10 @@
 // its space, it comes up once a map includes the node again. -connect=false
 // (THINKPOL_CONNECT) starts a device disconnected, which then needs the
 // local API to connect. A server serves its spaces whenever it runs and
-// refuses both ([ErrServerMode]). A device whose node returned (stopped,
+// refuses both ([ErrServerMode]). Its Status reads [Connecting] until its
+// first serve of the map has ended, every listener serving (or retried:
+// Retrying), then [Serving]; a later map's version shows once it is served
+// the same way, and the "map applied" log line comes then too. A device whose node returned (stopped,
 // or its first start failed) reads disconnected.
 //
 // The service runs `up -service` ([Config.Service], THINKPOL_SERVICE).

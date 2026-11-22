@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"regexp"
@@ -32,6 +33,9 @@ type fakeSupervisor struct {
 	// snapshot per read, then egress.
 	egress    supervisor.EgressInfo
 	egressSeq []supervisor.EgressInfo
+	// hold, if set, holds each SetListeners (its listeners still opening)
+	// until it gets a value or closes, telling holding (buffered) first.
+	hold, holding chan struct{}
 }
 
 func (f *fakeSupervisor) Egress() supervisor.EgressInfo {
@@ -57,6 +61,10 @@ func (f *fakeSupervisor) SetSpaces(sp []supervisor.Space) error {
 }
 
 func (f *fakeSupervisor) SetListeners(ls []supervisor.Listener) error {
+	if f.hold != nil {
+		f.holding <- struct{}{}
+		<-f.hold
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listeners = append(f.listeners, ls)
@@ -199,6 +207,47 @@ func TestServerWithIngressOffAcceptsNoDevice(t *testing.T) {
 	r.served(t, 2)
 	if sp, _, _ := sup.last(); len(sp) != 1 || len(sp[0].Inbound["memory"]) != 1 {
 		t.Fatalf("spaces %+v: the device's link is refused with ingress on", sp)
+	}
+}
+
+// A server's status reads serving, and its "map applied" line comes, only
+// once its first serve has ended, every listener serving; a later map's
+// version shows, and its line comes, only once it is served alike.
+func TestServerSaysAppliedOnceItsListenersServe(t *testing.T) {
+	s := newTestSpace(t)
+	sup := &fakeSupervisor{hold: make(chan struct{}), holding: make(chan struct{}, 8)}
+	r := runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) {
+		// As New makes it: the map read from disk.
+		ss.report.mode, ss.report.version = ModeServer, 1
+	})
+	t.Cleanup(func() { close(sup.hold) }) // before the server's: it may be held
+	applied := func(version int) bool {
+		return regexp.MustCompile(fmt.Sprintf(`(?m)msg="map applied" version=%d( |$)`, version)).MatchString(r.log.String())
+	}
+	<-sup.holding
+	time.Sleep(50 * time.Millisecond) // nothing may show it meanwhile
+	if st := r.report.status(); st.Connection == Serving || applied(1) {
+		t.Fatalf("while the listeners open: connection %v, log:\n%s", st.Connection, r.log)
+	}
+	if h := r.report.status().Health(); !slices.Contains(h.Problems, ProblemStarting) {
+		t.Fatalf("health while the listeners open: %+v", h)
+	}
+	sup.hold <- struct{}{}
+	eventually(t, func() bool { st := r.report.status(); return st.Connection == Serving && !st.Retrying })
+	if !applied(1) {
+		t.Fatalf("log:\n%s", r.log)
+	}
+
+	r.maps <- s.build(t, 2)
+	<-sup.holding
+	time.Sleep(50 * time.Millisecond)
+	if st := r.report.status(); st.MapVersion != 1 || applied(2) {
+		t.Fatalf("while map 2's listeners open: version %d, log:\n%s", st.MapVersion, r.log)
+	}
+	sup.hold <- struct{}{}
+	r.served(t, 2)
+	if !applied(2) {
+		t.Fatalf("log:\n%s", r.log)
 	}
 }
 

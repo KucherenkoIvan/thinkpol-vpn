@@ -877,7 +877,7 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 	}()
 	// Cleared before the supervisor closes (deferred calls run last first).
 	n.report.set(func(p *report) { p.workers = sup })
-	defer n.report.set(func(p *report) { p.workers, p.dnsUpstreamsRefused = nil, 0 })
+	defer n.report.set(func(p *report) { p.workers, p.dnsUpstreamsRefused, p.serving = nil, 0, false })
 	s := &serverSpaces{
 		sup: sup, reg: reg, trust: n.state.Trust,
 		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU,
@@ -1044,7 +1044,9 @@ func dials(section netmap.Section, reg *transport.Registry) []supervisor.Dial {
 
 // run serves the current map, then every newer one, until ctx ends. Only
 // the first SetSpaces failing is fatal (the node can't serve its space);
-// anything else is retried.
+// anything else is retried. The report shows a map once its serve ended
+// (SetListeners returns once its listeners serve): the first's as
+// serving, a later one's version.
 func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 	var retry <-chan time.Time
 	if err := s.apply(); err != nil {
@@ -1059,6 +1061,7 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 	for {
 		s.report.set(func(p *report) {
 			p.version, p.removed, p.retrying = s.follow.cur.Header().Version, s.follow.removed, retry != nil
+			p.serving = true
 		})
 		for _, kind := range told {
 			s.events.emit(kind, s.follow.cur.Header().Version)
