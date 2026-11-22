@@ -504,11 +504,11 @@
 // at the seventeenth poll), anything that exchanges one record each way at a
 // fixed beat with nothing between. HTTP/2 browsing with idle PINGs, a gRPC
 // stream with keepalive PINGs among its messages and a bulk download
-// pass. Flow shape beyond that is not judged. A TCP stream it can't frame from its first byte (not
-// TLS, joined midstream, or with bytes it wasn't shown because a module
-// before it dropped their packet) is never judged, and is tagged once,
-// "wireguard-rhythm: stream not framed", so a pass for that reason shows
-// in the verdict log. With its trace setting it writes a JSON line for
+// pass. Flow shape beyond that is not judged. A TCP stream it can't frame
+// from its first byte (not TLS, joined midstream, or with bytes it wasn't
+// shown because a module before it dropped their packet) is never judged,
+// and is tagged once, "wireguard-rhythm: stream not framed", so a pass
+// for that reason shows in the verdict log. With its trace setting it writes a JSON line for
 // every record it judges ([WGTraceLine]: size, end, whether it followed
 // quiet or was new, how often in a row the exchange it answered had stood
 // out), so a lab cell can say what a connection showed, flagged or not.

@@ -341,7 +341,7 @@ func blackoutRiddenOut(t *testing.T, k *livenessLink) {
 			t.Errorf("%s, a 1 s blackout under pings: %s closed its link (%q, last answer %s before)", k.transport, name, m[1], m[2])
 		}
 	}
-	t.Logf("%s, a 1 s blackout under pings: %d of %d pings came back, no link closed", k.transport, got, sent)
+	t.Logf("%s, a 1 s blackout under pings: %d of %d pings came back", k.transport, got, sent)
 	if sent == 0 || got < sent*3/4 {
 		t.Errorf("%s, a 1 s blackout under pings: %d of %d pings came back, want the 1 s lost at most", k.transport, got, sent)
 	}
