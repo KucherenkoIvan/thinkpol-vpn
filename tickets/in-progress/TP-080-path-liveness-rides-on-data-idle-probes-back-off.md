@@ -9,8 +9,8 @@ size: M
 depends_on: [TP-019, TP-087]
 refs: [RR65, N2, docs/design/overlay.md#data-plane-every-node-one-binary]
 needs_human: macos
-owner: ""
-branch: ""
+owner: "agent-tp-080"
+branch: "tp-080-path-liveness"
 ---
 
 ## Goal
@@ -49,3 +49,5 @@ The path package doc (internal/dataplane/path/doc.go) has the 6 s dead interval;
 - 2026-11-07 milestone → later (owner's MVP cut: robustness; re-check once reality runs)
 - 2026-11-07 notes: fast redial is TP-179 now (split from TP-085)
 - 2026-11-16 widened and moved to M2: liveness rides on data, idle probes back off (owner, 2026-11-16)
+- 2026-11-22 backlog → in-progress, owner: agent-tp-080, branch: tp-080-path-liveness
+- 2026-11-22 acceptance approved (owner)
