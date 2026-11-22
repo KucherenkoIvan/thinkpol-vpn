@@ -20,8 +20,9 @@ type Options struct {
 	Control func(network, address string, c syscall.RawConn) error
 	// Now is the clock; nil means time.Now. Nodes' clocks must agree within
 	// the listener's time window. It drives the dialer's seal and the
-	// listener's own freshness check; REALITY's check behind it uses the
-	// real clock.
+	// listener's own freshness check and the waits between failed checks
+	// of a listener's target; REALITY's check behind it uses the real
+	// clock.
 	Now func() time.Time
 	// TrustTargetRoots, for tests and the lab only, replaces the system
 	// roots Listen verifies the target's certificate against. Settings
@@ -49,6 +50,7 @@ func New(o Options) *Transport {
 	if t.now == nil {
 		t.now = time.Now
 	}
+	t.checks.now = t.now
 	return t
 }
 
