@@ -24,11 +24,11 @@ Today: `Options.ProbeInterval` and `Options.DeadAfter` (internal/dataplane/path/
 - A short design section first (docs/design/, path liveness) with the cadences, bounds and how they line up with the chains design's dead-link deadlines (docs/design/chains.md on the M3 design branch, not yet approved), reviewed and shown to the owner before code.
 
 ## Acceptance
-- [ ] The design section reviewed and shown to the owner before code (marked "(owner, date)" once approved).
-- [ ] While data flows both ways, no standalone probe records are sent (lab capture).
+- [x] The design section reviewed and shown to the owner before code (marked "(owner, date)" once approved). Approved (owner, 2026-11-22).
+- [ ] While data flows both ways, no standalone probe records are sent (lab: capture on udp, probe counters on reality).
 - [ ] A dead link under traffic is detected within the design's bound, no slower than today (lab test with the number).
 - [ ] On an idle link, probes back off with jitter to the design's maximum interval, and a dead idle link is detected within the stated bound (lab test).
-- [ ] The censor matrix's idle rhythm case (pulled from the matrix by TP-223 pending this) is back and passes for reality, with `udp` as the control.
+- [ ] The censor matrix's idle rhythm case (pulled from the matrix by TP-223 pending this) is back and passes for reality and udp, with a lab TLS pinger as the control.
 - [ ] RR65 and the path docs updated.
 
 ## Notes
@@ -55,3 +55,5 @@ The path package doc (internal/dataplane/path/doc.go) has the 6 s dead interval;
 - 2026-11-22 design r2 after review (go-paranoid, pocket-torvalds, Grok: fix first): acks in frames (seq/ack) settle B1–B3; drawn suspect rule, one idle draw per transport, sibling probes, RTT-sized T, chains reconciled; three owner questions rewritten with costs
 - 2026-11-22 design r3 after delta check (paranoid: fix first): budgets carry both ends' Shaping.MaxDelay (S's top shrinks by D, so under traffic ≤ max(4.5 s, 3.5 s + D), never slower than today); every old-format probe flags acks; relays fall back to kind 1 for packets with no room; close notice for receive-only ends, unhinted bound stated (26 s / 16 s); suspect only after S + R with no answer; one fresh clock per answer; one answer rule restarts the idle wait; Q3 rewritten with both options' costs (recommend back-off everywhere); Scope bullet 1 reversal stated at the top; serial seq; tell table and nits
 - 2026-11-22 design r4 after delta check (fix first, narrow): a burst's first frame is itself due within S + R (no once-per-answer fresh clock), so a sparse sender is found X + 2.0–4.5 s after its last answer (X = 2/5/7 s: 4.0–6.5/7.0–9.5/9.0–11.5 s; a SYN 2.0–4.5 s after it, ≤ 8.0 s if sent within 0.5 s of an answer), priced against today's 6.5 s; "never slower than today" qualified (continuous traffic with D ≤ 3 s, or pauses ≤ 2 s with D ≤ 1 s); shaped-link probing under two-way traffic in the summary and tell table; second and sibling probes only while unanswered
+- 2026-11-22 design approved (owner, 2026-11-22): Q1 (a) a lab-only TLS pinger as the idle case's control, Q2 (a) idle draws 8–24 s on reality and 5–14 s on udp, Q3 (a) every link backs off
+- 2026-11-22 acceptance 2 and 5 reworded per the approved design (owner, 2026-11-22)
