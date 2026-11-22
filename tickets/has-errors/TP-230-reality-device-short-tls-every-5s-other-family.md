@@ -99,6 +99,14 @@ Options (to price once the cause is known):
 3. Find and remove the second dialer if it is (b): a bug fix, no trade-off.
 Recommendation pending the lab evidence; the leaning is 3 if (b), else 1.
 
+## Review findings
+- [ ] R1.1 RESIDUAL-RISKS.md RR66 (and RR31 where it describes the server's dials to the target) says the check is once per server process, not periodic. Now: verifyTarget sends one Go crypto/tls hello per server name at each listener open (two per dual-stack start), and while a target's check fails, Listen re-checks it at random intervals (R1.2's numbers), one hello per server name, never on the agent's 5 s retry (TP-230). Say exactly that.
+- [ ] R1.2 Lower checkBackoffMax so the wait doubles from 5–10 s to at most 1–2 min (random in [d/2, d]): a server that booted before its uplink then serves within ~2 min of the target becoming reachable. Document the trade-off (a down target is dialed about once per 1–2 min at random while it stays down) in reality doc.go and docs/design/transports.md. Keep the constant's name and one place to change it.
+- [ ] R1.3 targetcheck_test.go: replace the 500 ms sleep holding the fake site's connection with a channel closed after the `checking` select; comment dialsWithin's 50 ms settle (an extra dial would have been accepted by now). Add cases, each mutation-checked: reset on success, the ctx-ended exemption, server names in the key (checkKey).
+- [ ] R1.4 Docs: reality doc.go drops the history parenthesis ("the lab's active prober cell failed on it"); listener.go "and a prober's would show it" → "and a prober would see that"; doc.go "tcp4" for an IPv4 or IPv4-mapped address; the handover race is not reality's to describe: point to the follow-up ticket instead. Retitle to "A reality server dials its camouflage site every 5 s" (frontmatter only; id and file name kept).
+- [ ] R1.5 Lab speed: move TestRealityIdleServerLeavesItsTarget's assertion (no server→target SYN for a window after "map applied", and Retrying false) into the censor matrix's reality row setup, window as short as still catches a 5 s rhythm (≥ 15 s), still failing on the pre-fix code (proved with the two fixed files reverted, not pushed); delete the separate test.
+- [ ] R1.6 File two follow-ups on rewrite: the supervisor serves a listener before its workers know it (agent/supervisor); a server reports its map applied while its first apply is still opening listeners (agent).
+
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate fixes)
 - 2026-11-16 backlog → in-progress, owner: agent-tp-230
@@ -114,3 +122,4 @@ Recommendation pending the lab evidence; the leaning is 3 if (b), else 1.
 - 2026-11-22 out of scope: (1) a server's status reads the map applied and not retrying while its first apply still opens the listeners and checks the target, so `mapApplied` (lab) passes early; it hid this bug from the matrix's reality setup, which also starts device-a before server-1's listeners are open. (2) Apparently the supervisor starts serving a public listener before its workers know it (setListeners returns before the Listeners message), so a connection accepted at once can be dropped; seen only as the 7 ms gap above, not verified. Not filed (agents don't file tickets).
 - 2026-11-22 in-progress → review
 - 2026-11-22 merged origin/rewrite again (d9df4152: TP-270, TP-273, supervisor and tests, no reality code); make lint and make test green there; the lab runs at c0cb3fd0 were not repeated.
+- 2026-11-22 review → has-errors: R1.1–R1.6 (four reviewers, two model families, found the fix sound)
