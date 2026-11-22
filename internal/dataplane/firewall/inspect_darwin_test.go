@@ -565,3 +565,61 @@ func TestInspectKillSwitchWithoutPfctlSaysSo(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+// A SIGKILLed agent leaves the guard's and the kill switch's anchors
+// loaded and their pf references recorded, never closed: what root's
+// diag reads without the agent (TP-133), through the same entries
+// (InspectIPv6Guard's and InspectKillSwitch's, their pfctl a fake here),
+// in a process that never ran either. Both anchors show with their rules
+// and both references as recorded and still held, and the read changes
+// nothing: pf only listed, the records as the dead agent left them, no
+// directory made.
+func TestADeadAgentsGuardAndKillSwitchAreReadWithoutIt(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	boot := func() (string, error) { return r.boot, nil }
+	if err := r.guard().Apply(ctx, exempt(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.killSwitch().Apply(ctx, upRules(t)); err != nil {
+		t.Fatal(err)
+	}
+	refs := r.pf.references()
+	records := []string{r.record(t), r.ksRecord(t)}
+	if len(refs) != 2 || records[0] == "" || records[1] == "" {
+		t.Fatalf("the agent left references %v, records %q", refs, records)
+	}
+	r.pf.forget()
+
+	guard := inspectIPv6Guard(ctx, r.pf, r.dir, boot)
+	ks := inspectKillSwitch(ctx, r.pf, r.dir, boot)
+	if err := readOnly(r.pf); err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{r.record(t), r.ksRecord(t)}; !slices.Equal(got, records) {
+		t.Fatalf("records %q, the agent left %q", got, records)
+	}
+	if guard.Unreadable != "" || !guard.Present || len(guard.Rules) != rulesFor || guard.Where != "pf anchor "+GuardAnchor ||
+		guard.PF == nil || !guard.PF.Enabled || guard.PF.Reference == nil || !guard.PF.Reference.Recorded || !guard.PF.Reference.Held {
+		t.Fatalf("guard %+v, pf %+v", guard, guard.PF)
+	}
+	if ks.Unreadable != "" || !ks.Present || len(ks.Rules) != len(r.pf.anchor(KillSwitchAnchor).rules) || ks.Where != "pf anchor "+KillSwitchAnchor ||
+		ks.PF == nil || !ks.PF.Enabled || ks.PF.Reference == nil || !ks.PF.Reference.Recorded || !ks.PF.Reference.Held {
+		t.Fatalf("kill switch %+v, pf %+v", ks, ks.PF)
+	}
+	// Each names its own reference.
+	if gp, kp := guard.PF.Reference.Pid, ks.PF.Reference.Pid; gp == kp || !slices.ContainsFunc(refs, func(t pfToken) bool { return t.pid == gp }) ||
+		!slices.ContainsFunc(refs, func(t pfToken) bool { return t.pid == kp }) {
+		t.Fatalf("references: guard's pid %d, kill switch's %d, pf holds %v", gp, kp, refs)
+	}
+
+	// With no state directory at all, nothing is recorded, and none is made.
+	missing := filepath.Join(r.dir, "not-yet")
+	guard, ks = inspectIPv6Guard(ctx, r.pf, missing, boot), inspectKillSwitch(ctx, r.pf, missing, boot)
+	if guard.PF.Reference == nil || guard.PF.Reference.Recorded || ks.PF.Reference == nil || ks.PF.Reference.Recorded || !guard.Present || !ks.Present {
+		t.Fatalf("no records: guard %+v, kill switch %+v", guard.PF.Reference, ks.PF.Reference)
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("inspecting made %s: %v", missing, err)
+	}
+}

@@ -65,7 +65,9 @@
 // asks for is held. On a device that holds across restarts too: the
 // [Store] keeps the blobs the node uses, and its index is where the
 // previous version of a list comes from while the current map's isn't held
-// yet.
+// yet. A fetched blob the store keeps is saved before the node logs it
+// fetched; the line's stored field says whether the save succeeded (a
+// failed one is warned first, with the blob's kind and name).
 //
 // # Bounds
 //

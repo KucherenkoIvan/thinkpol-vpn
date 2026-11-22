@@ -1,0 +1,109 @@
+//go:build lab
+
+package lab
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/lab/testcache"
+)
+
+// A second run from this checkout (labctl gotest, its own process) builds
+// and runs the same package's tests while this run's lab has them built:
+// both pass, this run's test binary is the one it built, and the other
+// run leaves no binaries behind.
+func TestHarnessAnotherRunFromTheCheckoutBuildsItsOwnBinaries(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	root, err := Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pkgPattern = "./" + harnessNodePackage
+	pkgs, err := ListGoPackages(ctx, root, pkgPattern)
+	if err != nil || len(pkgs) != 1 {
+		t.Fatalf("packages %v: %v", pkgs, err)
+	}
+	l := Start(t, GoTestTopology())
+	node := l.Node("gotest")
+	node.RunGoTests(t, pkgPattern)
+	bin := filepath.Join(l.binDir, "tests", testBinaryName(pkgs[0]))
+	before, err := os.Stat(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Run directories already there are other runs' (live, or dead and
+	// not yet swept): only the ones created from here on, just before the
+	// other run starts, are checked. A third run from the checkout that
+	// creates its directory in the meantime and dies there fails this test
+	// falsely; and a sweep by any run in that window removes what the other
+	// run left, so the mutant "labctl skips RemoveRunBinaries" may survive.
+	existing := map[string]bool{}
+	entries, err := os.ReadDir(binRoot(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		existing[e.Name()] = true
+	}
+
+	// A checkout name of its own: under make lab-test the child inherits
+	// THINKPOL_LAB_RUN and would join this run (its lab's name differs only
+	// by the process hash); the override keeps its lab out of this run's
+	// names and clean-up, like a run from another checkout. Uncached: a
+	// recorded pass of the package would start no lab and build nothing.
+	other := exec.CommandContext(ctx, "go", "-C", root, "run", "./lab/labctl", "gotest", "-v", pkgPattern)
+	other.Env = append(os.Environ(), fmt.Sprintf("%s=bindir-%d", ProjectEnv, os.Getpid()), testcache.NoCacheEnv+"=1")
+	out, err := other.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the other run: %v\n%s", err, out)
+	}
+	if bytes.Contains(out, []byte("(cached")) || !bytes.Contains(out, []byte("--- PASS: ")) {
+		t.Fatalf("the other run didn't run %s's tests:\n%s", pkgPattern, out)
+	}
+
+	after, err := os.Stat(bin)
+	if err != nil {
+		t.Fatalf("this run's test binary after the other run: %v", err)
+	}
+	if !os.SameFile(before, after) || !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("the other run replaced this run's test binary %s", bin)
+	}
+	node.RunGoTests(t, pkgPattern)
+
+	// Every run directory created since is a live run's or a kept lab's:
+	// the other run removed its own.
+	unlock, err := lockBinRoot(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	entries, err = os.ReadDir(binRoot(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if existing[e.Name()] || !strings.HasPrefix(e.Name(), runBinariesPrefix) {
+			continue
+		}
+		path := filepath.Join(binRoot(root), e.Name())
+		live, err := runBinariesLive(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		kept, err := keptBy(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !live && len(kept) == 0 {
+			t.Errorf("%s was left behind by a run that ended", e.Name())
+		}
+	}
+}

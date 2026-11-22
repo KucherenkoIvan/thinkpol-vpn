@@ -12,15 +12,15 @@ func TestParseQueueStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (QueueStats{Waiting: 1, QueueDropped: 7, UserDropped: 9}); got != want {
+	if want := (QueueStats{Waiting: 1, QueueDropped: 7, UserDropped: 9, Sequence: 120}); got != want {
 		t.Errorf("queue 100: %+v, want %+v", got, want)
 	}
 	got, err = ParseQueueStats(proc, 101)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != (QueueStats{}) {
-		t.Errorf("queue 101 dropped nothing, got %+v", got)
+	if got != (QueueStats{Sequence: 3}) {
+		t.Errorf("queue 101 dropped nothing and queued 3, got %+v", got)
 	}
 	if _, err := ParseQueueStats(proc, 102); err == nil {
 		t.Error("a queue that isn't there parsed")

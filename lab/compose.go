@@ -3,6 +3,7 @@ package lab
 import (
 	"encoding/json"
 	"net/netip"
+	"path/filepath"
 )
 
 // Paths inside every node.
@@ -15,6 +16,27 @@ const (
 	// testdata.
 	SrcDir = "/src"
 )
+
+// DeadEndNameserver is the nameserver every node gives Docker's embedded
+// resolver (127.0.0.11): an address nothing answers. Docker forwards a name
+// it doesn't know to the nameservers it read from the host's resolv.conf,
+// and asks them from the host's network namespace, where the sealing can't
+// reach (Docker 29 every one of them, Docker 27 only loopback ones such as
+// systemd-resolved's). A container's own nameservers it asks from the
+// container's namespace, through the node's routes, which the sealing leaves
+// no way out. It is in 198.18.0.0/15, reserved for benchmarking (RFC 2544),
+// not in the documentation ranges lab tests assign inside nodes: no lab
+// network or test may reach it (subnetPool refuses a pool that contains it,
+// TestOnlyTheNodesUseTheDeadEndNameserver checks the code).
+const DeadEndNameserver = "198.18.0.53"
+
+// seccompProfilePath, relative to the checkout, is Docker's default seccomp
+// profile plus one rule: pivot_root with CAP_SYS_ADMIN, which the default
+// never allows and every worker sandbox needs. make lab-seccomp generates it
+// (lab/seccompgen) from the pinned moby/profiles/seccomp. Docker Desktop
+// runs containers without seccomp, so only a Linux host shows the denial.
+// Compose reads the file on the host.
+var seccompProfilePath = filepath.Join("lab", "seccomp.json")
 
 // Labels on every container and network of a lab. The harness tears down
 // only projects whose every container and network carries LabelLab.
@@ -64,6 +86,7 @@ type composeService struct {
 	Privileged  bool                `json:"privileged,omitempty"`
 	CapAdd      []string            `json:"cap_add"`
 	SecurityOpt []string            `json:"security_opt"`
+	DNS         []string            `json:"dns"`
 	Devices     []string            `json:"devices"`
 	Sysctls     map[string]string   `json:"sysctls,omitempty"`
 	Environment map[string]string   `json:"environment"`
@@ -103,8 +126,23 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 			Labels:     labels,
 			// Docker would NAT whatever reaches the bridge out to the real
 			// network; nodes have no route there anyway (see configureNode).
-			DriverOpts: map[string]string{"com.docker.network.bridge.enable_ip_masquerade": "false"},
-			IPAM:       ipam,
+			// In its default "nat" gateway mode Docker 28 and later also
+			// drop, in the host's raw PREROUTING, a packet to a container's
+			// address that didn't arrive on that container's own bridge.
+			// Where the host has br_netfilter, that sees frames a node sends
+			// to the router for a node on another lab network: every packet
+			// the router would forward. "routed" has no such rule, and no
+			// NAT; Docker 27.0+ accepts it, while "nat-unprotected", the
+			// other mode without the rule, needs 28.
+			// enable_ip_masquerade=false is redundant with "routed" and kept
+			// on purpose: a second guard if the gateway mode is ever
+			// ignored or changed.
+			DriverOpts: map[string]string{
+				"com.docker.network.bridge.enable_ip_masquerade": "false",
+				"com.docker.network.bridge.gateway_mode_ipv4":    "routed",
+				"com.docker.network.bridge.gateway_mode_ipv6":    "routed",
+			},
+			IPAM: ipam,
 		}
 	}
 	for _, n := range topo.Nodes {
@@ -121,7 +159,7 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 			cmd = []string{"sleep", "infinity"}
 		}
 		// Nothing of the node's own runs before the harness has sealed it.
-		cmd = append([]string{"sh", "-c", `while [ ! -e ` + sealedMarker + ` ]; do sleep 0.1; done; exec "$@"`, "wait-for-seal"}, cmd...)
+		cmd = append([]string{"sh", "-c", `while [ ! -e ` + sealedMarker + ` ]; do sleep 0.1; done; exec "$@"`, sealWait}, cmd...)
 		if n.Systemd {
 			cmd = systemdCommand
 		}
@@ -138,7 +176,9 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 			CapAdd: []string{"NET_ADMIN", "NET_RAW", "SYS_ADMIN"},
 			// Docker's AppArmor profile, where the host has AppArmor, denies
 			// the mounts that network namespaces need, even with SYS_ADMIN.
-			SecurityOpt: []string{"apparmor=unconfined"},
+			// Its default seccomp profile denies pivot_root (seccompProfilePath).
+			SecurityOpt: []string{"apparmor=unconfined", "seccomp=" + filepath.Join(root, seccompProfilePath)},
+			DNS:         []string{DeadEndNameserver},
 			Devices:     []string{"/dev/net/tun"},
 			Environment: env,
 			Labels:      labels,
@@ -167,6 +207,10 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 	return json.MarshalIndent(f, "", "  ")
 }
 
+// sealWait is the $0 of a node's command while it waits for the seal,
+// which a snapshot waits to see gone (Node.waitCommand).
+const sealWait = "wait-for-seal"
+
 // sealScript, in a systemd node, is its sealing script (configureNode),
 // kept for the node's next start: /run, where the marker is, is a tmpfs.
 const sealScript = "/etc/lab/seal.sh"
@@ -180,6 +224,6 @@ var systemdCommand = []string{"sh", "-c",
 	`if [ -x ` + sealScript + ` ]; then ` + sealScript + ` || exit 1; fi; ` +
 		`while [ ! -e ` + sealedMarker + ` ]; do sleep 0.1; done; ` +
 		`mount -o remount,rw /sys/fs/cgroup || exit 1; exec "$@"`,
-	"wait-for-seal", "/lib/systemd/systemd",
+	sealWait, "/lib/systemd/systemd",
 	"systemd.mask=systemd-resolved.service", "systemd.mask=systemd-networkd.service", "systemd.mask=nginx.service",
 }

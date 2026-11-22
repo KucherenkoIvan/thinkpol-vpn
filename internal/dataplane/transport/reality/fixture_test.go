@@ -13,6 +13,7 @@ import (
 	"net"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -342,10 +343,10 @@ func newTap(t *testing.T, address string) *tap {
 			tp.answers = append(tp.answers, answer)
 			tp.mu.Unlock()
 			go func() {
-				_, _ = io.Copy(io.MultiWriter(up, lockedWriter{&tp.mu, buf}), c)
+				_, _ = io.Copy(recordThenForward{&tp.mu, buf, up}, c)
 				_ = up.Close()
 			}()
-			go func() { _, _ = io.Copy(io.MultiWriter(c, lockedWriter{&tp.mu, answer}), up); _ = c.Close() }()
+			go func() { _, _ = io.Copy(recordThenForward{&tp.mu, answer, c}, up); _ = c.Close() }()
 		}
 	}()
 	return tp
@@ -392,15 +393,27 @@ func interpose(t *testing.T, address string) (string, func()) {
 	return tp.addr(), func() { tp.replay(t) }
 }
 
-type lockedWriter struct {
-	mu *sync.Mutex
-	w  io.Writer
+// recordThenForward keeps each chunk before passing it on, so whatever
+// the far end has read is already in the capture: a test that reads the
+// capture once the far end got the last chunk sees that chunk too. What
+// the forward didn't take is dropped from the capture again.
+type recordThenForward struct {
+	mu  *sync.Mutex
+	rec *bytes.Buffer
+	to  io.Writer
 }
 
-func (w lockedWriter) Write(p []byte) (int, error) {
+func (w recordThenForward) Write(p []byte) (int, error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.w.Write(p)
+	w.rec.Write(p)
+	w.mu.Unlock()
+	n, err := w.to.Write(p)
+	if n < len(p) {
+		w.mu.Lock()
+		w.rec.Truncate(w.rec.Len() - (len(p) - n))
+		w.mu.Unlock()
+	}
+	return n, err
 }
 
 func harness(t *testing.T, tr *Transport, s transport.Shaping) transporttest.Harness {
@@ -415,6 +428,7 @@ func harness(t *testing.T, tr *Transport, s transport.Shaping) transporttest.Har
 			}
 			l, err := tr.Listen(t.Context(), transport.ListenConfig{Address: addr, Settings: listenSettingsFor(t, k, tg, 0)},
 				transport.Admission{Peers: peers, Camouflage: camouflage})
+			logSystemRootsRead(t)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -426,6 +440,21 @@ func harness(t *testing.T, tr *Transport, s transport.Shaping) transporttest.Har
 		Shaping:     s,
 		Refused:     refused,
 		Transport:   tr,
+	}
+}
+
+var systemRootsLogged atomic.Bool
+
+// logSystemRootsRead logs, once per process, how long Listen's first read
+// of the system roots took: the read TP-253 moved out of Listen's bounds,
+// which is ruled out as the cause if Delivery's "didn't complete" recurs.
+func logSystemRootsRead(t *testing.T) {
+	select {
+	case <-systemRoots.done:
+		if systemRootsLogged.CompareAndSwap(false, true) {
+			t.Logf("the first read of the system roots took %v", systemRoots.took)
+		}
+	default:
 	}
 }
 

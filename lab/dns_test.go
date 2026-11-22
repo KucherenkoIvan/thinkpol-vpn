@@ -23,7 +23,7 @@ import (
 // and stopping puts the OS's configuration back, after a crash too.
 func TestDNSFollowsTheRules(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
+	l := internetPool.Acquire(t)
 	server, devA, devB, inet := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.DeviceB), l.Node(lab.Internet)
 	inetIP := inet.IPv4(lab.NetServers)
 	domestic, foreign := startResolvers(t, inet)
@@ -42,7 +42,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		original := string(osResolvConf(inetIP))
 		devA.WriteFile(t, "/etc/resolv.conf", []byte(original))
 		capture := devA.Capture(t, "")
-		up := devA.Start(t, "thinkpol", "up")
+		up := startUp(t, devA)
 		waitLog(t, up, "the system resolves through the node")
 		ping(t, devA, s4)
 		conf := devA.MustExec(t, "cat", "/etc/resolv.conf")
@@ -80,7 +80,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		if conf := devA.MustExec(t, "cat", "/etc/resolv.conf"); conf == original {
 			t.Fatal("the crash test proves nothing: resolv.conf was restored")
 		}
-		up = devA.Start(t, "thinkpol", "up")
+		up = startUp(t, devA)
 		waitLog(t, up, "the system resolves through the node")
 		mustResolve(t, devA, "www.tunnel.test", false, foreignA)
 		if err := up.Stop(); err != nil {
@@ -97,7 +97,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		mustResolve(t, devB, "before.direct.test", false, domesticA)
 
 		capture := devB.Capture(t, "")
-		up := devB.Start(t, "thinkpol", "up")
+		up := startUp(t, devB)
 		waitLog(t, up, "the system resolves through the node")
 		ping(t, devB, s4)
 		if out := devB.MustExec(t, "resolvectl", "domain", "thinkpol0"); !strings.Contains(out, "~.") || !strings.Contains(out, "lab.internal") {
@@ -115,33 +115,15 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		// A domain on the physical link takes its names past the TUN: the
 		// device says DNS isn't protected, and says so no longer once it
 		// goes.
-		if out, err := execRead(devB, execTimeout, "thinkpol", "status"); err != nil {
+		if st, err := readStatus(devB, execTimeout); err != nil {
 			t.Fatal(err)
-		} else if strings.Contains(out, "dns_not_protected") {
-			t.Fatalf("not protected before any other domain:\n%s", out)
+		} else if err := st.check(noProblem("dns_not_protected")); err != nil {
+			t.Fatalf("before any other domain: %v", err)
 		}
 		devB.MustExec(t, "resolvectl", "domain", link, "~example.org")
-		lab.Eventually(t, 30*time.Second, func() error {
-			out, err := execRead(devB, pollTimeout, "thinkpol", "status")
-			if err != nil {
-				return err
-			}
-			if !strings.Contains(out, "dns_not_protected") {
-				return fmt.Errorf("status:\n%s", out)
-			}
-			return nil
-		})
+		waitStatusFor(t, devB, 30*time.Second, nil, problem("dns_not_protected"))
 		devB.MustExec(t, "resolvectl", "domain", link, "")
-		lab.Eventually(t, 30*time.Second, func() error {
-			out, err := execRead(devB, pollTimeout, "thinkpol", "status")
-			if err != nil {
-				return err
-			}
-			if strings.Contains(out, "dns_not_protected") {
-				return fmt.Errorf("status:\n%s", out)
-			}
-			return nil
-		})
+		waitStatusFor(t, devB, 30*time.Second, nil, noProblem("dns_not_protected"))
 
 		if err := up.Stop(); err != nil {
 			t.Errorf("thinkpol up: %v\n%s", err, up.Output())
@@ -165,31 +147,13 @@ func TestDNSFollowsTheRules(t *testing.T) {
 		// and resolved's watch makes that read when the file is written
 		// again.
 		devB.MustExec(t, "rm", "/run/systemd/resolve/resolv.conf")
-		up2 := devB.Start(t, "thinkpol", "up")
+		up2 := startUp(t, devB)
 		waitLog(t, up2, "the system resolves through the node")
-		lab.Eventually(t, 30*time.Second, func() error {
-			out, err := execRead(devB, pollTimeout, "thinkpol", "status")
-			if err != nil {
-				return err
-			}
-			if !strings.Contains(out, "dns_upstreams_stale") {
-				return fmt.Errorf("status:\n%s", out)
-			}
-			return nil
-		})
+		waitStatusFor(t, devB, 30*time.Second, nil, problem("dns_upstreams_stale"))
 		link = devB.Interface(lab.NetDevices)
 		devB.MustExec(t, "resolvectl", "dns", link, "")
 		devB.MustExec(t, "resolvectl", "dns", link, inetIP.String())
-		lab.Eventually(t, 30*time.Second, func() error {
-			out, err := execRead(devB, pollTimeout, "thinkpol", "status")
-			if err != nil {
-				return err
-			}
-			if strings.Contains(out, "dns_upstreams_stale") {
-				return fmt.Errorf("status:\n%s", out)
-			}
-			return nil
-		})
+		waitStatusFor(t, devB, 30*time.Second, nil, noProblem("dns_upstreams_stale"))
 		// The staleness cleared because the read was told: a direct name
 		// goes to the domestic resolver again.
 		mustResolve(t, devB, "www.direct.test", false, domesticA)
@@ -208,7 +172,7 @@ func TestDNSFollowsTheRules(t *testing.T) {
 // nothing; the domestic resolver is never asked a tunnel or overlay name.
 func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
+	l := internetPool.Acquire(t)
 	server, devA, inet := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Internet)
 	inetIP := inet.IPv4(lab.NetServers)
 	domestic, foreign := startResolvers(t, inet)
@@ -221,7 +185,7 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 
 	devA.WriteFile(t, "/etc/resolv.conf", osResolvConf(inetIP))
 	capture := devA.Capture(t, "")
-	up := devA.Start(t, "thinkpol", "up")
+	up := startUp(t, devA)
 	waitLog(t, up, "the system resolves through the node")
 	ping(t, devA, s4)
 
@@ -257,18 +221,7 @@ func TestDNSFollowsTheRulesOnAServerExit(t *testing.T) {
 	if refused := regexp.MustCompile(`refuses the upstream.*upstream=` + regexp.QuoteMeta(inetIP.String()) + `:5353`); !refused.MatchString(exit.Output()) {
 		t.Errorf("the exit didn't report refusing %s:5353:\n%s", inetIP, exit.Output())
 	}
-	lab.Eventually(t, 30*time.Second, func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
-		defer cancel()
-		st, err := server.Exec(ctx, "thinkpol", "status")
-		if err != nil {
-			return err
-		}
-		if !strings.Contains(st.Stdout, "dns_upstream_refused") {
-			return fmt.Errorf("no dns_upstream_refused in the server's status:\n%s", st.Stdout)
-		}
-		return nil
-	})
+	waitStatusFor(t, server, 30*time.Second, nil, problem("dns_upstream_refused"))
 	wantNoAnswer(t, devA, "www2.tunnel.test", "a tunnel-bound name with the resolver's upstream refused")
 	mustResolve(t, devA, "www3.direct.test", false, domesticA)
 	restartExit(upstreamNet)

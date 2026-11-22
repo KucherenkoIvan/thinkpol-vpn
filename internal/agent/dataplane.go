@@ -103,8 +103,9 @@ type DataPlane struct {
 	dnsUpstreams <-chan []netip.AddrPort
 	// killSwitch keeps a device's kill switch for the data plane's state
 	// (Node.enforceKillSwitch; nil in a worker), at every change, every
-	// killSwitchReapply, and when killSwitchRequests asks after a toggle
-	// changed (closing the channel it sent once done).
+	// re-apply period (DeviceHost.reapplyEvery), and when
+	// killSwitchRequests asks after a toggle changed (closing the channel
+	// it sent once done).
 	killSwitch         func(ctx context.Context, v killSwitchView)
 	killSwitchRequests <-chan chan struct{}
 
@@ -133,6 +134,9 @@ type tuning struct {
 	dnsListen netip.Addr
 	// exitDeadline replaces dataplane.ExitHandshakeDeadline (0: it).
 	exitDeadline time.Duration
+	// tableFault is the engine's TableFault (tests: a layout that fails
+	// before the router takes the new table).
+	tableFault func() error
 }
 
 // RetryAfter is how long a data plane waits before retrying an Apply, a
@@ -219,12 +223,17 @@ type connectRequest struct {
 	done    chan<- error
 }
 
-// rulesRequest replaces a device's own rules; done gets what enforcing
-// them said (rules.ErrPresetUnavailable: enforced failing closed) and
-// must have room for it.
+// rulesRequest replaces a device's own rules. The goroutine that runs
+// the device calls take once it has the request (a stopped node's caller
+// calls it instead): take stores the rules (DeviceFile) and returns them,
+// or fails having changed nothing.
+// done gets take's error or what enforcing them said
+// (rules.ErrPresetUnavailable: enforced failing closed;
+// ErrPresetNotEnforced, ErrPresetIncomplete: stored, but laying it out
+// failed) and must have room for it.
 type rulesRequest struct {
-	rules rules.Local
-	done  chan<- error
+	take func() (rules.Local, error)
+	done chan<- error
 }
 
 // runner follows the space's maps (follow) and runs the data plane while
@@ -270,6 +279,19 @@ type runner struct {
 	// retryAt is when to retry a failed Apply or start (zero: nothing to
 	// retry).
 	retryAt time.Time
+	// rulesPending is set while laying out dp.Rules failed (SetRules):
+	// the engine holds them, and the retry's Apply lays them out.
+	rulesPending bool
+	// applyFailed is the failure of the Applies failing in a row (the
+	// map's version and the step), warned of once; zero after one
+	// succeeds.
+	applyFailed failedApply
+}
+
+// failedApply is an Apply's failure, as warned of once.
+type failedApply struct {
+	version uint64
+	step    dataplane.Step
 }
 
 // tunMTU is the TUN's MTU: the overlay's, below the engine's per-link
@@ -323,7 +345,7 @@ func (r *runner) start(ctx context.Context) error {
 	}
 	r.pointSystem()
 	r.listeners = newListenerSet(engine, r.dp.Log, r.dp.tuning.retryAfter)
-	r.retryAt = time.Time{}
+	r.retryAt, r.rulesPending, r.applyFailed = time.Time{}, false, failedApply{}
 	r.applied()
 	return nil
 }
@@ -385,6 +407,7 @@ func (r *runner) engineConfig(p startPorts, resolver *dns.Server) dataplane.Engi
 		Log:          r.dp.Log,
 		Forward:      r.dp.Forward,
 		Rules:        r.dp.Rules,
+		TableFault:   r.dp.tuning.tableFault,
 	}
 	if p.ifc != nil {
 		cfg.Interface = overlayInterface{p.ifc}
@@ -482,7 +505,11 @@ func (r *runner) loop(ctx context.Context) error {
 	defer retry.Stop()
 	status := time.NewTicker(statusEvery)
 	defer status.Stop()
-	reapply := time.NewTicker(killSwitchReapply)
+	every := killSwitchReapply
+	if r.dp.Device != nil {
+		every = r.dp.Device.reapplyEvery()
+	}
+	reapply := time.NewTicker(every)
 	defer reapply.Stop()
 	for {
 		var ended <-chan struct{}
@@ -524,15 +551,66 @@ func (r *runner) loop(ctx context.Context) error {
 		case ups := <-r.dp.dnsUpstreams:
 			r.setUpstreams(ups)
 		case req := <-r.dp.rulesRequests:
-			r.dp.Rules = req.rules
-			var err error
-			if r.engine != nil {
-				err = r.engine.SetRules(req.rules)
-			}
-			r.publish()
-			req.done <- err
+			req.done <- r.takeRules(ctx, req)
 		}
 	}
+}
+
+// takeRules has the data plane take the rules req asks for: stored
+// first (a store that fails changes nothing), then handed to the engine
+// (and kept for every later start), then reported. Status shows the
+// preset as enforced only while the engine's router enforces it
+// (statusWith); layOutRules says what a failed layout left. The kill
+// switch follows the preset (the crash posture) before the reply, as
+// request has it follow a connect or disconnect.
+func (r *runner) takeRules(ctx context.Context, req rulesRequest) error {
+	l, err := req.take()
+	if err != nil {
+		return err
+	}
+	r.dp.Rules = l
+	if r.engine != nil {
+		r.dp.report.set(func(p *report) { p.switching = l.Preset.String() })
+		err = r.layOutRules()
+	}
+	// layoutFailed goes with the preset: publish would leave a moment
+	// showing this preset with the previous one's layout failure.
+	r.dp.report.set(func(p *report) { p.preset, p.switching, p.layoutFailed = l.Preset.String(), "", r.rulesPending })
+	r.enforceKillSwitch(ctx)
+	r.publish()
+	return err
+}
+
+// layOutRules has the engine enforce dp.Rules. A failure other than an
+// unavailable preset (enforced failing closed) is retried by the next
+// Apply, which lays out the rules the engine kept; it is told apart by
+// where it left the router: ErrPresetNotEnforced on the previous preset,
+// ErrPresetIncomplete on the new one with the rest of the layout (an
+// exit's device, the OS routing table) missing.
+func (r *runner) layOutRules() error {
+	err := r.engine.SetRules(r.dp.Rules)
+	st := r.engine.Status()
+	if err == nil || errors.Is(err, rules.ErrPresetUnavailable) {
+		switch {
+		case st.LastApplyError != "" && !r.retryAt.IsZero():
+			// An Apply failed too, and SetRules runs none of its steps,
+			// so it stays failed (apply_failed) until its retry succeeds;
+			// that retry comes now, as what failed may have cleared.
+			r.retryAt = time.Now()
+		case r.rulesPending:
+			// A retry left by a failed layout has nothing left to do.
+			r.retryAt = time.Time{}
+		}
+		r.rulesPending = false
+		return err
+	}
+	r.rulesPending = true
+	r.retryAt = time.Now().Add(r.dp.tuning.retryAfter)
+	r.dp.Log.Warn("laying out the rules failed, retrying", "preset", r.dp.Rules.Preset, "in", r.dp.tuning.retryAfter, "err", path.RedactError(err))
+	if st.Rules.Preset == r.dp.Rules.Preset {
+		return fmt.Errorf("%w: %w", ErrPresetIncomplete, err)
+	}
+	return fmt.Errorf("%w: %w", ErrPresetNotEnforced, err)
 }
 
 // publish puts the data plane's state into the device's report, then
@@ -546,7 +624,7 @@ func (r *runner) publish() {
 	r.dp.report.set(func(p *report) {
 		p.engine, p.version, p.removed, p.retrying, p.listeners, p.conn, p.dns =
 			r.engine, r.follow.cur.Header().Version, r.follow.removed, !r.retryAt.IsZero(), n, r.conn.state, r.guard.problem
-		p.mismatch = r.follow.mismatch
+		p.mismatch, p.layoutFailed = r.follow.mismatch, r.rulesPending
 		p.dnsNoUpstream = r.noUpstream()
 		p.exitDeadline = r.dp.tuning.exitDeadline
 	})
@@ -581,6 +659,9 @@ func (r *runner) request(ctx context.Context, req connectRequest) {
 		r.dp.remember(req.connect)
 	}
 	err := r.connect(ctx, req.connect)
+	// The kill switch follows before the reply, which carries the status:
+	// a reply ahead of it would show the switch from before the change.
+	r.enforceKillSwitch(ctx)
 	r.publish()
 	req.done <- err
 }
@@ -719,12 +800,26 @@ func (r *runner) tryStart(ctx context.Context) {
 	r.tell(EventConnected)
 }
 
+// apply applies the current section, with the rules the engine holds:
+// a successful Apply also lays out rules whose layout failed
+// (rulesPending).
 func (r *runner) apply(ctx context.Context) {
 	if err := r.engine.Apply(ctx, r.follow.section); err != nil {
 		r.retryAt = time.Now().Add(r.dp.tuning.retryAfter)
-		r.dp.Log.Warn("applying the map failed, retrying", "version", r.follow.cur.Header().Version,
-			"step", r.engine.Status().LastApplyError, "in", r.dp.tuning.retryAfter, "err", path.RedactError(err))
+		failed := failedApply{version: r.follow.cur.Header().Version, step: r.engine.Status().LastApplyError}
+		level := slog.LevelWarn
+		if failed == r.applyFailed {
+			level = slog.LevelDebug // the same failure, retried every RetryAfter
+		}
+		r.applyFailed = failed
+		r.dp.Log.Log(ctx, level, "applying the map failed, retrying", "version", failed.version,
+			"step", failed.step, "in", r.dp.tuning.retryAfter, "err", path.RedactError(err))
 		return
+	}
+	r.applyFailed = failedApply{}
+	if r.rulesPending {
+		r.rulesPending = false
+		r.dp.Log.Info("rules laid out", "preset", r.dp.Rules.Preset)
 	}
 	r.retryAt = time.Time{}
 	r.pointSystem()

@@ -12,10 +12,11 @@ import (
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/logring"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 )
 
 func TestTheWatcherDeliversChangedMaps(t *testing.T) {
-	dir := tempDir(t)
+	dir := trusteddirtest.TempDir(t)
 	path := filepath.Join(dir, MapFileName)
 	writeFile(t, path, []byte("version 1"), 0o644)
 	_, fi, err := readMap(path)

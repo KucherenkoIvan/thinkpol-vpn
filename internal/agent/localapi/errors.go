@@ -56,8 +56,15 @@ var (
 	// ErrNotRunning: the service answers, but its node isn't running.
 	ErrNotRunning        = Error{code: "not_running"}
 	ErrPresetUnavailable = Error{code: "rule_preset_unavailable"}
-	ErrUnknownPreset     = Error{code: "unknown_rule_preset"}
-	ErrDNSUnprotected    = Error{code: "dns_not_protected"}
+	// ErrPresetNotEnforced: the preset is stored, but laying it out failed
+	// before the router took it; the router keeps the preset it had until
+	// a retry lays it out.
+	ErrPresetNotEnforced = Error{code: "rule_preset_not_enforced"}
+	// ErrPresetIncomplete: the preset is stored and the router enforces
+	// it, but laying out the rest of it failed; retried.
+	ErrPresetIncomplete = Error{code: "rule_preset_incomplete"}
+	ErrUnknownPreset    = Error{code: "unknown_rule_preset"}
+	ErrDNSUnprotected   = Error{code: "dns_not_protected"}
 	// ErrStartFailed is a data plane that failed to start on Connect, sent
 	// with its step as the detail (`start_failed:<step>`); the failure
 	// itself stays in the service's log.
@@ -69,14 +76,24 @@ var (
 	// ErrServiceDown is nothing listening at the local API's socket: what
 	// the client finds when it dials, never sent by the server.
 	ErrServiceDown = Error{code: "service_down"}
+	// ErrServiceNotAnswering is something accepting the local API's
+	// connection without answering diag in time (DiagnoseOrReadHost):
+	// what the client finds, never sent by the server.
+	ErrServiceNotAnswering = Error{code: "service_not_answering"}
+	// ErrServiceRestarted is an agent answering once diag has read the
+	// host without one (DiagnoseOrReadHost): what the client finds, never
+	// sent by the server.
+	ErrServiceRestarted = Error{code: "service_restarted_during_read"}
 )
 
 // refusals are every refusal: its gRPC code, which the server sends it
 // with, and what a client tells a person of it, a detail filling the %s
 // of a refusal sent with one (detailed). A detailed refusal's code varies,
 // so it goes as grpckit's default, FailedPrecondition, the code its row
-// says; service_down's is never sent. A refusal's wording lives here
-// only; the client's dial-time refusal reuses ErrPermissionDenied's.
+// says; the client's own (service_down, service_not_answering,
+// service_restarted_during_read) are never sent. A refusal's wording
+// lives here only; the client's dial-time refusal reuses
+// ErrPermissionDenied's.
 // Both permission refusals ([IsPermission]) begin with "permission
 // denied", and service_down's with "the thinkpol service" (the lab checks
 // it), which stay; the rest of any message may change.
@@ -93,15 +110,20 @@ var refusals = []struct {
 	{ErrServerMode, codes.FailedPrecondition, "this node is a server: it serves its spaces whenever it runs", false},
 	{ErrNotRunning, codes.Unavailable, "the node is not running", false},
 	{ErrPresetUnavailable, codes.FailedPrecondition, "this space can't build that preset (no chain, or no domestic list): it is kept, and enforced failing closed", false},
+	{ErrPresetNotEnforced, codes.FailedPrecondition, "the preset is stored, but laying it out failed before the router took it: the router keeps the preset it had until a retry succeeds (see the status)", false},
+	{ErrPresetIncomplete, codes.FailedPrecondition, "the preset is stored and in place, but laying out the rest of it (an exit's device or the OS routing table) failed: retrying (see the status)", false},
 	{ErrUnknownPreset, codes.InvalidArgument, "no such rule preset: space, everything or all-but-domestic", false},
 	{ErrDNSUnprotected, codes.FailedPrecondition, "connected, but DNS is not protected: the system may resolve names outside the tunnel; the tunnel stays up", false},
 	{ErrStartFailed, codes.FailedPrecondition, "starting the data plane failed at step %q", true},
 	{ErrKillSwitchNotEnforced, codes.FailedPrecondition, "the setting is kept, but the kill switch is not enforced: %s", true},
 	{ErrServiceDown, codes.Unavailable, "the thinkpol service is not running", false},
+	{ErrServiceNotAnswering, codes.Unavailable, "the thinkpol service is not answering", false},
+	{ErrServiceRestarted, codes.Unavailable, "the thinkpol service came up while diag read the host", false},
 }
 
 // Refusals are every refusal a client may find in an error (errors.Is):
-// those the server sends, and the client's own [ErrServiceDown].
+// those the server sends, and the client's own ([ErrServiceDown],
+// [ErrServiceNotAnswering], [ErrServiceRestarted]).
 func Refusals() []Error {
 	out := make([]Error, 0, len(refusals))
 	for _, r := range refusals {

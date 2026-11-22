@@ -21,6 +21,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/routetable"
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/lists"
 )
 
@@ -76,17 +77,6 @@ func exempt(t *testing.T) routetable.Exempt {
 // neighbour probes (2), MLD (4), the block.
 const rulesFor = 12
 
-// tempDir is a test's directory by a path without symlinks (macOS's
-// temporary directories are under /var, a symlink), as trusteddir wants.
-func tempDir(t *testing.T) string {
-	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return dir
-}
-
 // rig is a guard on a fake pf, its record in a test directory.
 type rig struct {
 	pf   *fakePF
@@ -95,7 +85,7 @@ type rig struct {
 }
 
 func newRig(t *testing.T) *rig {
-	return &rig{pf: newFakePF(), dir: tempDir(t), boot: thisBoot}
+	return &rig{pf: newFakePF(), dir: trusteddirtest.TempDir(t), boot: thisBoot}
 }
 
 func (r *rig) store() tokenStore {

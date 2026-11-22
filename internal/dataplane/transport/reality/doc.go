@@ -42,10 +42,13 @@
 // real ServerHello spliced to the authenticated client). Each read from
 // the client goes on in one write, so the target sees the client's
 // segments as the site would (a record header forwarded on its own made
-// the lab's nginx fail on it and reset the rest). A client sending past
-// its hello before any answer isn't a dialer (ours sends nothing more
-// until the ServerHello): it is spliced as a stranger, its hello still
-// checked, so a replay is counted as one.
+// the lab's nginx fail on it and reset the rest). A client whose read
+// that completes the hello carries more bytes isn't a dialer (ours sends
+// nothing more until the ServerHello): it is spliced as a stranger, its
+// hello still checked, so a replay is counted as one. Bytes that come in a
+// later read aren't seen in time, and that hello is decided alone: the
+// rule is camouflage (looking like the real site would to such a client),
+// not authentication, which rests on the replay cache and the start rule.
 //
 // A target that can't be reached closes the connection. The target's FIN,
 // even before it sent anything, reaches the client as a half-close and
@@ -137,7 +140,13 @@
 // connection REALITY refuses and splices, so a legitimate hello at the
 // window's edge that REALITY refuses is cut after 15 s (known).
 //
-// Listen first completes a TLS 1.3 handshake with the target for each
+// Before checking the target, Listen has crypto/x509 read the system
+// roots, which on Linux and the BSDs it does from disk once per process,
+// on first use, with no bound: neither of the 10 s bounds below counts
+// that read, which can take longer than that on a loaded disk. A Listen
+// whose context ends during the read returns then; the read goes on.
+//
+// Listen then completes a TLS 1.3 handshake with the target for each
 // server name, through Control, within 10 s, and fails, naming the target
 // and the reason, unless the target's certificate verifies against the
 // system roots: REALITY's detection of the target's records stores the
@@ -151,22 +160,37 @@
 // trusted that way is imitated without post-handshake records.
 //
 // Then Listen has REALITY learn the target's post-handshake records and
-// waits for that, up to 10 s; REALITY dials the target for that without
-// the Control hook. Listen fails if REALITY's detection didn't end (the
-// target stalled): REALITY keeps what it learned per process, and would
-// otherwise hold every authenticated handshake for good. REALITY's
-// detection runs on after Listen gave up on it, with no deadline, and
-// would store an empty result over a later detection's pending one, so
-// detections of a target are serialized: a later Listen fails while the
-// earlier detection still runs, then forgets every result it left and
-// detects again. A result isn't that detection's last write (having
-// stored the records it read, it closes its connection, then checks the
-// key once more), so a result it left is forgotten only once it has stood
-// for a second. A detection whose target accepted the connection and then
-// stays silent never ends: its keys stay pending, and every later Listen
-// for that target fails until the process restarts. A caller retrying
-// Listen should know that a failure naming an earlier detection won't
-// clear on retry while the target stays silent.
+// waits for that, up to 10 s; REALITY dials the target for that without the
+// Control hook, and verifies it against the system roots. Besides the
+// records, REALITY's detection learns how many ChangeCipherSpec records in a
+// row the target tolerates: on one more connection per server name and ALPN
+// it sends the target 2 of them, then, unless the target alerted within a
+// second, 15, then 16. It runs once per process for each target, server name
+// and ALPN, and again only when a Listen re-runs a stalled detection
+// (below): not at every Listen, never for a handoff worker, and nothing a
+// client or prober sends triggers it. A site that refuses the records, like
+// nginx, gets only the first 2 and logs "unexpected ccs message" with the
+// client's address, which is the server's: the site's operator learns the
+// address of every server using it as camouflage, at each restart, and
+// whoever watches the server's uplink sees the ChangeCipherSpec records in
+// the clear and the detection's ClientHellos: of its 6 connections per
+// server name, the 4 that don't offer h2 send Go's ClientHello and the 2
+// that do send Chrome's (RR66). Stock REALITY does the same, so this marks a
+// REALITY server, not thinkpol in particular. Listen fails if REALITY's
+// detection didn't end (the target stalled): REALITY keeps what it learned
+// per process, and would otherwise hold every authenticated handshake for
+// good. REALITY's detection runs on after Listen gave up on it, with no
+// deadline, and would store an empty result over a later detection's pending
+// one, so detections of a target are serialized: a later Listen fails while
+// the earlier detection still runs, then forgets every result it left and
+// detects again. A result isn't that detection's last write (having stored
+// the records it read, it closes its connection, then checks the key once
+// more), so a result it left is forgotten only once it has stood for a
+// second. A detection whose target accepted the connection and then stays
+// silent never ends: its keys stay pending, and every later Listen for that
+// target fails until the process restarts. A caller retrying Listen should
+// know that a failure naming an earlier detection won't clear on retry while
+// the target stays silent.
 //
 // The dialer checks the certificate the same way. Anything else (a real
 // certificate: the connection was spliced, or a man in the middle
@@ -206,7 +230,7 @@
 // through the tunnel, a ping); a full record is unchanged. A map that
 // pads to buckets or at random gets what it asks for instead; it can't
 // ask for no padding at all. What the floor still shows (the rekeys'
-// timing, and the floor itself) is RESIDUAL-RISKS.md RR58.
+// timing, and the floor itself) is RESIDUAL-RISKS.md RR65.
 //
 // # Settings
 //
@@ -265,5 +289,5 @@
 // never dials). A hello the worker's table doesn't list (its map changed
 // in between) is spliced to the target, the held-back byte sent then.
 // Every worker given the listener's handoff settings holds its private
-// key, which REALITY's server needs (RESIDUAL-RISKS.md RR57).
+// key, which REALITY's server needs (RESIDUAL-RISKS.md RR64).
 package reality

@@ -48,9 +48,9 @@ func cli(t *testing.T, n *lab.Node, args []string) (lab.Result, error) {
 // else nothing. No status shows a public address or a key.
 func TestLocalAPI(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
+	l := twoDevicePool.Acquire(t)
 	server, devA, devB := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.DeviceB)
-	space := newM0Space(t, l.Node(lab.Internet), server)
+	space := newM0Space(t, l.Node(lab.Router), server)
 	envelope, _ := space.build(t)
 	nodes := map[string]*lab.Node{"server-1": server, "device-a": devA, "device-b": devB}
 	for name, n := range nodes {
@@ -88,12 +88,12 @@ func TestLocalAPI(t *testing.T) {
 	devA.MustExec(t, "install", "-d", "-m", "2777", "/run/thinkpol-api")
 	devB.MustExec(t, "install", "-d", "-m", "755", "-o", malloryUID, "/run/foreign-api")
 	up := map[string]*lab.Process{
-		"server-1": server.Start(t, "thinkpol", "up", "-mode", "server"),
-		"device-a": devA.Start(t, "thinkpol", "up", "-connect=false"),
-		"device-b": devB.Start(t, "env", "THINKPOL_API_SOCKET=/run/foreign-api/api.sock", "thinkpol", "up"),
+		"server-1": startUp(t, server),
+		"device-a": startUp(t, devA, "-connect=false"),
+		"device-b": devB.Start(t, upCommand(devB, []string{"THINKPOL_API_SOCKET=/run/foreign-api/api.sock"})...),
 	}
-	waitLog(t, up["server-1"], `worker space=\S+ .*msg="map applied"`)
-	waitLog(t, up["device-a"], "mode=device")
+	waitLog(t, up["server-1"], workerApplied(""))
+	waitStatus(t, devA, inMode("device"))
 	s4, s6 := space.overlay(1)
 	b4, _ := space.overlay(3)
 
@@ -135,9 +135,18 @@ func TestLocalAPI(t *testing.T) {
 		ping(t, devA, s4)
 		ping(t, devA, s6)
 		ping(t, devA, b4)
-		res, err = cli(t, devA, as(aliceUID, apiGID, "status"))
-		if err != nil {
-			t.Fatal(err)
+		// The lab's WireGuard runs its timers sped up, and with them the
+		// exit handshake deadline health reads (1.5 s at a factor of 10):
+		// a rekey under load can flip health for a moment.
+		healthy := regexp.MustCompile(`health: +ok`)
+		for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(500 * time.Millisecond) {
+			res, err = cli(t, devA, as(aliceUID, apiGID, "status"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if healthy.MatchString(res.Stdout) || time.Now().After(deadline) {
+				break
+			}
 		}
 		for _, want := range []string{`health: +ok`, `peers:`, `handshake [0-9hms]+ ago`, `neighbors:`, `udp \(dialed active up\)`} {
 			if !regexp.MustCompile(want).MatchString(res.Stdout) {
@@ -268,7 +277,7 @@ func TestLocalAPI(t *testing.T) {
 // carries on throughout.
 func TestDisconnectLeavesNothingBehind(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
+	l := internetPool.Acquire(t)
 	server, devA, devB, inet := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.DeviceB), l.Node(lab.Internet)
 	inetIP := inet.IPv4(lab.NetServers)
 	startResolvers(t, inet)
@@ -286,9 +295,9 @@ func TestDisconnectLeavesNothingBehind(t *testing.T) {
 	}
 
 	exit := startServerExit(t, server, inetIP, v1, netip.PrefixFrom(inetIP, 24).Masked())
-	devBUp := devB.Start(t, "thinkpol", "up")
-	up := devA.Start(t, "thinkpol", "up", "-connect=false")
-	waitLog(t, up, "mode=device")
+	devBUp := startUp(t, devB)
+	up := startUp(t, devA, "-connect=false")
+	waitStatus(t, devA, inMode("device"))
 
 	wantConnected := func(connected bool) error {
 		rules4, rules6, err := policyRules(devA, pollTimeout)

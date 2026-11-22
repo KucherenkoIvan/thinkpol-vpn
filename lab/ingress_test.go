@@ -20,10 +20,10 @@ import (
 // spec asking a device to dial server-2 with ingress off doesn't build.
 func TestIngressOffAdmitsOnlyServers(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
+	l := standardPool.Acquire(t)
 	s1, s2, devA, devB := l.Node(lab.Server1), l.Node(lab.Server2), l.Node(lab.DeviceA), l.Node(lab.DeviceB)
 	s1Addr, s2Addr := s1.IPv4(lab.NetServers).String(), s2.IPv4(lab.NetServers).String()
-	space := &m0Space{builder: l.Node(lab.Internet), spec: "/src/lab/maps/ingress.yaml"}
+	space := &m0Space{builder: l.Node(lab.Router), spec: "/src/lab/maps/ingress.yaml"}
 	settings := func(ingress, deviceBDials string) {
 		space.env = []string{
 			"SERVER_1_IPV4=" + s1Addr, "SERVER_2_IPV4=" + s2Addr,
@@ -52,10 +52,10 @@ func TestIngressOffAdmitsOnlyServers(t *testing.T) {
 	up := map[string]*lab.Process{
 		// server-1's worker dials server-2 out of its namespace, on the
 		// lab's private network, which dials refuse unless allowed.
-		"server-1": s1.Start(t, "thinkpol", "up", "-mode", "server", "-map-poll", "1s", "-egress-allowed", netip.PrefixFrom(s1.IPv4(lab.NetServers), 24).Masked().String()),
-		"server-2": s2.Start(t, "thinkpol", "up", "-mode", "server", "-map-poll", "1s"),
-		"device-a": devA.Start(t, "thinkpol", "up", "-map-poll", "1s"),
-		"device-b": devB.Start(t, "thinkpol", "up", "-map-poll", "1s"),
+		"server-1": startUp(t, s1, "-map-poll", "1s", "-egress-allowed", netip.PrefixFrom(s1.IPv4(lab.NetServers), 24).Masked().String()),
+		"server-2": startUp(t, s2, "-map-poll", "1s"),
+		"device-a": startUp(t, devA, "-map-poll", "1s"),
+		"device-b": startUp(t, devB, "-map-poll", "1s"),
 	}
 	waitLog(t, up["server-2"], `msg="map applied" .*version=`+version1+` .*ingress=on egress=off`)
 
@@ -76,8 +76,8 @@ func TestIngressOffAdmitsOnlyServers(t *testing.T) {
 		putMap(t, nodes[name], v2)
 	}
 	waitLog(t, up["server-2"], `msg="map applied" .*version=`+version2+` .*ingress=off egress=off`)
-	waitLog(t, up["server-1"], applied(version2))
-	waitLog(t, up["device-a"], applied(version2))
+	waitStatus(t, s1, mapApplied(version2))
+	waitStatus(t, devA, mapApplied(version2))
 
 	for range 5 {
 		noPing(t, devB, "-c", "2", "-W", "1", server2.String()) // server-2's ingress is off

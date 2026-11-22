@@ -21,7 +21,12 @@ import (
 // run is a listing, and the record's directory is opened, never made. It
 // works whether or not a guard runs.
 func InspectIPv6Guard(ctx context.Context) routetable.GuardReport {
-	return newIPv6Guard(execPfctl{path: pfctlPath, timeout: pfctlTimeout}, tokenStore{dir: netcfg.StateDir, boot: trusteddir.BootSession}, guardPoll, hostAddrs).inspect(ctx)
+	return inspectIPv6Guard(ctx, execPfctl{path: pfctlPath, timeout: pfctlTimeout}, netcfg.StateDir, trusteddir.BootSession)
+}
+
+// inspectIPv6Guard is InspectIPv6Guard through pf, its record in dir.
+func inspectIPv6Guard(ctx context.Context, pf pfctl, dir string, boot func() (string, error)) routetable.GuardReport {
+	return newIPv6Guard(pf, tokenStore{dir: dir, boot: boot}, guardPoll, hostAddrs).inspect(ctx)
 }
 
 func (g *IPv6Guard) inspect(ctx context.Context) routetable.GuardReport {
@@ -70,7 +75,12 @@ func inspectRules(ctx context.Context, pf pfctl, anchor string) (rules []routeta
 // names and whether pf still holds it. It only reads, as
 // InspectIPv6Guard does, whether or not a kill switch runs.
 func InspectKillSwitch(ctx context.Context) KillSwitchReport {
-	return NewKillSwitch().inspect(ctx)
+	return inspectKillSwitch(ctx, execPfctl{path: pfctlPath, timeout: pfctlTimeout}, netcfg.StateDir, trusteddir.BootSession)
+}
+
+// inspectKillSwitch is InspectKillSwitch through pf, its record in dir.
+func inspectKillSwitch(ctx context.Context, pf pfctl, dir string, boot func() (string, error)) KillSwitchReport {
+	return newKillSwitch(pf, tokenStore{dir: dir, boot: boot, record: killSwitchRecord, header: killSwitchHeader}, hostAddrs).inspect(ctx)
 }
 
 func (k *KillSwitch) inspect(ctx context.Context) KillSwitchReport {

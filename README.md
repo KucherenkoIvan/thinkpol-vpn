@@ -13,7 +13,7 @@ A research project, work in progress: a prototype and a lab for studying censors
 
 ## Development
 
-Needs Go 1.26 (`go.mod` pins the toolchain; with `GOTOOLCHAIN=auto`, an older Go downloads it), `make`, and the network for `make lint` (govulncheck reads the Go vulnerability database). [go-kernel](https://github.com/KucherenkoIvan/go-kernel) is public, so no `GOPRIVATE` or SSH setup is needed.
+Needs Go 1.21 or newer (`make` runs the toolchain `go.mod` pins, whatever the local Go is, and downloads it on first use), `make`, and the network for `make lint` (govulncheck reads the Go vulnerability database). [go-kernel](https://github.com/KucherenkoIvan/go-kernel) is public, so no `GOPRIVATE` or SSH setup is needed.
 
 ```sh
 make tools                     # pinned dev tools into bin/tools (lint does it on first use)

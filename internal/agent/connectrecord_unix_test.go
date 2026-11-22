@@ -7,12 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir/trusteddirtest"
 )
 
 func bootOf(s string) func() (string, error) { return func() (string, error) { return s, nil } }
 
 func TestTheConnectRecordKeepsTheLastRequestOfItsBoot(t *testing.T) {
-	dir := filepath.Join(tempDir(t), "thinkpol")
+	dir := filepath.Join(trusteddirtest.TempDir(t), "thinkpol")
 	rec := fileConnectRecord{dir: dir, boot: bootOf("boot-1")}
 
 	// None yet, and reading makes nothing.
@@ -75,7 +77,7 @@ func TestAConnectRecordThatCantBeReadIsAnError(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			dir := filepath.Join(tempDir(t), "thinkpol")
+			dir := filepath.Join(trusteddirtest.TempDir(t), "thinkpol")
 			if err := os.Mkdir(dir, 0o700); err != nil {
 				t.Fatal(err)
 			}

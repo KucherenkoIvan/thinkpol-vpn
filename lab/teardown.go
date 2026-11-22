@@ -22,6 +22,7 @@ func downProject(ctx context.Context, project, root string) error {
 		return fmt.Errorf("lab: refusing to tear down %q: not a lab project (no %q prefix)", project, ProjectPrefix)
 	}
 	var problems []string
+	found := 0
 	for _, list := range []struct{ cmd, name string }{
 		{"ps -a", "{{.Names}}"},
 		{"network ls", "{{.Name}}"},
@@ -36,6 +37,7 @@ func downProject(ctx context.Context, project, root string) error {
 			if line == "" {
 				continue
 			}
+			found++
 			f := strings.SplitN(line, "\t", 3)
 			for len(f) < 3 {
 				f = append(f, "")
@@ -50,6 +52,10 @@ func downProject(ctx context.Context, project, root string) error {
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("lab: refusing to tear down %q: %s", project, strings.Join(problems, "; "))
+	}
+	if found == 0 {
+		// Every lab start asks first; Compose would only list the same.
+		return nil
 	}
 	// An empty project directory and no COMPOSE_* variables: Compose loads
 	// nothing but the project name.
@@ -116,6 +122,11 @@ func DownRun(ctx context.Context, root, run string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return downRun(ctx, root, checkout, run)
+}
+
+// downRun is DownRun for the checkout whose prefix is checkout.
+func downRun(ctx context.Context, root, checkout, run string) ([]string, error) {
 	removed, err := downWhere(ctx, func(project, labRoot string) bool {
 		return labRoot == root && startedByRun(project, checkout, run)
 	})
@@ -134,7 +145,18 @@ func DownStale(ctx context.Context) ([]string, error) {
 	})
 }
 
+// downWhere removes the labs match picks, then the subnet reservations
+// whose owner is gone (reserveSubnets).
 func downWhere(ctx context.Context, match func(project, root string) bool) ([]string, error) {
+	removed, err := downMatching(ctx, match)
+	dir, lerr := lockDir()
+	if lerr == nil {
+		lerr = reclaimReservations(ctx, dir)
+	}
+	return removed, errors.Join(err, lerr)
+}
+
+func downMatching(ctx context.Context, match func(project, root string) bool) ([]string, error) {
 	projects, err := labProjects(ctx)
 	if err != nil {
 		return nil, err

@@ -56,9 +56,13 @@ var refusalExits = map[string]int{
 	localapi.ErrServerMode.Code():            exitFailure,
 	localapi.ErrNotRunning.Code():            exitUnavailable,
 	localapi.ErrPresetUnavailable.Code():     exitFailure,
+	localapi.ErrPresetNotEnforced.Code():     exitFailure,
+	localapi.ErrPresetIncomplete.Code():      exitFailure,
 	localapi.ErrUnknownPreset.Code():         exitUsage,
 	localapi.ErrDNSUnprotected.Code():        exitFailure,
 	localapi.ErrServiceDown.Code():           exitUnavailable,
+	localapi.ErrServiceNotAnswering.Code():   exitUnavailable,
+	localapi.ErrServiceRestarted.Code():      exitUnavailable,
 	localapi.ErrStartFailed.Code():           exitFailure,
 	localapi.ErrKillSwitchNotEnforced.Code(): exitFailure,
 }

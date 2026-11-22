@@ -230,7 +230,9 @@ func TestEgressAppliedAfterAFailedTableRebuild(t *testing.T) {
 	}
 	awaitSpaceTable(t, pid, true, 10*time.Second)
 
-	time.Sleep(time.Second) // for anything still on its way to the worker
+	// For anything still on its way to the worker: a config that isn't
+	// sent is an absence no watcher can see.
+	time.Sleep(time.Second)
 	if err := firstThenSecond(); err != nil {
 		t.Error(err)
 	}

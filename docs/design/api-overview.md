@@ -6,19 +6,19 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 
 ## Summary
 
-**What exists.**
+**What exists** (updated 2026-11-22; the findings below are the 2026-10-28 snapshot's).
 
-- **One binary, `thinkpol`, with 19 visible commands and one hidden one.** There are four groups:
-  - the node: `up`;
-  - local API clients: `status`, `connect`, `disconnect`, `spaces`, `rules preset`, `logs`, `diag`;
-  - the service: `service install|uninstall|connect-on-boot`;
+- **One binary, `thinkpol`, with 22 visible commands and two hidden ones.** There are four groups:
+  - the node: `up`, `rollback`;
+  - local API clients: `status`, `connect`, `disconnect`, `spaces`, `rules preset`, `connect-on-boot`, `kill-switch`, `allow-lan`, `logs`, `diag`;
+  - the service: `service install|uninstall`;
   - development tooling: `dev keygen|map|lists …`.
   
-  Plus `version` and the hidden `worker`.
-- **A gRPC local API, `LocalService`, with 8 calls,** over a Unix socket in a directory that only root and the `thinkpol` group can reach. The group may call everything except `TailLogs`. `Diagnose` gives the group its snapshot without the host parts.
-- **Configuration is environment plus flags.** There are 14 `THINKPOL_*` keys, all on `up`, and no config file. The installed service sets exactly one of them, `THINKPOL_CONNECT_ON_BOOT`.
+  Plus `version`, the hidden `worker`, and the hidden `service connect-on-boot`, kept only to refuse with a message (TP-166).
+- **A gRPC local API, `LocalService`, with 11 calls,** over a Unix socket in a directory that only root and the `thinkpol` group can reach. The group may call everything except `TailLogs`. `Diagnose` gives the group its snapshot without the host parts.
+- **Configuration is flags, environment and a node file.** There are 17 `THINKPOL_*` keys, all read by `up`, and `THINKPOL_API_SOCKET` by every local API client too; `up` reads them over the root-owned node file `node.json` in the state directory, which can carry 11 of them (TP-166, [Configuration](configuration.md)); a member's toggles live in `device.json`. A lab node's `thinkpol` also reads two lab variables (below). The installed service runs `thinkpol up -service` and sets none of them.
 - **On-disk state:**
-  - the state directory: `node.key`, `space.pub`, `map.bin`, `blobs/`, `rules.local`;
+  - the state directory: `node.key`, `space.pub`, `map.bin`, `blobs/`, `node.json`, `device.json` (an old `rules.local` is carried into it and removed), and a device's `crash-trace`;
   - runtime locks and records under `/run/thinkpol` (macOS: `/private/var/db/thinkpol`);
   - the API's socket directory;
   - the service unit or plist;
@@ -43,8 +43,8 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 | [Local API](api-overview-reference.md#local-api) (reference file) | the socket, the two gates, every call with its access and its shapes, refusals |
 | [Configuration](#configuration) | every key, its default and where it is documented; input files; lab variables |
 | [On-disk state](#on-disk-state) | every file the node, the service and the dev tools write or read |
-| [Built since the snapshot](#built-since-the-snapshot) | what TP-140, TP-166, TP-111, TP-048, TP-141, TP-195 and TP-167 added |
-| [Planned, not built](#planned-not-built) | what TP-183 and TP-133 propose |
+| [Built since the snapshot](#built-since-the-snapshot) | what TP-140, TP-166, TP-111, TP-048, TP-141, TP-195, TP-167 and TP-133 added |
+| [Planned, not built](#planned-not-built) | what TP-183 proposes |
 | [Consistency findings](#consistency-findings) | F1–F21 with suggested verdicts |
 | [Verdicts (owner, 2026-11-07)](#verdicts-owner-2026-11-07) | the decided conventions: configuration levels, status versus diag, exit codes, naming |
 
@@ -88,11 +88,12 @@ Other variables the binary reads:
 
 ### Lab variables
 
-These are not user-facing. They are read by the lab tooling and by tests, never by a node in normal use.
+These are not user-facing. They are read by the lab tooling and by tests, and by a node only in a lab, where `THINKPOL_LAB=1` is set: never in normal use.
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `THINKPOL_LAB` | tests | set in lab nodes; tests that need root or namespaces skip without it |
+| `THINKPOL_LAB` | tests, `thinkpol` | set in lab nodes; tests that need root or namespaces skip without it; `thinkpol` reads the next one only with it set to 1 |
+| `THINKPOL_LAB_KILL_SWITCH_REAPPLY` | `thinkpol`, in a lab node only | the kill switch's re-apply period, 1 s to under 10 s, its direct destinations expiring after three periods; anything else is the defaults (10 s, 30 s) |
 | `THINKPOL_LAB_PROJECT` | lab | replaces the checkout part of Compose project names |
 | `THINKPOL_LAB_RUN` | lab, Makefile | the run id in test and gotest labs' names; `make lab-test` sets one |
 | `THINKPOL_LAB_KEEP` | lab, Makefile | a failed test's lab stays up |
@@ -133,7 +134,7 @@ The operator creates it, or the dev runbook does. It must be owned by root or th
 | `connect` | node, under the service: the boot's connect choice; `rollback`, recording it down | 0600 | node at start, under `agent.lock` |
 | `netcfg/<dev>-<ino>.<owner>.lock` (Linux) | node: one configurator per owner and namespace | 0600 | node |
 | `netcfg/` lock and route record per owner (macOS) | node | — | node; `diag` |
-| `forwarding.json` | a server's supervisor, only when it turned forwarding on | 0600 | the next supervisor, after a crash |
+| `forwarding.json` | a server's supervisor, while it turns, or has turned, forwarding on (or accept_ra it couldn't put back stays 2) | 0600 | the next supervisor, after a crash |
 | `pf-guard.token` (macOS only) | node: the guard's `pfctl -E` reference | — | node; `diag` |
 
 A server's worker gets a private tmpfs mounted at `/run/thinkpol` inside its sandbox (`internal/agent/worker/sandbox_linux.go`). Its netcfg locks go there, and nothing of the host's `/run` is visible. `service uninstall` removes locks, boot records and sockets from this directory and from the socket directory, and lists anything else it leaves.
@@ -231,7 +232,7 @@ There is no captive-portal pause (owner, 2026-11-12): behind a portal the member
 |---|---|
 | file | `crash-trace` in the state directory, chosen over the runtime directory because it survives a reboot (`/run` is a tmpfs on Linux) and exists before the agent makes any directory, so the manager can open it. A device's `service install` creates it 0600 root (exclusively, not through a symlink) before the service starts. A start that finds it wider, or someone else's, fixes it and logs what it fixed; one with another link isn't read (emptied, removed, the run's stderr sent to the null device); one it can't fix, cut or empty stops the start without writing to it. Holds what the runtime writes to stderr and the error `up` exits with, never the log (which then goes only to the ring) and nothing on a clean stop. A start reads its head (64 KiB, kept in memory as valid UTF-8) and cuts the file to it; the node empties it once it has the trace, so a start that fails before keeps the trace and adds its error |
 | service definition | a device's plist gets `StandardErrorPath`, its unit `StandardError=append:` (systemd 240+; an older one ignores the line and keeps no trace); a server's is unchanged. `service install` picks one by the mode the node will run in: the node file's; with none, a device's only while the map shows the node as one, else a server's, with a warning (TP-111). An agent that runs as a server under a device's definition detaches from the file and removes it, and warns to reinstall; right after reading it, before anything else can fail, unless the node is known to be a device (its node file says so, or sets no mode and its map shows a device), so a failing start of a server, or of a node the map makes a server or doesn't hold, adds nothing to it |
-| `diag` | `last_run`: `unreadable`, `lines` (the trace's head, line by line) and `truncated`. Root only: the group's snapshot has it unreadable, "root only", when there is one. Still schema 1 |
+| `diag` | `last_run`: `unreadable`, `lines` (the trace's head, line by line) and `truncated`. Root only: the group's snapshot has it unreadable, "root only", when there is one. Schema 2 at head (`localapi.SchemaVersion`) |
 | `status` | `last_run_crashed` and `last_run_unreadable` (`-json`), and a `last run:` line in the text for each. No health problem: health is the node's state now, and a code would hold until the next restart |
 
 Answered: the path (`crash-trace`), the field names (`last_run`, `last_run_crashed`, `last_run_unreadable`, F5), no problem code, and the file's size bound: its head and one run's output, never the log.
@@ -251,22 +252,32 @@ Every command exits by BSD `sysexits.h` ([verdict](#exit-codes-f4)). One table m
 
 | Exit | When | What maps to it |
 |---|---|---|
-| 0 | the requested state was reached | success; `-h`, `help` |
-| 1 | not reached, or reached in part; a change made through the local API prints the status as it is now, then the error | `dns_not_protected` (connected, the tunnel stays up), `kill_switch_not_enforced` (a kill switch or allow-LAN toggle kept while the kill switch isn't as meant: `apply_failed`, `remove_failed`, `unsupported`, `not_applied`; the node retries), `rule_preset_unavailable` (kept, enforced failing closed), `server_mode`, `start_failed`, `membership_check_failed` (asking the OS for the caller's group failed: retrying won't help until it is fixed), and anything not named below, a missing output directory included |
+| 0 | the requested state was reached | success; `-h`, `help`; root's `diag` with no agent running, the host read without it (the snapshot is all there is to take) |
+| 1 | not reached, or reached in part; a change made through the local API prints the status as it is now, then the error | `dns_not_protected` (connected, the tunnel stays up), `kill_switch_not_enforced` (a kill switch or allow-LAN toggle kept while the kill switch isn't as meant: `apply_failed`, `remove_failed`, `unsupported`, `not_applied`; the node retries), `rule_preset_unavailable` (kept, enforced failing closed), `rule_preset_not_enforced` (kept, the router keeps the preset it had; retried), `rule_preset_incomplete` (kept and in place, the rest of its layout retried), `server_mode`, `start_failed`, `membership_check_failed` (asking the OS for the caller's group failed: retrying won't help until it is fixed), and anything not named below, a missing output directory included |
 | 64 | bad arguments | no command, an unknown command or group, a bad flag (where Go's `flag` exits 2), wrong arguments, a removed form (`service connect-on-boot`, `service install -connect-on-boot`), `unknown_rule_preset` |
 | 66 | a named input is missing | `ENOENT` on an input the command line names or defaults (`inputError`): `up`'s state directory, its map, key or trust file, a spec, a key directory, a lists source, the map `dev map rotate` replaces, `dev map inspect`'s map and keys |
-| 69 | the service isn't running | `service_down` (nothing listens at the socket), `not_running` (the service answers, its node doesn't run; a kill switch toggle is kept for its next start) |
+| 69 | the service isn't running | `service_down` (nothing listens at the socket), `not_running` (the service answers, its node doesn't run; a kill switch toggle or a rule preset is kept for its next start); root's `diag` with the host read but short of the agent's snapshot: `service_not_answering` (something holds the socket and gives no snapshot within a minute), `service_restarted_during_read` (an agent answers once the host was read) |
 | 75 | busy, try again | another agent holds the host (`up`, `rollback`: while the installed service runs, retrying doesn't clear it); `membership_unknown` (the OS didn't say in time whether the caller is in the group) |
-| 77 | permission denied | `permission_denied`, `root_only`; `rollback` and `service install`, `service uninstall` not run as root (`agent.NeedsRootError`); a named input the caller may not read (`up`'s state directory as a member). An `EACCES` deep in a command is 1 |
+| 77 | permission denied | `permission_denied`, `root_only`; `rollback` and `service install`, `service uninstall` not run as root, and `diag` with no agent answering not run as root, which reads the host itself (`agent.NeedsRootError`, `agent.ErrDiagNeedsRoot`); a named input the caller may not read (`up`'s state directory as a member). An `EACCES` deep in a command is 1 |
 | 78 | bad configuration | a node file, environment or flag value `up` can't run with (`agent.ConfigError`) |
 
 | Surface | Behaviour |
 |---|---|
-| stderr | `thinkpol <cmd>: <message>`; a local API refusal (or the client's `service_down`, `start_failed`, `kill_switch_not_enforced`) ends with its code: `thinkpol connect: connected, but DNS is not protected: … the tunnel stays up [dns_not_protected]` |
+| stderr | `thinkpol <cmd>: <message>`; a local API refusal (or the client's own `service_down`, `service_not_answering`, `service_restarted_during_read`, and `start_failed`, `kill_switch_not_enforced`) ends with its code: `thinkpol connect: connected, but DNS is not protected: … the tunnel stays up [dns_not_protected]` |
 | a change not reached | `connect`, `disconnect`, `rules preset`, and a setting given a value: on exit 1 the current status goes to stdout (if the service answers within 5 s), the error to stderr. Other failures print nothing to stdout |
 | `kill-switch [on\|off]`, `connect-on-boot [on\|off]` (and `allow-lan`) | `<setting> [value]`: no value prints the setting alone (`kill-switch: off, allow-LAN off`), a value sets it and prints the status. TP-048 and TP-166 built them so; no other forms exist |
 
-Answered (implementer, open to the owner): `server_mode` is 1, not 78 (a server isn't misconfigured; the call means nothing there). Decided in review (round 1): `membership_unknown` is 75 only for a lookup that timed out, any other failure is `membership_check_failed`, 1; a missing output directory is 1 (sysexits' 73 isn't in the table); a toggle kept while the kill switch isn't enforced is 1, for every client, since the server refuses it. `rules preset` on a stopped node still exits 0 (it stores the preset for the next start): TP-197 changes what that path reports.
+Answered (implementer, open to the owner): `server_mode` is 1, not 78 (a server isn't misconfigured; the call means nothing there). Decided in review (round 1): `membership_unknown` is 75 only for a lookup that timed out, any other failure is `membership_check_failed`, 1; a missing output directory is 1 (sysexits' 73 isn't in the table); a toggle kept while the kill switch isn't enforced is 1, for every client, since the server refuses it. `rules preset` on a stopped node exits 69, as a kill switch toggle does (the preset is stored for the next start).
+
+### TP-133: `diag` without a running agent
+
+When no agent answers, root's `diag` reads the host itself with the agent's own read-only readers and writes the same snapshot ([localapi's package doc](../../internal/agent/localapi/doc.go), "Without the agent"). The open questions, answered: the fallback is automatic (the crash it is for leaves no agent to ask for a flag's sake, and the snapshot says which it was); `agent` is `running`, `not_running`, `not_answering` or `restarted_during_read`, a new field with `status_unreadable`, schema still 2; exit 0 when no agent runs (the snapshot is all there is to take), 69 when one holds the socket and doesn't answer, a stopped one included, or one answers once the host was read (the snapshot is written, short of the agent's or no dead run's), 77 for anyone but root, 1 when the snapshot can't be written. Its fields: `agent` and `status_unreadable`, beside the reference's [`Diagnostics`](api-overview-reference.md#diagnostics).
+
+```
+$ thinkpol diag; echo $?      # as alice, no agent
+thinkpol diag: no agent answered, and reading the host without it is root's: its parts name public addresses: run it as root (sudo)
+77
+```
 
 ## Planned, not built
 
@@ -293,21 +304,6 @@ Open naming questions:
 - the problem code (F5);
 - the file name and location (F1);
 - where accepted capabilities are kept.
-
-### TP-133: `diag` without a running agent (planned, not built)
-
-| Surface | Proposal |
-|---|---|
-| behaviour | when the local API doesn't answer, root's `diag` reads the host itself and writes the same snapshot |
-| output | `agent: "not running"`, with `status`, `tun` and `last_apply` unreadable for that reason. **`Diagnostics` has no `agent` field today**: this adds one, a string, with schema still 1 |
-| non-root | an error, not a partial snapshot (exit 1, F4) |
-| side effects | none: no lock, no directory made |
-
-Open questions:
-
-- whether the fallback is automatic or needs a flag (e.g. `-offline`): automatic hides an API that is down for another reason;
-- the `agent` field's values;
-- the exit code when it falls back (F4).
 
 ## Consistency findings
 

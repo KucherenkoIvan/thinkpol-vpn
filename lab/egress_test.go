@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +27,7 @@ import (
 // nothing, and leaves its host's network alone (TP-111).
 func TestEgressThroughAnExit(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
+	l := standardPool.Acquire(t)
 	s1, s2, devA, inet := l.Node(lab.Server1), l.Node(lab.Server2), l.Node(lab.DeviceA), l.Node(lab.Internet)
 	inet4, exit4 := inet.IPv4(lab.NetServers), s2.IPv4(lab.NetServers)
 	// The lab's IPv6 is unique local, which is no internet to an exit:
@@ -61,11 +60,12 @@ func TestEgressThroughAnExit(t *testing.T) {
 	}
 	up := map[string]*lab.Process{}
 	for name, n := range nodes {
-		up[name] = n.Start(t, upFor(name, "-map-poll", "1s", "-egress-allowed", servers)...)
+		up[name] = startUp(t, n, "-map-poll", "1s", "-egress-allowed", servers)
 	}
-	uplink := regexp.QuoteMeta(s2.Interface(lab.NetServers))
-	waitLog(t, up["server-2"], `msg="map applied" .*version=`+version1+` .*egress=on uplink=`+uplink+` egress_ipv4=on egress_ipv6=on`)
-	waitLog(t, up["device-a"], applied(version1))
+	// The map's egress flag is in server-2's log alone.
+	waitLog(t, up["server-2"], `msg="map applied" .*version=`+version1+` .*egress=on `)
+	waitStatus(t, s2, mapApplied(version1), uplink(s2.Interface(lab.NetServers), true, true))
+	waitStatus(t, devA, mapApplied(version1))
 	// The device's route-table mode (TP-018) sends everything but its
 	// link endpoints into the TUN: its rule is "default -> chain:out".
 
@@ -80,10 +80,10 @@ func TestEgressThroughAnExit(t *testing.T) {
 		return out, err
 	}
 	// noFetch fails the test unless curl itself says it couldn't connect
-	// (curlFrom); it returns what curl printed.
-	noFetch := func(url string, timeout time.Duration) string {
+	// (curlFrom); it returns what curl printed. args go before the URL.
+	noFetch := func(url string, timeout time.Duration, args ...string) string {
 		t.Helper()
-		connected, out, err := curlFrom(devA, timeout, "-g", url)
+		connected, out, err := curlFrom(devA, timeout, append(append([]string{"-g"}, args...), url)...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -122,8 +122,8 @@ func TestEgressThroughAnExit(t *testing.T) {
 	for _, n := range nodes {
 		putMap(t, n, v2)
 	}
-	waitLog(t, up["server-2"], `msg="map applied" .*version=`+version2+` .*egress_ipv4=on egress_ipv6=off`)
-	waitLog(t, up["device-a"], applied(version2))
+	waitStatus(t, s2, mapApplied(version2), uplink(s2.Interface(lab.NetServers), true, false))
+	waitStatus(t, devA, mapApplied(version2))
 	web = inet.Capture(t, "ip6 and tcp port 80")
 	lab.Eventually(t, 30*time.Second, func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -134,10 +134,11 @@ func TestEgressThroughAnExit(t *testing.T) {
 		}
 		return nil
 	})
-	start := time.Now()
-	out := noFetch(url6, 10*time.Second) // IPv6 through an exit without IPv6
-	if took := time.Since(start); took > 3*time.Second {
-		t.Errorf("IPv6 refused after %v, want at once: %s", took, out)
+	// IPv6 through an exit without IPv6, refused at once by curl's own
+	// clock: a loaded host's docker exec takes seconds of its own.
+	out := noFetch(url6, 10*time.Second, "-w", "time_total=%{time_total}\n")
+	if took, ok := curlTook(out); !ok || took > 3*time.Second {
+		t.Errorf("IPv6 refused after %v by curl's clock (read %v), want at once: %s", took, ok, out)
 	}
 	if out, err := fetch(url4, 5*time.Second); err != nil || strings.TrimSpace(out) != "egress-ok" {
 		t.Fatalf("IPv4 without the IPv6 uplink: %q, %v", out, err)
@@ -160,7 +161,7 @@ func TestEgressThroughAnExit(t *testing.T) {
 	putMap(t, s1, v3)
 	putMap(t, s2, v3)
 	waitLog(t, up["server-2"], `msg="map applied" .*version=`+version3+` .*ingress=off egress=off`)
-	waitLog(t, up["server-1"], applied(version3))
+	waitStatus(t, s1, mapApplied(version3))
 	web = inet.Capture(t, "tcp port 80 or icmp")
 	for range 3 {
 		noFetch(url4, 3*time.Second) // through server-2 with its egress off
@@ -186,8 +187,8 @@ func TestEgressThroughAnExit(t *testing.T) {
 	for _, n := range nodes {
 		putMap(t, n, v4)
 	}
-	waitLog(t, up["server-2"], `worker space=\S+ .*`+applied(version4))
-	waitLog(t, up["device-a"], applied(version4))
+	waitLog(t, up["server-2"], workerApplied(version4))
+	waitStatus(t, devA, mapApplied(version4))
 	egressWorks := func() {
 		t.Helper()
 		lab.Eventually(t, 60*time.Second, func() error {
@@ -217,16 +218,8 @@ func TestEgressThroughAnExit(t *testing.T) {
 		}
 		n.MustExec(t, "sh", "-ec", "! test -e "+stateDir+"/node.json")
 		before := netState(n)
-		up[name] = n.Start(t, "thinkpol", "up", "-map-poll", "1s", "-egress-allowed", servers)
-		waitLog(t, up[name], `mode=device`)
-		waitLog(t, up[name], `the map makes this node a server, but it runs in device mode`)
-		lab.Eventually(t, 30*time.Second, func() error {
-			out, err := execRead(n, pollTimeout, "thinkpol", "status")
-			if err == nil && !strings.Contains(out, "mode_mismatch") {
-				err = fmt.Errorf("no mode_mismatch in\n%s", out)
-			}
-			return err
-		})
+		up[name] = startUpWithoutMode(t, n, "-map-poll", "1s", "-egress-allowed", servers)
+		waitStatus(t, n, inMode("device"), problem("mode_mismatch"))
 		if out := n.MustExec(t, "ss", "-Hlntu", "sport = :4500"); out != "" {
 			t.Errorf("%s listens:\n%s", name, out)
 		}
@@ -249,17 +242,11 @@ func TestEgressThroughAnExit(t *testing.T) {
 		}
 	}
 	runsNothing("server-1", s1)
-	lab.Eventually(t, 30*time.Second, func() error {
-		out, err := execRead(devA, pollTimeout, "thinkpol", "status")
-		if err == nil && !strings.Contains(out, "no_link_up") {
-			err = fmt.Errorf("device-a links:\n%s", out)
-		}
-		return err
-	})
+	waitStatusFor(t, devA, 30*time.Second, nil, problem("no_link_up"))
 	if err := up["server-1"].Stop(); err != nil {
 		t.Fatalf("server-1: thinkpol up exited with %v:\n%s", err, up["server-1"].Output())
 	}
-	up["server-1"] = s1.Start(t, upFor("server-1", "-map-poll", "1s", "-egress-allowed", servers)...)
+	up["server-1"] = startUp(t, s1, "-map-poll", "1s", "-egress-allowed", servers)
 	ping(t, devA, server2) // the relay is back
 	egressWorks()
 	runsNothing("server-2", s2)

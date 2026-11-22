@@ -178,9 +178,10 @@ func TestAKeptLabsBinariesStayUntilLabctlDown(t *testing.T) {
 }
 
 // fakeDocker puts a docker on PATH that lists labs (lines of "project\t
-// checkout") to labProjects' queries and answers everything else with
-// nothing: no test here reaches the real one. It returns the projects that
-// docker compose down was asked to remove so far, in order.
+// checkout") to labProjects' queries, and a container and a network of one
+// of them to downProject's, and answers everything else with nothing: no
+// test here reaches the real one. It returns the projects that docker
+// compose down was asked to remove so far, in order.
 func fakeDocker(t *testing.T, labs ...string) func() []string {
 	return fakeDockerFailing(t, "", labs...)
 }
@@ -201,7 +202,9 @@ func fakeDockerFailing(t *testing.T, fail string, labs ...string) func() []strin
 	default:
 		script += "*\"" + fail + "\"*) echo fake docker fails >&2; exit 1 ;;\n"
 	}
-	script += "*\"label=" + LabelLab + "=1\"*) cat \"$(dirname \"$0\")/labs\" ;;\nesac\n"
+	script += "*\"label=" + LabelLab + "=1\"*) cat \"$(dirname \"$0\")/labs\" ;;\n" +
+		"*\"label=com.docker.compose.project=\"*) p=$(printf '%s\\n' \"$@\" | sed -n 's/^label=com.docker.compose.project=//p'); " +
+		"awk -F '\\t' -v p=\"$p\" '$1 == p { print p \"-node-1\\t1\\t\" $2 }' \"$(dirname \"$0\")/labs\" ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -222,6 +225,21 @@ func fakeDockerFailing(t *testing.T, fail string, labs ...string) func() []strin
 			}
 		}
 		return downs
+	}
+}
+
+// A lab start first removes a leftover lab of its name (downProject): with
+// nothing of the project on the daemon, docker compose down isn't asked.
+func TestDownProjectSkipsComposeWithNothingToRemove(t *testing.T) {
+	root := t.TempDir()
+	composeDowns := fakeDocker(t, "tplab-x-t-there\t"+root)
+	for _, p := range []string{"tplab-x-t-gone", "tplab-x-t-there"} {
+		if err := downProject(t.Context(), p, root); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if downs := composeDowns(); !slices.Equal(downs, []string{"tplab-x-t-there"}) {
+		t.Errorf("compose down asked for %v; want only the project that exists, tplab-x-t-there", downs)
 	}
 }
 
@@ -281,10 +299,10 @@ func TestDownRunRemovesItsRunsLabAndBinaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mine := testProject(checkout, "r1", filepath.Join(root, "lab"), "TestX")
-	theirs := goTestPackageProject(checkout, "r12", "example.net/x")
-	kept := testProject(checkout, "r2", filepath.Join(root, "lab"), "TestKept")
-	elsewhere := testProject(checkout, "r1", filepath.Join(root, "lab"), "TestY")
+	mine := testProject(checkout, "r1", "p1", filepath.Join(root, "lab"), "TestX")
+	theirs := goTestPackageProject(checkout, "r12", "p1", "example.net/x")
+	kept := testProject(checkout, "r2", "p1", filepath.Join(root, "lab"), "TestKept")
+	elsewhere := testProject(checkout, "r1", "p1", filepath.Join(root, "lab"), "TestY")
 	labs := []string{
 		mine + "\t" + root, theirs + "\t" + root, kept + "\t" + root, checkout + "\t" + root,
 		elsewhere + "\t" + root + "-elsewhere",
@@ -450,7 +468,7 @@ func TestCleanupKeepsAFailedLabsBinaries(t *testing.T) {
 		}
 		l := &Lab{Project: "tplab-x-t-cleanup", stateDir: t.TempDir(), binDir: d.path}
 		tb := &cleanupTB{failed: c.failed}
-		l.cleanup(tb, d, c.keep)
+		l.cleanup(tb, d, c.keep, time.Time{})
 		if len(tb.errs) > 0 {
 			t.Fatalf("%+v: cleanup: %v", c, tb.errs)
 		}

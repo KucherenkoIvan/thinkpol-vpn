@@ -61,10 +61,11 @@ type Node struct {
 	// plane, under settingsMu).
 	settingsMu sync.Mutex
 	device     DeviceSettings
-	// presetMu keeps SetRulePreset's store and its request to the data
-	// plane in one order. Never held with settingsMu while it waits: run
-	// takes settingsMu before it reads rulesRequests.
-	presetMu      sync.Mutex
+	// presetTurn (one slot) has one SetRulePreset at a time, waited for
+	// under the caller's ctx: a stopped node's store and its report keep
+	// one order. Never held with settingsMu while it waits: the request's
+	// take, on the node's goroutine, takes settingsMu.
+	presetTurn    chan struct{}
 	rulesRequests chan rulesRequest
 	// killSwitchRequests asks the node's goroutine to act on a kill
 	// switch toggle stored (SetKillSwitch, SetAllowLAN); it closes the
@@ -112,9 +113,9 @@ func Prepare(cfg Config, logs Logs, plat Platform) (*Node, error) {
 	}
 	n := &Node{
 		cfg: cfg, state: st, logs: logs, plat: plat, dnsUpstreams: upstreams,
-		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest),
+		requests: make(chan connectRequest), stopped: make(chan struct{}), rulesRequests: make(chan rulesRequest), presetTurn: make(chan struct{}, 1),
 		killSwitchRequests: make(chan chan struct{}),
-		ks:                 killSwitchKeeper{newKS: plat.NewKillSwitch, log: logs.Logger},
+		ks:                 killSwitchKeeper{newKS: plat.NewKillSwitch, every: plat.reapplyEvery(), log: logs.Logger},
 	}
 	n.device = st.Device
 	n.report = report{mode: cfg.Mode, space: st.Trust.SpaceID, version: st.Map.Header().Version, removed: st.Removed,
@@ -254,20 +255,21 @@ func knownDevice(dir string) bool {
 func (n *Node) Status() Status { return n.report.status() }
 
 // Connect brings a device's data plane up on its latest map and returns
-// once it is up, or why it failed to start (a *StartError); a device
-// removed from its space comes up once a map includes it again.
-// ErrServerMode on a server.
+// once it is up and its kill switch follows (Status shows both), or why
+// it failed to start (a *StartError); a device removed from its space
+// comes up once a map includes it again. ErrServerMode on a server.
 func (n *Node) Connect(ctx context.Context) error { return n.request(ctx, true) }
 
 // Disconnect takes a device's data plane down, leaving nothing of it on
-// the host, and returns once it is down. The device goes on following its
-// space's maps. ErrServerMode on a server. The choice is recorded for the
-// boot (ConnectRecord) before the node hears of it, so a node that can't
-// act on it, busy with a first start that fails and returns while the
-// caller waits (ErrNotRunning), starts disconnected next time, its kill
-// switch removed unless toggled on. A caller that gives up first (its
-// ctx ends) while the node still runs puts the node's own choice back in
-// the record: the node goes on as it was, and so does its next start.
+// the host, and returns once it is down and its kill switch follows
+// (Status shows both). The device goes on following its space's maps.
+// ErrServerMode on a server. The choice is recorded for the boot
+// (ConnectRecord) before the node hears of it, so a node that can't act on
+// it, busy with a first start that fails and returns while the caller
+// waits (ErrNotRunning), starts disconnected next time, its kill switch
+// removed unless toggled on. A caller that gives up first (its ctx ends)
+// while the node still runs puts the node's own choice back in the record:
+// the node goes on as it was, and so does its next start.
 func (n *Node) Disconnect(ctx context.Context) error {
 	if n.Mode() == ModeServer {
 		return ErrServerMode
@@ -287,11 +289,22 @@ func (n *Node) Disconnect(ctx context.Context) error {
 }
 
 // SetRulePreset switches a device's rules to preset ("space",
-// "everything", "all-but-domestic"), keeping its own rules: the choice is
-// stored in DeviceFile (only the service writes it), then enforced.
-// ErrUnknownPreset for another name; ErrPresetUnavailable when the
+// "everything", "all-but-domestic"), keeping its own rules. The goroutine
+// that runs the node takes the choice: it stores it in DeviceFile (only
+// the service writes it), has the data plane and the kill switch follow
+// it, then Status shows it, before SetRulePreset returns. A caller whose
+// ctx ends before the node took the request (waiting for another
+// SetRulePreset, too) changed nothing and gets the ctx's error; once
+// taken, it gets the outcome. With no data plane running (a node that
+// waits for a section, or stopped) the choice is stored and shown, for the
+// next start; a stopped node says ErrNotRunning, as a kill switch toggle
+// does. ErrUnknownPreset for another name; ErrPresetUnavailable when the
 // space's map can't build the preset, which is then kept and enforced
-// failing closed (see rules.PresetRules); ErrServerMode on a server.
+// failing closed (see rules.PresetRules); ErrPresetNotEnforced when laying
+// it out failed before the router took it, ErrPresetIncomplete when the
+// router took it but laying out the rest failed: either way it is kept,
+// Status shows what the router enforces, and the layout is retried;
+// ErrServerMode on a server.
 func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	if n.Mode() == ModeServer {
 		return ErrServerMode
@@ -300,32 +313,59 @@ func (n *Node) SetRulePreset(ctx context.Context, preset string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrUnknownPreset, err)
 	}
-	n.presetMu.Lock()
-	defer n.presetMu.Unlock()
-	n.settingsMu.Lock()
-	next := n.device
-	next.Rules.Preset = p
-	err = n.storeDevice(next)
-	n.settingsMu.Unlock()
+	select {
+	case n.presetTurn <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-n.presetTurn }()
+	take := func() (rules.Local, error) { return n.storePreset(p) }
+	done := make(chan error, 1)
+	select {
+	case n.rulesRequests <- rulesRequest{take: take, done: done}:
+	case <-n.stopped:
+		if err := n.takeIdle(rulesRequest{take: take}); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: the rule preset is stored for its next start", ErrNotRunning)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	// Taken: every goroutine that receives rulesRequests replies in the
+	// same step, after a file write, one Engine.SetRules (its OS routing
+	// table change has no deadline of its own; only the engine's Close
+	// ends it) and the kill switch's Apply or Close (on macOS several
+	// pfctl runs of up to the firewall's pfctlTimeout each; on Linux
+	// nftables over netlink). The wait is bounded by those and ignores
+	// ctx: the caller hears what happened, not its ctx.
+	return <-done
+}
+
+// takeIdle takes the rules req asks for while no data plane runs (the
+// node waits for a section, or stopped): stored, then shown. Run reads
+// the stored rules before its data plane starts, so that start follows
+// them.
+func (n *Node) takeIdle(req rulesRequest) error {
+	l, err := req.take()
 	if err != nil {
 		return err
 	}
-	n.report.set(func(r *report) { r.preset = p.String() })
+	n.report.set(func(p *report) { p.preset = l.Preset.String() })
+	return nil
+}
+
+// storePreset stores preset as the device's (DeviceFile, keeping the rest
+// of its settings as they are now) and returns the device's rules.
+func (n *Node) storePreset(p rules.Preset) (rules.Local, error) {
+	n.settingsMu.Lock()
+	defer n.settingsMu.Unlock()
+	next := n.device
+	next.Rules.Preset = p
+	if err := n.storeDevice(next); err != nil {
+		return rules.Local{}, err
+	}
 	n.logs.Info("rule preset set", "preset", p)
-	done := make(chan error, 1)
-	select {
-	case n.rulesRequests <- rulesRequest{rules: next.Rules, done: done}:
-	case <-n.stopped:
-		return nil // stored: the next start takes it
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return next.Rules, nil
 }
 
 // SetConnectOnBoot sets a device's connect-on-boot, stored in DeviceFile
@@ -679,7 +719,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 		})
 	}
 	keepKillSwitch := func(ctx context.Context, meantUp bool) { n.keepRemovedKillSwitch(ctx, f.mismatch, meantUp) }
-	reapply := time.NewTicker(killSwitchReapply)
+	reapply := time.NewTicker(n.plat.reapplyEvery())
 	defer reapply.Stop()
 	publish()
 	if f.removed {
@@ -706,9 +746,7 @@ func (n *Node) awaitSection(ctx context.Context, maps <-chan []byte) bool {
 			publish()
 			close(done)
 		case req := <-n.rulesRequests:
-			// Stored already: the data plane starts with them.
-			keepKillSwitch(ctx, !n.conn.disconnected())
-			req.done <- nil
+			n.takeWaitingRules(ctx, req, f.mismatch)
 		case req := <-n.requests:
 			// Kept for when the node runs its section.
 			n.remember(req.connect)
@@ -763,6 +801,15 @@ func (n *Node) takeWaitingMap(ctx context.Context, f *mapFollower, env []byte) (
 		n.keepRemovedKillSwitch(ctx, f.mismatch, !n.conn.disconnected())
 	}
 	return taken, back
+}
+
+// takeWaitingRules is takeIdle for awaitSection: the kill switch follows
+// the preset before the reply, as the runner's does (takeRules), so the
+// status the reply leaves has both.
+func (n *Node) takeWaitingRules(ctx context.Context, req rulesRequest, mismatch bool) {
+	err := n.takeIdle(req)
+	n.keepRemovedKillSwitch(ctx, mismatch, !n.conn.disconnected())
+	req.done <- err
 }
 
 // keepRemovedKillSwitch keeps a device's kill switch while it waits for a

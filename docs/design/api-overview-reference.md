@@ -1,6 +1,6 @@
 # thinkpol-vpn — API overview: CLI and local API reference
 
-> **Since this snapshot (TP-166):** the node file `node.json` and the device file `device.json` exist, `rules.local` is carried into `device.json` and removed, connect-on-boot is the member's toggle (`thinkpol connect-on-boot on|off`, local API `SetConnectOnBoot`), the service runs `up -service` with no `THINKPOL_CONNECT_ON_BOOT`, `service connect-on-boot` and `service install -connect-on-boot` are refused, `diag` reports systemd drop-ins, and (TP-167) [exit codes](api-overview.md#tp-167-exit-codes-and-the-setting-shape) are sysexits. [Configuration](configuration.md) is current; what follows is not updated.
+> **Since this snapshot (TP-166):** the node file `node.json` and `device.json` exist, `rules.local` moved into `device.json`, connect-on-boot is the member's toggle (`connect-on-boot on|off`, `SetConnectOnBoot`), the service runs `up -service` with no `THINKPOL_CONNECT_ON_BOOT`, old connect-on-boot forms are refused, `diag` reports systemd drop-ins and (TP-133) [works with no agent](api-overview.md#tp-133-diag-without-a-running-agent), and (TP-167) [exit codes](api-overview.md#tp-167-exit-codes-and-the-setting-shape) are sysexits. [Configuration](configuration.md) is current; what follows is not updated.
 
 The CLI and local API half of the [API overview](api-overview.md) (TP-139), split out to keep each file under the design docs' 50 KB limit. The overview has the summary, the configuration, the on-disk state, the planned surface and the consistency findings (`Fn` below). Where the examples come from: [API overview](api-overview.md), first paragraphs. As there, the code wins where this file disagrees with it.
 
@@ -239,7 +239,7 @@ Other lines appear when they apply:
 `status -json` (the same device, abridged: the counters, and most of the zero values). The convention is the localapi package doc's "JSON", the same as `diag`'s:
 
 - the schema's own field names, snake_case, the same as the local API's `Status`, so the tray reading the API and a script reading the CLI see the same names;
-- every field present: an unset one as its zero value, or `null` for a message (`data_plane` while the data plane is down, `uplink` on a device, a peer's `last_handshake` before the first);
+- every field present: an unset one as its zero value, or `null` for a message (`data_plane` while the data plane is down, `uplink` on a device, a peer's `last_handshake` before the first, a neighbor's `up_since` while it is down);
 - `schema_version` (2), the CLI's own, in every document whatever the service sent: bumped when a field is removed or renamed or changes type or meaning, not when one is added. Enumerated values (enums, health problems) may grow without a bump, and counters come and go (a missing one is 0). With a service older than the CLI, a field the service never sends reads as its zero value under the CLI's version;
 - enum values in lower snake_case without their type's prefix, as the text view spells them (`connected`, `ok`, `device`; the zero value is `unspecified`); otherwise protojson's value spelling: 64-bit integers as strings, timestamps in RFC 3339 UTC, durations as seconds with 0, 3, 6 or 9 fractional digits, as protojson writes them (`"3s"`, `"3.200s"`, `"0.027600s"`); an enum value the CLI's schema doesn't know (a newer service's) is `unknown`, as in the text view;
 - two-space indent, the same bytes for the same state; with `-watch`, one compact object per line (NDJSON), for line readers.
@@ -294,7 +294,8 @@ Other lines appear when they apply:
             "bytes_out": "530",
             "queue_full": "0"
           }
-        ]
+        ],
+        "up_since": "2026-10-28T11:50:13.100Z"
       }
     ],
     "egresses": [ ... ],
@@ -321,11 +322,11 @@ Other lines appear when they apply:
 }
 ```
 
-The health problem vocabulary (`internal/agent/status.go`): `disconnected`, `removed_from_space`, `mode_mismatch` (the map makes a node run in device mode a server: it runs nothing of the map), `starting`, `retrying`, `apply_failed`, `no_link_up`, `neighbor_down`, `entries_skipped`, `worker_down`, `worker_restarted`, `links_rejected`, `rule_preset_unavailable`, `route_table_not_enforced`, `policy_rules_ahead`, `overlay_routes_ahead`, `ipv6_guard_not_enforced`, `ipv6_guard_unsupported`, `dns_not_protected`, `dns_upstreams_stale`, `dns_upstream_refused`, `dns_no_upstream`, `exit_no_handshake`. A dialed node that never linked is listed as a neighbor, down, once a dial attempt has failed or the path layer's dead interval (6 s) has passed since the dial started: `no_link_up` when no other neighbor is up, `neighbor_down` when another one is. `dns_no_upstream` also covers an OS that names no DNS server now (the resolver keeps asking the previous ones), and isn't raised beside `dns_upstreams_stale`. `exit_no_handshake` is an exit the device routes through (the exit of a chain its rules use), directly or behind a relay, that has left a WireGuard handshake initiation unanswered for 15 s (three of WireGuard's initiations, 5 s apart) while its first hop was up: down when the exit of the chain carrying either address family's background (`/0`) route is unanswered (a chain has one exit, so none of its exits answers), degraded for any other exit unanswered. The background route is the action with the most addresses in its family, not necessarily the default rule's: rules before it may take every address. Only a completed handshake clears it, even if the device goes idle after. While the exit's first hop is down only `no_link_up` or `neighbor_down` is raised, and when it comes back the 15 s start over from the first initiation sent since, never from one pending from before: an exit sent no initiation since its first hop came up (WireGuard stops retrying 90 s after traffic stops) isn't graded until one is, and then from that one. An exit nothing was sent to isn't graded, nor is any peer that isn't an exit (RR48).
+The health problem vocabulary (`internal/agent/status.go`): `disconnected`, `removed_from_space`, `mode_mismatch` (the map makes a node run in device mode a server: it runs nothing of the map), `starting`, `retrying`, `apply_failed`, `no_link_up`, `neighbor_down`, `entries_skipped`, `worker_down`, `worker_restarted`, `links_rejected`, `rule_preset_unavailable`, `rule_preset_not_enforced` (laying out the stored preset failed before the router took it, and is retried: the router keeps the preset it had meanwhile), `rule_preset_incomplete` (the router enforces the stored preset, but laying out the rest of it, an exit's device or the OS routing table, failed and is retried), `route_table_not_enforced`, `policy_rules_ahead`, `overlay_routes_ahead`, `ipv6_guard_not_enforced`, `ipv6_guard_unsupported`, `dns_not_protected`, `dns_upstreams_stale`, `dns_upstream_refused`, `dns_no_upstream`, `exit_no_handshake`. A dialed node that never linked is listed as a neighbor, down, once a dial attempt has failed or the path layer's dead interval (6 s) has passed since the dial started: `no_link_up` when no other neighbor is up, `neighbor_down` when another one is. `dns_no_upstream` also covers an OS that names no DNS server now (the resolver keeps asking the previous ones), and isn't raised beside `dns_upstreams_stale`. `exit_no_handshake` is an exit the device routes through (the exit of a chain its rules use), directly or behind a relay, that has left a WireGuard handshake initiation unanswered for 15 s (three of WireGuard's initiations, 5 s apart) while its first hop was up: down when the exit of the chain carrying either address family's background (`/0`) route is unanswered (a chain has one exit, so none of its exits answers), degraded for any other exit unanswered. The background route is the action with the most addresses in its family, not necessarily the default rule's: rules before it may take every address. Only a completed handshake clears it, even if the device goes idle after. While the exit's first hop is down only `no_link_up` or `neighbor_down` is raised, and when it comes back the 15 s start over from the first initiation sent since, never from one pending from before: an exit sent no initiation since its first hop came up (WireGuard stops retrying 90 s after traffic stops) isn't graded until one is, and then from that one. An exit nothing was sent to isn't graded, nor is any peer that isn't an exit (RR48).
 
 #### `connect` and `disconnect`
 
-Bring a device's data plane up or down. The service keeps running and keeps following the map. Both print the status once the change is done. The only flag is `-socket`.
+Bring a device's data plane up or down. The service keeps running and keeps following the map. Both print the status once the change is done, the kill switch included: its line shows it as the new connection leaves it (the crash posture's hold comes with a connect and goes with a disconnect). The only flag is `-socket`.
 
 ```
 $ thinkpol connect
@@ -375,7 +376,7 @@ $ thinkpol spaces
 
 #### `rules preset`
 
-Switches a device's routing rules to a preset: `space` (the space's own rules), `everything`, or `all-but-domestic`. The service stores the choice in `rules.local`. Synopsis: `thinkpol rules preset [-socket path] <space|everything|all-but-domestic>`. It prints the status. There is no form that shows the current preset: `status` shows it.
+Switches a device's routing rules to a preset: `space` (the space's own rules), `everything`, or `all-but-domestic`. The service stores the choice in the device file (`device.json`). Synopsis: `thinkpol rules preset [-socket path] <space|everything|all-but-domestic>`. It prints the status once the data plane and the kill switch follow the preset: the kill switch's line shows whether the new preset's crash posture holds it. There is no form that shows the current preset: `status` shows it.
 
 ```
 $ thinkpol rules preset space
@@ -790,10 +791,10 @@ Limits: 32 connections and 16 calls per connection. All watchers share one statu
 |---|---|---|---|---|---|
 | `GetStatus` | unary | control | `{}` | `{ status: Status }` | — |
 | `WatchStatus` | server stream | control | `{ interval: Duration }` (unset: 1s; at least 250ms) | stream of `{ status: Status }`, the first at once | — |
-| `Connect` | unary | control | `{}` | `{ status: Status }` once up | `server_mode`, `not_running`, `dns_not_protected`, `start_failed:<step>` |
-| `Disconnect` | unary | control | `{}` | `{ status: Status }` once down | `server_mode`, `not_running` |
+| `Connect` | unary | control | `{}` | `{ status: Status }` once up and the kill switch follows | `server_mode`, `not_running`, `dns_not_protected`, `start_failed:<step>` |
+| `Disconnect` | unary | control | `{}` | `{ status: Status }` once down and the kill switch follows | `server_mode`, `not_running` |
 | `ListSpaces` | unary | control | `{}` | `{ spaces: [ { id, active } ] }` (always one, active) | — |
-| `SetRulePreset` | unary | control | `{ preset: string }` | `{ status: Status }` | `unknown_rule_preset`, `rule_preset_unavailable` (stored anyway), `server_mode` |
+| `SetRulePreset` | unary | control | `{ preset: string }` | `{ status: Status }` once the data plane and the kill switch follow | `unknown_rule_preset`, `rule_preset_unavailable` (stored anyway), `rule_preset_not_enforced` (stored, the router keeps the preset it had until a retry lays it out), `rule_preset_incomplete` (stored and in place, the rest of its layout retried), `not_running` (stored for the next start), `server_mode` |
 | `TailLogs` | server stream | admin | `{ lines: uint32 (0: 100), follow: bool }` | stream of `{ lines: [string], missed: uint64 }` | — |
 | `Diagnose` | unary | control (host parts: admin) | `{}` | `{ diagnostics: Diagnostics }` | — |
 
@@ -807,6 +808,8 @@ Refusals travel as go-kernel domain error codes over gRPC status codes. The clie
 | `server_mode` | FailedPrecondition | this node is a server: it serves its spaces whenever it runs |
 | `not_running` | Unavailable | the node is not running |
 | `rule_preset_unavailable` | FailedPrecondition | this space can't build that preset (no chain, or no domestic list): it is kept, and enforced failing closed |
+| `rule_preset_not_enforced` | FailedPrecondition | the preset is stored, but laying it out failed before the router took it: the router keeps the preset it had until a retry succeeds (see the status) |
+| `rule_preset_incomplete` | FailedPrecondition | the preset is stored and in place, but laying out the rest of it (an exit's device or the OS routing table) failed: retrying (see the status) |
 | `unknown_rule_preset` | InvalidArgument | no such rule preset: space, everything or all-but-domestic |
 | `dns_not_protected` | FailedPrecondition | connected, but DNS is not protected: … the tunnel stays up |
 | `start_failed:<step>` | (the interceptor's) | starting the data plane failed at step "<step>"; the service's log has the details |
@@ -822,7 +825,7 @@ Refusals travel as go-kernel domain error codes over gRPC status codes. The clie
 - `health`: a level (`ok`, `degraded`, `down`) and its problems;
 - `data_plane`: MTU, IPv6 and why it is off, last Apply error, peers, neighbors and their links, egresses, skipped entries, listeners, and counters by name;
 - `workers`, `public_listeners`, `uplink`: on a server;
-- `rule_preset`, `rules_enforced`, `rule_preset_unavailable`, `connect_on_boot`: a device's toggles (TP-048 adds the kill switch and allow-LAN here);
+- `rule_preset`, `rules_enforced`, `rule_preset_unavailable`, `connect_on_boot`: a device's toggles (TP-048 adds the kill switch and allow-LAN here); `rules_enforced` is set only while the data plane's router enforces `rule_preset` (unset while disconnected, and while the router still enforces the preset it had; a router that enforces it while the rest of its layout is retried leaves it set, with the problem `rule_preset_incomplete`);
 - `maps_refused`, `last_run_crashed`, `last_run_unreadable`;
 - no `schema_version` on the wire: the CLI's JSON adds its own (the localapi package doc's "JSON").
 

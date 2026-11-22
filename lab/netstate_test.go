@@ -7,38 +7,12 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
-	"testing"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
 
 // The node's network state after start, stop, connect and disconnect.
-
-// execTimeout bounds a one-shot check's execs: the check runs once and
-// fails with what it saw. pollTimeout bounds one read inside a poll: the
-// poll's deadline is what bounds the wait, a read leaves it room to retry.
-const (
-	execTimeout = 2 * time.Minute
-	pollTimeout = 10 * time.Second
-)
-
-// execResult runs one command in the node, bounded by timeout, and
-// returns its whole result: for callers that classify the exit.
-func execResult(n *lab.Node, timeout time.Duration, args ...string) (lab.Result, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	return n.Exec(ctx, args...)
-}
-
-// execRead runs one command in the node and returns its stdout.
-func execRead(n *lab.Node, timeout time.Duration, args ...string) (string, error) {
-	res, err := execResult(n, timeout, args...)
-	if err != nil {
-		return "", fmt.Errorf("%w\nstdout:\n%s", err, res.Stdout)
-	}
-	return res.Stdout, nil
-}
 
 // policyRules is the device's policy rules (both families), which a stop
 // or a failed start must put back exactly.
@@ -164,61 +138,11 @@ func tcpReaches(n *lab.Node, dst netip.Addr, port, wait int) (bool, error) {
 	return false, fmt.Errorf("tcp from %s to %s: %w\n%s", n.Name, netip.AddrPortFrom(dst, uint16(port)), err, res.Stderr)
 }
 
-// pingNoReply says whether a failed ping got no reply: exit 1 and ping's
-// own " 0 received" summary: the echo left and nothing came back. A censor
-// probe needs this one: to call a path blocked, the probe must have
-// crossed the wire, which a route the sender lacks (pingNoReplyOrRoute)
-// doesn't show. Exec failures are an unknown state.
-func pingNoReply(res lab.Result) bool {
-	return res.ExitCode == 1 && strings.Contains(res.Stdout, " 0 received")
-}
-
-// pingNoReplyOrRoute says whether a failed ping shows, by ping's own
-// account, that the path doesn't work: no reply (pingNoReply), or the
-// sender's kernel refusing for want of a route, which sends nothing (exit
-// 2 with "Network is unreachable" or "No route to host"). Ping's other
-// exit-2 failures are usage errors (an unknown interface) and say nothing.
-func pingNoReplyOrRoute(res lab.Result) bool {
-	out := res.Stdout + res.Stderr
-	return pingNoReply(res) ||
-		res.ExitCode == 2 && (strings.Contains(out, "Network is unreachable") || strings.Contains(out, "No route to host"))
-}
-
 // pingBlackholed says whether a failed ping met a blackhole route: the
 // kernel refuses the connect with EINVAL (exit 2, "connect: Invalid
 // argument", measured in the lab), so nothing is sent.
 func pingBlackholed(res lab.Result) bool {
 	return res.ExitCode == 2 && strings.Contains(res.Stdout+res.Stderr, "connect: Invalid argument")
-}
-
-// pingAnswers pings from n (args after "ping"), with what ping printed:
-// true for a reply, false for ping's own "no" as no tells it (one of the
-// classifiers above, measured for the case), anything else an error (an
-// unknown state, never a pass).
-func pingAnswers(n *lab.Node, no func(lab.Result) bool, args ...string) (bool, string, error) {
-	res, err := execResult(n, execTimeout, append([]string{"ping"}, args...)...)
-	out := res.Stdout + res.Stderr
-	switch {
-	case err == nil:
-		return true, out, nil
-	case no(res):
-		return false, out, nil
-	}
-	return false, out, fmt.Errorf("ping %s on %s says nothing about the path: %w\n%s", strings.Join(args, " "), n.Name, err, out)
-}
-
-// noPing fails the test if ping (args after "ping") from n gets a reply,
-// and at once if ping says nothing about the path (pingAnswers). A route
-// the sender's kernel lacks counts as no path: nothing is sent.
-func noPing(t *testing.T, n *lab.Node, args ...string) {
-	t.Helper()
-	answered, out, err := pingAnswers(n, pingNoReplyOrRoute, args...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if answered {
-		t.Errorf("ping %s from %s answered:\n%s", strings.Join(args, " "), n.Name, out)
-	}
 }
 
 // curlNoConnection says whether a failed curl couldn't connect, by curl's
@@ -256,20 +180,43 @@ func curlFrom(n *lab.Node, maxTime time.Duration, args ...string) (bool, string,
 // is retried too, and returned once no attempt has answered for 30s past
 // within.
 func untilAnswer(within time.Duration, attempt func() (bool, error)) (bool, error) {
+	return untilAnswerOr(within, nil, attempt)
+}
+
+// untilAnswerOr is untilAnswer that also says no at once after an
+// attempt that said no if watch (unless nil) says that attempt was
+// blocked: watch is called just before each attempt, and what it returns
+// just after one that said no.
+func untilAnswerOr(within time.Duration, watch func() (blocked func() bool), attempt func() (bool, error)) (bool, error) {
 	deadline := time.Now().Add(within)
 	giveUp := deadline.Add(30 * time.Second)
+	return answerWhile(func() (out, gaveUp bool) {
+		now := time.Now()
+		return now.After(deadline), now.After(giveUp)
+	}, 300*time.Millisecond, watch, attempt)
+}
+
+// answerWhile is untilAnswerOr's loop on any clock: left, asked after
+// each attempt, says whether the window ran out and whether an error has
+// run past it too; pause is the time between attempts.
+func answerWhile(left func() (out, gaveUp bool), pause time.Duration, watch func() (blocked func() bool), attempt func() (bool, error)) (bool, error) {
 	for {
+		var blocked func() bool
+		if watch != nil {
+			blocked = watch()
+		}
 		yes, err := attempt()
+		out, gaveUp := left()
 		switch {
 		case err == nil && yes:
 			return true, nil
 		case err == nil:
-			if time.Now().After(deadline) {
+			if out || blocked != nil && blocked() {
 				return false, nil
 			}
-		case time.Now().After(giveUp):
+		case gaveUp:
 			return false, err
 		}
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(pause)
 	}
 }

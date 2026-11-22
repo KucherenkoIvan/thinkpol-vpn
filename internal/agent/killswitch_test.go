@@ -257,6 +257,103 @@ func TestTheCrashPostureHoldsWhileMeantUp(t *testing.T) {
 	}
 }
 
+// A change that moves the crash posture (a preset, a connect, a
+// disconnect) returns once the kill switch followed it: the status it
+// leaves, which the CLI prints, is the kill switch after the change, on
+// the host and in Status, whether the data plane runs or the device waits
+// for a section. The kill switch is slow here, so a reply ahead of it
+// would show the one from before.
+func TestAChangeReturnsWithTheKillSwitchItLeaves(t *testing.T) {
+	s := newTestSpace(t)
+	_, reg := memoryRegistry(t)
+	startNode(t, reg, s.a, s.verified(t, 1))
+	ctx := context.Background()
+	held := func(t *testing.T, step string, host *memKillSwitches, n *Node, active bool, shape string) {
+		t.Helper()
+		st := n.Status().KillSwitch
+		r := host.rules()
+		onHost := map[bool]string{true: "connected", false: "down"}[r != nil && r.TUN != ""]
+		if r == nil {
+			onHost = "none"
+		}
+		if st.On || st.Active != active || !st.Enforced || onHost != shape {
+			t.Fatalf("%s: returned with %+v and %s on the host, want active %v and %s", step, st, onHost, active, shape)
+		}
+	}
+	preset := func(t *testing.T, n *Node, p string) {
+		t.Helper()
+		if err := n.SetRulePreset(ctx, p); err != nil && !errors.Is(err, ErrPresetUnavailable) {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("running", func(t *testing.T) {
+		host := &memKillSwitches{}
+		b := startDevice(t, s, reg, true, withKillSwitch(host, nil))
+		b.connection(t, Connected)
+		inPlace(t, host, "none")
+		host.slowBy(300 * time.Millisecond)
+
+		preset(t, b.node, "everything")
+		held(t, "rules preset everything", host, b.node, true, "connected")
+		if err := b.node.Disconnect(ctx); err != nil {
+			t.Fatal(err)
+		}
+		held(t, "disconnect", host, b.node, false, "none")
+		if err := b.node.Connect(ctx); err != nil && !errors.Is(err, ErrPresetUnavailable) {
+			t.Fatal(err)
+		}
+		held(t, "connect", host, b.node, true, "connected")
+		preset(t, b.node, "space")
+		held(t, "rules preset space", host, b.node, false, "none")
+	})
+
+	t.Run("waiting for a section", func(t *testing.T) {
+		host := &memKillSwitches{}
+		b := startDevice(t, s, reg, true, withKillSwitch(host, nil), deviceOpt{prepare: func(c *Config, _ *Platform) {
+			writeFile(t, filepath.Join(c.StateDir, MapFileName), s.buildWithout(t, 1, s.b), 0o644)
+		}})
+		eventually(t, func() bool { return b.node.Status().Removed })
+		inPlace(t, host, "none")
+		host.slowBy(300 * time.Millisecond)
+
+		preset(t, b.node, "everything")
+		held(t, "rules preset everything", host, b.node, true, "down")
+		preset(t, b.node, "space")
+		held(t, "rules preset space", host, b.node, false, "none")
+	})
+
+	t.Run("failing", func(t *testing.T) {
+		host := &memKillSwitches{}
+		b := startDevice(t, s, reg, true, withKillSwitch(host, nil))
+		t.Cleanup(func() { host.failWith(nil); host.failCloseWith(nil); host.slowBy(0) })
+		b.connection(t, Connected)
+		inPlace(t, host, "none")
+		host.slowBy(300 * time.Millisecond)
+		notEnforced := func(t *testing.T, step string, active bool, want KillSwitchError) {
+			t.Helper()
+			if st := b.node.Status().KillSwitch; st.Active != active || st.Enforced || st.Error != want {
+				t.Fatalf("%s: returned with %+v, want active %v, not enforced: %s", step, st, active, want)
+			}
+		}
+
+		host.failWith(errors.New("nftables says no"))
+		preset(t, b.node, "everything")
+		notEnforced(t, "rules preset everything", true, KillSwitchApplyFailed)
+		host.failWith(nil)
+		if err := b.node.SetAllowLAN(ctx, false); err != nil { // the loop's own retry may have run before failWith(nil)
+			t.Fatal(err)
+		}
+		inPlace(t, host, "connected")
+		eventually(t, func() bool { return b.node.Status().KillSwitch.Enforced })
+		host.failCloseWith(errors.New("nftables says no"))
+		if err := b.node.Disconnect(ctx); err != nil {
+			t.Fatal(err)
+		}
+		notEnforced(t, "disconnect", false, KillSwitchRemoveFailed)
+	})
+}
+
 // A start narrows what a crashed run left to the down shape before it
 // connects, so it fails closed until connected again; a start that comes
 // up disconnected with nothing meant removes it.
@@ -493,41 +590,96 @@ func TestKillSwitchSettingsComeFromTheNodeThenTheMember(t *testing.T) {
 	}
 }
 
-// countingKillSwitch counts its Applies.
-type countingKillSwitch struct{ applies int }
+// countingKillSwitch counts its Applies, keeps the direct timeout set
+// and the one set when it was first applied, and fails each Close with
+// closeErr.
+type countingKillSwitch struct {
+	applies      int
+	direct       time.Duration
+	firstApplied time.Duration
+	closeErr     error
+}
+
+func (c *countingKillSwitch) SetDirectTimeout(d time.Duration) { c.direct = d }
 
 func (c *countingKillSwitch) Apply(context.Context, firewall.KillSwitchRules) error {
+	if c.applies == 0 {
+		c.firstApplied = c.direct
+	}
 	c.applies++
 	return nil
 }
 
-func (c *countingKillSwitch) Close() error { return nil }
+func (c *countingKillSwitch) Close() error { return c.closeErr }
 
-// The kill switch in place is applied again at every killSwitchReapply
-// tick, the tick handled a little after it fired included: on Linux that
-// renews the direct destinations well within firewall.DirectTimeout.
+// The kill switch in place is applied again at every re-apply tick, the
+// tick handled a little after it fired included: on Linux that renews the
+// direct destinations well within firewall.DirectTimeout. The period is
+// killSwitchReapply unless the host sets one (the lab's shorter one).
 func TestTheKillSwitchIsReappliedAtEveryTick(t *testing.T) {
-	ks := &countingKillSwitch{}
-	clock := time.Unix(1_000_000, 0)
-	k := killSwitchKeeper{newKS: func() KillSwitch { return ks }, log: slog.New(slog.DiscardHandler), now: func() time.Time { return clock }}
-	r := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")}
-	tick := clock
-	for i := range 6 {
-		// The node loop handles a tick late, by more or less each time.
-		clock = tick.Add(time.Duration(50-49*(i%2)) * time.Millisecond)
-		k.keep(context.Background(), true, r)
-		if ks.applies != i+1 {
-			t.Fatalf("tick %d: %d applies, want %d", i, ks.applies, i+1)
+	for _, host := range []DeviceHost{{}, {KillSwitchReapply: 2 * time.Second}} {
+		every := host.reapplyEvery()
+		ks := &countingKillSwitch{}
+		clock := time.Unix(1_000_000, 0)
+		k := killSwitchKeeper{newKS: func() KillSwitch { return ks }, every: every, log: slog.New(slog.DiscardHandler), now: func() time.Time { return clock }}
+		r := firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")}
+		tick := clock
+		for i := range 6 {
+			// The node loop handles a tick late, by more or less each time.
+			clock = tick.Add(time.Duration(50-49*(i%2)) * time.Millisecond)
+			k.keep(context.Background(), true, r)
+			if ks.applies != i+1 {
+				t.Fatalf("every %v, tick %d: %d applies, want %d", every, i, ks.applies, i+1)
+			}
+			clock = tick.Add(every / 4) // another event between ticks
+			k.keep(context.Background(), true, r)
+			if ks.applies != i+1 {
+				t.Fatalf("every %v: an event %v after tick %d applied it again", every, every/4, i)
+			}
+			tick = tick.Add(every)
 		}
-		clock = tick.Add(killSwitchReapply / 4) // another event between ticks
-		k.keep(context.Background(), true, r)
-		if ks.applies != i+1 {
-			t.Fatalf("an event %v after tick %d applied it again", killSwitchReapply/4, i)
+	}
+	for set, want := range map[time.Duration]time.Duration{0: killSwitchReapply, 2 * time.Second: 2 * time.Second, time.Hour: killSwitchReapply} {
+		if d := (DeviceHost{KillSwitchReapply: set}).reapplyEvery(); d != want {
+			t.Errorf("the period set to %v: %v, want %v", set, d, want)
 		}
-		tick = tick.Add(killSwitchReapply)
 	}
 	if firewall.DirectTimeout < 2*killSwitchReapply {
 		t.Errorf("firewall.DirectTimeout %v leaves no stall margin over a %v re-apply", firewall.DirectTimeout, killSwitchReapply)
+	}
+}
+
+// The kill switch a node makes gets a direct timeout of three re-apply
+// periods: 30 s, firewall.DirectTimeout, unless a lab host shortened the
+// period.
+func TestTheKillSwitchDirectTimeoutIsThreePeriods(t *testing.T) {
+	s := newTestSpace(t)
+	cfg := testConfig(s.stateDir(t, s.b, 1))
+	for set, want := range map[time.Duration]time.Duration{0: 30 * time.Second, 2 * time.Second: 6 * time.Second, time.Hour: 30 * time.Second} {
+		ks := &countingKillSwitch{}
+		plat := testPlatform()
+		plat.NewKillSwitch = func() KillSwitch { return ks }
+		plat.KillSwitchReapply = set
+		n, err := Prepare(cfg, Logs{}, plat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.ks.keep(context.Background(), true, firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")})
+		if ks.applies != 1 || ks.firstApplied != want {
+			t.Errorf("the period set to %v: %d applies, direct timeout %v at the first, want %v", set, ks.applies, ks.firstApplied, want)
+		}
+	}
+	// A removal that fails keeps the kill switch it made to remove a
+	// previous run's; the next want applies that one, timeout and all.
+	ks := &countingKillSwitch{closeErr: errors.New("nft: busy")}
+	k := killSwitchKeeper{newKS: func() KillSwitch { return ks }, every: 2 * time.Second, log: slog.New(slog.DiscardHandler)}
+	k.keep(context.Background(), false, firewall.KillSwitchRules{})
+	k.keep(context.Background(), true, firewall.KillSwitchRules{Mark: routetable.Mark, Allow: mustSet(t, "203.0.113.50/32")})
+	if ks.applies != 1 || ks.firstApplied != 6*time.Second {
+		t.Errorf("after a failed removal: %d applies, direct timeout %v at the first, want 6s", ks.applies, ks.firstApplied)
+	}
+	if firewall.DirectTimeout != 30*time.Second {
+		t.Errorf("firewall.DirectTimeout is %v, the design's 30 s", firewall.DirectTimeout)
 	}
 }
 

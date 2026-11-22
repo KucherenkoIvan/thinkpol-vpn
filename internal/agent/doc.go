@@ -126,7 +126,10 @@
 // (a signal's cancellation is no error, [CleanStop]), and nothing from a
 // kill. Status says the last run crashed (Status.LastRunCrashed), or that
 // its trace wasn't read (Status.LastRunUnreadable), and Diagnostics has
-// the trace, or why, root's only. A server keeps no trace: right after
+// the trace, or why, root's only. With no agent to answer, root's diag
+// reads the file itself ([DiagnoseHost]) as it is: the head as a start
+// reads it, never fixed, cut or emptied, and not at all when it isn't a
+// regular file with a single link. A server keeps no trace: right after
 // reading the file, before anything else that can fail, `up` detaches
 // stderr from it (emptied, removed, stderr to the null device) unless the
 // node is known to be a device: its node file says "device" (whatever
@@ -303,9 +306,30 @@
 // decides.
 //
 // A rule preset chosen through the local API ([Node.SetRulePreset]) is
-// stored in [DeviceFile], then handed to the engine
-// ([dataplane.Engine.SetRules]) at once; every start takes it as
-// [dataplane.EngineConfig.Rules].
+// taken by the goroutine that runs the data plane: it stores the preset
+// in [DeviceFile], hands it to the engine ([dataplane.Engine.SetRules])
+// at once, and only then has Status show it. With no data plane running
+// (the node waits for a section, or stopped) it is stored and shown, and
+// the next start takes it (a stopped node says [ErrNotRunning], as a kill
+// switch toggle does): every start takes the stored preset as
+// [dataplane.EngineConfig.Rules]. A request the node never took (its
+// caller gave up first) changes nothing, and a store that fails leaves
+// the old preset everywhere. Status says the preset is enforced
+// (RulesEnforced) only while the engine's router enforces that preset
+// ([dataplane.RuleStatus.Preset]); while the data plane switches, it
+// shows the new preset as soon as the router enforces it, as the OS
+// routing table catches up. When laying it out fails, the engine keeps
+// the preset all the same, and the failure is told by where it left the
+// router. Failing before the router took it, the router keeps the preset
+// it had: the stored one is shown as not enforced yet
+// ([ProblemPresetNotEnforced]) and the caller gets
+// [ErrPresetNotEnforced]. Failing after (an exit's device, or the OS
+// routing table, once the router's table changed), the router enforces
+// the new preset with the rest missing: it is shown enforced and
+// incomplete ([ProblemPresetIncomplete]; a chain's exit without its
+// device drops that chain's traffic) and the caller gets
+// [ErrPresetIncomplete]. Either way the data plane retries with its next
+// Apply, which lays out the preset the engine kept.
 //
 // The device file ([DeviceFile], device.json in the state directory) is
 // the member's toggles ([DeviceSettings]), as strict as the node file, 0600:
@@ -355,15 +379,22 @@
 // direct destinations, which expire 30 s after the last one; an apply
 // between ticks can push the next re-apply a tick later, so they are
 // renewed, and a change from outside repaired, at most about 15 s apart,
-// and a node loop stalled for about 15 s lets them expire); and when a
-// member changes a toggle ([Node.SetKillSwitch], [Node.SetAllowLAN]),
+// and a node loop stalled for about 15 s lets them expire; a lab node
+// may shorten the tick, [DeviceHost.KillSwitchReapply], and the kill
+// switch's keeper sets the expiry to three ticks, 30 s by default); and
+// when a member changes a toggle ([Node.SetKillSwitch], [Node.SetAllowLAN]),
 // which return once it was acted on, with a [KillSwitchNotEnforcedError]
 // if the kill switch is then not as meant (the toggle stays), or
-// [ErrNotRunning] from a stopped node (stored for its next start). A stop is no deliberate disconnect:
-// the node returning leaves the down shape in place if it was meant up or
-// the toggle is on, as a crash would, and warns so ([KillSwitchStopNote])
-// whenever rules are in place, an apply that put them there but failed
-// ([firewall.ErrKillSwitchInPlace]) included.
+// [ErrNotRunning] from a stopped node (stored for its next start). A
+// connect, a disconnect and a rule preset ([Node.Connect],
+// [Node.Disconnect], [Node.SetRulePreset]) also return only once the
+// kill switch followed them, so the Status a caller reads then (and the
+// CLI prints) is the kill switch after the change, a failed apply or
+// remove included; their error doesn't say it. A stop is no deliberate
+// disconnect: the node returning leaves the down shape in place if it was
+// meant up or the toggle is on, as a crash would, and warns so
+// ([KillSwitchStopNote]) whenever rules are in place, an apply that put
+// them there but failed ([firewall.ErrKillSwitchInPlace]) included.
 // Only a deliberate disconnect with the toggle off (or no crash posture),
 // a start that comes up so, `rollback` ([Rollback]) or `service
 // uninstall` ([Platform.ClearHost]) removes it. A disconnect is recorded for the boot before the node hears

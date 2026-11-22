@@ -18,8 +18,9 @@ type RollbackReport struct {
 }
 
 // NeedsRootError is a command refused because it isn't run as root: what
-// it changes is the host's (Why). Rollback and the service's install and
-// uninstall return it, so a caller matches one type for all of them
+// it changes or reads is the host's (Why). Rollback, the service's
+// install and uninstall, and diag reading the host without an agent
+// (DiagnoseHost) return it, so a caller matches one type for all of them
 // (errors.As); errors.Is still finds each one's own value. It is in a file
 // every OS builds, not beside a per-OS check: the CLI matches it on every
 // OS, including one whose commands refuse as unsupported first.

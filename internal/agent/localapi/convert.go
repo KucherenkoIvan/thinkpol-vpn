@@ -90,7 +90,7 @@ func dataPlaneProto(dp *dataplane.Status, listeners int, iface string) *localapi
 	}
 	for _, n := range dp.Neighbors {
 		np := &localapiv1.Neighbor{
-			NodeId: idString(netmap.NodeID(n.Node)), Up: n.Up, UpFor: duration(n.UpFor), Rtt: duration(n.RTT), Dialed: n.Dialed,
+			NodeId: idString(netmap.NodeID(n.Node)), Up: n.Up, UpFor: duration(n.UpFor), UpSince: timestamp(n.UpSince), Rtt: duration(n.RTT), Dialed: n.Dialed,
 		}
 		for _, l := range n.Links {
 			np.Links = append(np.Links, &localapiv1.Link{

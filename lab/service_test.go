@@ -6,12 +6,54 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
+
+// signalAgent sends sig to the agent's process alone, as a crash or a
+// SIGQUIT reaches it, and waits until every worker it had is gone. Not to
+// the whole unit: systemd 252 (the image's) then walks the unit's
+// cgroup.procs, and on Linux 7.0 that walk fails with EIO while a
+// SIGKILLed agent exits, though the signal landed. The workers end anyway:
+// each has PR_SET_PDEATHSIG, and with KillMode=mixed systemd kills what is
+// left in the unit's cgroup once the agent is gone, before the restart.
+// A server's agent runs workers and a device's none: minWorkers keeps a
+// server's wait from passing on an empty list, e.g. after a rename of the
+// worker command.
+func signalAgent(t *testing.T, n *lab.Node, sig string, minWorkers int) {
+	t.Helper()
+	workers := agentWorkers(t, n)
+	if len(workers) < minWorkers {
+		t.Fatalf("before SIG%s, %s runs workers %v, want at least %d", sig, n.Name, workers, minWorkers)
+	}
+	n.MustExec(t, "systemctl", "kill", "--kill-whom=main", "-s", sig, "thinkpol.service")
+	lab.Eventually(t, 10*time.Second, func() error {
+		var alive []string
+		for _, pid := range agentWorkers(t, n) {
+			if slices.Contains(workers, pid) {
+				alive = append(alive, pid)
+			}
+		}
+		if len(alive) > 0 {
+			return fmt.Errorf("SIG%s to the agent: of its workers %v, %v still run", sig, workers, alive)
+		}
+		return nil
+	})
+}
+
+// agentWorkers lists the pids of the server workers running in n.
+func agentWorkers(t *testing.T, n *lab.Node) []string {
+	t.Helper()
+	res, err := execResult(n, pollTimeout, "pgrep", "-f", "^thinkpol worker( |$)")
+	if err != nil && res.ExitCode != 1 { // pgrep's 1: none
+		t.Fatalf("pgrep workers on %s: %v\n%s", n.Name, err, res.Stderr)
+	}
+	return strings.Fields(res.Stdout)
+}
 
 // TestServiceUnderSystemd installs device-a as a service in a node that
 // runs systemd, and checks what PRD D5 and the crash posture ask of it:
@@ -32,7 +74,6 @@ func TestServiceUnderSystemd(t *testing.T) {
 			{Name: lab.Router, Networks: []string{lab.NetDevices, lab.NetServers}, Forward: true},
 			{Name: lab.DeviceA, Networks: []string{lab.NetDevices}, Gateway: lab.Router, Systemd: true},
 			{Name: lab.Server1, Networks: []string{lab.NetServers}, Gateway: lab.Router, Forward: true},
-			{Name: lab.Internet, Networks: []string{lab.NetServers}, Gateway: lab.Router},
 		},
 	}
 	l := lab.Start(t, topo)
@@ -53,12 +94,12 @@ func TestServiceUnderSystemd(t *testing.T) {
 		}
 	})
 
-	space := newM0Space(t, l.Node(lab.Internet), server)
+	space := newM0Space(t, l.Node(lab.Router), server)
 	envelope, _ := space.build(t)
 	space.install(t, server, "server-1", envelope)
 	space.install(t, dev, "device-a", envelope)
-	up := server.Start(t, "thinkpol", "up", "-mode", "server")
-	waitLog(t, up, `worker space=\S+ .*msg="map applied"`)
+	up := startUp(t, server)
+	waitLog(t, up, workerApplied(""))
 	s4, _ := space.overlay(1)
 	dev.MustExec(t, "useradd", "-M", "-u", aliceUID, "alice")
 	resolvConf := dev.MustExec(t, "cat", "/etc/resolv.conf")
@@ -104,17 +145,21 @@ func TestServiceUnderSystemd(t *testing.T) {
 	asAlice := func(args ...string) []string {
 		return append([]string{"setpriv", "--reuid", "alice", "--regid", "alice", "--init-groups", "/usr/local/bin/thinkpol"}, args...)
 	}
+	aliceStatus := func() (nodeStatus, error) {
+		res, err := execResult(dev, pollTimeout, asAlice("status", "-json")...)
+		if err != nil {
+			return nodeStatus{}, fmt.Errorf("%w\n%s%s", err, res.Stdout, res.Stderr)
+		}
+		return parseStatus(res.Stdout)
+	}
 	state := func(want string) {
 		t.Helper()
 		lab.Eventually(t, 90*time.Second, func() error {
-			res, err := execResult(dev, pollTimeout, asAlice("status")...)
+			st, err := aliceStatus()
 			if err != nil {
-				return fmt.Errorf("%w\n%s%s", err, res.Stdout, res.Stderr)
+				return err
 			}
-			if !regexp.MustCompile(`state: +` + want + `\n`).MatchString(res.Stdout) {
-				return fmt.Errorf("want %s:\n%s", want, res.Stdout)
-			}
-			return nil
+			return st.check(connection(want))
 		})
 	}
 	state("disconnected")
@@ -151,7 +196,7 @@ func TestServiceUnderSystemd(t *testing.T) {
 	crash := func() {
 		t.Helper()
 		before := restarts()
-		dev.MustExec(t, "systemctl", "kill", "-s", "KILL", "thinkpol.service")
+		signalAgent(t, dev, "KILL", 0)
 		lab.Eventually(t, 60*time.Second, func() error {
 			if got := restarts(); got == before {
 				return fmt.Errorf("NRestarts still %q", got)
@@ -166,25 +211,25 @@ func TestServiceUnderSystemd(t *testing.T) {
 	// The crash trace (PRD S2's device exception): a kill leaves nothing on
 	// stderr, so the restarted agent shows no crash. A Go crash (SIGQUIT:
 	// the runtime's trace, exit 2) leaves its trace in the file, root's
-	// 0600; the restarted agent shows it (alice's status the line, root's
+	// 0600; the restarted agent shows it (alice's status says so, root's
 	// diag the trace, alice's diag only that it is root's) and empties the
 	// file, where its log never goes.
 	lastRun := func(crashed bool) {
 		t.Helper()
 		lab.Eventually(t, 90*time.Second, func() error {
-			res, err := execResult(dev, pollTimeout, asAlice("status")...)
+			st, err := aliceStatus()
 			if err != nil {
-				return fmt.Errorf("%w\n%s%s", err, res.Stdout, res.Stderr)
+				return err
 			}
-			if got := strings.Contains(res.Stdout, "\nlast run:"); got != crashed {
-				return fmt.Errorf("want the last run crashed %v:\n%s", crashed, res.Stdout)
+			if st.LastRunCrashed != crashed {
+				return fmt.Errorf("want the last run crashed %v:\n%s", crashed, st.raw)
 			}
 			return nil
 		})
 	}
 	lastRun(false)
 	before := restarts()
-	dev.MustExec(t, "systemctl", "kill", "-s", "QUIT", "thinkpol.service")
+	signalAgent(t, dev, "QUIT", 0)
 	lab.Eventually(t, 60*time.Second, func() error {
 		if got := restarts(); got == before {
 			return fmt.Errorf("NRestarts still %q", got)
@@ -289,7 +334,7 @@ func TestServiceUnderSystemd(t *testing.T) {
 	// took them down itself.
 	dev.WriteFile(t, "/run/systemd/system/thinkpol.service.d/lab-hold.conf", []byte("[Service]\nRestartSec=1h\n"))
 	dev.MustExec(t, "systemctl", "daemon-reload")
-	dev.MustExec(t, "systemctl", "kill", "-s", "KILL", "thinkpol.service")
+	signalAgent(t, dev, "KILL", 0)
 	lab.Eventually(t, 30*time.Second, func() error {
 		got, err := execRead(dev, pollTimeout, "systemctl", "show", "-p", "SubState", "--value", "thinkpol.service")
 		if err != nil || got != "auto-restart\n" {
