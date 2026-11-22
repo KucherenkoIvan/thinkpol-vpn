@@ -158,7 +158,7 @@ LAB_LONG_TESTS := ^(TestCensorMatrix|TestIdleLinksProbeAtRandom|TestLinksUnderTr
 # The long stream's tests running at once, under LAB_SLOTS: it shares the
 # slot cap with the default stream, which must keep enough of its slots to
 # stay within LAB_BUDGET while the long stream's labs hold theirs for minutes.
-LAB_LONG_PARALLEL ?= 2
+LAB_LONG_PARALLEL ?= 3
 # $(call LAB_COUNT_CELLS,<label>,<files>): the cells the streams listed
 # in files (a line each, "<transport> / <censor>"), once each, as
 # "<label>: <n> (<cells>)", or nothing when none; for make lab-test's last
