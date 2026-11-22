@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: M
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-276"
+branch: "tp-276-forwarding-record-before-writes"
 ---
 
 ## Goal
@@ -35,3 +35,4 @@ branch: ""
 
 ## Log
 - 2026-11-22 created in backlog (TP-270 review)
+- 2026-11-22 backlog → in-progress, owner: agent-tp-276
