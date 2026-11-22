@@ -794,3 +794,100 @@ func sharedOf(s *supervisor.Supervisor, space netmap.SpaceID) supervisor.SharedC
 	}
 	return supervisor.SharedCounters{}
 }
+
+// A server's first datagram, sent the moment SetListeners returns while
+// the space's worker is still starting, reaches the worker: the listener
+// is served only once the worker is routed to and knows it.
+func TestFirstDatagramAfterStartReachesTheWorker(t *testing.T) {
+	needsLab(t)
+	d := newDialer()
+	sp := handMadeSpace(t, d)
+	s, err := supervisor.New(sharedOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := s.SetSpaces([]supervisor.Space{sp.Space}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetListeners([]supervisor.Listener{{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dialSpace(t, d).WritePacket([]byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	id := transport.Identity{Space: transport.SpaceID(sp.ID), Node: transport.NodeID(d.Node)}
+	eventually(t, 5*time.Second, "the first datagram at the worker", func() error {
+		if got := sharedOf(s, sp.ID); got.NoWorker != 0 {
+			return fmt.Errorf("dropped for lack of a worker: %+v", got)
+		}
+		if !hasLine(s, sp.ID, "packet "+id.String()+" first") {
+			return fmt.Errorf("output %q", probeLines(s, sp.ID))
+		}
+		return nil
+	})
+}
+
+// startAnswering starts a supervisor of one space whose worker answers its
+// Listeners as mode says (runAnsweringWorker), with one udp listener.
+func startAnswering(t *testing.T, mode string) (*supervisor.Supervisor, netmap.SpaceID, supervisor.Options) {
+	t.Helper()
+	opts := sharedOptions()
+	opts.Env = append(opts.Env, envAnswers+"="+mode)
+	space := netmap.NewSpaceID()
+	s := start(t, opts, space)
+	if err := s.SetListeners([]supervisor.Listener{{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort)}}); err != nil {
+		t.Fatal(err)
+	}
+	return s, space, opts
+}
+
+// A running worker that reads a Listeners message and never answers it is
+// killed StopTimeout after the send, and restarted; SetListeners waits for
+// it no longer than that.
+func TestWorkerNotAnsweringListenersIsRestarted(t *testing.T) {
+	needsLab(t)
+	s, space, opts := startAnswering(t, answerFirst)
+	waitReady(t, s, space)
+	time.Sleep(500 * time.Millisecond) // its first answer in: routed to
+	begin := time.Now()
+	if err := s.SetListeners([]supervisor.Listener{
+		{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort)},
+		{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort+1)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(begin); took > opts.StopTimeout+time.Second {
+		t.Fatalf("SetListeners took %v, want at most StopTimeout %v", took, opts.StopTimeout)
+	}
+	eventually(t, 2*opts.StopTimeout, "the worker killed", func() error {
+		if w, _ := info(s, space); w.LastExitReason != supervisor.ExitUnresponsive || !strings.Contains(w.LastExit, "listeners") {
+			return fmt.Errorf("got %+v, want exit %q over the listeners", w, supervisor.ExitUnresponsive)
+		}
+		return nil
+	})
+	t.Logf("killed after %v", time.Since(begin))
+	eventually(t, 25*time.Second, "the worker restarted", func() error {
+		if w, _ := info(s, space); w.Starts < 2 || !w.Ready {
+			return fmt.Errorf("got %+v, want a second start, ready", w)
+		}
+		return nil
+	})
+}
+
+// A worker that answers a Listeners message it wasn't sent breaks the
+// protocol: it is killed and restarted.
+func TestUnsolicitedListenersAnswerIsAProtocolError(t *testing.T) {
+	needsLab(t)
+	s, space, _ := startAnswering(t, answerTwice)
+	eventually(t, 10*time.Second, "the worker ended over the extra answer", func() error {
+		if w, _ := info(s, space); w.LastExitReason != supervisor.ExitProtocolError {
+			return fmt.Errorf("got %+v, want exit %q", w, supervisor.ExitProtocolError)
+		}
+		return nil
+	})
+}

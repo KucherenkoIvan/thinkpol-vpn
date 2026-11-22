@@ -59,6 +59,8 @@ func TestMain(m *testing.M) {
 		os.Exit(runBadKindWorker())
 	case os.Getenv("SUPERVISOR_TEST_DEAF") != "":
 		os.Exit(runDeafWorker())
+	case os.Getenv(envAnswers) != "":
+		os.Exit(runAnsweringWorker(os.Getenv(envAnswers)))
 	case os.Getenv(envWorker) != "":
 		os.Exit(runTestWorker())
 	case os.Getenv(envSupervisor) != "":
@@ -499,6 +501,73 @@ func runDeafWorker() int {
 	}
 	time.Sleep(time.Hour) // alive, reading nothing, until the test kills it
 	return 0
+}
+
+// envAnswers makes the test worker runAnsweringWorker, answering its
+// Listeners messages as the value says: answerFirst or answerTwice.
+const envAnswers = "SUPERVISOR_TEST_ANSWERS"
+
+const (
+	// answerFirst answers the first Listeners message only; later ones
+	// are read and never answered.
+	answerFirst = "first"
+	// answerTwice answers each Listeners message twice.
+	answerTwice = "twice"
+)
+
+// runAnsweringWorker is a worker that reports Ready at once (it does not
+// sandbox), then answers its Listeners messages as mode says.
+func runAnsweringWorker(mode string) int {
+	cf := os.NewFile(uintptr(ipc.ControlFD), "control")
+	c, err := ipc.FromFile(cf)
+	_ = cf.Close()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if _, err := c.Receive(); err != nil { // Init
+		return 1
+	}
+	if err := c.Send(ipc.Message{Kind: ipc.KindReady}); err != nil {
+		return 1
+	}
+	for answered := 0; ; {
+		m, err := c.Receive()
+		if err != nil {
+			return 0
+		}
+		m.CloseFiles()
+		switch m.Kind {
+		case ipc.KindStop:
+			return 0
+		case ipc.KindListeners:
+			ls, err := ipc.DecodeListeners(m)
+			if err != nil {
+				return 1
+			}
+			if mode == answerFirst && answered > 0 {
+				continue
+			}
+			ids := make([]uint32, len(ls))
+			for i, l := range ls {
+				ids[i] = l.ID
+			}
+			known, err := ipc.ListenersKnownMessage(ids)
+			if err != nil {
+				return 1
+			}
+			times := 1
+			if mode == answerTwice {
+				times = 2
+			}
+			for range times {
+				if err := c.Send(known); err != nil {
+					return 1
+				}
+			}
+			answered++
+		}
+	}
 }
 
 // A worker that stops reading its control socket is killed once a control
