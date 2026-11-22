@@ -48,6 +48,14 @@ var (
 	idleBound = map[string]time.Duration{"reality": 26 * time.Second, "udp": 16 * time.Second}
 )
 
+// idleIntervals is how many idle intervals TestIdleLinksProbeAtRandom
+// reads per transport: enough that all of them falling within 3 s of each
+// other by chance, the spread check failing, stays under 10⁻⁷. The
+// earlier of two draws crowds I's bottom, udp's most (56% of its intervals
+// fall in the first 3 s): 31 intervals take that chance to 3.5·10⁻⁸ on
+// udp; reality's 20 take it to 2.2·10⁻⁹ (computed).
+var idleIntervals = map[string]int{"reality": 20, "udp": 31}
+
 // livenessLink is device-a's link to server-1 over one transport, up.
 type livenessLink struct {
 	transport           string
@@ -366,9 +374,9 @@ func checkBusyBound(t *testing.T, what, node string, after time.Duration) {
 // minutes): an idle link over reality and over udp exchanges one probe and
 // its reply at intervals within the transport's idle range (8 to 24 s, 5
 // to 14 s; the earlier of the two ends' draws), spread rather than at a
-// fixed rhythm, over 31 intervals; then a blackhole both ways is found
-// within the idle bound (I's top and T: 26 s, 16 s) of each end's last
-// answer.
+// fixed rhythm (idleIntervals of them); then a blackhole both ways is
+// found within the idle bound (I's top and T: 26 s, 16 s) of each end's
+// last answer.
 func TestIdleLinksProbeAtRandom(t *testing.T) {
 	lab.LongTest(t)
 	t.Parallel()
@@ -376,20 +384,20 @@ func TestIdleLinksProbeAtRandom(t *testing.T) {
 		t.Run(transport, func(t *testing.T) {
 			t.Parallel()
 			k := upLink(t, transport, everyPacket)
-			r := idleRange[transport]
-			// 31 intervals take about 31 times the earlier of two draws
-			// on average (13.3 s on reality, 8 s on udp); the wait gives
-			// them over seven standard deviations more.
-			wait := map[string]time.Duration{"reality": 10 * time.Minute, "udp": 6 * time.Minute}[transport]
+			r, n := idleRange[transport], idleIntervals[transport]
+			// n intervals take about n times the earlier of two draws on
+			// average (13.3 s on reality, 8 s on udp); the wait gives them
+			// over seven standard deviations more.
+			wait := map[string]time.Duration{"reality": 7 * time.Minute, "udp": 6 * time.Minute}[transport]
 			var gaps []time.Duration
 			lab.Eventually(t, wait, func() error {
 				gaps = idleGaps(k.capture.Packets())
-				if len(gaps) < 31 {
-					return fmt.Errorf("%d idle intervals so far, want 31", len(gaps))
+				if len(gaps) < n {
+					return fmt.Errorf("%d idle intervals so far, want %d", len(gaps), n)
 				}
 				return nil
 			})
-			gaps = gaps[:31]
+			gaps = gaps[:n]
 			lo, hi := slices.Min(gaps), slices.Max(gaps)
 			close := 0
 			for i := 1; i < len(gaps); i++ {
@@ -401,8 +409,8 @@ func TestIdleLinksProbeAtRandom(t *testing.T) {
 			for _, g := range gaps {
 				shown = append(shown, g.Round(10*time.Millisecond).String())
 			}
-			t.Logf("%s idle: 31 intervals from %v to %v, %d of 30 consecutive pairs within 1 s of each other: %s",
-				transport, lo.Round(10*time.Millisecond), hi.Round(10*time.Millisecond), close, strings.Join(shown, " "))
+			t.Logf("%s idle: %d intervals from %v to %v, %d of %d consecutive pairs within 1 s of each other: %s",
+				transport, n, lo.Round(10*time.Millisecond), hi.Round(10*time.Millisecond), close, n-1, strings.Join(shown, " "))
 			// An end probes no sooner than I's bottom after its last
 			// answer, the far end's probe or its own reply, and the
 			// earlier end no later than I's top.
@@ -411,12 +419,10 @@ func TestIdleLinksProbeAtRandom(t *testing.T) {
 					t.Errorf("%s: an idle exchange %v after the one before, want %v to %v", transport, g, r[0], r[1])
 				}
 			}
-			// Spread: 31 intervals all within 3 s of each other would be
-			// a fixed rhythm. Drawn, that happens about 3·10⁻⁸ of the time
-			// on udp (the earlier of two draws crowds I's bottom: 56% of
-			// them fall in its first 3 s) and far less on reality.
+			// Spread: all n within 3 s of each other would be a fixed
+			// rhythm (idleIntervals has the chance of it by draws).
 			if hi-lo < 3*time.Second {
-				t.Errorf("%s: 31 idle intervals within %v of each other: a fixed rhythm", transport, hi-lo)
+				t.Errorf("%s: %d idle intervals within %v of each other: a fixed rhythm", transport, n, hi-lo)
 			}
 
 			devFrom, serverFrom := len(k.devUp.Output()), len(k.serverUp.Output())
