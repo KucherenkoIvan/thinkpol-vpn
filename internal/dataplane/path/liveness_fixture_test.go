@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
@@ -13,7 +14,15 @@ import (
 
 // The liveness tests run two nodes over a pipe on a fake clock: the test
 // steps the clock, the links' timers go off as it passes them, and each
-// direction of the pipe can lose, hold back, refuse or answer frames.
+// direction of the pipe can lose, hold back, refuse or answer frames. They
+// run in a synctest bubble (bubble), where the harness waits after each
+// timer and step until every frame in flight has been handled.
+
+// bubble runs f, a liveness test's body, in a synctest bubble.
+func bubble(t *testing.T, f func(t *testing.T)) {
+	t.Helper()
+	synctest.Test(t, f)
+}
 
 type lclock struct {
 	mu     sync.Mutex
@@ -85,7 +94,7 @@ func (c *lclock) add(d time.Duration) {
 		c.timers = slices.DeleteFunc(c.timers, func(x *ltimer) bool { return x == due })
 		c.mu.Unlock()
 		due.f()
-		time.Sleep(200 * time.Microsecond) // what the timer queued goes out at its time
+		synctest.Wait() // what the timer queued goes out at its time
 	}
 }
 
@@ -108,7 +117,7 @@ func newSeededRand(seed byte) *seededRand { return &seededRand{rand.NewChaCha8([
 
 func (s *seededRand) Read(p []byte) (int, error) { return s.r.Read(p) }
 
-// wire is one direction of a pipe.
+// wire is one direction of a pipe; mu also guards its writer's peer.
 type wire struct {
 	mu      sync.Mutex
 	lost    bool
@@ -161,16 +170,16 @@ func (e *pend) WritePacket(p []byte) error {
 	f := slices.Clone(p)
 	w.written = append(w.written, record{at: e.h.elapsed(), f: f})
 	lost := w.lost || w.drop != nil && w.drop(f)
-	delay := w.delay
+	delay, peer := w.delay, e.peer
 	w.mu.Unlock()
 	if lost {
 		return nil
 	}
 	if delay > 0 {
-		e.h.clock.AfterFunc(delay, func() { e.peer.arrive(f) })
+		e.h.clock.AfterFunc(delay, func() { peer.arrive(f) })
 		return nil
 	}
-	e.peer.arrive(f)
+	peer.arrive(f)
 	return nil
 }
 
@@ -198,7 +207,8 @@ func (e *pend) RemoteAddr() net.Addr { return nil }
 // Shaping makes the end a shapedLink, as an accepted link would say.
 func (e *pend) Shaping() transport.Shaping { return e.shaping }
 
-// harness is nodes A (id 1, the leader) and B (id 2) on a fake clock.
+// harness is nodes A (id 1, the leader) and B (id 2) on a fake clock, in
+// a bubble.
 type harness struct {
 	t      *testing.T
 	clock  *lclock
@@ -235,7 +245,8 @@ func newHarness(t *testing.T, tune func(*Options)) *harness {
 
 func (h *harness) elapsed() time.Duration { return h.clock.Now().Sub(h.start) }
 
-// pipe returns two connected ends; ab carries what the first writes.
+// pipe returns two connected ends and the wires they write on: xy carries
+// what x writes, yx what y writes.
 func (h *harness) pipe() (x, y *pend, xy, yx *wire) {
 	xy, yx = &wire{}, &wire{}
 	x = &pend{h: h, out: xy, in: make(chan []byte, 1024), done: make(chan struct{})}
@@ -245,29 +256,48 @@ func (h *harness) pipe() (x, y *pend, xy, yx *wire) {
 }
 
 // link joins A and B with one link of the named transport, A dialing with
-// shaping s (B's end says the same), and waits until both ends are up.
+// shaping s (B's end says the same), and waits until both ends are up and
+// write seq and ack.
 func (h *harness) link(transportName string, s transport.Shaping) (la, lb *link, ab, ba *wire) {
 	h.t.Helper()
 	x, y, ab, ba := h.pipe()
 	y.shaping = s
 	la = h.a.addLink(h.b.id, x, true, transportName, 0, s)
 	lb = h.b.addLink(h.a.id, y, false, transportName, -1, transport.Shaping{})
-	h.until("the link up", 5*time.Second, func() bool { return la.up() && lb.up() && la.newer() && lb.newer() }, nil)
+	h.until("the link up", 5*time.Second, func() bool { return la.up() && lb.up() && la.acking() && lb.acking() }, nil)
 	h.run(h.step, nil) // the frames that brought it up are behind
 	return la, lb, ab, ba
 }
 
-func (l *link) newer() bool {
+// acking says whether l writes seq and ack: its far end reads acks.
+func (l *link) acking() bool {
 	l.lmu.Lock()
 	defer l.lmu.Unlock()
-	return l.lv.newer
+	return l.lv.acks
+}
+
+// reattach replaces l, one end of a link, with a new link of l's node
+// writing on the same wire to the same far end, as a redial or a restart
+// lands on the far end's open udp link (udp's doc, "Links"): l closes
+// without a notice, the far end's link carries on, and the new link draws
+// its first seq afresh.
+func (h *harness) reattach(l *link) *link {
+	h.t.Helper()
+	old := l.tl.(*pend)
+	far := old.peer
+	l.close("re-attached", nil)
+	e := &pend{h: h, out: old.out, peer: far, in: make(chan []byte, 1024), done: make(chan struct{})}
+	far.out.mu.Lock()
+	far.peer = e
+	far.out.mu.Unlock()
+	return l.node.addLink(l.nb.id, e, l.dialed, l.transport, l.endpoint, transport.Shaping{})
 }
 
 // run steps the clock for d, calling each (if any) after every step.
 func (h *harness) run(d time.Duration, each func()) {
 	for done := time.Duration(0); done < d; done += h.step {
 		h.clock.add(h.step)
-		time.Sleep(time.Millisecond)
+		synctest.Wait()
 		if each != nil {
 			each()
 		}
@@ -286,7 +316,7 @@ func (h *harness) until(what string, limit time.Duration, cond func() bool, each
 			h.t.Fatalf("%s: not within %v", what, limit)
 		}
 		h.clock.add(h.step)
-		time.Sleep(time.Millisecond)
+		synctest.Wait()
 		if each != nil {
 			each()
 		}
@@ -310,7 +340,7 @@ func (h *harness) sinceAnswer(l *link) time.Duration {
 	return time.Duration(l.node.now() - l.lastAnswer.Load())
 }
 
-// probes counts the probes written on w from at on (close notices too).
+// probes counts the probes written on w from on (close notices too).
 func probes(w *wire, from time.Duration) int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -323,7 +353,7 @@ func probes(w *wire, from time.Duration) int {
 	return n
 }
 
-// kinds lists the frames written on w from at on: kind and length.
+// kinds lists the frames written on w from on: kind and length.
 func kinds(w *wire, from time.Duration) [][2]int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -336,9 +366,9 @@ func kinds(w *wire, from time.Duration) [][2]int {
 	return out
 }
 
-// olderNode answers like a node from before acks: a probe of the older
-// format comes back with its kind changed and everything else copied;
-// anything else it can't read and drops.
+// olderNode answers like a node from before acks: a V1 probe comes back
+// with its kind changed and everything else copied; anything else it
+// can't read and drops.
 func olderNode(f []byte) [][]byte {
 	if f[0] == kindProbe && len(f) == probeSizeV1 {
 		r := slices.Clone(f)
@@ -352,8 +382,7 @@ func isNotice(f []byte) bool {
 	return f[0] == kindProbe && len(f) == probeSize && f[1]&flagClosing != 0
 }
 
-// v1Packet is an older node's packet from src to dst with a message of n
-// bytes.
+// v1Packet is a V1 packet from src to dst with a message of n bytes.
 func v1Packet(src, dst NodeID, n int) []byte {
 	f := make([]byte, headerSizeV1+n)
 	f[0], f[1] = kindPacketV1, 8

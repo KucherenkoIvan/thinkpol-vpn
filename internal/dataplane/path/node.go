@@ -3,7 +3,6 @@ package path
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -19,7 +18,7 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
-// Range is a span of durations a node draws from, Min and Max included.
+// Range is a span of durations a node draws from: Min up to Max.
 type Range struct{ Min, Max time.Duration }
 
 func (r Range) check(name string) error {
@@ -56,8 +55,10 @@ type Options struct {
 	// may take (default 6 s). Neighbors lists a dialed node that never
 	// gave a link as down once it has passed.
 	DialTimeout time.Duration
-	// Rand is where the draws (S, I, a link's first seq) come from
-	// (default crypto/rand.Reader); safe for one reader at a time.
+	// Rand, if set, is where every link's draws (S, I, its first seq) come
+	// from, read under one lock for the node: for tests. By default each
+	// link draws from a generator of its own, seeded once from
+	// crypto/rand. A Rand that fails panics.
 	Rand io.Reader
 	// FollowFor is how long the leader's latest path stays worth following
 	// after its last packet (default DialTimeout).
@@ -125,9 +126,6 @@ func (o Options) withDefaults() (Options, error) {
 	def(&o.RedialMin, 250*time.Millisecond)
 	def(&o.RedialMax, max(5*time.Second, o.RedialMin))
 	def(&o.watchEvery, 500*time.Millisecond)
-	if o.Rand == nil {
-		o.Rand = rand.Reader
-	}
 	if o.afterFunc == nil {
 		o.afterFunc = func(d time.Duration, f func()) timer { return time.AfterFunc(d, f) }
 	}
@@ -230,7 +228,7 @@ type Node struct {
 
 	counters counters
 
-	randMu sync.Mutex // Options.Rand
+	randMu sync.Mutex // Options.Rand, if set
 }
 
 // NewNode starts the path layer of node id. Give it a Table with Update and
@@ -516,14 +514,14 @@ func (n *Node) handle(l *link, b *[]byte) {
 	case kindProbe:
 		switch len(f) {
 		case probeSizeV1:
-			n.counters.probesReceived.Add(1)
+			n.counters.controlReceived.Add(1)
 			if f[1]&flagReadsAcks != 0 {
 				l.readsAcks(f[2:6], now)
 			}
 			l.reply(b)
 			return
 		case probeSize:
-			n.counters.probesReceived.Add(1)
+			n.counters.controlReceived.Add(1)
 			l.onFrame(now, f, probeSizeV1, 0)
 			if f[1]&flagClosing != 0 {
 				putBuf(b)
@@ -535,7 +533,7 @@ func (n *Node) handle(l *link, b *[]byte) {
 		}
 	case kindProbeReply:
 		if len(f) == probeSizeV1 || len(f) == probeSize {
-			n.counters.probesReceived.Add(1)
+			n.counters.controlReceived.Add(1)
 			l.onFrame(now, f, seqAck(f), l.awaited(f))
 			putBuf(b)
 			return
@@ -565,7 +563,7 @@ func (n *Node) handle(l *link, b *[]byte) {
 }
 
 // reply turns a probe in b into its reply and queues it. A link that reads
-// acks says so; one that doesn't echoes the probe's flags, as older nodes
+// acks says so; one that doesn't echoes the probe's flags, as V1 nodes
 // do.
 func (l *link) reply(b *[]byte) {
 	f := (*b)[:probeSize]
@@ -574,7 +572,7 @@ func (l *link) reply(b *[]byte) {
 	}
 	f[0] = kindProbeReply
 	l.lmu.Lock()
-	if l.lv.newer {
+	if l.lv.acks {
 		f[1] = flagReadsAcks
 	}
 	l.lmu.Unlock()
@@ -706,8 +704,8 @@ type Counters struct {
 	ReadFailed  uint64 // a link's transport failed a read (a packet lost, the link kept)
 	// Liveness's own frames, not packets: probes, their replies and close
 	// notices written to links, and read from them.
-	ProbesSent     uint64
-	ProbesReceived uint64
+	ControlSent     uint64
+	ControlReceived uint64
 }
 
 type counters struct {
@@ -715,7 +713,7 @@ type counters struct {
 	noRoute, spoofed, hopLimit, noPath, unknownPeer atomic.Uint64
 	queueFull, malformed, otherSpace                atomic.Uint64
 	tooLarge, writeFailed, readFailed               atomic.Uint64
-	probesSent, probesReceived                      atomic.Uint64
+	controlSent, controlReceived                    atomic.Uint64
 }
 
 // Counters returns the node's counters.
@@ -726,7 +724,7 @@ func (n *Node) Counters() Counters {
 		NoRoute: c.noRoute.Load(), Spoofed: c.spoofed.Load(), HopLimit: c.hopLimit.Load(), NoPath: c.noPath.Load(),
 		UnknownPeer: c.unknownPeer.Load(), QueueFull: c.queueFull.Load(), Malformed: c.malformed.Load(),
 		OtherSpace: c.otherSpace.Load(), TooLarge: c.tooLarge.Load(), WriteFailed: c.writeFailed.Load(),
-		ReadFailed: c.readFailed.Load(), ProbesSent: c.probesSent.Load(), ProbesReceived: c.probesReceived.Load(),
+		ReadFailed: c.readFailed.Load(), ControlSent: c.controlSent.Load(), ControlReceived: c.controlReceived.Load(),
 	}
 }
 

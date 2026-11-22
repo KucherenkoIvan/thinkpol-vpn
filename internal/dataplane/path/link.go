@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -29,7 +30,7 @@ type neighbor struct {
 	follows bool // this node's id is the higher: it sends where answers come from
 	mu      sync.Mutex
 	links   []*link
-	active  *link // the leader's: traffic stays on it while it is up
+	active  *link // the link pick chose last
 
 	lastRecv atomic.Pointer[link] // the link the neighbor's latest packet came on
 }
@@ -57,13 +58,19 @@ func (nb *neighbor) remove(l *link) {
 
 // pick returns the link to send on, and whether it is up. The leader
 // (the lower node id) keeps its active link while it is up; the follower
-// sends where its latest answer came from. Else the up link answered last,
-// which becomes active; else any link.
+// sends where the leader's latest packet came from, while that link is
+// up (not where its latest answer came from: an idle link's probe reply
+// would draw it there). Else the up link answered last, which becomes
+// active; else any link.
 func (nb *neighbor) pick() (*link, bool) {
 	nb.mu.Lock()
 	defer nb.mu.Unlock()
 	if a := nb.active; a != nil && a.up() && !nb.follows {
 		return a, true
+	}
+	if r := nb.lastRecv.Load(); r != nil && r.up() && nb.follows {
+		nb.active = r
+		return r, true
 	}
 	var best *link
 	var bestAnswer int64
@@ -145,10 +152,12 @@ type link struct {
 	delay int64 // D: both ends' shaping delay
 	idle  Range // I's range, the transport's
 
-	lmu   sync.Mutex
-	lv    liveness
-	timer timer
-	armed int64 // the deadline the timer is set for
+	lmu    sync.Mutex
+	lv     liveness
+	rand   io.Reader // the link's draws (linkRand)
+	timer  timer
+	armed  int64  // the deadline the timer is set for
+	probed uint32 // probes sent: the next one's token
 
 	pmu    sync.Mutex
 	probes map[uint64]int64 // token → when sent
@@ -189,6 +198,7 @@ func (n *Node) addLink(id NodeID, tl transport.Link, dialed bool, transportName 
 		// end's, as the map sets both ends of a link.
 		delay: 2 * int64(s.MaxDelay()),
 		idle:  idle,
+		rand:  n.linkRand(),
 	}
 	l.initLiveness(now)
 	l.remote = addrString(tl.RemoteAddr())
@@ -405,7 +415,7 @@ func (l *link) writeLoop() {
 			l.packetsOut.Add(1)
 			l.bytesOut.Add(uint64(size))
 			if control {
-				l.node.counters.probesSent.Add(1)
+				l.node.counters.controlSent.Add(1)
 			}
 		case errors.Is(err, net.ErrClosed):
 			l.close("the transport closed it", err)
@@ -417,14 +427,14 @@ func (l *link) writeLoop() {
 			l.failed("write", &l.writeFailures, err)
 		}
 		if closing {
-			l.close(l.closeWhy(), nil)
+			l.close(l.closeReason(), nil)
 			return
 		}
 	}
 }
 
-// stamp gives f, a newer-format frame, the next seq and the latest ack at
-// off, and returns the seq. Only the writer stamps, under lmu.
+// stampLocked gives f, a frame with seq and ack, the next seq and the
+// latest ack at off, and returns the seq. Only the writer stamps.
 func (l *link) stampLocked(f []byte, off int) uint32 {
 	lv := &l.lv
 	lv.latest++
@@ -455,7 +465,7 @@ func (l *link) written(seq uint32, w int64, expects bool, err error) {
 // queued) in the format the link writes, and returns what it wrote.
 func (l *link) writeControl(f []byte, closing bool) ([]byte, error) {
 	l.lmu.Lock()
-	if !l.lv.newer {
+	if !l.lv.acks {
 		l.lmu.Unlock()
 		f = f[:probeSizeV1]
 		// A transport that shapes may hold these a while; round trips
@@ -471,12 +481,12 @@ func (l *link) writeControl(f []byte, closing bool) ([]byte, error) {
 }
 
 // writePacket writes a packet frame of either format in the format the
-// link writes, and returns what it wrote. An older packet with no room
+// link writes, and returns what it wrote. A V1 packet with no room
 // for seq and ack (it already fills a buffer, or the transport refuses it
 // longer) goes as it came, neither counting nor answering.
 func (l *link) writePacket(f []byte) ([]byte, error) {
 	l.lmu.Lock()
-	if !l.lv.newer {
+	if !l.lv.acks {
 		l.lmu.Unlock()
 		if f[0] == kindPacket {
 			f = toV1(f)
@@ -540,14 +550,16 @@ func (l *link) readLoop() {
 	}
 }
 
-// probe sends a probe with a random token, remembered until its reply
-// comes back or it is one of more than maxProbes waiting. An older-format
-// probe's token starts with the link's first seq less one (frame.go).
+// probe sends a probe, its token remembered until its reply comes back or
+// it is one of more than maxProbes waiting. The token counts the link's
+// probes; a V1 probe's starts with the link's first seq less one instead
+// (frame.go).
 func (l *link) probe(now int64) {
 	var token [8]byte
-	_, _ = rand.Read(token[:])
 	l.lmu.Lock()
-	if !l.lv.newer {
+	l.probed++
+	binary.BigEndian.PutUint32(token[4:], l.probed)
+	if !l.lv.acks {
 		binary.BigEndian.PutUint32(token[:4], l.lv.first-1)
 	}
 	l.lv.lastProbe = now

@@ -726,8 +726,8 @@ func TestWGRhythmOrdinaryTLS(t *testing.T) {
 		// alone on an idle stream are the steady signal's.
 		{"gRPC stream with keepalive PINGs", grpc, 0},
 		// Risk: keepalive PINGs on an idle stream, the steady signal at
-		// the eleventh.
-		{"keepalive PINGs on an idle stream", idlePings, 220 * s},
+		// the seventeenth.
+		{"keepalive PINGs on an idle stream", idlePings, 340 * s},
 		{"bulk download", download, 0},
 		// Risk: any request and response repeated at an interval within
 		// the rekey window, whatever their sizes (an HTTP/2 poll's
@@ -735,9 +735,9 @@ func TestWGRhythmOrdinaryTLS(t *testing.T) {
 		{"HTTP/2 poll every 2 minutes", h2Poll, -1},
 		// Risk: an identical request and response at a fixed interval,
 		// flagged by the steady signal (30 to 30.5 s apart) once the
-		// quiet after the tenth has passed, at the eleventh. It never
-		// stands out a rekey period after it last did.
-		{"HTTP/1.1 poll every 30 s", poll(30*s, 260, 380), 5*time.Minute + 33507*ms},
+		// quiet after the sixteenth has passed, at the seventeenth. It
+		// never stands out a rekey period after it last did.
+		{"HTTP/1.1 poll every 30 s", poll(30*s, 260, 380), 8*time.Minute + 35148*ms},
 		// Risk: the same at an interval within the rekey window.
 		{"HTTP/1.1 poll every 2 minutes", poll(120*s, 260, 380), -1},
 		// Risk: a server heartbeat, one unanswered record of one size at a
@@ -1811,17 +1811,23 @@ func every(first, step time.Duration, n int) []time.Duration {
 }
 
 // TestWGRhythmSteadyExchanges: idle exchanges of one record each way at a
-// fixed rhythm show the steady signal at the tenth, judged once the quiet
-// after it has passed (on the next packet); intervals spread by more than
-// wgSteadyJitter, an exchange of other sizes, a second record before the
-// quiet, an answer outside the pair window, another record between
-// exchanges, an unanswered one after the quiet or an exchange of three
-// records each keep a run short of ten. An exchange is judged only once
-// the quiet after it has passed: a bare acknowledgement right after the
-// tenth's answer doesn't flag it.
+// fixed rhythm show the steady signal at the wgSteadyExchanges-th, judged
+// once the quiet after it has passed (on the next packet); intervals
+// spread by more than wgSteadyJitter, an exchange of other sizes, a
+// second record before the quiet, an answer outside the pair window,
+// another record between exchanges, an unanswered one after the quiet or
+// an exchange of three records each keep a run short. An exchange is
+// judged only once the quiet after it has passed: a bare acknowledgement
+// right after the last one's answer doesn't flag it. A run spread past
+// wgSteadyJitter keeps its longest tail that fits.
 func TestWGRhythmSteadyExchanges(t *testing.T) {
 	s, ms := time.Second, time.Millisecond
-	jittered := every(6*s, 6*s, 12)
+	// n exchanges: enough to flag, and two short runs either side of a
+	// break after the fifth.
+	const n = wgSteadyExchanges + 2
+	steady := every(6*s, 6*s, n)
+	flagAt := steady[wgSteadyExchanges]
+	jittered := every(6*s, 6*s, n)
 	for i := range jittered {
 		jittered[i] += time.Duration(i%3) * 300 * ms // intervals of 5.4 and 6.3 s
 	}
@@ -1831,34 +1837,35 @@ func TestWGRhythmSteadyExchanges(t *testing.T) {
 	for range 3 {
 		spread = append(spread, spread[len(spread)-1]+7200*ms)
 	}
-	sized := pinger(every(6*s, 6*s, 12), 30*ms, 40, 40)
+	sized := pinger(every(6*s, 6*s, n), 30*ms, 40, 40)
 	sized[11].size = 41 // the sixth exchange's answer
-	twice := pinger(every(6*s, 6*s, 12), 30*ms, 40, 40)
+	twice := pinger(every(6*s, 6*s, n), 30*ms, 40, 40)
 	twice = append(twice, wireRecord{30*s + 60*ms, false, 40}) // a second answer in the fifth exchange
-	late := pinger(every(8*s, 8*s, 12), 30*ms, 40, 40)
+	late := pinger(every(8*s, 8*s, n), 30*ms, 40, 40)
 	late[9].at = 40*s + 2100*ms // the fifth answer after the pair window, the quiet passed before the next
-	between := pinger(every(6*s, 6*s, 12), 30*ms, 40, 40)
+	between := pinger(every(6*s, 6*s, n), 30*ms, 40, 40)
 	between = append(between, wireRecord{33 * s, true, 300}) // a record halfway, before the quiet
-	lone := pinger(every(12*s, 12*s, 12), 30*ms, 40, 40)
+	lone := pinger(every(12*s, 12*s, n), 30*ms, 40, 40)
 	lone = append(lone, wireRecord{66 * s, false, 40}) // an unanswered record after the quiet, halfway
 	// An exchange of three records halfway between two 12 s apart.
-	third := pinger(every(12*s, 12*s, 12), 30*ms, 40, 40)
+	third := pinger(every(12*s, 12*s, n), 30*ms, 40, 40)
 	third = append(third, pinger([]time.Duration{66 * s}, 30*ms, 40, 40)...)
 	third = append(third, wireRecord{66*s + 60*ms, true, 40})
+	want := fmt.Sprintf("%s: %d idle exchanges of 40 and 40 bytes", WGRhythmBySteady, wgSteadyExchanges)
 	for _, c := range []struct {
 		name string
 		recs []wireRecord
 		at   time.Duration // when it is flagged; 0: never
 	}{
-		{"a TLS pinger every 6 s", pinger(every(6*s, 6*s, 12), 30*ms, 40, 40), 66 * s},
+		{"a TLS pinger every 6 s", pinger(steady, 30*ms, 40, 40), flagAt},
 		{"the server opening", func() []wireRecord {
-			out := pinger(every(6*s, 6*s, 12), 30*ms, 40, 40)
+			out := pinger(steady, 30*ms, 40, 40)
 			for i := range out {
 				out[i].toServer = !out[i].toServer
 			}
 			return out
-		}(), 66 * s},
-		{"intervals within 1 s of each other", pinger(jittered, 30*ms, 40, 40), jittered[10]},
+		}(), flagAt},
+		{"intervals within 1 s of each other", pinger(jittered, 30*ms, 40, 40), jittered[wgSteadyExchanges]},
 		{"a spread interval", pinger(spread, 30*ms, 40, 40), 0},
 		{"other sizes", sized, 0},
 		{"a second answer", twice, 0},
@@ -1877,37 +1884,45 @@ func TestWGRhythmSteadyExchanges(t *testing.T) {
 			t.Errorf("%s: blocked at %s: %+v", c.name, a.at, a)
 		case c.at != 0 && !blocked:
 			t.Errorf("%s: passed, want flagged at %s", c.name, c.at)
-		case c.at != 0 && (a.at != c.at || !strings.HasPrefix(a.Reason, WGRhythmBySteady+": 10 idle exchanges of 40 and 40 bytes")):
-			t.Errorf("%s: blocked at %s for %q, want at %s for ten steady exchanges", c.name, a.at, a.Reason, c.at)
+		case c.at != 0 && (a.at != c.at || !strings.HasPrefix(a.Reason, want)):
+			t.Errorf("%s: blocked at %s for %q, want at %s for %q", c.name, a.at, a.Reason, c.at, want)
 		}
 	}
 	acked := newWGRun(t, `{}`, 1400)
-	for _, w := range pinger(every(6*s, 6*s, 12), 30*ms, 40, 40) {
+	for _, w := range pinger(steady, 30*ms, 40, 40) {
 		acked.carry([]wireRecord{w})
 		acked.ack(w.at+5*ms, !w.toServer)
 	}
-	if a, blocked := acked.firstBlocked(); !blocked || a.at != 66*s {
-		t.Errorf("a pinger acknowledged: first blocked %+v (blocked %v), want at 66 s, past the quiet after the tenth", a, blocked)
+	if a, blocked := acked.firstBlocked(); !blocked || a.at != flagAt {
+		t.Errorf("a pinger acknowledged: first blocked %+v (blocked %v), want at %s, past the quiet after the last", a, blocked, flagAt)
 	}
-	// The run started over at the exchange before the spread interval:
-	// its tenth is spread[17], judged at spread[18].
-	for range 7 {
-		spread = append(spread, spread[len(spread)-1]+7200*ms)
+	// Eight intervals of 6 s, one of 6.9 s, one of 7.2 s (spread 1.2 s:
+	// the run keeps 6.9 and 7.2, its longest tail that fits), then 7 s
+	// apart: the run from the exchange before the 6.9 s interval is
+	// flagged at tail[24], one exchange before a restart from the
+	// interval that spread it would be.
+	tail := every(6*s, 6*s, 9)
+	for _, d := range []time.Duration{6900 * ms, 7200 * ms} {
+		tail = append(tail, tail[len(tail)-1]+d)
+	}
+	for len(tail) < 26 {
+		tail = append(tail, tail[len(tail)-1]+7*s)
 	}
 	r := newWGRun(t, `{}`, 1400)
-	r.carry(pinger(spread, 30*ms, 40, 40))
-	if a, blocked := r.firstBlocked(); !blocked || a.at != spread[18] {
-		t.Errorf("a run started over at a spread interval: first blocked %+v (blocked %v), want at %s", a, blocked, spread[18])
+	r.carry(pinger(tail, 30*ms, 40, 40))
+	if a, blocked := r.firstBlocked(); !blocked || a.at != tail[8+wgSteadyExchanges] {
+		t.Errorf("a run spread past the band: first blocked %+v (blocked %v), want at %s", a, blocked, tail[8+wgSteadyExchanges])
 	}
 }
 
 // TestWGRhythmSteadyDrawnIdle: thinkpol's idle probes, an exchange of one
 // record each way at the earlier of the two ends' waits, each drawn
 // afresh (docs/design/path-liveness.md: 8 to 24 s on reality, 5 to 14 s on
-// udp), seldom show the steady signal. Ten in a row at intervals within
-// 1 s of each other come by chance about 8·10⁻⁸ of the time on reality
-// and 6·10⁻⁶ on udp (lab/censor/doc.go); pinned, seeded, over 200 idle
-// hours a transport: reality never, udp once.
+// udp), seldom show the steady signal. Sixteen in a row (fifteen
+// intervals) within 1 s of each other come by chance about 2.7·10⁻¹³ of
+// the time on reality and 5.7·10⁻¹⁰ on udp (lab/censor/doc.go); pinned,
+// seeded, over 200 idle hours a transport: never (at ten in a row, udp
+// once).
 func TestWGRhythmSteadyDrawnIdle(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -1917,7 +1932,7 @@ func TestWGRhythmSteadyDrawnIdle(t *testing.T) {
 		flagged int
 	}{
 		{"reality", 8 * time.Second, 24 * time.Second, 507, false, 0},
-		{"udp", 5 * time.Second, 14 * time.Second, 18 + wgUDPOverhead, true, 1},
+		{"udp", 5 * time.Second, 14 * time.Second, 18 + wgUDPOverhead, true, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			rng := rand.New(rand.NewPCG(80, 2026))

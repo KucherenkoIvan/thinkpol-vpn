@@ -58,6 +58,10 @@
 // (frame.go). An answer is a frame whose ack is newer than any before or
 // covers the latest frame written: proof that the far end reads this end.
 // Received traffic alone proves only that the far end reaches this one.
+// A seq more than a reorder window (1024) behind the newest read, or a V1
+// probe flagging acks on a link that reads seqs already, is a new link at
+// the far end (a udp redial or restart lands on this end's open link) and
+// is acked from then on.
 //
 // Busy: a frame that expects an answer (any but replies, close notices
 // and WireGuard keepalives, told by length) written S after both the
@@ -84,21 +88,26 @@
 // turns suspect: one exchange per drawn wait, a dead idle link found
 // within I + T. A link is up from its first answer until it closes.
 // [Counters] counts liveness's own frames, probes, replies and close
-// notices, written and read (ProbesSent, ProbesReceived), so that busy
-// links sending none shows from outside (the lab's TP-080 checks).
+// notices, written and read (ControlSent, ControlReceived), so that busy
+// links sending none shows from outside (the lab checks it).
+//
+// Each link draws S, I and its first seq from a generator of its own
+// (math/rand/v2's ChaCha8), seeded once from crypto/rand when the link is
+// made; [Options.Rand] replaces them all, for tests.
 //
 // D is this end's shaping delay (transport.Shaping.MaxDelay), from the
 // dial config or, on an accepted link, the link itself, doubled: the far
 // end's isn't known here and is taken to be the same. Today's transports
 // refuse delay shaping, so D is 0 on them.
 //
-// Older nodes read neither acks nor the newer frames: a link writes the
-// older frames, every probe flagging that this end reads acks, and keeps
-// the older rule (a probe every 2 s while unanswered that long, closed 6 s
-// after its last answer) until the far end sends a probe with that flag
-// or a newer frame. Replies don't count: older nodes copy flags back. A
-// relay writes its own seq and ack; an older node's packet with no room
-// for them goes on in the older format, neither counting nor answering.
+// Older nodes read neither acks nor frames with seq and ack (V1 nodes,
+// V1 frames): a link writes V1 frames, every probe flagging that this end
+// reads acks, and keeps the V1 rule (a probe every 2 s while unanswered
+// that long, closed 6 s after its last answer) until the far end sends a
+// probe with that flag or a frame with seq and ack. Replies don't count:
+// V1 nodes copy flags back. A relay writes its own seq and ack; a V1
+// node's packet with no room for them goes on as V1, neither counting nor
+// answering.
 //
 // A link never answered closes after [Options.DialTimeout] (6 s by
 // default). [Node.Neighbors] lists a dialed node that never gave a link as
@@ -107,8 +116,10 @@
 // never succeeds reads like a link that died; a first dial still waiting
 // for an answer isn't listed before that. The deadline counts from the
 // latest dial start: a map change of the node's endpoints restarts the
-// dial, and the clock. Probe tokens are random, and a reply counts by its
-// token only if it answers a probe still awaited. Its round trip is an
+// dial, and the clock. A probe's token counts the link's probes (a V1
+// probe's first four bytes are the link's first seq less one instead),
+// and a reply counts by its token only if it answers a probe still
+// awaited. Its round trip is an
 // upper bound: a transport that shapes may hold each probe and each reply
 // up to transport.MaxControlHold, which T leaves room for. Latency
 // comparisons belong on traffic nobody holds, such as WireGuard's
@@ -123,9 +134,9 @@
 // switching first hops (entries of a chain) keeps the exit and the
 // connections open through it. Traffic to an adjacent node stays on one of
 // its links: the lower node id keeps its link while it is up, the higher
-// sends where its latest answer came from. Packets are never spread across first
-// hops packet by packet: they would arrive out of order, which TCP handles
-// badly.
+// sends where the lower's latest packet came from (else where its latest
+// answer came from). Packets are never spread across first hops packet by
+// packet: they would arrive out of order, which TCP handles badly.
 //
 // [Failover] follows the priority order with hysteresis: it stays on the
 // current hop while that is up, and a hop earlier in the order takes over

@@ -14,23 +14,23 @@ type NodeID = transport.NodeID
 //
 //	packet:          kind=6 | hop limit [1] | destination [8] | source [8] | seq [4] | ack [4] | WireGuard message
 //	probe, reply:    kind=2, 3 | flags [1] | token [8] | seq [4] | ack [4]
-//	older packet:    kind=1 | hop limit [1] | destination [8] | source [8] | WireGuard message
-//	older probe:     kind=2, 3 | flags [1] | token [8]
+//	V1 packet:       kind=1 | hop limit [1] | destination [8] | source [8] | WireGuard message
+//	V1 probe, reply: kind=2, 3 | flags [1] | token [8]
 //
 // Flags: bit 0, the sender reads acks; bit 1, a close notice (a probe the
 // far end obeys by closing the link, without a reply). Seq and ack are per
 // link and serial numbers (RFC 1982): seq counts the frames a link writes
-// in the newer format, from a random start, and ack is the newest seq the
+// with seq and ack, from a random start, and ack is the newest seq the
 // link has read from the far end (docs/design/path-liveness.md, "Acks in
-// the frames"). A link writes the older frames, which older nodes read,
-// until the far end shows it reads acks. An older probe with bit 0 set
+// the frames"). A link writes V1 frames, which V1 nodes (from before acks)
+// read, until the far end shows it reads acks. A V1 probe with bit 0 set
 // carries the sender's first seq less one in the first four bytes of its
 // token, so a far end that switches on it has an ack to send before any
-// newer frame arrives.
+// frame with seq and ack arrives.
 //
 // Packets travel end to end and relays forward them by destination; probes
 // and their replies stay on one link. A frame of any other kind is dropped,
-// so a kind added later is ignored by older nodes.
+// so a kind added later is ignored by nodes from before it.
 const (
 	kindPacketV1   = 1
 	kindProbe      = 2
@@ -42,7 +42,7 @@ const (
 
 	// HeaderSize is what the path layer adds to every WireGuard message.
 	HeaderSize = 26
-	// headerSizeV1 is the older packet's header: no seq or ack.
+	// headerSizeV1 is the V1 packet's header: no seq or ack.
 	headerSizeV1 = 18
 	// seqAckSize is what seq and ack add to a frame.
 	seqAckSize = HeaderSize - headerSizeV1
@@ -104,8 +104,8 @@ func parsePacket(f []byte) (header, int, bool) {
 	return h, off, true
 }
 
-// seqAck returns where a newer-format frame keeps its seq and ack, or -1
-// for a frame without them.
+// seqAck returns where a frame keeps its seq and ack, or -1 for a V1
+// frame.
 func seqAck(f []byte) int {
 	switch {
 	case f[0] == kindPacket && len(f) > HeaderSize:
@@ -116,15 +116,15 @@ func seqAck(f []byte) int {
 	return -1
 }
 
-// toV1 rewrites a packet frame in place into the older format and returns
-// it: the header moves up over seq and ack. f must be a newer packet.
+// toV1 rewrites a packet frame in place into a V1 packet and returns it:
+// the header moves up over seq and ack. f must have seq and ack.
 func toV1(f []byte) []byte {
 	copy(f[seqAckSize:HeaderSize], f[:headerSizeV1])
 	f[seqAckSize] = kindPacketV1
 	return f[seqAckSize:]
 }
 
-// fromV1 rewrites an older packet frame into the newer format, in the
+// fromV1 rewrites a V1 packet frame into one with seq and ack, in the
 // same buffer (cap(f) must allow seqAckSize more), and returns it; seq and
 // ack are left for the writer.
 func fromV1(f []byte) []byte {

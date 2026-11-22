@@ -198,7 +198,7 @@
 // keepalives once the connection has carried an exchange) it needs, the
 // 300 ms of quiet after which it reads the record count, the 10 ms that
 // make records one burst, the three records a way a burst may hold, and
-// the ten idle exchanges the steady signal needs. Five signals each show
+// the sixteen idle exchanges the steady signal needs. Five signals each show
 // the rhythm, the last no WireGuard timer's but any fixed beat's:
 //
 //   - rekey: an exchange, a record one way answered within 2 s by one the
@@ -293,31 +293,37 @@
 //     burst of the same counts recurs three times in a row, each
 //     REKEY_AFTER_TIME to the rekey window after the one before; one of
 //     those counts sooner than REKEY_AFTER_TIME starts the chain over.
-//   - steady: idle exchanges at a fixed rhythm (TP-080,
-//     docs/design/path-liveness.md): an exchange whose first record
+//   - steady: idle exchanges at a fixed rhythm
+//     (docs/design/path-liveness.md): an exchange whose first record
 //     comes after REKEY_TIMEOUT with no record either way and is
 //     answered within 2 s by one record the other way, the only one
 //     before the next quiet, of the same sizes each way as the exchange
-//     before. Ten in a row whose intervals (first record to first
-//     record) all lie within 1 s of each other, a band rather than a
-//     drift from one to the next, show the rhythm: a pinger, a keepalive
-//     PING or a poll at a fixed interval longer than the quiet. Any other
+//     before. Sixteen in a row (fifteen intervals, first record to first
+//     record) all within 1 s of each other, a band rather than a drift
+//     from one to the next, show the rhythm: a pinger, a keepalive PING
+//     or a poll at a fixed interval longer than the quiet. Any other
 //     record (an unanswered one, a second answer, data) ends the run, and
-//     an interval that would spread the band past 1 s starts it over from
-//     the exchange before. An exchange is judged once the quiet after it
-//     has passed, on the connection's next packet, so the run shows at
-//     the eleventh exchange's first record. thinkpol's idle path probes
-//     draw their waits: an exchange at the earlier of the two ends' draws,
-//     8 to 24 s on reality, 5 to 14 s on udp. Ten such intervals fall in
-//     one 1 s band by chance about 8·10⁻⁸ of the time on reality and
-//     6.4·10⁻⁶ on udp, whose draws crowd the range's bottom (computed;
-//     pinned, seeded, TestWGRhythmSteadyDrawnIdle: over 200 idle hours,
-//     reality never flagged, udp once). So an idle reality link is flagged
-//     about once in 50,000 idle hours, an idle udp link about once in
-//     350: a residual of the draws (RR65), and the false-fail chance of
-//     the matrix's idle udp cell, about 10⁻⁴ in its 4 minutes. Drift
-//     between consecutive intervals instead of a band would flag about 15
-//     times as often (9.96·10⁻⁵ per ten on udp).
+//     an interval that would spread the band past 1 s keeps the run's
+//     longest tail of intervals that it doesn't spread. An exchange is
+//     judged once the quiet after it has passed, on the connection's next
+//     packet, so the run shows at the seventeenth exchange's first
+//     record: about 100 s into a pinger 6 s apart. thinkpol's idle path
+//     probes draw their waits: an exchange at the earlier of the two
+//     ends' draws, 8 to 24 s on reality, 5 to 14 s on udp. Fifteen such
+//     intervals fall in one 1 s band by chance about 2.7·10⁻¹³ of the
+//     time on reality and 5.7·10⁻¹⁰ on udp, whose draws crowd the
+//     range's bottom (computed; pinned, seeded,
+//     TestWGRhythmSteadyDrawnIdle: over 200 idle hours, never flagged).
+//     So an idle udp link is flagged about once in 4 million idle hours,
+//     a reality one about once in 10¹⁰: a residual of the draws (RR65);
+//     the matrix's idle udp cell false-fails about 10⁻⁸ of its runs (its
+//     4 minutes hold about sixteen runs of fifteen intervals), its
+//     reality cell about 10⁻¹². Sixteen exchanges, not ten, set those
+//     figures (owner, 2026-11-22: at most about 10⁻⁷ a run on udp, and
+//     the pinger caught within the hold); at ten, udp's cell false-failed
+//     about 10⁻⁴ of its runs. Drift between consecutive intervals
+//     instead of a band would flag about 200 times as often (about 10⁻⁷
+//     per fifteen intervals on udp).
 //
 // A shorter rekey period (the module's rekey setting) is for a WireGuard
 // whose timers run sped up, as the lab's thinkpol runs wireguard-go's
@@ -495,7 +501,7 @@
 // steady idle interval (a server-sent events comment line), and, by the
 // steady signal, keepalive PINGs on an idle gRPC, HTTP/2 or WebSocket
 // connection and polling at a fixed interval (HTTP/1.1 every 30 s: flagged
-// at the eleventh poll), anything that exchanges one record each way at a
+// at the seventeenth poll), anything that exchanges one record each way at a
 // fixed beat with nothing between. HTTP/2 browsing with idle PINGs, a gRPC
 // stream with keepalive PINGs among its messages and a bulk download
 // pass. Flow shape beyond that is not judged. A TCP stream it can't frame from its first byte (not
@@ -737,9 +743,10 @@
 // caught by its record counts, and its cell says it is a known tell RR65
 // accepts, as long as the module blocked it for the count or the burst
 // alone (a block for any other reason is an error): an expected fail is a
-// correct cell, as udp's is. The idle case (one ping, then nothing) is out
-// of the matrix until TP-080 brings it back: an idle thinkpol tunnel shows
-// no WireGuard rhythm, so udp can't be caught there. A prober cell whose
+// correct cell, as udp's is. The idle case holds the tunnels idle: an
+// idle thinkpol tunnel shows no WireGuard rhythm, only its path probes,
+// so reality and udp must pass, and the https row's TLS pinger is the
+// control the steady signal must catch (above). A prober cell whose
 // upstream tell is unattributable, or reported rather than flagged over
 // any baseline (owner, 2026-11-19: a), crossed but is not judged, never a
 // pass; the matrix counts such cells (NOT JUDGED), as it counts known

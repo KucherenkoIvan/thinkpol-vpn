@@ -1,11 +1,14 @@
 package path
 
 import (
+	crand "crypto/rand"
 	"encoding/binary"
 	"io"
 	"math"
 	"math/bits"
+	"math/rand/v2"
 	"slices"
+	"sync"
 	"time"
 )
 
@@ -14,21 +17,26 @@ import (
 // busy links need no probes, and idle links probe after a drawn wait.
 //
 // Until the far end shows it reads acks (a probe with flagReadsAcks, or
-// a newer frame), a link writes the older frames and keeps the older
-// rule: a probe every legacyProbeEvery while unanswered that long, closed
-// legacyDeadAfter after its last answer.
+// a frame with seq and ack), a link writes the V1 frames and keeps the V1
+// rule: a probe every probeEveryV1 while unanswered that long, closed
+// deadAfterV1 after its last answer.
 const (
-	legacyProbeEvery = 2 * time.Second
-	legacyDeadAfter  = 6 * time.Second
+	probeEveryV1 = 2 * time.Second
+	deadAfterV1  = 6 * time.Second
 	// closeGrace is how long a dead link waits for its close notice to
 	// leave before it closes anyway (a write blocked on a stalled stream).
 	closeGrace = 50 * time.Millisecond
+	// reorderWindow is how far behind the newest seq read a frame may
+	// come and still count as reordered: one further behind is from a new
+	// link at the far end (a redial onto this one, its seq drawn afresh),
+	// and its seq is acked from then on.
+	reorderWindow = 1024
 )
 
 // liveness is a link's state for the rules; the link's lmu guards it.
 // Times are node times (zero: never).
 type liveness struct {
-	newer bool // the far end reads acks: write the newer frames
+	acks bool // the far end reads acks: write frames with seq and ack
 
 	first uint32 // the first seq this end writes
 
@@ -57,17 +65,36 @@ type liveness struct {
 	srtt, rttvar int64 // probes' round trips; measured once one came back
 	measured     bool
 
-	lastProbe int64 // the older rule's cadence
+	lastProbe int64 // the V1 rule's cadence
 }
 
-// draw fills b from Options.Rand; a reader that fails gives zeros, the
-// bottom of every range.
-func (n *Node) draw(b []byte) {
-	n.randMu.Lock()
-	_, err := io.ReadFull(n.opts.Rand, b)
-	n.randMu.Unlock()
-	if err != nil {
-		clear(b)
+// linkRand is a new link's source of draws: a generator of its own,
+// seeded once from crypto/rand, or Options.Rand under the node's lock.
+func (n *Node) linkRand() io.Reader {
+	if n.opts.Rand != nil {
+		return &lockedReader{mu: &n.randMu, r: n.opts.Rand}
+	}
+	var seed [32]byte
+	_, _ = crand.Read(seed[:]) // it never fails: the program crashes first
+	return rand.NewChaCha8(seed)
+}
+
+type lockedReader struct {
+	mu *sync.Mutex
+	r  io.Reader
+}
+
+func (r *lockedReader) Read(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return io.ReadFull(r.r, p)
+}
+
+// drawLocked fills b from the link's draws. A failing Options.Rand
+// panics: zeros would draw every range's bottom, a fixed rhythm.
+func (l *link) drawLocked(b []byte) {
+	if _, err := io.ReadFull(l.rand, b); err != nil {
+		panic("path: Options.Rand failed: " + err.Error())
 	}
 }
 
@@ -77,17 +104,18 @@ func within(r Range, u uint32) int64 {
 	return int64(r.Min) + int64(hi)
 }
 
-// initLiveness starts the rules for a link created at now.
+// initLiveness starts the rules for a link created at now, before anyone
+// else can see it.
 func (l *link) initLiveness(now int64) {
 	var b [12]byte
-	l.node.draw(b[:])
+	l.drawLocked(b[:])
 	first := binary.BigEndian.Uint32(b[:4])
 	l.lv = liveness{first: first, latest: first - 1, highAck: first - 1, clock: now}
-	l.drawLocked(now, b[4:])
+	l.waitsLocked(now, b[4:])
 }
 
-// drawLocked draws S and the idle wait from now, from 8 random bytes.
-func (l *link) drawLocked(now int64, b []byte) {
+// waitsLocked draws S and the idle wait from now, from 8 random bytes.
+func (l *link) waitsLocked(now int64, b []byte) {
 	o := &l.node.opts
 	s := Range{o.Burst.Min, max(o.Burst.Min, o.Burst.Max-time.Duration(l.delay))}
 	l.lv.spacing = within(s, binary.BigEndian.Uint32(b[:4]))
@@ -145,12 +173,12 @@ func (l *link) ackAnswerLocked(ack uint32) bool {
 // came up with it.
 func (l *link) answeredLocked(now int64) bool {
 	var b [8]byte
-	l.node.draw(b[:])
+	l.drawLocked(b[:])
 	lv := &l.lv
 	l.lastAnswer.Store(now)
 	lv.clock = now
 	lv.suspectAt, lv.probing, lv.secondAt, lv.deadAt = 0, false, 0, 0
-	l.drawLocked(now, b[:])
+	l.waitsLocked(now, b[:])
 	if l.upSince.Load() == 0 {
 		l.upSince.Store(now)
 		return true
@@ -164,7 +192,7 @@ func (l *link) answeredLocked(now int64) bool {
 // within a burst is due within R. A deadline stands until an answer.
 func (l *link) wroteLocked(w int64) {
 	lv := &l.lv
-	if !lv.newer {
+	if !lv.acks {
 		return
 	}
 	s := lv.spacing
@@ -210,11 +238,11 @@ func (l *link) nextLocked() int64 {
 		at(l.created + int64(l.node.opts.DialTimeout))
 	}
 	switch {
-	case !lv.newer:
+	case !lv.acks:
 		if answered != 0 {
-			at(answered + int64(legacyDeadAfter))
+			at(answered + int64(deadAfterV1))
 		}
-		at(max(lv.lastProbe, answered) + int64(legacyProbeEvery))
+		at(max(lv.lastProbe, answered) + int64(probeEveryV1))
 	case lv.probing:
 		if !lv.secondSent {
 			at(lv.secondAt)
@@ -271,11 +299,11 @@ func (l *link) checkLocked(now int64) actions {
 		}
 	case answered == 0 && now-l.created >= int64(l.node.opts.DialTimeout):
 		a.close = "no answer within " + l.node.opts.DialTimeout.String()
-	case !lv.newer:
+	case !lv.acks:
 		switch {
-		case answered != 0 && now-answered >= int64(legacyDeadAfter):
-			a.close = "no answer to its probes within " + legacyDeadAfter.String()
-		case now-max(lv.lastProbe, answered) >= int64(legacyProbeEvery):
+		case answered != 0 && now-answered >= int64(deadAfterV1):
+			a.close = "no answer to its probes within " + deadAfterV1.String()
+		case now-max(lv.lastProbe, answered) >= int64(probeEveryV1):
 			a.probe = true
 		}
 	case lv.probing:
@@ -318,7 +346,7 @@ func (l *link) act(a actions, now int64) {
 func (l *link) nudge(now int64, siblings bool) {
 	l.lmu.Lock()
 	lv := &l.lv
-	if !lv.newer || lv.probing || lv.closeAt != 0 || l.lastAnswer.Load() == 0 {
+	if !lv.acks || lv.probing || lv.closeAt != 0 || l.lastAnswer.Load() == 0 {
 		l.lmu.Unlock()
 		return
 	}
@@ -340,7 +368,7 @@ func (l *link) hint(now int64) {
 }
 
 // onFrame takes a frame read at now for liveness: off is where its seq
-// and ack sit (-1: an older frame without them), probeSent when the probe
+// and ack sit (-1: a V1 frame without them), probeSent when the probe
 // a reply answers was sent (0: it answers none).
 func (l *link) onFrame(now int64, f []byte, off int, probeSent int64) {
 	l.lmu.Lock()
@@ -350,9 +378,9 @@ func (l *link) onFrame(now int64, f []byte, off int, probeSent int64) {
 		l.sampleLocked(now - probeSent)
 	}
 	if off >= 0 {
-		lv.newer = true
+		lv.acks = true
 		seq, ack := binary.BigEndian.Uint32(f[off:]), binary.BigEndian.Uint32(f[off+4:])
-		if !lv.haveRecv || int32(seq-lv.recv) > 0 {
+		if d := int32(seq - lv.recv); !lv.haveRecv || d > 0 || d < -reorderWindow {
 			lv.recv, lv.haveRecv = seq, true
 		}
 		if l.ackAnswerLocked(ack) {
@@ -367,16 +395,16 @@ func (l *link) onFrame(now int64, f []byte, off int, probeSent int64) {
 	}
 }
 
-// readsAcks takes an older probe that says its sender reads acks: the
-// link switches to the newer frames, acking the sender's first seq less
-// one (the token's first four bytes) until a newer frame arrives.
+// readsAcks takes a V1 probe that says its sender reads acks: the link
+// switches to frames with seq and ack, acking the sender's first seq less
+// one (the token's first four bytes) until a frame with a seq arrives. On
+// a link that reads seqs already, the probe is a new link's at the far end
+// (a redial onto this one): its seq starts over from there.
 func (l *link) readsAcks(token []byte, now int64) {
 	l.lmu.Lock()
 	lv := &l.lv
-	lv.newer = true
-	if !lv.haveRecv {
-		lv.recv, lv.haveRecv = binary.BigEndian.Uint32(token), true
-	}
+	lv.acks = true
+	lv.recv, lv.haveRecv = binary.BigEndian.Uint32(token), true
 	l.armLocked(now)
 	l.lmu.Unlock()
 }
@@ -390,11 +418,12 @@ func (l *link) sendNotice() {
 	f[0], f[1] = kindProbe, flagReadsAcks|flagClosing
 	*b = f
 	if !l.sendControl(b) {
-		l.close(l.closeWhy(), nil)
+		l.close(l.closeReason(), nil)
 	}
 }
 
-func (l *link) closeWhy() string {
+// closeReason is why a dead link closes.
+func (l *link) closeReason() string {
 	l.lmu.Lock()
 	defer l.lmu.Unlock()
 	return l.lv.closeWhy

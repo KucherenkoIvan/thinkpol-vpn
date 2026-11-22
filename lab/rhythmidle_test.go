@@ -18,14 +18,12 @@ import (
 
 // idleRhythmHold is how long the idle rhythm case holds its tunnels idle:
 // at real time whatever the lab's WireGuard timer scale, since idle path
-// probes keep real time. Long enough for reality's draws (8 to 24 s,
-// one exchange per 13.3 s on average) to make the ten exchanges the steady
-// signal needs about twice over, and for the pinger to be caught well
-// within it. The chance that udp's draws (one exchange per 8 s) show the
-// signal by chance in it is about 1.3·10⁻⁴ (some 21 runs of ten, each
-// 6.4·10⁻⁶, lab/censor/doc.go), reality's under 10⁻⁶: the design's
-// signal, not a choice of this test, so the cell's false-fail chance can't
-// be made negligible without changing it (TP-080's Log).
+// probes keep real time. Long enough for reality's draws (one exchange per
+// 13.3 s on average) to make the sixteen exchanges the steady signal needs
+// (18 on average), udp's (one per 8 s) nearly twice over, and for the
+// pinger (6 s apart) to be caught at about 100 s. The chance that udp's
+// draws show the signal in it is about 10⁻⁸ (some 16 runs of fifteen
+// intervals, each 5.7·10⁻¹⁰, lab/censor/doc.go), reality's about 10⁻¹².
 const idleRhythmHold = 4 * time.Minute
 
 // rhythmIdleCase is the wireguard-rhythm case that holds the held rows'
@@ -62,8 +60,8 @@ const pingerEvery = 6 * time.Second
 // server-1 every pingerEvery and getting it back, nothing else on the
 // connection, started after censord so the module reads it from its
 // first byte. It never holds in use (transport.idleOnly). The pinger
-// must have exchanged at least the ten records each way the steady
-// signal needs before the censor could cut it, or the hold held nothing.
+// must have exchanged at least the records each way the steady signal
+// needs before the censor could cut it, or the hold held nothing.
 func holdPinger(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool, blocks func() int) {
 	if !idle {
 		t.Fatal("the pinger holds only idle")
@@ -83,8 +81,8 @@ func holdPinger(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle 
 	res, _ := dev.Exec(ctx, "timeout", strconv.Itoa(int(d/time.Second)), "sh", "-c",
 		loop+" | socat -T 30 - OPENSSL:"+to.v4.String()+":"+strconv.Itoa(pingerPort)+",verify=0")
 	echoes := strings.Count(res.Stdout, "ping\n")
-	if echoes < 11 {
-		t.Fatalf("the pinger got %d echoes in %v, want at least 11 (the steady signal's ten and the one that judges them): %s", echoes, d, res.Stderr)
+	if want := censor.WGRhythmSteadyExchanges + 1; echoes < want {
+		t.Fatalf("the pinger got %d echoes in %v, want at least %d (the steady signal's %d and the one that judges them): %s", echoes, d, want, censor.WGRhythmSteadyExchanges, res.Stderr)
 	}
 	t.Logf("the pinger's hold: %d echoes, %d blocks", echoes, blocks())
 }

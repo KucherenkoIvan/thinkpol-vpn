@@ -20,7 +20,8 @@ import (
 )
 
 // Wall-clock timings: a link silent under traffic is closed within
-// about 180 ms (S + R + T), an idle one within about 280 ms (I + T).
+// 220 ms (S + R + T: 60 + 40 + 2·40 + 40 ms), an idle one within 320 ms
+// (I + T: 200 + 120 ms).
 var fastOptions = path.Options{
 	Burst:       path.Range{Min: 30 * time.Millisecond, Max: 60 * time.Millisecond},
 	Response:    path.Range{Min: 20 * time.Millisecond, Max: 40 * time.Millisecond},
@@ -34,9 +35,10 @@ var fastOptions = path.Options{
 }
 
 // Timings for a fake clock, which tests step by fakeStep, giving the nodes
-// fakeSlack of wall time per step: the defaults but for idle waits of
-// 2–4 s. A link silent under traffic is closed within 4.5 s, an idle one
-// within 6 s.
+// fakeSlack of wall time per step: liveness at its defaults but for idle
+// waits of 2–4 s, so a link silent under traffic is closed within 4.5 s
+// (S + R + T), an idle one within 6 s (I + T); dials time out after 5 s
+// and are retried on the wall clock.
 var fakeOptions = path.Options{
 	IdleDefault: path.Range{Min: 2 * time.Second, Max: 4 * time.Second},
 	DialTimeout: 5 * time.Second,

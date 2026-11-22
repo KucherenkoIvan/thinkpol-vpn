@@ -1356,7 +1356,7 @@ var censorCases = []censorCase{
 	// and udp pass, their idle path probes drawn at random
 	// (docs/design/path-liveness.md), and the https row's TLS pinger, one
 	// fixed exchange at a fixed interval, is the control the steady signal
-	// must catch (TP-080).
+	// must catch.
 	rhythmIdleCase(),
 	// M2 gate checks (docs/design/milestones.md). Wu et al.'s exemptions
 	// on each connection's first data, UDP's first datagram too, and

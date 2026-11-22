@@ -94,8 +94,9 @@ const (
 	// wgSteadyExchanges is how many idle exchanges in a row, at intervals
 	// all within wgSteadyJitter of each other, show a fixed rhythm: a
 	// choice (docs/design/path-liveness.md), against intervals drawn at
-	// random (the chance per ten in doc.go).
-	wgSteadyExchanges = 10
+	// random (the chance by draws in doc.go), that a pinger 6 s apart
+	// still shows within the matrix's 4-minute idle hold.
+	wgSteadyExchanges = 16
 )
 
 // WGRhythmByCount and WGRhythmByBurst start the count and burst
@@ -106,6 +107,9 @@ const (
 	// WGRhythmBySteady starts the steady signal's block reason: idle
 	// exchanges at a fixed rhythm, no WireGuard timer.
 	WGRhythmBySteady = "steady exchanges"
+	// WGRhythmSteadyExchanges is how many idle exchanges in a row the
+	// steady signal needs.
+	WGRhythmSteadyExchanges = wgSteadyExchanges
 )
 
 // wgRhythm flags a connection that carries WireGuard with its rhythm
@@ -237,13 +241,12 @@ type wgIdleExchange struct {
 }
 
 // wgSteadyRun is the connection's latest run of idle exchanges of one
-// pair of sizes: how many, when the latest began, and the shortest and
-// longest interval between two in the run.
+// pair of sizes: when the latest began, and the intervals between them,
+// oldest first (one exchange more than intervals, none before the first).
 type wgSteadyRun struct {
-	sizes  [2]int
-	n      int
-	last   time.Time
-	lo, hi time.Duration
+	sizes     [2]int
+	last      time.Time
+	intervals []time.Duration
 }
 
 // wgCount is the count signal's state: records each way, the difference
@@ -761,27 +764,21 @@ func (m *wgRhythm) exchange(c *wgConn, sizes [2]int, stands bool, end time.Time)
 // the connection once wgSteadyExchanges in a row have come at intervals
 // all within wgSteadyJitter of each other. An exchange of other sizes
 // starts the run over; one whose interval would spread the run's past
-// wgSteadyJitter starts it over from the exchange before, the run's
-// latest interval its first.
+// wgSteadyJitter keeps the run's longest tail that it doesn't spread.
 func (m *wgRhythm) steadyExchange(c *wgConn, e wgIdleExchange) {
 	u := &c.steady
-	switch {
-	case u.n == 0 || e.sizes != u.sizes:
-		*u = wgSteadyRun{sizes: e.sizes, n: 1, last: e.at}
+	if u.last.IsZero() || e.sizes != u.sizes {
+		*u = wgSteadyRun{sizes: e.sizes, last: e.at}
 		return
 	}
-	gap := e.at.Sub(u.last)
-	lo, hi := gap, gap
-	if u.n >= 2 {
-		lo, hi = min(u.lo, gap), max(u.hi, gap)
+	u.intervals = append(u.intervals, e.at.Sub(u.last))
+	u.last = e.at
+	for len(u.intervals) >= wgSteadyExchanges || slices.Max(u.intervals)-slices.Min(u.intervals) > wgSteadyJitter {
+		u.intervals = u.intervals[1:]
 	}
-	if hi-lo > wgSteadyJitter {
-		u.n, lo, hi = 1, gap, gap
-	}
-	u.n, u.last, u.lo, u.hi = u.n+1, e.at, lo, hi
-	if u.n >= wgSteadyExchanges {
+	if n := len(u.intervals) + 1; n >= wgSteadyExchanges {
 		c.flagged = fmt.Sprintf(WGRhythmBySteady+": %d idle exchanges of %d and %d bytes, %s to %s apart",
-			u.n, u.sizes[0], u.sizes[1], u.lo.Round(10*time.Millisecond), u.hi.Round(10*time.Millisecond))
+			n, u.sizes[0], u.sizes[1], slices.Min(u.intervals).Round(10*time.Millisecond), slices.Max(u.intervals).Round(10*time.Millisecond))
 	}
 }
 

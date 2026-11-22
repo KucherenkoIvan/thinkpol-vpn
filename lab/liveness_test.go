@@ -16,9 +16,9 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
 
-// Path liveness on real links (docs/design/path-liveness.md, TP-080):
-// device-a's link to server-1 over reality and over udp, through the
-// router, where a capture watches it and a blackhole cuts it.
+// Path liveness on real links (docs/design/path-liveness.md): device-a's
+// link to server-1 over reality and over udp, through the router, where a
+// capture watches it, a blackhole cuts it and netem blacks it out.
 
 // Path probe frames (docs/design/path-liveness.md, "Acks in the frames"):
 // probes, replies and close notices are 18 bytes, the older ones 10.
@@ -33,12 +33,15 @@ const (
 	// busyBound is how soon after its last answer a link under traffic is
 	// found dead: S + R + T at their tops, 1.5 + 1 + 2 s.
 	busyBound = 4500 * time.Millisecond
-	// todayBound is the rule before TP-080's: closed 6 s after the last
-	// reply, probes 2 s apart, 6.5 s at worst.
-	todayBound = 6500 * time.Millisecond
+	// v1Bound is the V1 rule's: closed 6 s after the last reply, probes
+	// 2 s apart, 6.5 s at worst.
+	v1Bound = 6500 * time.Millisecond
 	// loadSlack is what a loaded lab machine may add to a timer: the
 	// design's bounds are the rules', a node held up fires late.
 	loadSlack = 1500 * time.Millisecond
+	// labTrip is a generous one-way trip through the lab's router (it
+	// takes under a millisecond): what a close notice adds.
+	labTrip = 100 * time.Millisecond
 )
 
 // idleRange is I's range per transport, and idleBound how soon a dead idle
@@ -123,18 +126,18 @@ func upLink(t *testing.T, transport string, capture int) *livenessLink {
 	return k
 }
 
-// counters reads device-a's probe counters: liveness's own frames it
-// wrote and read.
+// counters reads device-a's control counters: liveness's own frames
+// (probes, replies, close notices) it wrote and read.
 func (k *livenessLink) counters(t *testing.T) (sent, read uint64) {
 	t.Helper()
 	st, err := readStatus(k.dev, pollTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sent, ok1 := st.counter("path.probes_sent")
-	read, ok2 := st.counter("path.probes_received")
+	sent, ok1 := st.counter("path.control_sent")
+	read, ok2 := st.counter("path.control_received")
 	if !ok1 || !ok2 {
-		t.Fatalf("device-a's status has no probe counters:\n%s", st.raw)
+		t.Fatalf("device-a's status has no control counters:\n%s", st.raw)
 	}
 	return sent, read
 }
@@ -228,20 +231,19 @@ func closed(t *testing.T, p *lab.Process, name string, from int, within time.Dur
 	return d, m[1]
 }
 
-// TestBusyLinksSendNoProbes: while data flows both ways (pings every
-// 20 ms), device-a and server-1 send no probes, replies or notices: on
-// udp no probe-sized datagram crosses the router, and on both transports
-// device-a's probe counters stand still. The capture and the counters
-// see the probes that brought the link up, so they count what they
-// should. Then, in the same lab, a link dead under traffic: a blackhole
-// both ways under the pings, where each end finds it dead within the
-// busy bound of its last answer (S + R + T, 4.5 s; today's rule took up
-// to 6.5 s), and, once the link is back, one from server-1 to device-a
-// under a one-way stream from device-a, where device-a, the sender,
-// does the same and server-1, the receive-only end, closes on
-// device-a's notice or its own deadlines, within the unhinted bound
-// (the idle rule's: 26 s, 16 s) at worst.
-func TestBusyLinksSendNoProbes(t *testing.T) {
+// TestLinksUnderTraffic: device-a's link to server-1 while data flows,
+// over reality and over udp, one lab each, in turn:
+//   - no probes (busyLinksSendNoProbes): under pings both ways, no probe,
+//     reply or notice either way;
+//   - on reality, a 1 s blackout ridden out (blackoutRiddenOut);
+//   - dead both ways (deadBothWays): a blackhole under the pings, found
+//     within the busy bound at each end;
+//   - dead one way (deadOneWay): a blackhole from server-1 under a
+//     one-way stream from device-a, found within the busy bound by
+//     device-a and by server-1, the receive-only end, on udp (by
+//     device-a's close notice), within the idle bound on reality (owner,
+//     2026-11-22: the notice waits behind the stalled stream there).
+func TestLinksUnderTraffic(t *testing.T) {
 	t.Parallel()
 	for _, transport := range []string{"reality", "udp"} {
 		t.Run(transport, func(t *testing.T) {
@@ -252,15 +254,26 @@ func TestBusyLinksSendNoProbes(t *testing.T) {
 			}
 			k := upLink(t, transport, capture)
 			busyLinksSendNoProbes(t, k)
-			deadUnderTraffic(t, k)
+			if transport == "reality" {
+				blackoutRiddenOut(t, k)
+			}
+			deadBothWays(t, k)
+			deadOneWay(t, k)
 		})
 	}
 }
 
+// busyLinksSendNoProbes: while data flows both ways (pings every 20 ms),
+// device-a and server-1 send no probes, replies or notices: on udp no
+// probe-sized datagram crosses the router, and on both transports
+// device-a's control counters stand still. The capture and the counters
+// see the probes that brought the link up, so they count what they
+// should.
 func busyLinksSendNoProbes(t *testing.T, k *livenessLink) {
+	t.Helper()
 	sent0, read0 := k.counters(t)
 	if sent0 == 0 || read0 == 0 {
-		t.Fatalf("device-a counted %d probes sent and %d read bringing its link up, want some of each", sent0, read0)
+		t.Fatalf("device-a counted %d control frames sent and %d read bringing its link up, want some of each", sent0, read0)
 	}
 	wait := k.pingFor(t, 16*time.Second)
 	// The window opens once the pings have run for 2 s and closes 1 s
@@ -276,7 +289,7 @@ func busyLinksSendNoProbes(t *testing.T, k *livenessLink) {
 	if sent == 0 || got < sent*9/10 {
 		t.Fatalf("the pings didn't cross: %d of %d came back", got, sent)
 	}
-	t.Logf("%s: %d of %d pings came back; device-a's probe counters %d sent and %d read before the pings, %d and %d after 2 s, %d and %d after 14 s",
+	t.Logf("%s: %d of %d pings came back; device-a's control counters %d sent and %d read before the pings, %d and %d after 2 s, %d and %d after 14 s",
 		k.transport, got, sent, sent0, read0, sentA, readA, sentB, readB)
 	if sentB != sentA || readB != readA {
 		t.Errorf("%s under two-way traffic: device-a wrote %d probes, replies or notices and read %d in %v", k.transport, sentB-sentA, readB-readA, to.Sub(from).Round(time.Millisecond))
@@ -305,27 +318,67 @@ func busyLinksSendNoProbes(t *testing.T, k *livenessLink) {
 	}
 }
 
-func deadUnderTraffic(t *testing.T, k *livenessLink) {
-	// Both ways, under pings.
+// blackoutRiddenOut: under pings, netem on the router drops everything
+// between device-a and server-1 for 1 s, both ways; TCP retransmits once
+// it lifts, well within the busy rules' S + R + T, so neither end closes
+// its link and the pings come back.
+func blackoutRiddenOut(t *testing.T, k *livenessLink) {
+	t.Helper()
+	wait := k.pingFor(t, 12*time.Second)
+	time.Sleep(3 * time.Second)
+	devFrom, serverFrom := len(k.devUp.Output()), len(k.serverUp.Output())
+	ifaces := []string{k.router.Interface(lab.NetDevices), k.router.Interface(lab.NetServers)}
+	for _, i := range ifaces {
+		k.router.MustExec(t, "tc", "qdisc", "add", "dev", i, "root", "netem", "loss", "100%")
+	}
+	time.Sleep(time.Second)
+	for _, i := range ifaces {
+		k.router.MustExec(t, "tc", "qdisc", "del", "dev", i, "root")
+	}
+	sent, got := wait()
+	for name, out := range map[string]string{"device-a": k.devUp.Output()[devFrom:], "server-1": k.serverUp.Output()[serverFrom:]} {
+		if m := linkClosed.FindStringSubmatch(out); m != nil {
+			t.Errorf("%s, a 1 s blackout under pings: %s closed its link (%q, last answer %s before)", k.transport, name, m[1], m[2])
+		}
+	}
+	t.Logf("%s, a 1 s blackout under pings: %d of %d pings came back, no link closed", k.transport, got, sent)
+	if sent == 0 || got < sent*3/4 {
+		t.Errorf("%s, a 1 s blackout under pings: %d of %d pings came back, want the 1 s lost at most", k.transport, got, sent)
+	}
+}
+
+// deadBothWays: a blackhole both ways under the pings, where each end
+// finds the link dead within the busy bound of its last answer (S + R + T,
+// 4.5 s; the V1 rule took up to 6.5 s).
+func deadBothWays(t *testing.T, k *livenessLink) {
+	t.Helper()
 	wait := k.pingFor(t, 12*time.Second)
 	time.Sleep(3 * time.Second)
 	devFrom, serverFrom := len(k.devUp.Output()), len(k.serverUp.Output())
 	cut := time.Now()
 	lift := k.blackhole(t, true)
-	devAfter, devWhy := closed(t, k.devUp, "device-a", devFrom, todayBound+10*time.Second)
+	devAfter, devWhy := closed(t, k.devUp, "device-a", devFrom, v1Bound+10*time.Second)
 	devSeen := time.Since(cut)
-	serverAfter, serverWhy := closed(t, k.serverUp, "server-1", serverFrom, todayBound+10*time.Second)
+	serverAfter, serverWhy := closed(t, k.serverUp, "server-1", serverFrom, v1Bound+10*time.Second)
 	t.Logf("%s, cut both ways under pings: device-a closed its link %v after its last answer (%q), seen %v after the cut; server-1 %v after its last answer (%q)",
 		k.transport, devAfter, devWhy, devSeen.Round(time.Millisecond), serverAfter, serverWhy)
-	checkBusyBound(t, k.transport+", cut both ways", "device-a", devAfter)
-	checkBusyBound(t, k.transport+", cut both ways", "server-1", serverAfter)
+	checkBusyBound(t, k.transport+", cut both ways", "device-a", devAfter, 0)
+	checkBusyBound(t, k.transport+", cut both ways", "server-1", serverAfter, 0)
 	lift()
 	wait()
 	waitStatus(t, k.dev, linkUp)
+}
 
-	// One way: device-a streams to server-1, which sends nothing of its
-	// own back (a sink); server-1's way is cut, so server-1 is the
-	// receive-only end whose sending side broke.
+// deadOneWay: device-a streams to server-1, which sends nothing of its own
+// back (a sink); server-1's way is cut, so server-1 is the receive-only end
+// whose sending side broke. device-a, the sender, finds the link dead
+// within the busy bound; server-1 hears device-a's close notice a trip
+// after device-a's close on udp. On reality it can't: device-a's TCP
+// stalls without server-1's acknowledgements and the notice waits behind
+// the stream, so server-1 has its own frames' deadlines, or none (it
+// sends only what expects no answer), and then the idle bound.
+func deadOneWay(t *testing.T, k *livenessLink) {
+	t.Helper()
 	k.server.Start(t, "socat", "-u", "UDP-RECV:9999", "OPEN:/dev/null")
 	streamCtx, stop := context.WithCancel(context.Background())
 	defer stop()
@@ -337,36 +390,31 @@ func deadUnderTraffic(t *testing.T, k *livenessLink) {
 	if n := k.pathSentIn(t, time.Second); n < 20 {
 		t.Fatalf("device-a's one-way stream isn't flowing: %d packets sent in 1 s", n)
 	}
-	devFrom, serverFrom = len(k.devUp.Output()), len(k.serverUp.Output())
-	lift = k.blackhole(t, false)
+	devFrom, serverFrom := len(k.devUp.Output()), len(k.serverUp.Output())
+	lift := k.blackhole(t, false)
 	defer lift()
-	devAfter, devWhy = closed(t, k.devUp, "device-a", devFrom, todayBound+10*time.Second)
-	serverAfter, serverWhy = closed(t, k.serverUp, "server-1", serverFrom, idleBound[k.transport]+loadSlack+10*time.Second)
+	devAfter, devWhy := closed(t, k.devUp, "device-a", devFrom, v1Bound+10*time.Second)
+	serverAfter, serverWhy := closed(t, k.serverUp, "server-1", serverFrom, idleBound[k.transport]+loadSlack+10*time.Second)
 	t.Logf("%s, cut from server-1 under device-a's one-way stream: device-a closed its link %v after its last answer (%q); server-1 %v after its last answer (%q)",
 		k.transport, devAfter, devWhy, serverAfter, serverWhy)
-	checkBusyBound(t, k.transport+", one-way stream, cut from server-1", "device-a", devAfter)
-	// The receive-only end: device-a's close notice reaches it a one-way
-	// trip after device-a's close when it can cross; on reality it can't,
-	// since device-a's TCP stalls without server-1's acknowledgements and
-	// the notice waits behind the stream. Without the notice it has its
-	// own frames' deadlines, or none (it sends only what expects no
-	// answer), and then the unhinted bound, the idle rule's.
+	what := k.transport + ", one-way stream, cut from server-1"
+	checkBusyBound(t, what, "device-a", devAfter, 0)
+	if k.transport == "udp" {
+		checkBusyBound(t, what, "server-1, the receive-only end,", serverAfter, labTrip)
+		return
+	}
 	if bound := idleBound[k.transport]; serverAfter > bound+loadSlack {
-		t.Errorf("%s, one-way stream, cut from server-1: server-1, the receive-only end, closed its link %v after its last answer, want within %v (the idle rule's bound, unhinted)", k.transport, serverAfter, bound)
+		t.Errorf("%s: server-1, the receive-only end, closed its link %v after its last answer, want within %v (the idle bound) and the load's slack", what, serverAfter, bound)
 	}
 }
 
-// checkBusyBound fails the test when a node took longer than today's rule
-// allows (6.5 s, with the load's slack) to find a link under traffic dead:
-// the busy bound (4.5 s) and the load's slack are both under it, the idle
-// rule (16 s or 26 s), which a link under traffic must never wait for,
-// far over it.
-func checkBusyBound(t *testing.T, what, node string, after time.Duration) {
+// checkBusyBound fails the test when a node took longer than the busy
+// bound (4.5 s), the load's slack and extra (a notice's trip) to find a
+// link under traffic dead, measured from its last answer.
+func checkBusyBound(t *testing.T, what, node string, after, extra time.Duration) {
 	t.Helper()
-	if after > todayBound+loadSlack {
-		t.Errorf("%s: %s closed its link %v after its last answer, want within %v (the busy bound %v; today's rule %v)", what, node, after, todayBound+loadSlack, busyBound, todayBound)
-	} else if after > busyBound+loadSlack {
-		t.Logf("%s: %s took %v, past the busy bound %v and the load's slack: a loaded machine, or the rule", what, node, after, busyBound)
+	if bound := busyBound + extra; after > bound+loadSlack {
+		t.Errorf("%s: %s closed its link %v after its last answer, want within %v (the busy bound) and the load's slack %v (the V1 rule took up to %v)", what, node, after, bound, loadSlack, v1Bound)
 	}
 }
 
@@ -399,10 +447,10 @@ func TestIdleLinksProbeAtRandom(t *testing.T) {
 			})
 			gaps = gaps[:n]
 			lo, hi := slices.Min(gaps), slices.Max(gaps)
-			close := 0
+			alike := 0
 			for i := 1; i < len(gaps); i++ {
 				if d := gaps[i] - gaps[i-1]; d > -time.Second && d < time.Second {
-					close++
+					alike++
 				}
 			}
 			var shown []string
@@ -410,7 +458,7 @@ func TestIdleLinksProbeAtRandom(t *testing.T) {
 				shown = append(shown, g.Round(10*time.Millisecond).String())
 			}
 			t.Logf("%s idle: %d intervals from %v to %v, %d of %d consecutive pairs within 1 s of each other: %s",
-				transport, n, lo.Round(10*time.Millisecond), hi.Round(10*time.Millisecond), close, n-1, strings.Join(shown, " "))
+				transport, n, lo.Round(10*time.Millisecond), hi.Round(10*time.Millisecond), alike, n-1, strings.Join(shown, " "))
 			// An end probes no sooner than I's bottom after its last
 			// answer, the far end's probe or its own reply, and the
 			// earlier end no later than I's top.
