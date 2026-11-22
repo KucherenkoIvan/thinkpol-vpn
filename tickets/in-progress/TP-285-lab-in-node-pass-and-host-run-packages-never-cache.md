@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-284]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-285"
+branch: "tp-285-lab-and-host-run-cache"
 ---
 
 ## Goal
@@ -34,3 +34,4 @@ A second full `make lab-test` of the same commit, from another checkout, serves 
 
 ## Log
 - 2026-11-22 created in backlog (from TP-284's review)
+- 2026-11-22 backlog → in-progress, owner: agent-tp-285
