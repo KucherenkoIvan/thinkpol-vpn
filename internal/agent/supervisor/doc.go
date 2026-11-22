@@ -57,7 +57,9 @@
 // whole life, so a worker never outlives the supervisor and its namespace
 // dies with it. The worker then pivots into a minimal root, drops
 // SYS_ADMIN and everything but the network capabilities, and sets
-// no_new_privs (package worker).
+// no_new_privs (package worker). Worker starts are serialized (forkMu): Go
+// writes a child's id maps through fds without close-on-exec, which a
+// worker forked meanwhile would inherit.
 //
 // The worker talks to the supervisor over two unnamed SOCK_SEQPACKET
 // socket pairs (package ipc): a control socket (Init, config, lifecycle,
@@ -207,7 +209,9 @@
 // Turning forwarding on resets other sysctls (IPv4: accept_redirects and
 // every interface's forwarding; IPv6: every interface's forwarding), and
 // turning it off resets them again, so the record keeps their earlier
-// values.
+// values. An attempt that fails before its switch is flipped puts back
+// the accept_ra values it wrote (what it can't is in the error), and
+// nothing else: a switch someone else turned on meanwhile stays on.
 //
 // It records what it changed in [DefaultRuntimeDir] (forwarding.json, on a
 // tmpfs like the sysctls' own lifetime), so a successor after a crash
@@ -217,7 +221,8 @@
 // tables, never the other way round, or the root would forward everything
 // for a moment. Forwarding it can't turn off keeps its tables and its
 // record, so the root still forwards nothing else and the next start tries
-// again.
+// again. Not yet: a crash between turning forwarding on and the record's
+// save, or a failed save, leaves it unrecorded (TP-276).
 //
 // A service uninstall leaves no next start, so [ClearLeftovers] does a
 // dead supervisor's cleanup there and then: holding the node's supervisor
