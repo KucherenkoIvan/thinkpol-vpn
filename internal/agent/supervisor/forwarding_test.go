@@ -300,6 +300,7 @@ func TestForwardingThatFailsToTurnOnLeavesAcceptRAAsItWas(t *testing.T) {
 		hook       func(sys *fakeKernelSys, key, value string) error
 		refuseGlob string
 		wantSwitch string
+		wantEth0RA string // "" for 1
 	}{
 		{name: "an accept_ra write refused", hook: func(_ *fakeKernelSys, key, value string) error {
 			if key == eth0RA && value == "2" {
@@ -321,6 +322,15 @@ func TestForwardingThatFailsToTurnOnLeavesAcceptRAAsItWas(t *testing.T) {
 			}
 			return nil
 		}, wantSwitch: "1"},
+		{name: "an accept_ra changed by someone else meanwhile", hook: func(sys *fakeKernelSys, key, value string) error {
+			if key == forwardingKeys[1] && value == "1" {
+				if err := sys.procSysFS.Write(eth0RA, "0"); err != nil {
+					return err
+				}
+				return errors.New("refused")
+			}
+			return nil
+		}, wantSwitch: "0", wantEth0RA: "0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sys, get := fakeProcSys(t)
@@ -341,9 +351,13 @@ func TestForwardingThatFailsToTurnOnLeavesAcceptRAAsItWas(t *testing.T) {
 			if f.owned() != [2]bool{} {
 				t.Errorf("owned = %v after the failed attempt, want none", f.owned())
 			}
-			for _, key := range []string{"net/ipv6/conf/default/accept_ra", eth0RA} {
-				if got := get(key); got != "1" {
-					t.Errorf("%s = %s after the failed attempt, want 1", key, got)
+			wantEth0RA := tc.wantEth0RA
+			if wantEth0RA == "" {
+				wantEth0RA = "1"
+			}
+			for key, want := range map[string]string{"net/ipv6/conf/default/accept_ra": "1", eth0RA: wantEth0RA} {
+				if got := get(key); got != want {
+					t.Errorf("%s = %s after the failed attempt, want %s", key, got, want)
 				}
 			}
 			if got := get(forwardingKeys[1]); got != tc.wantSwitch {

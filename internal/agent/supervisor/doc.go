@@ -219,8 +219,8 @@
 // tables, never the other way round, or the root would forward everything
 // for a moment. Forwarding it can't turn off keeps its tables and its
 // record, so the root still forwards nothing else and the next start tries
-// again. Not yet: a crash between these writes and the record's save
-// leaves them unrecorded (TP-276).
+// again. Not yet: a crash between turning forwarding on and the record's
+// save, or a failed save, leaves it unrecorded (TP-276).
 //
 // A service uninstall leaves no next start, so [ClearLeftovers] does a
 // dead supervisor's cleanup there and then: holding the node's supervisor
