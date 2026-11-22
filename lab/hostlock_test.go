@@ -19,17 +19,27 @@ import (
 // The slot queue tests share one host: a lock directory under the test's
 // own TMPDIR with a single slot, held by the test while waiters line up.
 // Locks are per open file, so a waiter in this process stands in for
-// another run as well as a child process does.
+// another run as well as a child process does: the process's share of the
+// queue (slotQueueShare) is off for them.
 
 func oneSlotHost(t *testing.T) string {
 	t.Helper()
 	t.Setenv("TMPDIR", t.TempDir())
 	t.Setenv(MaxLabsEnv, "1")
+	queueShareOf(t, 0)
 	dir, err := lockDir()
 	if err != nil {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// queueShareOf sets slotQueueShare to n for the rest of the test.
+func queueShareOf(t *testing.T, n int) {
+	t.Helper()
+	saved := slotQueueShare
+	slotQueueShare = n
+	t.Cleanup(func() { slotQueueShare = saved })
 }
 
 // waitForTickets returns once the slot queue holds exactly n tickets.
