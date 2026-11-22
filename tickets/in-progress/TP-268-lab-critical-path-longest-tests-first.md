@@ -114,3 +114,4 @@ Round 2 (three reviewers: no leak, deadlock or changed test claim; the A/B doesn
 - 2026-11-22 on bfe277f0: make lint, make test passed; lab commit bfe277f0
 - 2026-11-22 in-progress → review
 - 2026-11-22 review → has-errors (round 2 findings R2.1–R2.9, R3: the deciding measurement)
+- 2026-11-22 has-errors → in-progress, owner: agent-tp-268 (round 2 fixes and the three-arm measurement)
