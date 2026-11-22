@@ -896,6 +896,29 @@ func TestWorkersAreSandboxed(t *testing.T) {
 	}
 }
 
+// TestConcurrentWorkerStartsInheritNoFds: workers started at once hold no
+// host file, in particular not the fds through which Go writes another
+// worker's uid_map, setgroups and gid_map just after its clone (forkMu).
+// Each round starts eight workers together; without the serialization most
+// runs see a leak within a few rounds.
+func TestConcurrentWorkerStartsInheritNoFds(t *testing.T) {
+	needsLab(t)
+	for round := range 5 {
+		spaces := make([]netmap.SpaceID, 8)
+		for i := range spaces {
+			spaces[i] = netmap.NewSpaceID()
+		}
+		t.Run(fmt.Sprint("round-", round), func(t *testing.T) {
+			s := start(t, options(nil), spaces...)
+			for i, w := range waitReady(t, s, spaces...) {
+				if leaked := procLeakedFiles(t, w.PID); len(leaked) > 0 {
+					t.Errorf("space %d (pid %d) has leaked host-file fds: %q", i, w.PID, leaked)
+				}
+			}
+		})
+	}
+}
+
 // TestNetnsidEscapeBlocked is the B1 check: a worker holds CAP_NET_ADMIN, but
 // its network namespace is owned by its own non-initial user namespace, so
 // that capability can't reach the root namespace through the veth's

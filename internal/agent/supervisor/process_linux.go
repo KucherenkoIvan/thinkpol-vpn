@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"runtime"
 	"slices"
+	"sync"
 	"syscall"
 	"time"
 
@@ -195,6 +196,13 @@ type process struct {
 	err   error         // Wait's result, set before gone closes
 }
 
+// forkMu serializes worker starts in the process. Go writes a child's
+// /proc/<pid>/{uid_map,setgroups,gid_map} through fds opened without
+// O_CLOEXEC after its clone, and lets several forks run at once
+// (syscall.acquireForkLock), so a worker cloned meanwhile inherits them:
+// another worker's uid_map, open read-write, inside its sandbox.
+var forkMu sync.Mutex
+
 // start starts cmd from a goroutine locked to its OS thread for the
 // process's whole life (the parent-death signal fires when the thread that
 // forked the child exits, and Go ends a thread whose goroutine exits while
@@ -205,7 +213,10 @@ func start(cmd *exec.Cmd) (*process, error) {
 	started := make(chan error, 1)
 	go func() {
 		runtime.LockOSThread()
-		if err := cmd.Start(); err != nil {
+		forkMu.Lock()
+		err := cmd.Start()
+		forkMu.Unlock()
+		if err != nil {
 			runtime.UnlockOSThread()
 			started <- err
 			close(p.gone)

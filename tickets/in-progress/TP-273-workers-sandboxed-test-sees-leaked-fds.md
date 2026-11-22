@@ -31,7 +31,11 @@ branch: tp-273-workers-sandboxed-fd-leak
 
 ## Notes
 - Seen: TP-265/266 full labs, 2026-11-19 (TP-266's Log, R1.7).
+- Cause (from the code; not yet reproduced in the lab, see Log): Go's syscall writes a new child's `/proc/<pid>/uid_map`, `setgroups` and `gid_map` after its clone through `syscall.Open(path, O_RDWR, 0)` without O_CLOEXEC (`writeIDMappings`/`writeSetgroups`, src/syscall/exec_linux.go in go1.26.11), while `acquireForkLock` (src/syscall/forkpipe2.go) lets several forks run at once. The supervisor starts its workers from concurrent goroutines (`start`, internal/agent/supervisor/process_linux.go), so a worker cloned while another's maps are being written inherits that fd: the leaked `/proc/748/uid_map` is the other worker's map, open read-write, in the sandbox. A product defect, not a test one.
+- Fix: `forkMu` serializes `cmd.Start` in `start` (process_linux.go), the only fork with id maps in the process. No product open changed: the opens are the standard library's. Other forks in the process (ip, nft) may still inherit such an fd briefly; they are host tools, not sandboxed, and a written map can't be written again.
 
 ## Log
 - 2026-11-22 created in backlog (final-lab small fixes)
 - 2026-11-22 backlog → in-progress, owner: agent-tp-273
+- 2026-11-22 fix: forkMu in internal/agent/supervisor/process_linux.go start; new lab test TestConcurrentWorkerStartsInheritNoFds (eight workers started at once, five rounds, no leaked host-file fd); package doc updated
+- 2026-11-22 handoff: not run in the lab. The lab image can't be built: lab/Dockerfile pins nginx=1.22.1-9+deb12u10, which bookworm-security replaced with deb12u11, and no lab image is cached on the run machine. Still to do once it builds: reproduce on the parent commit (COUNT loop of both tests), mutation (forkMu.Lock/Unlock removed, the new test must fail), 20 consecutive green runs of TestWorkersAreSandboxed

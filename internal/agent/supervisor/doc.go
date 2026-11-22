@@ -55,9 +55,12 @@
 // link-netnsid. The exec clears its supplementary groups and sets the
 // parent-death signal (SIGKILL), from a thread locked for the process's
 // whole life, so a worker never outlives the supervisor and its namespace
-// dies with it. The worker then pivots into a minimal root, drops
-// SYS_ADMIN and everything but the network capabilities, and sets
-// no_new_privs (package worker).
+// dies with it. Worker starts in one process run one at a time: Go writes
+// a new child's uid and gid maps through descriptors without close-on-exec,
+// which a worker forked at the same moment would inherit into its sandbox.
+// The worker then pivots into a minimal root, drops SYS_ADMIN and
+// everything but the network capabilities, and sets no_new_privs (package
+// worker).
 //
 // The worker talks to the supervisor over two unnamed SOCK_SEQPACKET
 // socket pairs (package ipc): a control socket (Init, config, lifecycle,
