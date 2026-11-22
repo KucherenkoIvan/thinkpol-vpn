@@ -57,8 +57,10 @@ func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admi
 	return l, nil
 }
 
-// openListener checks a listener of the map and its target (the target's
-// certificate, then REALITY's detection of its records), then listens.
+// openListener checks that a listener of the map can bind its address,
+// then checks its target (the target's certificate, then REALITY's
+// detection of its records), then listens: a listener that can't bind
+// never dials the target.
 func (t *Transport) openListener(ctx context.Context, cfg transport.ListenConfig) (net.Listener, listenSettings, error) {
 	addr, err := netip.ParseAddrPort(cfg.Address)
 	if err != nil || !addr.Addr().IsValid() {
@@ -68,26 +70,56 @@ func (t *Transport) openListener(ctx context.Context, cfg transport.ListenConfig
 	if err != nil {
 		return nil, ls, err
 	}
+	lc := net.ListenConfig{Control: t.control}
+	network := listenNetwork(addr)
+	// Closed at once rather than held through the check: held, the port
+	// would take connections it doesn't answer for as long as the check
+	// runs (seconds), and a prober would see that; what a server's
+	// supervisor does with connections accepted before its workers know
+	// the listener is TP-278's.
+	probe, err := lc.Listen(ctx, network, addr.String())
+	if err != nil {
+		return nil, ls, fmt.Errorf("reality: %w", err)
+	}
+	_ = probe.Close()
+	if err := t.checkTarget(ctx, ls); err != nil {
+		return nil, ls, err
+	}
+	ln, err := lc.Listen(ctx, network, addr.String())
+	if err != nil {
+		return nil, ls, fmt.Errorf("reality: %w", err)
+	}
+	return ln, ls, nil
+}
+
+// listenNetwork binds one address family, as the map's listeners mean it:
+// on plain "tcp", Go makes a wildcard address one dual-stack socket, so
+// 0.0.0.0:p and [::]:p would collide.
+func listenNetwork(ap netip.AddrPort) string {
+	if ap.Addr().Is4() || ap.Addr().Is4In6() {
+		return "tcp4"
+	}
+	return "tcp6"
+}
+
+// checkTarget checks a listener's target, through the transport's
+// backoff of failed checks.
+func (t *Transport) checkTarget(ctx context.Context, ls listenSettings) error {
 	// REALITY's detection verifies the target against the system roots,
 	// as verifyTarget does without targetRoots; on Linux and the BSDs
 	// crypto/x509 reads them from disk once per process, on first use,
 	// which on a loaded disk can take longer than the bounds below allow
 	// the target.
 	if err := readSystemRoots(ctx); err != nil {
-		return nil, ls, err
+		return err
 	}
-	if err := verifyTarget(ctx, ls.target.String(), ls.names, t.targetRoots, detectWait, t.control); err != nil {
-		return nil, ls, err
-	}
-	if err := detect(ctx, upstreamRecords{}, ls.target.String(), ls.names, detectWait); err != nil {
-		return nil, ls, err
-	}
-	lc := net.ListenConfig{Control: t.control}
-	ln, err := lc.Listen(ctx, "tcp", addr.String())
-	if err != nil {
-		return nil, ls, fmt.Errorf("reality: %w", err)
-	}
-	return ln, ls, nil
+	dest := ls.target.String()
+	return t.checks.run(ctx, dest, ls.names, func() error {
+		if err := verifyTarget(ctx, dest, ls.names, t.targetRoots, detectWait, t.control); err != nil {
+			return err
+		}
+		return detect(ctx, upstreamRecords{}, dest, ls.names, detectWait)
+	})
 }
 
 // systemRoots is the process's first read of the system roots: done is

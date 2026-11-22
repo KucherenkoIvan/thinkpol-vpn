@@ -1246,7 +1246,7 @@ func allFail() map[string]string {
 }
 
 var censorCases = []censorCase{
-	{name: "off"},
+	{name: offCase},
 	// Lists that name neither server-1 nor the https row's site: plain
 	// HTTPS to an unlisted site passes, and so does everything else.
 	{name: "blocklists (elsewhere)", modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
