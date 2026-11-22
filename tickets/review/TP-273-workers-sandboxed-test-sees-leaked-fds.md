@@ -35,10 +35,10 @@ branch: tp-273-workers-sandboxed-fd-leak
 - Fix: `forkMu` serializes `cmd.Start` in `start` (process_linux.go), the only fork with id maps in the process. No product open changed: the opens are the standard library's. Other forks in the process (ip, nft) may still inherit such an fd briefly; they are host tools, not sandboxed, and a written map can't be written again.
 
 ## Review findings
-- [ ] R1.1 process_linux.go, the comment above forkMu: say that every fork with SysProcAttr UidMappings/GidMappings in the process must Start under forkMu, and that a Start stuck on its exec (a hung filesystem) holds up every worker start until it returns.
-- [ ] R1.2 process_linux.go start: unlock forkMu with defer (a small func around cmd.Start), so a panic in Start can't leave it held.
-- [ ] R1.3 supervisor_linux_test.go: procLeakedFiles flags host file paths only (it skips sockets, pipes, anon inodes, /dev), so the new test is named TestConcurrentWorkerStartsInheritNoHostFiles; its comment keeps only the constraint, the run history stays in the Log.
-- [ ] R1.4 doc.go: the new sentence moves after the no_new_privs sentence and reads "Worker starts are serialized (forkMu): Go writes a child's id maps through fds without close-on-exec, which a worker forked meanwhile would inherit."
+- [x] R1.1 process_linux.go, the comment above forkMu: say that every fork with SysProcAttr UidMappings/GidMappings in the process must Start under forkMu, and that a Start stuck on its exec (a hung filesystem) holds up every worker start until it returns.
+- [x] R1.2 process_linux.go start: unlock forkMu with defer (a small func around cmd.Start), so a panic in Start can't leave it held.
+- [x] R1.3 supervisor_linux_test.go: procLeakedFiles flags host file paths only (it skips sockets, pipes, anon inodes, /dev), so the new test is named TestConcurrentWorkerStartsInheritNoHostFiles; its comment keeps only the constraint, the run history stays in the Log.
+- [x] R1.4 doc.go: the new sentence moves after the no_new_privs sentence and reads "Worker starts are serialized (forkMu): Go writes a child's id maps through fds without close-on-exec, which a worker forked meanwhile would inherit."
 
 ## Log
 - 2026-11-22 created in backlog (final-lab small fixes)
@@ -53,3 +53,6 @@ branch: tp-273-workers-sandboxed-fd-leak
 - 2026-11-22 review → has-errors: R1.1–R1.4 (review confirmed the cause and the fix)
 - 2026-11-22 has-errors → in-progress
 - 2026-11-22 R1.1–R1.4: forkMu comment (every id-mapped fork Starts under it; a hung exec holds up worker starts), startLocked unlocks with defer, test renamed TestConcurrentWorkerStartsInheritNoHostFiles (comment keeps the constraint only), doc.go sentence after no_new_privs
+- 2026-11-22 d80a551f: make lint and make test green; make lab-gotest PKG=./internal/agent/supervisor/... green; make lab-gotest PKG=./internal/agent/supervisor/ RUN=TestConcurrentWorkerStartsInheritNoHostFiles COUNT=5: 5/5 green. No new mutation: the test body is unchanged (renamed only) and startLocked keeps the lock span, so the forkMu-removed mutation logged above still applies; full lab is the orchestrator's after merge
+- 2026-11-22 follow-up filed: TP-277 (a worker closes fds it didn't expect to inherit)
+- 2026-11-22 in-progress → review
