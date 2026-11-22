@@ -116,8 +116,8 @@ func (c *GoTestCache) entry(ctx context.Context, root string, p preparedRun, nam
 	}, nil
 }
 
-// freshRun is how a package's run in a fresh lab went.
-type freshRun struct {
+// labRun is how a package's run in a lab went.
+type labRun struct {
 	labErr, testErr error
 	testLog         []byte // its -test.testlogfile, when asked for
 	logErr          error  // reading testLog back
@@ -128,7 +128,7 @@ type freshRun struct {
 // failed or whose lab failed is never recorded (nil: nothing to record),
 // nor one whose test log couldn't be read back, or whose seccomp profile
 // changed since it started, as its inputs are checked (an error).
-func (c *GoTestCache) record(entry *goTestEntry, run freshRun, started time.Time, t TestTally) error {
+func (c *GoTestCache) record(entry *goTestEntry, run labRun, started time.Time, t TestTally) error {
 	if run.labErr != nil || run.testErr != nil {
 		return nil
 	}

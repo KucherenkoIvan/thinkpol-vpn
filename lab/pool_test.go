@@ -182,6 +182,7 @@ func TestPoolWaitsForLabsComing(t *testing.T) {
 	if pl := <-got; pl != up {
 		t.Errorf("the first waiter got %v, want the lab that came", pl)
 	}
+	p.gone() // the start failed: adopt counts it out
 	p.mu.Lock()
 	p.came(nil)
 	p.mu.Unlock()
@@ -190,6 +191,219 @@ func TestPoolWaitsForLabsComing(t *testing.T) {
 	}
 	if p.labs != 3 || p.coming != 0 {
 		t.Errorf("%d labs, %d coming, want 3 and 0", p.labs, p.coming)
+	}
+	// A test that came between the failed start's count-out and came
+	// waited for the lab coming; came lets it start one.
+	p = &Pool{size: 5, name: "router", coming: 1}
+	go func() {
+		pl, err := p.take(far, unranked)
+		if err != nil {
+			t.Error(err)
+		}
+		got <- pl
+	}()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+		p.mu.Lock()
+		n := len(p.waiters)
+		p.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d waiters, want 1", n)
+		}
+	}
+	p.mu.Lock()
+	p.came(nil)
+	p.mu.Unlock()
+	select {
+	case pl := <-got:
+		if pl != nil {
+			t.Errorf("got %v, want leave to start one", pl)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the waiter still waits for a lab no longer coming")
+	}
+}
+
+// TestPoolStartGivesWayToALabThatCameBack: a test whose own lab start
+// waits for a slot takes a lab that comes back meanwhile, once no test
+// waits in take (a waiting test has nothing coming, so it goes first); the
+// start then leaves the slot queue, gives the process's share of it back
+// and is counted out, so the pool neither waits for that slot nor keeps a
+// lab nobody asked for.
+func TestPoolStartGivesWayToALabThatCameBack(t *testing.T) {
+	dir := oneSlotHost(t)
+	queueShareOf(t, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	held := holdSlot(t, ctx)
+	p := &Pool{size: 2, name: "router"}
+	far := time.Now().Add(time.Minute)
+	if pl, err := p.take(far, unranked); pl != nil || err != nil {
+		t.Fatalf("the first test: %v, %v: want leave to start one", pl, err)
+	}
+	inUse := &pooledLab{}
+	startErr := make(chan error, 1)
+	start := func(ctx context.Context) (*pooledLab, error) {
+		release, err := waitForSlot(ctx, labBudget.begin(time.Time{}), "tplab-pool-test", "")
+		startErr <- err
+		if err != nil {
+			return p.adopt(nil, nil, time.Now(), err)
+		}
+		release()
+		return &pooledLab{}, nil
+	}
+	starting := make(chan *pooledLab, 1)
+	go func() {
+		pl, err := p.acquire(ctx, far, unranked, start)
+		if err != nil {
+			t.Error(err)
+		}
+		starting <- pl
+	}()
+	waitForTickets(t, dir, 1) // its start waits for the slot
+	waiting := make(chan *pooledLab, 1)
+	go func() {
+		pl, err := p.take(far, unranked)
+		if err != nil {
+			t.Error(err)
+		}
+		waiting <- pl
+	}()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+		p.mu.Lock()
+		n := len(p.waiters)
+		p.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d waiters, want 1: the pool is full", n)
+		}
+	}
+	receive := func(ch chan *pooledLab, who string) *pooledLab {
+		t.Helper()
+		select {
+		case pl := <-ch:
+			return pl
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s got no lab", who)
+			return nil
+		}
+	}
+	p.mu.Lock()
+	p.putBack(inUse)
+	p.mu.Unlock()
+	if pl := receive(waiting, "the waiting test"); pl != inUse {
+		t.Fatalf("the waiting test got %v, want the lab that came back", pl)
+	}
+	select {
+	case pl := <-starting:
+		t.Fatalf("the starting test got %v while a test waited", pl)
+	default:
+	}
+	p.mu.Lock()
+	p.putBack(inUse)
+	p.mu.Unlock()
+	if pl := receive(starting, "the starting test"); pl != inUse {
+		t.Fatalf("the starting test got %v, want the lab that came back", pl)
+	}
+	select {
+	case err := <-startErr:
+		if !errors.Is(err, errSlotWaitStopped) {
+			t.Fatalf("the start ended with %v, want it to have left the slot queue", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the start no test needs any more still waits for the slot")
+	}
+	waitForTickets(t, dir, 0)
+	p.down.Wait()
+	p.mu.Lock()
+	labs, idle := p.labs, len(p.idle)
+	p.mu.Unlock()
+	if labs != 1 || idle != 0 {
+		t.Errorf("%d labs, %d idle: want 1 and 0, the start no test needed counted out", labs, idle)
+	}
+	// Its place in the process's share of the slot queue is free: another
+	// start joins the queue.
+	got := make(chan func(), 1)
+	go func() {
+		release, err := acquireHostSlot(ctx)
+		if err != nil {
+			t.Error(err)
+		}
+		got <- release
+	}()
+	waitForTickets(t, dir, 1)
+	held()
+	if release := <-got; release != nil {
+		release()
+	}
+}
+
+// TestPoolTearsDownAStartNobodyNeedsAtClose: a start no test needs any
+// more that holds its slot already goes on; when it ends after the pool
+// closed, its lab is torn down, and closing waits for it, so no lab
+// outlives the run.
+func TestPoolTearsDownAStartNobodyNeedsAtClose(t *testing.T) {
+	p := &Pool{size: 2, name: "router"}
+	far := time.Now().Add(time.Minute)
+	if pl, err := p.take(far, unranked); pl != nil || err != nil {
+		t.Fatalf("the first test: %v, %v: want leave to start one", pl, err)
+	}
+	late := &fakeLab{project: "lab-late"}
+	proceed := make(chan struct{})
+	got := make(chan *pooledLab, 1)
+	go func() {
+		pl, err := p.acquire(t.Context(), far, unranked, func(context.Context) (*pooledLab, error) {
+			<-proceed // it holds its slot: giving up its wait changes nothing
+			return &pooledLab{ops: late}, nil
+		})
+		if err != nil {
+			t.Error(err)
+		}
+		got <- pl
+	}()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+		p.mu.Lock()
+		n := len(p.starters)
+		p.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d tests starting a lab, want 1", n)
+		}
+	}
+	inUse := &pooledLab{}
+	p.mu.Lock()
+	p.putBack(inUse)
+	p.mu.Unlock()
+	if pl := <-got; pl != inUse {
+		t.Fatalf("the starting test got %v, want the lab that came back", pl)
+	}
+	closed := make(chan error, 1)
+	go func() {
+		var stats strings.Builder
+		closed <- p.close(&stats, "tests")
+	}()
+	select {
+	case err := <-closed:
+		t.Fatalf("the pool closed (%v) while a lab of its was still starting", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(proceed)
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	if c := late.counts(); c[3] != 1 {
+		t.Errorf("the late lab was torn down %d times, want once", c[3])
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.labs != 1 || len(p.idle) != 0 {
+		t.Errorf("%d labs, %d idle: want the one in use only", p.labs, len(p.idle))
 	}
 }
 
@@ -280,6 +494,7 @@ type fakeLab struct {
 	resetErr error
 	keepEnv  bool
 	undone   string // what its reset logs as undone
+	downErr  error
 
 	mu                             sync.Mutex
 	resets, cleanups, kept, downed int
@@ -297,13 +512,13 @@ func (f *fakeLab) reset(_ context.Context, _ *Snapshot, logf func(format string,
 	return f.resetErr
 }
 
-func (f *fakeLab) cleanup(testing.TB, time.Time) {
+func (f *fakeLab) cleanup(labUser, time.Time) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cleanups++
 }
 
-func (f *fakeLab) keep(testing.TB) bool {
+func (f *fakeLab) keep(labUser) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.keepEnv {
@@ -316,7 +531,7 @@ func (f *fakeLab) down(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.downed++
-	return nil
+	return f.downErr
 }
 
 func (f *fakeLab) counts() [4]int {
@@ -370,7 +585,7 @@ func TestPoolGiveBack(t *testing.T) {
 	p := &Pool{size: 1, name: "router", labs: 1}
 	f := &fakeLab{project: "lab-1"}
 	p.giveBack(&fakeTB{name: "TestFailed", failed: true}, &pooledLab{ops: f}, time.Now())
-	if c := f.counts(); c != [4]int{0, 1, 0, 0} || p.labs != 0 || len(p.idle) != 0 || !retiredFor(p, "TestFailed", "the test failed") {
+	if c := f.counts(); c != [4]int{0, 1, 0, 0} || p.labs != 0 || len(p.idle) != 0 || !retiredFor(p, "TestFailed", "it failed") {
 		t.Errorf("a failed test: resets, cleanups, kept, downs %v, %d labs, %d idle, retired %q: want its clean-up only, retired", c, p.labs, len(p.idle), p.Stats().Retired)
 	}
 

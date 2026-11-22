@@ -169,7 +169,7 @@ func claimProject(project string) string {
 // test's lab and the run directory bins it mounts. A failed test's log
 // gets the containers' logs since since (all of them when zero: a lab
 // that served other tests before has theirs too).
-func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool, since time.Time) {
+func (l *Lab) cleanup(t labUser, bins *runBinaries, keep bool, since time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), labBudget.teardown)
 	defer cancel()
 	if t.Failed() {
@@ -192,7 +192,7 @@ func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool, since time.Tim
 // keepRunning keeps the lab up for inspection, and the run directory bins
 // it mounts (KeepEnv), letting go of its slot and subnets; false when it
 // couldn't, the lab still up for the caller to tear down.
-func (l *Lab) keepRunning(t testing.TB, bins *runBinaries) bool {
+func (l *Lab) keepRunning(t labUser, bins *runBinaries) bool {
 	if err := bins.keep(l.Project); err != nil {
 		t.Errorf("lab %s: can't keep it, tearing it down: %v", l.Project, err)
 		return false
@@ -326,14 +326,48 @@ func (c startClock) run(ctx context.Context, project string, p startPhase, f fun
 	return fmt.Errorf("lab %s: %s: %w", project, what, err)
 }
 
+// errSlotWaitStopped is a lab start's error when it gave up its slot wait
+// (withSlotWaitStop).
+var errSlotWaitStopped = errors.New("lab: the start was no longer needed, so it left the slot queue")
+
+type slotWaitStopKey struct{}
+
+// withSlotWaitStop marks a lab start's ctx: once stop is closed, its slot
+// wait gives up (leaving the slot queue and the process's share of it)
+// with errSlotWaitStopped, whether it has begun yet or not. A start that
+// holds its slot already goes on.
+func withSlotWaitStop(ctx context.Context, stop <-chan struct{}) context.Context {
+	return context.WithValue(ctx, slotWaitStopKey{}, stop)
+}
+
 // waitForSlot is a lab start's wait for its slot (acquireSlot) under
 // clock's bound, noted in the timeline whether or not it got one.
 func waitForSlot(ctx context.Context, clock startClock, project, slotKey string) (release func(), err error) {
 	from := time.Now()
+	if stop, ok := ctx.Value(slotWaitStopKey{}).(<-chan struct{}); ok {
+		wctx, cancel := context.WithCancelCause(ctx)
+		defer cancel(nil)
+		go func() {
+			select {
+			case <-stop:
+				cancel(errSlotWaitStopped)
+			case <-wctx.Done():
+			}
+		}()
+		select {
+		case <-stop:
+			cancel(errSlotWaitStopped)
+		default:
+		}
+		ctx = wctx
+	}
 	err = clock.run(ctx, project, phaseSlotWait, func(ctx context.Context) (err error) {
 		release, err = acquireSlot(ctx, slotKey)
 		return err
 	})
+	if err != nil && context.Cause(ctx) == errSlotWaitStopped {
+		err = errors.Join(errSlotWaitStopped, err)
+	}
 	to := time.Now()
 	noteSlotWait(project, from, to, err)
 	if clock.slotWait != nil {
