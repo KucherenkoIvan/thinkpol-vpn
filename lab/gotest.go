@@ -125,7 +125,10 @@ func buildPackageTests(ctx context.Context, root, binDir string, pkg GoPackage) 
 	name = testBinaryName(pkg)
 	bin := filepath.Join(binDir, "tests", name)
 	built, err = buildTestsOnce(bin, func() (bool, error) {
-		return goBuild(ctx, root, t, bin, "test", "-c", "./"+pkg.Dir)
+		// Without -trimpath the checkout's directory is compiled in, and
+		// the binary's hash, part of the results cache's key, differs for
+		// every checkout of the same commit.
+		return goBuild(ctx, root, t, bin, "test", "-c", "-trimpath", "./"+pkg.Dir)
 	})
 	return name, built, err
 }

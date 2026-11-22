@@ -46,13 +46,14 @@
 //
 // GoTestEach, given a GoTestCache, builds each package's test binary before
 // starting its lab and skips the lab when a pass recorded under the same key
-// still holds (lab/testcache: the binary, the image, the engine, the
-// harness, the args and env, and the files the binary read through package
-// os, which it lists in its -test.testlogfile, read back from the node
-// before the lab goes down). Only passes are recorded, for a week, and not
-// when a checkout input changed during the run. Each package run in a lab
-// reports its time split into its queue for one of the run's labs, slot
-// wait, lab start, tests and teardown (LabPhases).
+// still holds (lab/testcache: the binary, built with -trimpath so that the
+// same sources build the same binary from any checkout, the image, the
+// engine, the harness, the args and env, and the files the binary read
+// through package os, which it lists in its -test.testlogfile, read back
+// from the node before the lab goes down). Only passes are recorded, for a
+// week, and not when a checkout input changed during the run. Each package
+// run in a lab reports its time split into its queue for one of the run's
+// labs, slot wait, lab start, tests and teardown (LabPhases).
 //
 // GoTestEach's packages share their labs through a pool of its own
 // (nodePool, a Pool that Main doesn't know of, closed when GoTestEach

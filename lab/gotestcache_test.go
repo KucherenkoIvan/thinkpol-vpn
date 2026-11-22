@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -148,6 +149,58 @@ func TestEntryKeyCoversTheRun(t *testing.T) {
 			tc.change(t, f)
 			if got := f.hit(t); got != tc.hit {
 				t.Fatalf("hit %v after the %s changed, want %v", got, tc.name, tc.hit)
+			}
+		})
+	}
+}
+
+// Each full lab runs from a checkout of its own: the same sources, built
+// from another directory as goTestPackage builds them, key the same, so
+// the second run finds the first one's passes, while a changed test or a
+// changed dependency of the package still misses.
+func TestKeyIsTheSameFromAnotherCheckout(t *testing.T) {
+	needGoTool(t)
+	isolateGoEnv(t)
+	t.Setenv(GOARCHEnv, "amd64") // the lab's platform without asking Docker
+	files := map[string]string{
+		"go.mod":           "module example.net/moved\n\ngo 1.26\n",
+		"p/p.go":           "package p\n\nimport \"example.net/moved/dep\"\n\nfunc P() int { return dep.D() }\n",
+		"p/p_test.go":      "package p\n\nimport \"testing\"\n\nfunc TestP(t *testing.T) {\n\tif P() != 1 {\n\t\tt.Fatal(P())\n\t}\n}\n",
+		"dep/dep.go":       "package dep\n\nfunc D() int { return 1 }\n",
+		"lab/seccomp.json": "seccomp1",
+	}
+	pkg := GoPackage{ImportPath: "example.net/moved/p", Dir: "p"}
+	key := func(t *testing.T, root string, files map[string]string) string {
+		t.Helper()
+		for name, body := range files {
+			writeFileT(t, filepath.Join(root, filepath.FromSlash(name)), body)
+		}
+		bin := t.TempDir()
+		name, built, err := buildPackageTests(t.Context(), root, bin, pkg)
+		if err != nil || !built {
+			t.Fatalf("buildPackageTests = %v, %v", built, err)
+		}
+		c := &GoTestCache{Harness: "h1", engine: "e1"}
+		p := preparedRun{img: image{ref: "sha256:i1", platform: "linux/amd64"}, bin: &runBinaries{path: bin}}
+		e, err := c.entry(t.Context(), root, p, name, pkg, nil, []string{"-test.v"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e.action.ID()
+	}
+	want := key(t, t.TempDir(), files)
+	if got := key(t, filepath.Join(t.TempDir(), "another", "checkout"), files); got != want {
+		t.Fatal("the same sources built from another checkout key differently")
+	}
+	for change, file := range map[string][2]string{
+		"test":       {"p/p_test.go", strings.Replace(files["p/p_test.go"], "P() != 1", "P() == 0", 1)},
+		"dependency": {"dep/dep.go", strings.Replace(files["dep/dep.go"], "return 1", "return 2", 1)},
+	} {
+		t.Run(change+" changed", func(t *testing.T) {
+			changed := maps.Clone(files)
+			changed[file[0]] = file[1]
+			if got := key(t, t.TempDir(), changed); got == want {
+				t.Fatalf("a changed %s keys as the unchanged sources did", change)
 			}
 		})
 	}
