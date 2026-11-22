@@ -334,8 +334,10 @@ lab-perf: ## performance gates, alone on the host: waits for every other lab run
 # defaults without (lab.DefaultTestTimeout in a node, 60m on the host).
 LAB_GOTEST_TIMEOUT = $(if $(filter file,$(origin LAB_TIMEOUT)),$(if $(COUNT),60m),$(LAB_TIMEOUT))
 
-lab-gotest: export LAB_RUN = $(RUN)
-lab-gotest: export LAB_SKIP = $(SKIP)
+# RUN and SKIP reach labctl unexpanded, so a regexp's $ anchors and $/
+# separators aren't read as make variables (TestMakefileLabGotestPassesRunVerbatim).
+lab-gotest: export LAB_RUN = $(value RUN)
+lab-gotest: export LAB_SKIP = $(value SKIP)
 lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1, its lab-tagged tests on the host; fails if all skip (PKG=./internal/... required, RUN=regexp SKIP=regexp COUNT=n LAB_TIMEOUT=d)
 	$(if $(PKG),,$(error lab-gotest needs PKG, e.g. PKG=./internal/dataplane/netcfg/...; make lab-test runs every package))
 	@tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
