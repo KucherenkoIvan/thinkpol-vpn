@@ -25,9 +25,9 @@ In TP-261's full labs, TestKillSwitchUnderSystemd (four parallel parts) only sta
 - Fewer container starts, faster lab starts, node-phase caching (TP-242, TP-243, the node-phase pooling ticket).
 
 ## Acceptance
-- [x] Critical path before/after from the timeline (which tests end last, when they started), in Notes. Before: the matrix's last row (took its lab 782 s, ended 931 s) and the kill switch (started ~290 s, ended 738 s); after: both done first in every run, the node phase (cold) or a pooled test behind its own late lab start (warm) last (Notes, "Runs").
-- [ ] Warm full lab default stream before/after, in Notes (target: ≥ 2 min faster). Not met: 16m9s before, 18m45s, 20m6s and 25m35s after, each under another session's labs on the same slots (Notes).
-- [x] No new flakes: the full lab green twice. Four full labs on d39cbd58: every test passed, no lab retired (all over budget, as the baselines).
+- [x] Critical path before/after from the timeline (which tests end last, when they started), in Notes. Before: the matrix's last row (took its lab 782 s, ended 931 s) and the kill switch (started ~290 s, ended 738 s); after: both done first in every run, the node phase (cold) or a pooled test behind its own late lab start (warm) last (Notes, "Runs"). Fix round A/B on bfe277f0 against rewrite 6832b93c (Notes, "Fix round"): on rewrite the matrix's last row took its lab at 782 s and 642 s, the matrix ended last (1010 s, 793 s), the kill switch started at 290 s and 517 s; on the branch the kill switch ran 42–198 s and the matrix, still the last test, ended at 714 s and 711 s.
+- [x] Warm full lab default stream before/after, in Notes (target: ≥ 2 min faster). First round not met (16m9s before; 18m45s, 20m6s and 25m35s after, each under another session's labs). Fix round A/B, warm, alternating, quiet at each start: rewrite 17m29s and 13m51s (median 15m40s), branch 13m10s and 12m59s (median 13m4.5s): 2m35.5s faster (Notes, "Fix round"; the spread caveat there).
+- [x] No new flakes: the full lab green twice. Four full labs on d39cbd58: every test passed, no lab retired (all over budget, as the baselines). Fix round, bfe277f0: two warm full labs passed within budget (exit 0), plus the cold throwaway (passed, over budget).
 
 ## Notes
 - Baseline: TP-261's final head 3b356c7c, full lab twice: 897 s (default 14m57s) and 713 s (default 11m53s).
@@ -61,8 +61,24 @@ All tests passed in every run (no lab retired outside the harness's deliberate c
 
 **Warm default stream: not faster** (16m9s → 18m45s, 20m6s, 25m35s), under the other session's labs on the same slots: that session runs code without the per-process queue share, so its processes queued every start while this run stood two in line. A quiet runner was never available for a clean comparison (the other session started a lab during each final run).
 
+### Fix round (2026-11-22)
+- **Fix**: a pooled test whose own lab start still waits for its slot takes a lab that comes back meanwhile, once no test waits in line (a waiting test has no start coming, so it goes first): `Pool.startOrTake`, `Pool.handOn` (lab/pool.go). The start it no longer needs leaves the slot queue and the process's share of it (`withSlotWaitStop`, `errSlotWaitStopped` in lab/lab.go's `waitForSlot`) and is counted out; one that holds its slot already goes on and its lab joins the pool (`Pool.putBack`), torn down if the pool has closed, which waits for it (`Pool.down`). The node pool (TP-269) gets the same through `Pool.acquire`.
+- **Ordering kept**: after TP-269 (node-phase reuse) the `lab/` phase's order still decides the default stream: on rewrite the censor matrix ends last and the kill switch starts 5–9 minutes in; on the branch both start at once.
+- **A/B** (`make lab-test`, alternating, warm; before each run no other session's lab containers and no other docker lock holder; throwaways first: branch 16m13s, cold after the image rebuild; rewrite 19m32s, under other sessions' labs; neither counted):
+
+| Run | Commit | Wall | Default | Long | Exit | Slot wait median / max | Critical path |
+|---|---|---|---|---|---|---|---|
+| A1 rewrite | 6832b93c | 1049 s | 17m29s, over budget | 3m27s | 3 (tests passed) | 0.3 s / 112 s | matrix last row (wireguard) took its lab 782 s, matrix ended last ~1010 s; kill switch 290–490 s |
+| B1 branch | bfe277f0 | 791 s | 13m10s | 3m8s | 0 | 48 s / 562 s | matrix resumed 42 s, last row took its lab 598 s, ended last 714 s; kill switch 49–198 s |
+| A2 rewrite | 6832b93c | 832 s | 13m51s | 3m14s | 0 | 0.0 s / 86 s | matrix last row (wireguard) 642 s, ended last ~793 s; kill switch 517–688 s |
+| B2 branch | bfe277f0 | 778 s | 12m59s | 3m16s | 0 | 51 s / 575 s | matrix resumed 37 s, last row took its lab 606 s, ended last 711 s; kill switch 42–176 s |
+
+All four: every test passed, node phase 39 of 40 packages cached. During A1 and A2 no other session's labs or docker lock showed (at the start and at a check mid-run); during B1 and B2 another session's labs started 5–7 minutes in, so the branch's numbers carry load the rewrite's don't.
+- **Verdict**: default stream median 15m40s on rewrite, 13m4.5s on the branch: 2m35.5s faster, green both times, so the ticket goes to review. Caveat: the rewrite runs spread 3m38s (17m29s, 13m51s); against A2 alone the branch is 41–52 s faster. The branch's two runs agree within 11 s.
+- Slot waits read higher on the branch: there a start's wait includes the time it stands outside the queue, behind the first starts and the process's share (slotQueueShare). The longest are fresh starts (TestServiceUninstallAfterAServerCrash, 9m22s) that end well before the matrix.
+- Not seen in the A/B: whether a start ever gave way to a lab that came back. The timeline has no line for it; the unit tests show the mechanism.
+
 ### Next steps (not done here)
-- A pool test whose own lab start still waits for a slot should take a lab that comes back first (cancel the start before it holds a slot): final3's last test waited 14m on its own start while its pool's lab sat idle.
 - Measure again once every runner's code has the queue share (other branches merged), on a quiet runner; consider a larger share if the default stream still waits behind other phases.
 
 ## Log
@@ -80,3 +96,7 @@ All tests passed in every run (no lab retired outside the harness's deliberate c
 - 2026-11-22 fix: a pooled test whose own lab start waits for its slot takes a lab that comes back meanwhile, once no test waits in take (Pool.startOrTake, Pool.handOn: waiters first, then starters, lab/pool.go); the start leaves the slot queue and the process's share of it (withSlotWaitStop, errSlotWaitStopped, lab/lab.go waitForSlot) and is counted out, or, holding its slot already, goes on and its lab joins the pool (Pool.putBack; in a closed pool it is torn down, and closing waits for it: Pool.down); the node pool's goTest reads the start's slot wait only once it is done (lab/gotestpool.go); README "Slots and waiting", lab/doc.go
 - 2026-11-22 tests: TestPoolStartGivesWayToALabThatCameBack (lab/poolslot_test.go, a real one-slot lock directory), TestPoolTearsDownAStartNobodyNeedsAtClose, TestPoolWaitsForLabsComing extended (lab/pool_test.go); mutations (each restored after, on the Mac): handOn never gives a lab to a starter → the starting test gets no lab; starters before waiters → the waiting test gets none; stop never closed → the start still waits for its slot; waitForSlot ignores the stop → same; came(nil) without letting waiters start → the waiter waits for a lab no longer coming; the abandoned start not counted in Pool.down → the pool closes while a lab of its is still starting; putBack in a closed pool keeps the lab → torn down 0 times, 2 labs 1 idle
 - 2026-11-22 on d31d26af: make lint, make test passed; go test -race ./lab/ -run 'Pool|Slot|First' -count=10 passed
+- 2026-11-22 merged origin/rewrite again (TP-275's nginx pin) at bfe277f0; A/B full labs, alternating, quiet at each start (throwaways first: branch 16m13s cold, rewrite 19m32s under other sessions' labs): rewrite 6832b93c 17m29s (exit 3, passed) and 13m51s (exit 0); branch bfe277f0 13m10s and 12m59s (exit 0, another session's labs started 5–7 minutes into each); default stream median 15m40s → 13m4.5s, 2m35.5s faster (Notes "Fix round", with the rewrite runs' spread)
+- 2026-11-22 not verified: that a start gave way to a lab that came back in the full labs (no timeline line for it; the unit tests cover the mechanism); targeted lab-gotest runs not done separately: the four full labs on bfe277f0 run every lab/ test and the node phase
+- 2026-11-22 on bfe277f0: make lint, make test passed; lab commit bfe277f0
+- 2026-11-22 in-progress → review
