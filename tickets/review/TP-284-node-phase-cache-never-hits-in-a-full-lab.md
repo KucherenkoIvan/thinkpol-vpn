@@ -49,3 +49,4 @@ A full `make lab-test` of a commit whose packages already passed in nodes on thi
 - 2026-11-22 two full make lab-test runs of 18bfa3b3 from two fresh checkouts at different paths, back to back, quiet runner: run 1 exit 2 (passed, over budget), default 16m38s, long 4m37s, node 0 of 46 cached, 14 node labs; run 2 exit 0, default 13m28s, long 3m13s, node 29 of 46 cached (29 of the 30 in-node packages), 1 node lab (details in Notes)
 - 2026-11-22 not verified / left open: box 3 not ticked: ./lab never records its in-node pass in a full lab (its input lab/bin changes during the run), and the 16 host-run packages miss go test's own cache from another checkout; both out of scope, for the orchestrator (Notes)
 - 2026-11-22 lab commit 18bfa3b3 (the two full labs above)
+- 2026-11-22 in-progress → review
