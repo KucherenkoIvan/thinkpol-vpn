@@ -6,7 +6,7 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
 
 ## Summary
 
-**What exists** (matched to the code at head in TP-225; the findings below are the 2026-10-28 snapshot's).
+**What exists** (updated 2026-11-22; the findings below are the 2026-10-28 snapshot's).
 
 - **One binary, `thinkpol`, with 22 visible commands and two hidden ones.** There are four groups:
   - the node: `up`, `rollback`;
@@ -16,7 +16,7 @@ This is everything a person or a script sees of thinkpol today: the CLI, the loc
   
   Plus `version`, the hidden `worker`, and the hidden `service connect-on-boot`, kept only to refuse with a message (TP-166).
 - **A gRPC local API, `LocalService`, with 11 calls,** over a Unix socket in a directory that only root and the `thinkpol` group can reach. The group may call everything except `TailLogs`. `Diagnose` gives the group its snapshot without the host parts.
-- **Configuration is flags, environment and a node file.** There are 17 `THINKPOL_*` keys, all on `up`, which reads them over the root-owned node file `node.json` in the state directory (TP-166, [Configuration](configuration.md)); a member's toggles live in `device.json`. A lab node's `thinkpol` also reads two lab variables (below). The installed service runs `thinkpol up -service` and sets none of them.
+- **Configuration is flags, environment and a node file.** There are 17 `THINKPOL_*` keys, all read by `up`, and `THINKPOL_API_SOCKET` by every local API client too; `up` reads them over the root-owned node file `node.json` in the state directory, which can carry 11 of them (TP-166, [Configuration](configuration.md)); a member's toggles live in `device.json`. A lab node's `thinkpol` also reads two lab variables (below). The installed service runs `thinkpol up -service` and sets none of them.
 - **On-disk state:**
   - the state directory: `node.key`, `space.pub`, `map.bin`, `blobs/`, `node.json`, `device.json` (an old `rules.local` is carried into it and removed), and a device's `crash-trace`;
   - runtime locks and records under `/run/thinkpol` (macOS: `/private/var/db/thinkpol`);
