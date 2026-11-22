@@ -279,6 +279,52 @@ func TestForwardingThatCannotBeTurnedOffStaysRecorded(t *testing.T) {
 	}
 }
 
+// An IPv6 forwarding attempt that fails before its switch is flipped puts
+// back the accept_ra values it already wrote: nothing is left changed, or
+// recorded.
+func TestForwardingThatFailsToTurnOnLeavesAcceptRAAsItWas(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		refuse func(key, value string) bool
+	}{
+		{"an accept_ra write refused", func(key, value string) bool { return key == "net/ipv6/conf/eth0/accept_ra" && value == "2" }},
+		{"the switch refused", func(key, value string) bool { return key == forwardingKeys[1] && value == "1" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sys, get := fakeProcSys(t)
+			run := t.TempDir()
+			f := rootForwarding{sys: sys}
+			if err := f.load(run); err != nil {
+				t.Fatal(err)
+			}
+			sys.arm(func(key, value string) error {
+				if tc.refuse(key, value) {
+					return errors.New("refused")
+				}
+				return nil
+			})
+			if err := f.ensure([2]bool{false, true}); err == nil {
+				t.Fatal("ensure returned nil with IPv6 forwarding refused")
+			}
+			sys.disarm()
+			if f.owned() != [2]bool{} {
+				t.Errorf("owned %v after a failed attempt", f.owned())
+			}
+			for _, key := range []string{"net/ipv6/conf/default/accept_ra", "net/ipv6/conf/eth0/accept_ra"} {
+				if got := get(key); got != "1" {
+					t.Errorf("%s = %s after the failed attempt, want 1", key, got)
+				}
+			}
+			if got := get(forwardingKeys[1]); got != "0" {
+				t.Errorf("IPv6 forwarding %s after the failed attempt", got)
+			}
+			if _, err := os.Stat(filepath.Join(run, forwardingFile)); !os.IsNotExist(err) {
+				t.Errorf("a record of the failed attempt: %v", err)
+			}
+		})
+	}
+}
+
 func TestMaxFlowsDefaultsToAQuarterOfConntrack(t *testing.T) {
 	sys, _ := fakeProcSys(t)
 	if got := maxFlows(0, sys); got != 262144/4 {

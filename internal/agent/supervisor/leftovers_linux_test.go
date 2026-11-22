@@ -29,12 +29,19 @@ const raLink = "tplo-ra0"
 // supervisor's: a link and an nftables table of someone else's. The
 // returned sysctls are the ones the dead one wrote through, its hook
 // disarmed.
+//
+// The dead one set accept_ra 2 on every interface at 1 (the uplink lo,
+// eth0, default), which the forwarding cleanups' plain writes don't put
+// back: after the test, ClearLeftovers runs with the record as the dead
+// one wrote it, whatever the test left, and every accept_ra must be what
+// it was before.
 func leftByADeadSupervisor(t *testing.T, run string) *hookSysctls {
 	t.Helper()
 	forwardingOff(t)
 	setSysctl(t, forwardingKeys[1], "0")
 	addLink(t, &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: raLink}})
 	setSysctl(t, raKey, "1")
+	acceptRA := acceptRAs(t)
 	sys := &hookSysctls{procSysFS: procSysFS{root: "/proc/sys"}}
 	s := servingWithEgress(t, Options{RuntimeDir: run, sysctls: sys, Uplink: func() (egress.Uplink, error) {
 		return egress.Uplink{Name: "lo", IPv4: true, IPv6: true}, nil
@@ -44,6 +51,23 @@ func leftByADeadSupervisor(t *testing.T, run string) *hookSysctls {
 	_ = s.Close()
 	sys.disarm()
 	t.Cleanup(func() { _ = removeIsolation() })
+	record, err := os.ReadFile(filepath.Join(run, forwardingFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.WriteFile(filepath.Join(run, forwardingFile), record, 0o600); err != nil {
+			t.Error(err)
+		}
+		if _, err := ClearLeftovers(Options{NewRoot: testNewRoot, RuntimeDir: run}); err != nil {
+			t.Errorf("clearing the dead supervisor's leftovers after the test: %v", err)
+		}
+		for key, was := range acceptRA {
+			if v, err := realSysctl(key); err == nil && v != was {
+				t.Errorf("%s %s after the dead supervisor's leftovers were cleared, was %s", key, v, was)
+			}
+		}
+	})
 	addLink(t, &netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: LinkPrefix + "7"}, PeerName: "tplo-peer7"})
 	addLink(t, &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "tplo-other0"}})
 	c, err := nftables.New()
@@ -63,6 +87,25 @@ func leftByADeadSupervisor(t *testing.T, run string) *hookSysctls {
 }
 
 var raKey = "net/ipv6/conf/" + raLink + "/accept_ra"
+
+// acceptRAs are the root's accept_ra values, by key.
+func acceptRAs(t *testing.T) map[string]string {
+	t.Helper()
+	sys := procSysFS{root: "/proc/sys"}
+	keys, err := sys.Glob("net/ipv6/conf/*/accept_ra")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := map[string]string{}
+	for _, k := range keys {
+		v, err := sys.Read(k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m[k] = v
+	}
+	return m
+}
 
 // refuseOff refuses to turn off the forwarding switches keys.
 func refuseOff(keys ...string) func(key, value string) error {

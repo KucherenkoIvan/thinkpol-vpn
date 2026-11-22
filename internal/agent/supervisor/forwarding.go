@@ -225,6 +225,12 @@ func (f *rootForwarding) enable(fam int) error {
 		return err
 	}
 	c := &forwardingChange{Main: sysctlChange{Key: main, Original: was, Written: "1"}}
+	// Any failure before the switch is flipped puts back the accept_ra
+	// values already written, or they'd outlive the attempt unrecorded.
+	fail := func(err error) error {
+		f.fams[fam] = c
+		return errors.Join(err, f.restoreFamily(fam))
+	}
 	if fam == 1 {
 		dirs, err := f.sys.Glob("net/ipv6/conf/*")
 		if err != nil {
@@ -238,7 +244,7 @@ func (f *rootForwarding) enable(fam int) error {
 			key := "net/ipv6/conf/" + dev + "/accept_ra"
 			if v, err := f.sys.Read(key); err == nil && v == "1" {
 				if err := f.sys.Write(key, "2"); err != nil {
-					return err
+					return fail(err)
 				}
 				c.Before = append(c.Before, sysctlChange{Key: key, Original: "1", Written: "2"})
 			}
@@ -246,7 +252,7 @@ func (f *rootForwarding) enable(fam int) error {
 	}
 	keys, err := f.sideKeys(fam)
 	if err != nil {
-		return err
+		return fail(err)
 	}
 	before := map[string]string{}
 	for _, k := range keys {
@@ -255,9 +261,7 @@ func (f *rootForwarding) enable(fam int) error {
 		}
 	}
 	if err := f.sys.Write(main, "1"); err != nil {
-		f.fams[fam] = c // accept_ra may have changed: put it back with the rest
-		_ = f.restoreFamily(fam)
-		return err
+		return fail(err)
 	}
 	for _, k := range keys {
 		// Every one, changed or not: writing the switch back resets them

@@ -207,7 +207,8 @@
 // Turning forwarding on resets other sysctls (IPv4: accept_redirects and
 // every interface's forwarding; IPv6: every interface's forwarding), and
 // turning it off resets them again, so the record keeps their earlier
-// values.
+// values. An attempt that fails before its switch is flipped puts back
+// the accept_ra values it wrote, so a failed start leaves none changed.
 //
 // It records what it changed in [DefaultRuntimeDir] (forwarding.json, on a
 // tmpfs like the sysctls' own lifetime), so a successor after a crash
