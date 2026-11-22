@@ -155,6 +155,10 @@ LAB_BUDGET ?= 15m
 # the censor matrix, whose held cells are the long stream's (lab/README.md,
 # "Streams"), and path liveness's lab tests (lab/liveness_test.go).
 LAB_LONG_TESTS := ^(TestCensorMatrix|TestIdleLinksProbeAtRandom|TestLinksUnderTraffic)$$
+# The long stream's tests running at once, under LAB_SLOTS: it shares the
+# slot cap with the default stream, which must keep enough of its slots to
+# stay within LAB_BUDGET while the long stream's labs hold theirs for minutes.
+LAB_LONG_PARALLEL ?= 3
 # $(call LAB_COUNT_CELLS,<label>,<files>): the cells the streams listed
 # in files (a line each, "<transport> / <censor>"), once each, as
 # "<label>: <n> (<cells>)", or nothing when none; for make lab-test's last
@@ -253,8 +257,8 @@ lab-test lab-test-default lab-test-long:
 		phases="lab labpkgs node harness";; \
 	esac; \
 	case " $(LAB_STREAMS) " in *" long "*) \
-		( ( { ( cd lab && THINKPOL_LAB_STREAM=long exec go tool test2json -t -p "$$labpkg" "$$tmp/lab.test" -test.v=test2json -test.paniconexit0 -test.count=1 -test.parallel=$(LAB_SLOTS) -test.timeout=$(LAB_TIMEOUT) -test.run='$(LAB_LONG_TESTS)' ) 2>&1; echo $$? > "$$tmp/long.status"; } | { TMPDIR="$$tmp" "$$labctl" testjson -times "$$tmp/long.times" 2>&1; echo $$? > "$$tmp/long.testjson"; } | awk '{print "[long] " $$0; fflush()}' ) & \
-		  ( { THINKPOL_LAB_STREAM=long go test -tags lab -json -count=1 -parallel $(LAB_SLOTS) -timeout $(LAB_TIMEOUT) -run '$(LAB_LONG_TESTS)' $$others 2>&1; echo $$? > "$$tmp/longpkgs.status"; } | { TMPDIR="$$tmp" "$$labctl" testjson -times "$$tmp/longpkgs.times" 2>&1; echo $$? > "$$tmp/longpkgs.testjson"; } | awk '{print "[long] " $$0; fflush()}' ) & \
+		( ( { ( cd lab && THINKPOL_LAB_STREAM=long exec go tool test2json -t -p "$$labpkg" "$$tmp/lab.test" -test.v=test2json -test.paniconexit0 -test.count=1 -test.parallel=$(LAB_LONG_PARALLEL) -test.timeout=$(LAB_TIMEOUT) -test.run='$(LAB_LONG_TESTS)' ) 2>&1; echo $$? > "$$tmp/long.status"; } | { TMPDIR="$$tmp" "$$labctl" testjson -times "$$tmp/long.times" 2>&1; echo $$? > "$$tmp/long.testjson"; } | awk '{print "[long] " $$0; fflush()}' ) & \
+		  ( { THINKPOL_LAB_STREAM=long go test -tags lab -json -count=1 -parallel $(LAB_LONG_PARALLEL) -timeout $(LAB_TIMEOUT) -run '$(LAB_LONG_TESTS)' $$others 2>&1; echo $$? > "$$tmp/longpkgs.status"; } | { TMPDIR="$$tmp" "$$labctl" testjson -times "$$tmp/longpkgs.times" 2>&1; echo $$? > "$$tmp/longpkgs.testjson"; } | awk '{print "[long] " $$0; fflush()}' ) & \
 		  wait; "$$labctl" budget -stream long -since $$start "$$tmp/long.times" "$$tmp/longpkgs.times" || echo 1 > "$$tmp/long.status" ) & \
 		phases="$$phases long longpkgs";; \
 	esac; \
