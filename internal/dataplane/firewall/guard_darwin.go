@@ -497,7 +497,7 @@ func (g *IPv6Guard) readBypass(ctx context.Context) (bypassListing, error) {
 	if err != nil {
 		return bypassListing{}, err
 	}
-	skips, err := skippedNames(ifcs.stdout)
+	skips, err := SkippedNames(ifcs.stdout)
 	if err != nil {
 		return bypassListing{}, err
 	}

@@ -33,6 +33,7 @@ The owner has no network with native IPv6 available now. Unblock when one is.
 
 ## Notes
 - The device-test kit's session B (08a, 08, 09, 10) is ready for this run.
+- 2026-10-23 (TP-082): the second acceptance item's pfctl listings and its `set skip on lo` step now run through the device-test harness: `devicetest run TP-096` (plan `lab/devicetest/plans/tp096.go`; `devicetest plans TP-096` prints every step). It records the stock listings, loads `set skip on lo` before the stock rules, records `-s Interfaces -v` and the main rules, loads the stock rules back, records them again, and compares pf with its baseline. The listings with the guard applied, and what health says within 10 s, need a connected agent, so they wait for the harness's exit driver. Steps 0–10 still need a network with native IPv6.
 
 ### Device run 2026-10-24: pfctl listings
 
@@ -73,6 +74,7 @@ log had no warns, and the restore with `sudo pfctl -f /etc/pf.conf` was clean.
 - 2026-10-16 docs: TP-097 cancelled; this waits for a network with native IPv6 again
 - 2026-10-22 TP-126: an acceptance item for the pfctl listings its bypass check parses (`-s Interfaces -v`, `-a com.apple -s Anchors`)
 - 2026-10-22 TP-126 round 2: the `set skip on lo` step keeps the hook (prepended to the stock rules) and records what health says
+- 2026-10-23 docs: its pfctl listings and the `set skip on lo` step run through the device-test harness (TP-082)
 - 2026-10-24: macOS device run; ticked pfctl-listings box (steps 6, 20: no skip line shown, health ok); still open: native-IPv6 steps (no IPv6 network), lint/test box (not run).
 - 2026-10-29 TP-129: an acceptance item for the anchors read above the hook (nested names as pfctl lists them, the missing anchor answer of `-s Anchors`)
 - 2026-10-29 TP-129 round 1: the anchors item also saves `-a tp129 -s Anchors` (children by full path) and how an anonymous anchor is listed
