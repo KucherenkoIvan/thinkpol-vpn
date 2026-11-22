@@ -54,3 +54,4 @@ branch: "tp-276-forwarding-record-before-writes"
 - 2026-11-22 not verified: a real SIGKILL of a supervisor in the lab (the crash points are unit tests on the fake kernel); confinement of an adopted family is shown by `owned` (which builds the forward chain's drop) and the existing lab test TestForwardingCloseCannotTurnOffStaysConfined, not by a new lab test
 - 2026-11-22 in-progress → review
 - 2026-11-22 review → has-errors: R1.1–R1.6 (four reviewers, two model families: change sound, the applyTables choice accepted)
+- 2026-11-22 has-errors → in-progress, owner: agent-tp-276
