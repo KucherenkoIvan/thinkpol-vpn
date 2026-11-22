@@ -29,7 +29,9 @@ const HostTestsFile = "hosttests_test.go"
 // GoTestOnHost runs packages' tests on this machine with one go test
 // -json, without THINKPOL_LAB, so a test that would need the lab skips
 // (and fails the package here) instead of running. builds packages compile
-// and run at once (go test -p), as in a node's run with CGO_ENABLED=0.
+// and run at once (go test -p), as in a node's run with CGO_ENABLED=0 and
+// -trimpath: without it the checkout's directory is in every build ID, and
+// go test's cache would never serve a package from another checkout.
 // args are test binary flags (-test.v, -test.run, ...), which go test
 // takes too; env (NAME=value) is added to the environment. Each package's
 // output goes to w in one piece, as it ends: what go test would print
@@ -77,7 +79,7 @@ func GoTestOnHost(ctx context.Context, root string, pkgs []GoPackage, builds int
 
 // hostGoTestCommand is GoTestOnHost's go test.
 func hostGoTestCommand(ctx context.Context, root string, pkgs []GoPackage, builds int, env, args []string) *exec.Cmd {
-	goArgs := append([]string{"-C", root, "test", "-json", "-p", strconv.Itoa(max(builds, 1))}, args...)
+	goArgs := append([]string{"-C", root, "test", "-json", "-trimpath", "-p", strconv.Itoa(max(builds, 1))}, args...)
 	for _, p := range pkgs {
 		goArgs = append(goArgs, "./"+p.Dir)
 	}

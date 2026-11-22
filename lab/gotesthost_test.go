@@ -382,13 +382,55 @@ func TestGoTestOnHostMissingResult(t *testing.T) {
 	}
 }
 
+// TestGoTestOnHostCachesAcrossCheckouts: go test's cache serves a package
+// that passed on the host from another checkout of the same sources, as
+// each full lab runs from a fresh one, and not a changed test, nor an
+// unchanged test whose dependency in the module changed (-trimpath drops
+// the checkout's directory from the build, not the dependency's code).
+func TestGoTestOnHostCachesAcrossCheckouts(t *testing.T) {
+	needGoTool(t)
+	isolateGoEnv(t)
+	// A test no earlier run has built, so the first run can't be cached.
+	src := fmt.Sprintf("package pass\n\nimport (\n\t\"testing\"\n\n\t\"example.net/tagged/dep\"\n)\n\nfunc TestPass%d(t *testing.T) {\n\tif dep.V() == 0 {\n\t\tt.Fatal(\"zero\")\n\t}\n}\n", time.Now().UnixNano())
+	dep := "package dep\n\nfunc V() int { return 1 }\n"
+	pkgs := []GoPackage{{ImportPath: "example.net/tagged/pass", Dir: "pass", NeedsNoNode: true}}
+	checkout := func(test, dep string) string {
+		return writeModule(t, map[string]string{"pass/pass_test.go": test, "dep/dep.go": dep})
+	}
+	run := func(root string) GoTestResult {
+		t.Helper()
+		var out syncBuffer
+		results, err := GoTestOnHost(t.Context(), root, pkgs, 1, &out, nil)
+		if err != nil || len(results) != 1 || results[0].Failed {
+			t.Fatalf("GoTestOnHost: %v, %+v\n%s", err, results, out.String())
+		}
+		return results[0]
+	}
+	if r := run(checkout(src, dep)); r.Cached {
+		t.Fatalf("first run cached: %+v", r)
+	}
+	if r := run(checkout(src, dep)); !r.Cached {
+		t.Errorf("the same sources from another checkout ran again: %+v", r)
+	}
+	if r := run(checkout(src+"\nfunc TestMore(t *testing.T) {}\n", dep)); r.Cached {
+		t.Errorf("a changed test served from the cache: %+v", r)
+	}
+	// A dependency's change that breaks the test: a cached pass would hide it.
+	var out syncBuffer
+	results, err := GoTestOnHost(t.Context(), checkout(src, "package dep\n\nfunc V() int { return 0 }\n"), pkgs, 1, &out, nil)
+	if err != nil || len(results) != 1 || !results[0].Failed || results[0].Cached {
+		t.Errorf("a test whose dependency changed: %v, %+v, want it run and failed\n%s", err, results, out.String())
+	}
+}
+
 // TestHostGoTestCommand: go test compiles and runs builds packages at once
-// and builds without cgo, without THINKPOL_LAB from the environment.
+// and builds without cgo and with -trimpath, without THINKPOL_LAB from the
+// environment.
 func TestHostGoTestCommand(t *testing.T) {
 	t.Setenv("THINKPOL_LAB", "1")
 	t.Setenv("CGO_ENABLED", "1")
 	cmd := hostGoTestCommand(t.Context(), "/src", []GoPackage{{Dir: "a"}, {Dir: "b/c"}}, 3, []string{"X=1"}, []string{"-test.run", "TestA"})
-	if want := []string{"go", "-C", "/src", "test", "-json", "-p", "3", "-test.run", "TestA", "./a", "./b/c"}; !slices.Equal(cmd.Args, want) {
+	if want := []string{"go", "-C", "/src", "test", "-json", "-trimpath", "-p", "3", "-test.run", "TestA", "./a", "./b/c"}; !slices.Equal(cmd.Args, want) {
 		t.Errorf("args %q, want %q", cmd.Args, want)
 	}
 	var cgo []string
