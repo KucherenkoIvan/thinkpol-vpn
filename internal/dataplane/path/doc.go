@@ -71,6 +71,10 @@
 // comparisons belong on traffic nobody holds, such as WireGuard's
 // handshake round trip.
 //
+// Planned (TP-080): liveness rides on data and idle probes back off with
+// jitter, as docs/design/path-liveness.md sets out (a draft until the
+// owner approves it).
+//
 // # Paths
 //
 // A [Bind] serves one WireGuard device. Its endpoints are peers' node ids;
