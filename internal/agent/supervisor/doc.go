@@ -210,8 +210,10 @@
 // every interface's forwarding; IPv6: every interface's forwarding), and
 // turning it off resets them again, so the record keeps their earlier
 // values. An attempt that fails before its switch is flipped puts back
-// the accept_ra values it wrote (what it can't is in the error), and
-// nothing else: a switch someone else turned on meanwhile stays on.
+// the accept_ra values it wrote, and nothing else: a switch someone else
+// turned on meanwhile stays on. An accept_ra value that can't be put back
+// (here, on Close, or by a successor) stays in the record under a switch
+// that isn't the supervisor's, so the next attempt or start tries again.
 //
 // It records what it changed in [DefaultRuntimeDir] (forwarding.json, on a
 // tmpfs like the sysctls' own lifetime, so no earlier boot's record is
@@ -230,9 +232,13 @@
 // or writes it, so a successor never starts while its predecessor lives.
 // A successor puts back the accept_ra values of a family it doesn't adopt
 // (its switch never flipped, or turned off since) that still hold 2. A
-// switch someone else turns on between the supervisor's read of it at 0
-// and its write of 1 is taken as the supervisor's, by it and by a
-// successor alike.
+// switch someone else turns on after the supervisor read it at 0 is taken
+// as the supervisor's: by it until its own write of 1, and, if it died
+// between the record's save and that write, by a successor when it next
+// loads the record, however long the service stays down until then. That
+// fails closed: the successor's tables confine that forwarding to the
+// spaces (dropping, say, a container runtime's forwarded traffic), and it
+// turns it off when no space needs it.
 //
 // It puts everything back, side effects included and each only if still
 // unchanged since, when no space needs it and on Close, before it removes

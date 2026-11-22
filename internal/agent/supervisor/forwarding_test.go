@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -308,6 +309,7 @@ func TestForwardingThatFailsToTurnOnLeavesAcceptRAAsItWas(t *testing.T) {
 			}
 			return nil
 		}, wantSwitch: "0"},
+		{name: "the interfaces unlistable", refuseGlob: "net/ipv6/conf/*", wantSwitch: "0"},
 		{name: "the side sysctls unreadable", refuseGlob: "net/ipv6/conf/*/forwarding", wantSwitch: "0"},
 		{name: "the switch refused", hook: func(_ *fakeKernelSys, key, value string) error {
 			if key == forwardingKeys[1] && value == "1" {
@@ -401,6 +403,17 @@ func (c *crashSys) Write(key, value string) error {
 	return err
 }
 
+func (c *crashSys) snapshot(name string) {
+	c.t.Helper()
+	p := crashPoint{name: name, sys: c.t.TempDir(), run: c.t.TempDir()}
+	for src, dst := range map[string]string{c.root: p.sys, c.run: p.run} {
+		if err := os.CopyFS(dst, os.DirFS(src)); err != nil && !errors.Is(err, os.ErrExist) {
+			c.t.Fatal(err)
+		}
+	}
+	c.crashes = append(c.crashes, p)
+}
+
 // afterWriteSys runs after, if set, once a write has gone through.
 type afterWriteSys struct {
 	*fakeKernelSys
@@ -413,16 +426,6 @@ func (a *afterWriteSys) Write(key, value string) error {
 		a.after(key)
 	}
 	return err
-}
-
-func (c *crashSys) snapshot(name string) {
-	p := crashPoint{name: name, sys: c.t.TempDir(), run: c.t.TempDir()}
-	for src, dst := range map[string]string{c.root: p.sys, c.run: p.run} {
-		if err := os.CopyFS(dst, os.DirFS(src)); err != nil && !errors.Is(err, os.ErrExist) {
-			c.t.Fatal(err)
-		}
-	}
-	c.crashes = append(c.crashes, p)
 }
 
 // sysctlTree is every sysctl under root, by key.
@@ -469,7 +472,7 @@ func checkSuccessor(t *testing.T, sysRoot, run string, want map[string]string) {
 			t.Errorf("after the successor's restore: %s = %s, want %s", key, got[key], v)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(run, forwardingFile)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(run, forwardingFile)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("the record outlived the successor's restore: %v", err)
 	}
 }
@@ -597,7 +600,207 @@ func TestForwardingRecordOfASwitchTurnedOffPutsBackAcceptRA(t *testing.T) {
 			t.Errorf("after the successor's load: %s = %s, want %s", key, got, want)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(run, forwardingFile)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(run, forwardingFile)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("the record outlived the successor's load: %v", err)
+	}
+}
+
+// A switch someone else turns on after the accept_ra writes and before the
+// supervisor marks its own (killed in between) isn't adopted: the
+// successor leaves it on and puts accept_ra back.
+func TestForwardingSwitchTurnedOnBeforeItIsMarkedIsLeftAlone(t *testing.T) {
+	fake, _ := fakeProcSys(t)
+	run := t.TempDir()
+	crash := &crashSys{fakeKernelSys: fake, t: t, run: run}
+	sys := &afterWriteSys{fakeKernelSys: fake, after: func(key string) {
+		if key == "net/ipv6/conf/eth0/accept_ra" { // the last accept_ra write
+			fake.set("net/ipv6/conf/*/forwarding", "1") // as a container runtime would
+			crash.snapshot("killed after the accept_ra writes")
+		}
+	}}
+	f := rootForwarding{sys: sys}
+	if err := f.load(run); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ensure([2]bool{false, true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(crash.crashes) != 1 {
+		t.Fatalf("%d snapshots, want 1", len(crash.crashes))
+	}
+	p := crash.crashes[0]
+	want := sysctlTree(t, p.sys)
+	for _, dev := range []string{"default", "eth0"} {
+		if key := "net/ipv6/conf/" + dev + "/accept_ra"; want[key] != "2" {
+			t.Fatalf("%s = %s at the snapshot, want 2", key, want[key])
+		} else {
+			want[key] = "1"
+		}
+	}
+	next := rootForwarding{sys: &fakeKernelSys{hookSysctls: hookSysctls{procSysFS: procSysFS{root: p.sys}}}}
+	if err := next.load(p.run); err != nil {
+		t.Fatal(err)
+	}
+	if next.owned() != [2]bool{} {
+		t.Fatalf("the successor adopted someone else's switch: owned = %v", next.owned())
+	}
+	if err := next.restore(); err != nil {
+		t.Fatal(err)
+	}
+	for key, v := range sysctlTree(t, p.sys) {
+		if v != want[key] {
+			t.Errorf("after the successor: %s = %s, want %s", key, v, want[key])
+		}
+	}
+}
+
+// An accept_ra value that can't be put back stays in the record, under a
+// switch that isn't the supervisor's, and the next start puts it back:
+// whether the put-back failed in a failed attempt, in putting forwarding
+// back, or in a successor's load.
+func TestForwardingAcceptRAThatCannotBePutBackStaysRecorded(t *testing.T) {
+	eth0RA := "net/ipv6/conf/eth0/accept_ra"
+	refuse := func(refused ...string) func(key, value string) error {
+		return func(key, value string) error {
+			for i := 0; i < len(refused); i += 2 {
+				if key == refused[i] && value == refused[i+1] {
+					return errors.New("refused")
+				}
+			}
+			return nil
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		// fail leaves eth0's accept_ra at 2, its put-back refused.
+		fail func(t *testing.T, sys *fakeKernelSys, run string)
+	}{
+		{name: "in a failed attempt", fail: func(t *testing.T, sys *fakeKernelSys, run string) {
+			f := rootForwarding{sys: sys}
+			if err := f.load(run); err != nil {
+				t.Fatal(err)
+			}
+			sys.arm(refuse(forwardingKeys[1], "1", eth0RA, "1"))
+			defer sys.disarm()
+			if err := f.ensure([2]bool{false, true}); err == nil {
+				t.Fatal("ensure returned nil with IPv6 forwarding refused")
+			}
+			if f.owned() != [2]bool{} {
+				t.Errorf("owned = %v after the failed attempt, want none", f.owned())
+			}
+		}},
+		{name: "in putting forwarding back", fail: func(t *testing.T, sys *fakeKernelSys, run string) {
+			f := rootForwarding{sys: sys}
+			if err := f.load(run); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.ensure([2]bool{false, true}); err != nil {
+				t.Fatal(err)
+			}
+			sys.arm(refuse(eth0RA, "1"))
+			defer sys.disarm()
+			if err := f.restore(); err == nil {
+				t.Fatal("restore returned nil with accept_ra not put back")
+			}
+			if f.owned() != [2]bool{} {
+				t.Errorf("owned = %v after the restore, want none", f.owned())
+			}
+		}},
+		{name: "in a successor's load", fail: func(t *testing.T, sys *fakeKernelSys, run string) {
+			f := rootForwarding{sys: sys}
+			if err := f.load(run); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.ensure([2]bool{false, true}); err != nil {
+				t.Fatal(err)
+			}
+			// The supervisor dies; an admin turns IPv6 forwarding off.
+			if err := sys.procSysFS.Write(forwardingKeys[1], "0"); err != nil {
+				t.Fatal(err)
+			}
+			sys.arm(refuse(eth0RA, "1"))
+			defer sys.disarm()
+			next := rootForwarding{sys: sys}
+			if err := next.load(run); err == nil {
+				t.Fatal("load returned nil with accept_ra not put back")
+			}
+			if next.owned() != [2]bool{} {
+				t.Errorf("owned = %v after the load, want none", next.owned())
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sys, get := fakeProcSys(t)
+			run := t.TempDir()
+			tc.fail(t, sys, run)
+			if got := get(eth0RA); got != "2" {
+				t.Fatalf("%s = %s, want 2 (its put-back refused)", eth0RA, got)
+			}
+			// Someone else turns IPv6 forwarding on: the record's switch
+			// isn't the supervisor's, so the next start leaves it on.
+			sys.set("net/ipv6/conf/*/forwarding", "1")
+			next := rootForwarding{sys: sys}
+			if err := next.load(run); err != nil {
+				t.Fatalf("the next start's load: %v", err)
+			}
+			if next.owned() != [2]bool{} {
+				t.Errorf("the next start adopted someone else's switch: owned = %v", next.owned())
+			}
+			for key, want := range map[string]string{
+				eth0RA:                            "1",
+				"net/ipv6/conf/default/accept_ra": "1",
+				forwardingKeys[1]:                 "1",
+			} {
+				if got := get(key); got != want {
+					t.Errorf("after the next start's load: %s = %s, want %s", key, got, want)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(run, forwardingFile)); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("the record outlived the put-back: %v", err)
+			}
+		})
+	}
+}
+
+// Forwarding turned on again after an attempt whose accept_ra put-back
+// failed takes those values as its own, and puts them back with the rest.
+func TestForwardingRetriedAfterAFailedPutBackOwnsItsAcceptRA(t *testing.T) {
+	sys, get := fakeProcSys(t)
+	want := sysctlTree(t, sys.root)
+	run := t.TempDir()
+	f := rootForwarding{sys: sys}
+	if err := f.load(run); err != nil {
+		t.Fatal(err)
+	}
+	eth0RA := "net/ipv6/conf/eth0/accept_ra"
+	sys.arm(func(key, value string) error {
+		if (key == forwardingKeys[1] || key == eth0RA) && value == "1" {
+			return errors.New("refused")
+		}
+		return nil
+	})
+	if err := f.ensure([2]bool{false, true}); err == nil {
+		t.Fatal("ensure returned nil with IPv6 forwarding refused")
+	}
+	sys.disarm()
+	if got := get(eth0RA); got != "2" {
+		t.Fatalf("%s = %s, want 2 (its put-back refused)", eth0RA, got)
+	}
+	if err := f.ensure([2]bool{false, true}); err != nil {
+		t.Fatal(err)
+	}
+	if f.owned() != [2]bool{false, true} {
+		t.Fatalf("owned = %v after the retry, want IPv6", f.owned())
+	}
+	if err := f.restore(); err != nil {
+		t.Fatal(err)
+	}
+	for key, v := range sysctlTree(t, sys.root) {
+		if v != want[key] {
+			t.Errorf("after the restore: %s = %s, want %s", key, v, want[key])
+		}
+	}
+	if _, err := os.Stat(filepath.Join(run, forwardingFile)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the record outlived the restore: %v", err)
 	}
 }
