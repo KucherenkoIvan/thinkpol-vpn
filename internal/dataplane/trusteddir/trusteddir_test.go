@@ -82,7 +82,7 @@ func TestOthersCantChangeTheWay(t *testing.T) {
 }
 
 func TestOpenOwnedByChecksThatUser(t *testing.T) {
-	dir := tempDir(t)
+	dir := trusteddirtest.TempDir(t)
 	d, err := OpenOwnedBy(dir, os.Geteuid())
 	if err != nil {
 		t.Fatal(err)
