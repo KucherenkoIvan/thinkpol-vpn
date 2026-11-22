@@ -27,7 +27,7 @@ A full `make lab-test` of a commit whose packages already passed in nodes on thi
 ## Acceptance
 - [x] The cause shown: which part of the key changes between two full labs of the same commit from different checkout paths. Evidence: the test binary's sha256 (Action.TestBinary): `go test -c` without `-trimpath` compiles the checkout's directory in; the two builds' hashes and the unchanged parts in the Log (2026-11-22).
 - [x] A test that the key is the same for the same sources built from two different directories (mutation: the old build → fails). Evidence: TestKeyIsTheSameFromAnotherCheckout, mutations in the Log.
-- [ ] Two consecutive full labs of the same commit from different checkout paths: the second serves every unchanged package from the cache, and its default stream time is reported. Not ticked: at 18bfa3b3 the second run served 29 of the 30 in-node packages (cold run: 0 of 46) and its default stream took 13m28s (exit 0), but two kinds of package still ran, neither through this key's checkout path (Notes, "Still run in a second full lab").
+- [x] Two consecutive full labs of the same commit from different checkout paths: the second caches every unchanged in-node package except ./lab: 29 of 30; default stream 13m28s. Evidence: the two full labs of 18bfa3b3 in the Log (cold run: 0 of 46 cached; second run exit 0, 29 of the 30 in-node packages cached); ./lab and the host-run packages are TP-285.
 - [x] lab/README.md says what the key covers. Evidence: "Cached passes": the binary covers the package's code, tests and imports, built with `-trimpath`, so not where the checkout sits.
 
 ## Notes
@@ -35,7 +35,7 @@ A full `make lab-test` of a commit whose packages already passed in nodes on thi
 - Evidence, two full `make lab-test` runs of 18bfa3b3, back to back on a quiet runner (no other lab containers), each from a fresh checkout at its own path; offsets from each run's start:
   - Run 1 (cold: no record for the new binaries): exit 2 (tests passed, over budget; NOT JUDGED: reality / active prober), default stream 16m38s, long 4m37s; node phase "gotest: ok, 46 packages, 0 of them cached", 14 node-phase lab starts, the last node lab down at 5m49s; the harness phase ran (lab/ code changed); the first lab-phase lab started at 0m38s; the censor matrix's labs from 1m47s to 10m48s.
   - Run 2: exit 0, default stream 13m28s of its 15m budget, long 3m13s; node phase "gotest: ok, 46 packages, 29 of them cached", 1 node-phase lab start (`./lab`, 40 s), the last node lab down at 1m14s; the harness phase cached; the first lab-phase lab started at 0m40s; the censor matrix's labs from 0m51s to 10m46s.
-- Still run in a second full lab (out of scope here, not this key's checkout path):
+- Still run in a second full lab (out of scope here, not this key's checkout path; follow-up TP-285):
   - `./lab`'s in-node pass is never recorded in a full lab, from any checkout: "pass not recorded: testcache: an input changed during the run: <checkout>/lab/bin" in both runs. One of its tests reads the checkout's `lab/bin`, which the run's own phases write meanwhile. 40 s of node time, off the default stream's critical path now.
   - The 16 packages that need no node run on the host under go test's own cache, which keys on the checkout's path (the package directory in its build IDs without `-trimpath`, and the absolute names of the files a test opens), so they all ran (the longest 20 s, all in the first minute).
 
@@ -50,3 +50,4 @@ A full `make lab-test` of a commit whose packages already passed in nodes on thi
 - 2026-11-22 not verified / left open: box 3 not ticked: ./lab never records its in-node pass in a full lab (its input lab/bin changes during the run), and the 16 host-run packages miss go test's own cache from another checkout; both out of scope, for the orchestrator (Notes)
 - 2026-11-22 lab commit 18bfa3b3 (the two full labs above)
 - 2026-11-22 in-progress → review
+- 2026-11-22 review nits: lab/README.md no longer says the host-run `go test` builds as a node's run does (the node build has `-trimpath`, the host's doesn't); README "Cached passes" notes node test stack traces name files by module path; box 3 reworded to what was proven (orchestrator) and ticked; follow-up filed as TP-285
