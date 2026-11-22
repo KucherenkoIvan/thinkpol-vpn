@@ -22,8 +22,8 @@ func init() {
 // interval wg(8) suggests, which thinkpol doesn't set
 // (internal/dataplane/wg). The thresholds below derive from them, but for
 // wgPairWindow, wgSteadyJitter, wgRekeys, wgCountSettle, wgCountHold,
-// wgBurstGap, wgBurstMax and the keepalive count: those are the module's
-// choices, no WireGuard timer.
+// wgBurstGap, wgBurstMax, wgSteadyExchanges and the keepalive count: those
+// are the module's choices, no WireGuard timer.
 //
 // A shorter rekey period (the module's rekey setting, as a lab whose
 // wireguard-go runs its timers sped up sets it) scales wireguard-go's
@@ -91,6 +91,11 @@ const (
 	// response and that packet's answer. Bigger bursts are taken for
 	// other traffic's (measured, doc.go).
 	wgBurstMax = 3
+	// wgSteadyExchanges is how many idle exchanges in a row, at intervals
+	// all within wgSteadyJitter of each other, show a fixed rhythm: a
+	// choice (docs/design/path-liveness.md), against intervals drawn at
+	// random (the chance per ten in doc.go).
+	wgSteadyExchanges = 10
 )
 
 // WGRhythmByCount and WGRhythmByBurst start the count and burst
@@ -98,6 +103,9 @@ const (
 const (
 	WGRhythmByCount = "WireGuard rekey by record count"
 	WGRhythmByBurst = "WireGuard rekey by burst"
+	// WGRhythmBySteady starts the steady signal's block reason: idle
+	// exchanges at a fixed rhythm, no WireGuard timer.
+	WGRhythmBySteady = "steady exchanges"
 )
 
 // wgRhythm flags a connection that carries WireGuard with its rhythm
@@ -153,6 +161,15 @@ const (
 //     with the same counts wgRekeys times in a row, each a rekey period to
 //     the rekey window after the one before; a burst of those counts
 //     sooner than a rekey period starts the chain over.
+//   - steady: idle exchanges at a fixed rhythm, which no WireGuard timer
+//     makes but a keepalive of a protocol on top of it or beside it
+//     does: an exchange of one record each way, its first sent after the
+//     quiet and answered within the pair window by the only record before
+//     the next quiet, of the same sizes each way as the exchange before,
+//     wgSteadyExchanges in a row at intervals (one exchange's first record
+//     to the next's) all within wgSteadyJitter of each other. An
+//     exchange is judged once the quiet after it has passed, on the
+//     connection's next packet; any other record ends the run.
 //
 // With a shorter rekey period the windows that are wireguard-go's timers
 // (the rekey window but its persistent keepalive, the quiet, the pair
@@ -203,7 +220,30 @@ type wgConn struct {
 	burst        wgRecordBurst
 	bursts       map[[2]int]*wgChain
 	burstsPruned time.Time
-	flagged      string
+	// opener is the latest record sent after the quiet while its answer
+	// may still come; idle the exchange it opened, answered, until the
+	// quiet after it passes; steady the run of such exchanges.
+	opener  *wgRecord
+	idle    *wgIdleExchange
+	steady  wgSteadyRun
+	flagged string
+}
+
+// wgIdleExchange is an exchange of one record each way after the quiet:
+// when its first record ended, and the two records' sizes by direction.
+type wgIdleExchange struct {
+	at    time.Time
+	sizes [2]int
+}
+
+// wgSteadyRun is the connection's latest run of idle exchanges of one
+// pair of sizes: how many, when the latest began, and the shortest and
+// longest interval between two in the run.
+type wgSteadyRun struct {
+	sizes  [2]int
+	n      int
+	last   time.Time
+	lo, hi time.Duration
 }
 
 // wgCount is the count signal's state: records each way, the difference
@@ -588,10 +628,31 @@ func (m *wgRhythm) record(c *wgConn, dir int, f *Flow, size int, end time.Time) 
 	}
 	d.recent[size] = wgRecentRecord{end, quiet, fresh}
 	idle := !c.last.IsZero() && end.Sub(c.last) >= m.quiet()
+	m.idleExchange(c, r, idle)
 	c.last = end
 	if idle {
 		c.pending = &r
 	}
+}
+
+// idleExchange takes a record for the steady signal: one after the quiet
+// opens an exchange, the first record the other way within the pair
+// window answers it, and any other record before the next quiet ends the
+// exchange and the run. The answered exchange is judged once the quiet
+// after it has passed (settle).
+func (m *wgRhythm) idleExchange(c *wgConn, r wgRecord, afterQuiet bool) {
+	o := c.opener
+	switch {
+	case afterQuiet:
+		c.opener, c.idle = &r, nil
+		return
+	case o != nil && r.dir != o.dir && r.end.Sub(o.end) <= m.pairWindow():
+		var sizes [2]int
+		sizes[o.dir], sizes[r.dir] = o.size, r.size
+		c.opener, c.idle = nil, &wgIdleExchange{at: o.end, sizes: sizes}
+		return
+	}
+	c.opener, c.idle, c.steady = nil, nil, wgSteadyRun{}
 }
 
 // traced writes the record's trace line, if the module traces.
@@ -618,6 +679,10 @@ func (m *wgRhythm) settle(c *wgConn, f *Flow, now time.Time) {
 	// reading, which would count that record into it.
 	if !c.last.IsZero() && now.Sub(c.last) >= wgCountSettle && (!c.count.settled || !c.count.move.start.IsZero()) {
 		m.readCount(c, now)
+	}
+	if e := c.idle; e != nil && now.Sub(c.last) >= m.quiet() {
+		c.idle = nil
+		m.steadyExchange(c, *e)
 	}
 	if c.flagged != "" {
 		// The flag's own line: no record, the packet it came on.
@@ -686,6 +751,34 @@ func (m *wgRhythm) exchange(c *wgConn, sizes [2]int, stands bool, end time.Time)
 			sizes[0], sizes[1], e.chain, e.gap.Round(time.Second))
 	}
 	return e.chain
+}
+
+// steadyExchange counts an idle exchange into the steady run, and flags
+// the connection once wgSteadyExchanges in a row have come at intervals
+// all within wgSteadyJitter of each other. An exchange of other sizes
+// starts the run over; one whose interval would spread the run's past
+// wgSteadyJitter starts it over from the exchange before, the run's
+// latest interval its first.
+func (m *wgRhythm) steadyExchange(c *wgConn, e wgIdleExchange) {
+	u := &c.steady
+	switch {
+	case u.n == 0 || e.sizes != u.sizes:
+		*u = wgSteadyRun{sizes: e.sizes, n: 1, last: e.at}
+		return
+	}
+	gap := e.at.Sub(u.last)
+	lo, hi := gap, gap
+	if u.n >= 2 {
+		lo, hi = min(u.lo, gap), max(u.hi, gap)
+	}
+	if hi-lo > wgSteadyJitter {
+		u.n, lo, hi = 1, gap, gap
+	}
+	u.n, u.last, u.lo, u.hi = u.n+1, e.at, lo, hi
+	if u.n >= wgSteadyExchanges {
+		c.flagged = fmt.Sprintf(WGRhythmBySteady+": %d idle exchanges of %d and %d bytes, %s to %s apart",
+			u.n, u.sizes[0], u.sizes[1], u.lo.Round(10*time.Millisecond), u.hi.Round(10*time.Millisecond))
+	}
 }
 
 // window is the latest a rekey comes after the one before:

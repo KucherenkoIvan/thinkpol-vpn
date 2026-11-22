@@ -677,6 +677,11 @@ func TestWGRhythmOrdinaryTLS(t *testing.T) {
 		grpc = append(grpc, rec(at, true, 34), rec(at+25*ms, false, 34))
 	}
 
+	idlePings := slices.Clone(h2Start)
+	for at := 20 * s; at < 360*s; at += 20 * s {
+		idlePings = append(idlePings, rec(at, true, 34), rec(at+25*ms, false, 34))
+	}
+
 	var download []wireRecord
 	download = append(download, h2Start...)
 	download = append(download, rec(100*ms, true, 150), rec(150*ms, false, 120))
@@ -717,16 +722,22 @@ func TestWGRhythmOrdinaryTLS(t *testing.T) {
 		flaggedAt time.Duration
 	}{
 		{"HTTP/2 browsing, idle PINGs", browse, 0},
+		// Its messages between the PINGs end each steady run; PINGs
+		// alone on an idle stream are the steady signal's.
 		{"gRPC stream with keepalive PINGs", grpc, 0},
+		// Risk: keepalive PINGs on an idle stream, the steady signal at
+		// the eleventh.
+		{"keepalive PINGs on an idle stream", idlePings, 220 * s},
 		{"bulk download", download, 0},
 		// Risk: any request and response repeated at an interval within
 		// the rekey window, whatever their sizes (an HTTP/2 poll's
 		// indexed request too).
 		{"HTTP/2 poll every 2 minutes", h2Poll, -1},
-		// An identical request and response, both in the handshake band,
-		// at a steady interval shorter than a rekey period never stands
-		// out a rekey period after it last did.
-		{"HTTP/1.1 poll every 30 s", poll(30*s, 260, 380), 0},
+		// Risk: an identical request and response at a fixed interval,
+		// flagged by the steady signal (30 to 30.5 s apart) once the
+		// quiet after the tenth has passed, at the eleventh. It never
+		// stands out a rekey period after it last did.
+		{"HTTP/1.1 poll every 30 s", poll(30*s, 260, 380), 5*time.Minute + 33507*ms},
 		// Risk: the same at an interval within the rekey window.
 		{"HTTP/1.1 poll every 2 minutes", poll(120*s, 260, 380), -1},
 		// Risk: a server heartbeat, one unanswered record of one size at a
@@ -1777,5 +1788,152 @@ func TestWGRhythmFlagsMQTTKeepalive(t *testing.T) {
 	a, blocked := r.firstBlocked()
 	if !blocked || a.at < 457*s || !strings.HasPrefix(a.Reason, WGRhythmByCount+": the difference each way stepped 3 times by +1, the last 2m30s apart") {
 		t.Errorf("MQTT keepalives and a publish every 150 s: first blocked %+v (blocked %v), want a drop by record count after the third publish at 457 s", a, blocked)
+	}
+}
+
+// pinger is a TLS pinger's records: one record of req bytes from the
+// client at each of at, answered after rtt by one of resp bytes.
+func pinger(at []time.Duration, rtt time.Duration, req, resp int) []wireRecord {
+	var out []wireRecord
+	for _, a := range at {
+		out = append(out, wireRecord{a, true, req}, wireRecord{a + rtt, false, resp})
+	}
+	return out
+}
+
+// every is n instants from first on, step apart.
+func every(first, step time.Duration, n int) []time.Duration {
+	out := make([]time.Duration, n)
+	for i := range out {
+		out[i] = first + time.Duration(i)*step
+	}
+	return out
+}
+
+// TestWGRhythmSteadyExchanges: idle exchanges of one record each way at a
+// fixed rhythm show the steady signal at the tenth, judged once the quiet
+// after it has passed (on the next packet); intervals spread by more than
+// wgSteadyJitter, an exchange of other sizes, a second record before the
+// quiet, an answer outside the pair window or another record between
+// exchanges each keep a run short of ten.
+func TestWGRhythmSteadyExchanges(t *testing.T) {
+	s, ms := time.Second, time.Millisecond
+	jittered := every(6*s, 6*s, 12)
+	for i := range jittered {
+		jittered[i] += time.Duration(i%3) * 300 * ms // intervals of 5.4 and 6.3 s
+	}
+	// Nine exchanges 6 s apart, then intervals of 7.2 s: the first spreads
+	// the run's intervals to 1.2 s and starts it over.
+	spread := every(6*s, 6*s, 9)
+	for range 3 {
+		spread = append(spread, spread[len(spread)-1]+7200*ms)
+	}
+	sized := pinger(every(6*s, 6*s, 12), 30*ms, 40, 40)
+	sized[11].size = 41 // the sixth exchange's answer
+	twice := pinger(every(6*s, 6*s, 12), 30*ms, 40, 40)
+	twice = append(twice, wireRecord{30*s + 60*ms, false, 40}) // a second answer in the fifth exchange
+	late := pinger(every(6*s, 6*s, 12), 30*ms, 40, 40)
+	late[9].at = 30*s + 2100*ms // the fifth answer after the pair window
+	between := pinger(every(6*s, 6*s, 12), 30*ms, 40, 40)
+	between = append(between, wireRecord{33 * s, true, 300}) // a record halfway, before the quiet
+	for _, c := range []struct {
+		name string
+		recs []wireRecord
+		at   time.Duration // when it is flagged; 0: never
+	}{
+		{"a TLS pinger every 6 s", pinger(every(6*s, 6*s, 12), 30*ms, 40, 40), 66 * s},
+		{"the server opening", func() []wireRecord {
+			out := pinger(every(6*s, 6*s, 12), 30*ms, 40, 40)
+			for i := range out {
+				out[i].toServer = !out[i].toServer
+			}
+			return out
+		}(), 66 * s},
+		{"intervals within 1 s of each other", pinger(jittered, 30*ms, 40, 40), jittered[10]},
+		{"a spread interval", pinger(spread, 30*ms, 40, 40), 0},
+		{"other sizes", sized, 0},
+		{"a second answer", twice, 0},
+		{"an answer outside the pair window", late, 0},
+		{"a record between exchanges", between, 0},
+	} {
+		recs := slices.Clone(c.recs)
+		slices.SortStableFunc(recs, func(a, b wireRecord) int { return int(a.at - b.at) })
+		r := newWGRun(t, `{}`, 1400)
+		r.carry(recs)
+		a, blocked := r.firstBlocked()
+		switch {
+		case c.at == 0 && blocked:
+			t.Errorf("%s: blocked at %s: %+v", c.name, a.at, a)
+		case c.at != 0 && !blocked:
+			t.Errorf("%s: passed, want flagged at %s", c.name, c.at)
+		case c.at != 0 && (a.at != c.at || !strings.HasPrefix(a.Reason, WGRhythmBySteady+": 10 idle exchanges of 40 and 40 bytes")):
+			t.Errorf("%s: blocked at %s for %q, want at %s for ten steady exchanges", c.name, a.at, a.Reason, c.at)
+		}
+	}
+	// The run started over at the exchange before the spread interval:
+	// its tenth is spread[17], judged at spread[18].
+	for range 7 {
+		spread = append(spread, spread[len(spread)-1]+7200*ms)
+	}
+	r := newWGRun(t, `{}`, 1400)
+	r.carry(pinger(spread, 30*ms, 40, 40))
+	if a, blocked := r.firstBlocked(); !blocked || a.at != spread[18] {
+		t.Errorf("a run started over at a spread interval: first blocked %+v (blocked %v), want at %s", a, blocked, spread[18])
+	}
+}
+
+// TestWGRhythmSteadyDrawnIdle: thinkpol's idle probes, an exchange of one
+// record each way at the earlier of the two ends' waits, each drawn
+// afresh (docs/design/path-liveness.md: 8 to 24 s on reality, 5 to 14 s on
+// udp), seldom show the steady signal. Ten in a row at intervals within
+// 1 s of each other come by chance about 8·10⁻⁸ of the time on reality
+// and 6·10⁻⁶ on udp (lab/censor/doc.go); pinned, seeded, over 200 idle
+// hours a transport: reality never, udp once.
+func TestWGRhythmSteadyDrawnIdle(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		lo, hi  time.Duration
+		size    int
+		udp     bool
+		flagged int
+	}{
+		{"reality", 8 * time.Second, 24 * time.Second, 507, false, 0},
+		{"udp", 5 * time.Second, 14 * time.Second, 18 + wgUDPOverhead, true, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rng := rand.New(rand.NewPCG(80, 2026))
+			draw := func() time.Duration { return c.lo + time.Duration(rng.Int64N(int64(c.hi-c.lo)+1)) }
+			flagged := 0
+			for range 200 {
+				var at []time.Duration
+				for a := time.Second; a < time.Hour; {
+					a += min(draw(), draw())
+					at = append(at, a)
+				}
+				var r *wgRun
+				if c.udp {
+					r = newWGUDPRun(t, `{}`)
+					r.datagram(0, true, 148+wgUDPOverhead) // the flow's first datagram
+				} else {
+					r = newWGRun(t, `{}`, 1400)
+				}
+				// Either end probes; the reply comes 2 ms later.
+				var recs []wireRecord
+				for _, a := range at {
+					opener := rng.IntN(2) == 0
+					recs = append(recs, wireRecord{a, opener, c.size}, wireRecord{a + 2*time.Millisecond, !opener, c.size})
+				}
+				r.carry(recs)
+				if a, blocked := r.firstBlocked(); blocked {
+					flagged++
+					if !strings.HasPrefix(a.Reason, WGRhythmBySteady) {
+						t.Errorf("flagged by another signal: %+v", a)
+					}
+				}
+			}
+			if flagged != c.flagged {
+				t.Errorf("%d of 200 idle hours flagged, pinned %d", flagged, c.flagged)
+			}
+		})
 	}
 }
