@@ -83,6 +83,9 @@
 // transport's range ([Options.Idle]: 8–24 s on reality, 5–14 s on udp),
 // turns suspect: one exchange per drawn wait, a dead idle link found
 // within I + T. A link is up from its first answer until it closes.
+// [Counters] counts liveness's own frames, probes, replies and close
+// notices, written and read (ProbesSent, ProbesReceived), so that busy
+// links sending none shows from outside (the lab's TP-080 checks).
 //
 // D is this end's shaping delay (transport.Shaping.MaxDelay), from the
 // dial config or, on an accepted link, the link itself, doubled: the far

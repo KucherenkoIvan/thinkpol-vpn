@@ -188,7 +188,7 @@
 // wireguard-go defines them, REKEY_AFTER_TIME (120 s), REJECT_AFTER_TIME
 // (180 s), REKEY_TIMEOUT (5 s) and KEEPALIVE_TIMEOUT (10 s), and the
 // persistent keepalive interval wg(8) suggests (25 s), never what a
-// transport was measured to do. Six numbers are the module's own
+// transport was measured to do. Seven numbers are the module's own
 // choices, no WireGuard timer: the 2 s an answer has (also how long
 // after the records that moved it the record count must read a value off
 // its level again to have stepped, and how far apart a run of records
@@ -197,8 +197,9 @@
 // run's intervals may differ by, the three occurrences (rekeys, or idle
 // keepalives once the connection has carried an exchange) it needs, the
 // 300 ms of quiet after which it reads the record count, the 10 ms that
-// make records one burst, and the three records a way a burst may hold.
-// Four signals each show the rhythm:
+// make records one burst, the three records a way a burst may hold, and
+// the ten idle exchanges the steady signal needs. Five signals each show
+// the rhythm, the last no WireGuard timer's but any fixed beat's:
 //
 //   - rekey: an exchange, a record one way answered within 2 s by one the
 //     other way, that stands out: each of its two sizes new to its
@@ -292,6 +293,31 @@
 //     burst of the same counts recurs three times in a row, each
 //     REKEY_AFTER_TIME to the rekey window after the one before; one of
 //     those counts sooner than REKEY_AFTER_TIME starts the chain over.
+//   - steady: idle exchanges at a fixed rhythm (TP-080,
+//     docs/design/path-liveness.md): an exchange whose first record
+//     comes after REKEY_TIMEOUT with no record either way and is
+//     answered within 2 s by one record the other way, the only one
+//     before the next quiet, of the same sizes each way as the exchange
+//     before. Ten in a row whose intervals (first record to first
+//     record) all lie within 1 s of each other, a band rather than a
+//     drift from one to the next, show the rhythm: a pinger, a keepalive
+//     PING or a poll at a fixed interval longer than the quiet. Any other
+//     record (an unanswered one, a second answer, data) ends the run, and
+//     an interval that would spread the band past 1 s starts it over from
+//     the exchange before. An exchange is judged once the quiet after it
+//     has passed, on the connection's next packet, so the run shows at
+//     the eleventh exchange's first record. thinkpol's idle path probes
+//     draw their waits: an exchange at the earlier of the two ends' draws,
+//     8 to 24 s on reality, 5 to 14 s on udp. Ten such intervals fall in
+//     one 1 s band by chance about 8·10⁻⁸ of the time on reality and
+//     6.4·10⁻⁶ on udp, whose draws crowd the range's bottom (computed;
+//     pinned, seeded, TestWGRhythmSteadyDrawnIdle: over 200 idle hours,
+//     reality never flagged, udp once). So an idle reality link is flagged
+//     about once in 50,000 idle hours, an idle udp link about once in
+//     350: a residual of the draws (RR65), and the false-fail chance of
+//     the matrix's idle udp cell, about 10⁻⁴ in its 4 minutes. Drift
+//     between consecutive intervals instead of a band would flag about 15
+//     times as often (9.96·10⁻⁵ per ten on udp).
 //
 // A shorter rekey period (the module's rekey setting) is for a WireGuard
 // whose timers run sped up, as the lab's thinkpol runs wireguard-go's
@@ -443,7 +469,8 @@
 // traffic resumes (measured, TP-223: held idle 7.5 minutes after one ping,
 // udp's device sent one 124-byte datagram 10 s after the reply, and
 // WireGuard nothing else; one keepalive is no run, so neither signal can
-// fire on an idle thinkpol tunnel).
+// fire on an idle thinkpol tunnel). What an idle thinkpol tunnel does
+// show is its path probes, the steady signal's to judge (above).
 //
 // Records are kept by age, not count, so a burst of data around a rekey
 // doesn't hide it, and stale exchanges are dropped at most once a rekey
@@ -465,10 +492,13 @@
 // design: an identical request and response, of any sizes, repeated at an
 // interval of 2 to 3.5 minutes (HTTP/1.1 or HTTP/2 polling every 2
 // minutes), and a server heartbeat, one unanswered record of one size at a
-// steady idle interval (a server-sent events comment line). HTTP/2
-// browsing with idle PINGs, a gRPC stream with keepalive PINGs (answered),
-// a bulk download and HTTP/1.1 polling every 30 s pass. Flow shape beyond
-// that is not judged. A TCP stream it can't frame from its first byte (not
+// steady idle interval (a server-sent events comment line), and, by the
+// steady signal, keepalive PINGs on an idle gRPC, HTTP/2 or WebSocket
+// connection and polling at a fixed interval (HTTP/1.1 every 30 s: flagged
+// at the eleventh poll), anything that exchanges one record each way at a
+// fixed beat with nothing between. HTTP/2 browsing with idle PINGs, a gRPC
+// stream with keepalive PINGs among its messages and a bulk download
+// pass. Flow shape beyond that is not judged. A TCP stream it can't frame from its first byte (not
 // TLS, joined midstream, or with bytes it wasn't shown because a module
 // before it dropped their packet) is never judged, and is tagged once,
 // "wireguard-rhythm: stream not framed", so a pass for that reason shows

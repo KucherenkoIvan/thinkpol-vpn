@@ -457,7 +457,9 @@ func TestIdleGaps(t *testing.T) {
 	a, b := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")
 	t0 := time.Unix(1_700_000_000, 0)
 	var ps []lab.Packet
-	frame := func(at time.Duration, from netip.Addr) { ps = append(ps, lab.Packet{Time: t0.Add(at), Src: from, Payload: []byte{1}}) }
+	frame := func(at time.Duration, from netip.Addr) {
+		ps = append(ps, lab.Packet{Time: t0.Add(at), Src: from, Payload: []byte{1}})
+	}
 	ack := func(at time.Duration, from netip.Addr) { ps = append(ps, lab.Packet{Time: t0.Add(at), Src: from}) }
 	ms := time.Millisecond
 	// Setup and the ping: frames close together, never a gap.
