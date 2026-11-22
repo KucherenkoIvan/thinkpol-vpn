@@ -153,18 +153,20 @@
 // prober would see. (How a shared listener's first connections reach the
 // workers is the supervisor's: TP-278.)
 //
-// The agent retries a listener that failed every 5 s after its last apply
-// (agent.RetryAfter). A target whose check failed is held for a wait drawn
-// at random from the upper half of 10 s, doubling with each failure in a
-// row up to 2 minutes, per target and server names for the transport's
-// life; until then Listen fails at once with the last check's error,
-// dialling nothing. So a failing target isn't dialled at every retry. A
-// held check runs again only when a retry calls Listen after the wait
-// ended, so re-checks land on the retry's 5 s grid: about 10 s after the
-// first failure (a 5 to 10 s wait rounds up to the second retry), then 15
-// to 20 s, 25 to 40 s and, at the cap, 65 to 120 s apart, always whole
-// multiples of 5 s, which a censor folding their times by 5 s sees while
-// the target stays down (RESIDUAL-RISKS.md RR66; TP-281). The cap is a
+// A server's agent retries a listener that failed a random 3 to 7 s after
+// each failed apply (uniform, 5 s on average: agent.RetryAfter). A target
+// whose check failed is held for a wait drawn at random from the upper
+// half of 10 s, doubling with each failure in a row up to 2 minutes, per
+// target and server names for the transport's life; until then Listen
+// fails at once with the last check's error, dialling nothing. So a
+// failing target isn't dialled at every retry. A held check runs again
+// only when a retry calls Listen after the wait ended, 0 to 7 s after it
+// ends: 5 to 17 s after the first failure, then 10 to 27 s, 20 to 47 s, 40
+// to 87 s and, at the cap, 60 to 127 s apart. Those gaps are not multiples
+// of one period, so folding the re-check times by any period doesn't line
+// them up; a censor still sees the series itself, short hellos to one
+// target whose gaps grow to 1 to 2 minutes and stay there while the target
+// stays down (RESIDUAL-RISKS.md RR66). The cap is a
 // trade-off: a server that started before its uplink (or its target) came
 // up serves within about 2 minutes of the target becoming reachable, and a
 // target that stays down is dialled about once every 1 to 2 minutes from
