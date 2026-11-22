@@ -518,8 +518,9 @@ func runDeafWorker() int {
 const envAnswers = "SUPERVISOR_TEST_ANSWERS"
 
 const (
-	// answerFirst answers the first Listeners message only; later ones
-	// are read and never answered.
+	// answerFirst answers its first Listeners message and every one of
+	// at most one listener; later ones of more are read and never
+	// answered.
 	answerFirst = "first"
 	// answerTwice answers each Listeners message twice.
 	answerTwice = "twice"
@@ -575,7 +576,13 @@ func runAnsweringWorker(mode string) int {
 			return 0
 		case ipc.KindListeners:
 			if mode == answerFirst && answered > 0 {
-				continue
+				ls, err := ipc.DecodeListeners(m)
+				if err != nil {
+					return 1
+				}
+				if len(ls) > 1 {
+					continue
+				}
 			}
 			times := 1
 			if mode == answerTwice {
