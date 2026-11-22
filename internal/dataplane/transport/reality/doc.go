@@ -150,8 +150,8 @@
 // and listens again after the check. Held through the check, the port
 // would take connections and answer none of them for seconds, which a
 // prober would see, and behind a shared listener they would all be handed
-// over the moment the supervisor starts serving, before its workers know
-// the listener (the lab's prober cell caught both).
+// over the moment the supervisor starts serving, which can be before its
+// workers know the listener (the lab's active prober cell failed on it).
 //
 // The agent retries a listener that failed every few seconds
 // (agent.RetryAfter). A target whose check failed isn't checked again
