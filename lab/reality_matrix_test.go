@@ -65,8 +65,9 @@ func setupReality(t *testing.T, l *lab.Lab) (probeTarget, error) {
 }
 
 // idleHold is how long idleServerLeavesItsTarget watches an idle server:
-// three of the agent's retries (agent.RetryAfter, 5 s, a wall clock
-// constant the lab doesn't speed up).
+// at least two of the server's apply retries (3 to 7 s apart, 5 s on
+// average: agent.RetryAfter, a wall clock constant the lab doesn't speed
+// up).
 const idleHold = 15 * time.Second
 
 // recordedOffCell says whether t is the off cell the row's first lab

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -920,7 +921,10 @@ type serverSpaces struct {
 	iface      string
 	linkMTU    int
 	retryAfter time.Duration
-	log        *slog.Logger
+	// after is the retry's timer (nil: time.After); tests move a fake
+	// clock with it.
+	after func(time.Duration) <-chan time.Time
+	log   *slog.Logger
 	// stateDir holds the seeds of the space's blobs (seedBlobs).
 	stateDir string
 	// dns runs the space's resolver in its worker, asking dnsUpstreams,
@@ -1051,8 +1055,9 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 		if !errors.As(err, new(errListeners)) {
 			return err
 		}
-		s.log.Warn("opening listeners failed, retrying", "in", s.retryAfter, "err", err)
-		retry = time.After(s.retryAfter)
+		var in time.Duration
+		retry, in = s.retryIn()
+		s.log.Warn("opening listeners failed, retrying", "in", in, "err", err)
 	}
 	// told are the events to tell once the report shows them.
 	var told []EventKind
@@ -1092,12 +1097,28 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 			}
 		}
 		if err := s.apply(); err != nil {
-			s.log.Warn("serving the map failed, retrying", "version", s.follow.cur.Header().Version, "in", s.retryAfter, "err", err)
-			retry = time.After(s.retryAfter)
+			var in time.Duration
+			retry, in = s.retryIn()
+			s.log.Warn("serving the map failed, retrying", "version", s.follow.cur.Header().Version, "in", in, "err", err)
 		} else {
 			retry = nil
 		}
 	}
+}
+
+// retryIn starts the wait before a failed apply is retried and says how
+// long it is: drawn uniformly from 60% to 140% of retryAfter (3 to 7 s
+// for RetryAfter), averaging retryAfter. A reality target whose check
+// failed is checked again only by the first retry after its own wait ends
+// (RR66): on a fixed period, those re-checks would all be whole periods
+// apart.
+func (s *serverSpaces) retryIn() (<-chan time.Time, time.Duration) {
+	d := s.retryAfter*3/5 + rand.N(s.retryAfter*4/5+1)
+	after := s.after
+	if after == nil {
+		after = time.After
+	}
+	return after(d), d.Round(time.Millisecond)
 }
 
 // logOutput is where the node's own log lines go: stderr and the ring.
