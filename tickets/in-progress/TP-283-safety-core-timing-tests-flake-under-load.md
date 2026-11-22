@@ -26,13 +26,16 @@ The device-test safety core's timing tests and the self-test's 10 s bound pass o
 - The core's behaviour on a device: only its tests' timing.
 
 ## Acceptance
-- [ ] The owner's decision recorded in Notes.
+- [x] The owner's decision recorded in Notes.
 - [ ] No failure of the core's timing tests or `TestABrokenCaptureStopsTheRunWithin10s` in N loaded runs (N in the decision, e.g. 20 under `make lab-test` load), the runs and their load in the Log.
 - [ ] Every new or changed test mutation-checked, mutations in the Log.
 
 ## Notes
 - Found in TP-082's last round (2026-11-22).
+- Decision (owner, 2026-11-22): widen the core's timing test deadlines only; the core's own code (its non-test files) doesn't change. The self-test's 10 s bound (TP-082's acceptance) stays and is only measured under load. N = 20 loaded runs.
 
 ## Log
 - 2026-11-22 created in backlog (from TP-082's last round)
 - 2026-11-22 backlog → in-progress, owner: agent-tp-283
+- 2026-11-22 deadman_test.go: "a fresh heartbeat holds it until the limit" now deadline 500 ms, stale 1 s, limit 3 s, heartbeat every 100 ms for 8 s (was 100 ms / 300 ms / 1.2 s / 30 ms for 5 s); "a heartbeat that goes stale" now deadline 500 ms, stale 1 s, heartbeat every 100 ms for 2 s, fire no earlier than 2 s (was 100 ms / 300 ms / 30 ms for 600 ms). A beat may now be late by 900 ms (was 270 ms) before the heartbeat counts as stale. No other test in the core has a bound that load can break: the rest are lower bounds, negative waits or eventually-waits of 5 s or more. The core's non-test files are unchanged. FROZEN: only deadman_test.go's line, f5aa6284…e2d799 → 2235a76a…270db0.
+- 2026-11-22 mutations (in deadman.go, never committed): the heartbeat ignored (fires at the deadline) → "a fresh heartbeat holds it" fails (fired at 500 ms, "deadline"); the limit case removed → it fails ("deadline" at 9 s, not "limit"); a stale heartbeat still holding (stale check removed) → "a heartbeat that goes stale" fails (still watching after 10 s).
