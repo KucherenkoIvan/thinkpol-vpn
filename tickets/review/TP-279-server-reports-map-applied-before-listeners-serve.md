@@ -65,3 +65,4 @@ Round 1 (2026-11-22, on dda4e0f0): correctness (fix first), style (fix first), d
 - 2026-11-22 not verified: the local API and CLI showing a stopped server as disconnected on a real host (convert's mapping is unchanged); no full make lab-test (brief: targeted runs only)
 - 2026-11-22 in-progress → review
 - 2026-11-22 delta-review test fix T2 (d65c66c5): TestWorkerIsReadyOnceRoutedTo sets StopTimeout to slowAnswer + 9 s, so each slow answer has 9 s to spare before the answer timeout (was 2 s); oracle unchanged. Mutation: markReady at the start of serve, before the worker is routed to → the test fails in the lab (ready 10 ms after start); TP-278's T1 merged (24f81f27); lab-gotest of both tests COUNT=3 ok on d65c66c5
+- 2026-11-22 runs on TP-279's head 9ad41d1e (both test fixes): make lint 0 issues (43 s), make test pass (37 s), make lab-gotest PKG=./internal/agent/supervisor/... COUNT=5 ok, not cached (248 s)
