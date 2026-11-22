@@ -23,7 +23,7 @@ func slowest(o *Options) {
 	o.Response = Range{time.Second, time.Second}
 }
 
-// within checks got against want, give or take tol.
+// near checks got against want, give or take tol.
 func near(t *testing.T, what string, got, want, tol time.Duration) {
 	t.Helper()
 	if got < want-tol || got > want+tol {
@@ -546,7 +546,7 @@ func TestRelayFallsBackForPacketsWithNoRoom(t *testing.T) {
 	h := newHarness(t, nil)
 	old := NodeID{9}
 	r, n := h.a, h.b
-	lr, _, rn, _ := h.link("udp", transport.Shaping{})
+	_, _, rn, _ := h.link("udp", transport.Shaping{})
 	r.Update(Table{Routes: []Route{{Destination: n.id, NextHops: []NodeID{n.id}}}})
 	x, y, _, _ := h.pipe()
 	r.addLink(old, x, false, "udp", -1, transport.Shaping{})
@@ -573,7 +573,6 @@ func TestRelayFallsBackForPacketsWithNoRoom(t *testing.T) {
 	if c := r.Counters(); c.Forwarded != 2 || c.TooLarge != 0 {
 		t.Fatalf("relay counters %+v, want both forwarded", c)
 	}
-	_ = lr
 }
 
 // Packets moving to another of the neighbor's links hint that the link
@@ -581,10 +580,9 @@ func TestRelayFallsBackForPacketsWithNoRoom(t *testing.T) {
 // rather than after its idle wait.
 func TestAHintProbesASilentLink(t *testing.T) {
 	h := newHarness(t, slowest)
-	la1, lb1, ab1, _ := h.link("udp", transport.Shaping{})
+	_, lb1, ab1, _ := h.link("udp", transport.Shaping{})
 	_, lb2, _, _ := h.link("udp", transport.Shaping{})
 	h.run(time.Second, func() { data(lb1) })
-	_ = la1
 	h.run(1100*time.Millisecond, nil) // silent past R (1 s)
 	from := h.elapsed()
 	data(lb2)
@@ -592,5 +590,4 @@ func TestAHintProbesASilentLink(t *testing.T) {
 	if probes(ab1, from) == 0 {
 		t.Fatal("the silent link sent no probe when the neighbor's packets came another way")
 	}
-	_ = lb1
 }

@@ -1,7 +1,6 @@
 package path
 
 import (
-	"encoding/binary"
 	"math/rand/v2"
 	"net"
 	"slices"
@@ -363,5 +362,3 @@ func v1Packet(src, dst NodeID, n int) []byte {
 	f[headerSizeV1] = wgData
 	return f
 }
-
-func seqOf(f []byte) uint32 { return binary.BigEndian.Uint32(f[seqAck(f):]) }
