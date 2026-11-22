@@ -24,10 +24,10 @@ branch: tp-273-workers-sandboxed-fd-leak
 - Other sandbox properties (TP-272's leftover temp dir).
 
 ## Acceptance
-- [ ] The leaked descriptors and their cause, with file:line, in Notes.
-- [ ] The cause fixed; the test's leak check unchanged or stricter.
-- [ ] A test or a reproduction that fails without the fix (mutation named in the Log).
-- [ ] 20 consecutive green targeted runs of the test on the final commit.
+- [x] The leaked descriptors and their cause, with file:line, in Notes.
+- [x] The cause fixed; the test's leak check unchanged or stricter. (procLeakedFiles unchanged; new TestConcurrentWorkerStartsInheritNoFds applies it to eight workers started at once.)
+- [x] A test or a reproduction that fails without the fix (mutation named in the Log).
+- [x] 20 consecutive green targeted runs of the test on the final commit. (bc4d1454, COUNT=20 of both tests in one node: 20/20 each.)
 
 ## Notes
 - Seen: TP-265/266 full labs, 2026-11-19 (TP-266's Log, R1.7).
@@ -40,3 +40,7 @@ branch: tp-273-workers-sandboxed-fd-leak
 - 2026-11-22 fix: forkMu in internal/agent/supervisor/process_linux.go start; new lab test TestConcurrentWorkerStartsInheritNoFds (eight workers started at once, fifteen rounds, no leaked host-file fd); package doc updated
 - 2026-11-22 handoff: not run in the lab. The lab image can't be built: lab/Dockerfile pins nginx=1.22.1-9+deb12u10, which bookworm-security replaced with deb12u11, and no lab image is cached on the run machine. Still to do once it builds: reproduce on the parent commit (COUNT loop of both tests), mutation (forkMu.Lock/Unlock removed, the new test must fail), 20 consecutive green runs of TestWorkersAreSandboxed
 - 2026-11-22 lab image fixed on rewrite (TP-275), merged in. Reproduced on c89aaf57 with forkMu.Lock/Unlock removed (mutation, edited on the run machine only, never pushed): the new test failed 1 of 3 runs, then 7 of 10 (five rounds each); each failing worker held another worker's id-map file open, e.g. ["/proc/558/setgroups"] in two workers, ["/proc/1175/uid_map"] in three, ["/proc/843/gid_map"]; TestWorkersAreSandboxed passed its 3 runs there. Rounds raised to 15
+- 2026-11-22 mutation at fifteen rounds (bc4d1454, forkMu.Lock/Unlock removed on the run machine only): TestConcurrentWorkerStartsInheritNoFds failed 5 of 5 (COUNT=5); restored
+- 2026-11-22 bc4d1454: make lab-gotest PKG=./internal/agent/supervisor/ RUN=TestConcurrentWorkerStartsInheritNoFds|TestWorkersAreSandboxed COUNT=20: 20/20 green each, EXIT 0 (2m59s, tests 1m35s); the whole package in the lab: green (59s); make lint and make test green
+- 2026-11-22 not verified: TestWorkersAreSandboxed's own flake rate before the fix (it passed its 3 runs on the unfixed tree; the new test is the reproduction). Code lab-tested by targeted runs only; the full lab is the orchestrator's after merge
+- 2026-11-22 in-progress → review
