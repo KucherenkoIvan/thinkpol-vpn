@@ -55,6 +55,27 @@ func sharedServe(ctx context.Context, s worker.Session) error {
 	var bulk atomic.Uint64
 	var listeners []*udp.Listener
 	serving := map[uint32]bool{}
+	// As the real worker does, it opens its listeners only once its first
+	// config gave the peers: what was forwarded meanwhile waits for them.
+	configured := false
+	var pending []worker.SharedListener
+	open := func(ls []worker.SharedListener) error {
+		for _, l := range ls {
+			if serving[l.ID] || l.Stream || l.Transport != udp.Name {
+				continue
+			}
+			serving[l.ID] = true
+			tl, err := l.Listen(reg, transport.Admission{Peers: peers})
+			if err != nil {
+				return err
+			}
+			ul := tl.(*udp.Listener)
+			listeners = append(listeners, ul)
+			go acceptLinks(ctx, ul, say, &bulk)
+		}
+		say("listeners %d", len(serving))
+		return nil
+	}
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -73,21 +94,20 @@ func sharedServe(ctx context.Context, s worker.Session) error {
 			}
 			peers.Set(c.Inbound)
 			say("config links=%d", len(c.Inbound))
-		case ls := <-s.Listeners:
-			for _, l := range ls {
-				if serving[l.ID] || l.Stream || l.Transport != udp.Name {
-					continue
-				}
-				serving[l.ID] = true
-				tl, err := l.Listen(reg, transport.Admission{Peers: peers})
-				if err != nil {
+			if !configured {
+				configured = true
+				if err := open(pending); err != nil {
 					return err
 				}
-				ul := tl.(*udp.Listener)
-				listeners = append(listeners, ul)
-				go acceptLinks(ctx, ul, say, &bulk)
 			}
-			say("listeners %d", len(serving))
+		case ls := <-s.Listeners:
+			if !configured {
+				pending = ls
+				continue
+			}
+			if err := open(ls); err != nil {
+				return err
+			}
 		case c := <-s.SharedCounters:
 			say("shared forwarded=%d replies=%d replayed=%d", c.Forwarded, c.Replies, c.Replayed)
 		case <-tick.C:
@@ -793,4 +813,132 @@ func sharedOf(s *supervisor.Supervisor, space netmap.SpaceID) supervisor.SharedC
 		}
 	}
 	return supervisor.SharedCounters{}
+}
+
+// A server's first datagram, sent the moment SetListeners returns while
+// the space's worker is still starting, reaches the worker: the listener
+// is served only once the worker is routed to and knows it.
+func TestFirstDatagramAfterStartReachesTheWorker(t *testing.T) {
+	needsLab(t)
+	d := newDialer()
+	sp := handMadeSpace(t, d)
+	s, err := supervisor.New(sharedOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := s.SetSpaces([]supervisor.Space{sp.Space}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetListeners([]supervisor.Listener{{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dialSpace(t, d).WritePacket([]byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	id := transport.Identity{Space: transport.SpaceID(sp.ID), Node: transport.NodeID(d.Node)}
+	eventually(t, 5*time.Second, "the first datagram at the worker", func() error {
+		if got := sharedOf(s, sp.ID); got.NoWorker != 0 {
+			return fmt.Errorf("dropped for lack of a worker: %+v", got)
+		}
+		if !hasLine(s, sp.ID, "packet "+id.String()+" first") {
+			return fmt.Errorf("output %q", probeLines(s, sp.ID))
+		}
+		return nil
+	})
+}
+
+// startAnswering starts a supervisor of one space whose worker answers its
+// Listeners as mode says (runAnsweringWorker), with one udp listener.
+func startAnswering(t *testing.T, mode string) (*supervisor.Supervisor, netmap.SpaceID, supervisor.Options) {
+	t.Helper()
+	opts := sharedOptions()
+	opts.Env = append(opts.Env, envAnswers+"="+mode)
+	space := netmap.NewSpaceID()
+	s, err := supervisor.New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	// Not waiting for it ready: one that breaks the protocol may never be.
+	if err := s.SetSpaces(spacesOf(space)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetListeners([]supervisor.Listener{{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort)}}); err != nil {
+		t.Fatal(err)
+	}
+	return s, space, opts
+}
+
+// A running worker that reads a Listeners message and never answers it is
+// killed StopTimeout after the send, and restarted; SetListeners waits for
+// it no longer than that.
+func TestWorkerNotAnsweringListenersIsRestarted(t *testing.T) {
+	needsLab(t)
+	s, space, opts := startAnswering(t, answerFirst)
+	waitReady(t, s, space)
+	// Every Listeners message so far answered: the kill can come only
+	// from the send below.
+	eventually(t, 10*time.Second, "the startup's Listeners answered", func() error {
+		if sent, answered, ok := supervisor.ListenersAnswered(s, space); !ok || sent == 0 || answered != sent {
+			return fmt.Errorf("attached %v, %d sent, %d answered", ok, sent, answered)
+		}
+		return nil
+	})
+	first, _ := info(s, space)
+	begin := time.Now()
+	set := make(chan error, 1)
+	go func() {
+		set <- s.SetListeners([]supervisor.Listener{
+			{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort)},
+			{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort+1)},
+		})
+	}()
+	// Alive until StopTimeout after the send, less a poll's slack.
+	for time.Since(begin) < opts.StopTimeout-200*time.Millisecond {
+		if w, _ := info(s, space); w.Starts != first.Starts || w.LastExitReason != first.LastExitReason {
+			t.Fatalf("killed %v after the send, want StopTimeout %v: %+v", time.Since(begin), opts.StopTimeout, w)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := <-set; err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(begin); took > opts.StopTimeout+time.Second {
+		t.Fatalf("SetListeners took %v, want at most StopTimeout %v", took, opts.StopTimeout)
+	}
+	eventually(t, 2*opts.StopTimeout, "the worker killed", func() error {
+		if w, _ := info(s, space); w.LastExitReason != supervisor.ExitUnresponsive || !strings.Contains(w.LastExit, "listeners") {
+			return fmt.Errorf("got %+v, want exit %q over the listeners", w, supervisor.ExitUnresponsive)
+		}
+		return nil
+	})
+	t.Logf("killed after %v", time.Since(begin))
+	eventually(t, 25*time.Second, "the worker restarted", func() error {
+		if w, _ := info(s, space); w.Starts < 2 || !w.Ready {
+			return fmt.Errorf("got %+v, want a second start, ready", w)
+		}
+		return nil
+	})
+}
+
+// A worker that answers a Listeners message it wasn't sent breaks the
+// protocol: it is killed and restarted.
+func TestUnsolicitedListenersAnswerIsAProtocolError(t *testing.T) {
+	needsLab(t)
+	s, space, _ := startAnswering(t, answerTwice)
+	eventually(t, 10*time.Second, "the worker ended over the extra answer", func() error {
+		if w, _ := info(s, space); w.LastExitReason != supervisor.ExitProtocolError {
+			return fmt.Errorf("got %+v, want exit %q", w, supervisor.ExitProtocolError)
+		}
+		return nil
+	})
 }

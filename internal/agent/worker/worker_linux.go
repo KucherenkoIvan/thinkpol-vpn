@@ -141,8 +141,8 @@ func readData(data *ipc.Conn, shared *sharedListeners, cancel context.CancelCaus
 }
 
 // readControl delivers each Config and Listeners the supervisor sends
-// (latest-wins) and each stream it hands over, and ends the worker on Stop,
-// EOF or anything unexpected.
+// (latest-wins; each Listeners acknowledged) and each stream it hands
+// over, and ends the worker on Stop, EOF or anything unexpected.
 func readControl(control *ipc.Conn, shared *sharedListeners, ch channels, seeds *Seeds, cancel context.CancelCauseFunc) {
 	for {
 		m, err := control.Receive()
@@ -154,7 +154,7 @@ func readControl(control *ipc.Conn, shared *sharedListeners, ch channels, seeds 
 			cancel(err)
 			return
 		}
-		if err := deliver(m, shared, ch, seeds); err != nil {
+		if err := deliver(m, control, shared, ch, seeds); err != nil {
 			cancel(err)
 			return
 		}
@@ -163,7 +163,7 @@ func readControl(control *ipc.Conn, shared *sharedListeners, ch channels, seeds 
 
 // deliver acts on one control message; an error ends the worker, with it
 // as the cause (errStopped on Stop).
-func deliver(m ipc.Message, shared *sharedListeners, ch channels, seeds *Seeds) error {
+func deliver(m ipc.Message, control *ipc.Conn, shared *sharedListeners, ch channels, seeds *Seeds) error {
 	switch m.Kind {
 	case ipc.KindStop:
 		m.CloseFiles()
@@ -187,7 +187,22 @@ func deliver(m ipc.Message, shared *sharedListeners, ch channels, seeds *Seeds) 
 		if err != nil {
 			return fmt.Errorf("worker: %w", err)
 		}
-		latest(ch.listeners, shared.update(ls))
+		known := shared.update(ls)
+		latest(ch.listeners, known)
+		// Answered once taken in: the supervisor routes to this process,
+		// and serves a new listener, only once it has the answer (or, for
+		// the listener, StopTimeout passed).
+		ids := make([]uint32, len(known))
+		for i, l := range known {
+			ids[i] = l.ID
+		}
+		ack, err := ipc.ListenersKnownMessage(ids)
+		if err != nil {
+			return fmt.Errorf("worker: %w", err)
+		}
+		if err := control.Send(ack); err != nil {
+			return fmt.Errorf("worker: %w", err)
+		}
 	case ipc.KindCounters:
 		c, err := ipc.DecodeCounters(m)
 		if err != nil {

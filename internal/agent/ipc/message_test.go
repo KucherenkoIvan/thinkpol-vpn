@@ -71,6 +71,25 @@ func TestListenersRoundTrip(t *testing.T) {
 	}
 }
 
+func TestListenersKnownRoundTrip(t *testing.T) {
+	m, err := ipc.ListenersKnownMessage([]uint32{3, 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := ipc.DecodeListenersKnown(m); err != nil || !reflect.DeepEqual(out, []uint32{3, 9}) {
+		t.Fatalf("round trip: %v, %v", out, err)
+	}
+	if m, err = ipc.ListenersKnownMessage(nil); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := ipc.DecodeListenersKnown(m); err != nil || len(out) != 0 {
+		t.Fatalf("none known: %v, %v", out, err)
+	}
+	if _, err := ipc.DecodeListenersKnown(ipc.Message{Kind: ipc.KindListeners, Payload: []byte("[]")}); err == nil {
+		t.Fatal("decoded a Listeners message as ListenersKnown")
+	}
+}
+
 // A Stream message keeps the consumed bytes and the target's apart, with
 // or without a target descriptor, and refuses a payload whose lengths
 // don't add up.

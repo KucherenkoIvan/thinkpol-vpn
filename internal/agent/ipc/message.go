@@ -12,7 +12,7 @@ import (
 // Version is the protocol version carried in Init; a worker refuses an Init
 // whose version differs, so a half-replaced binary can't mismatch its
 // supervisor. Bump it on any wire change here.
-const Version = 5
+const Version = 6
 
 // ErrFull is returned by TrySend when the socket's send buffer is full, so
 // the message was not sent; the caller drops it.
@@ -31,6 +31,9 @@ const (
 	KindListeners Kind = 7 // control socket: JSON []Listener
 	KindCounters  Kind = 8 // control socket: JSON SharedCounters, periodically
 	KindBlob      Kind = 9 // control socket: one blob seed, a sealed memfd attached
+	// KindListenersKnown is the worker's answer to each Listeners: JSON
+	// []uint32, the ids of the listeners it has now.
+	KindListenersKnown Kind = 10
 )
 
 func (k Kind) String() string {
@@ -53,6 +56,8 @@ func (k Kind) String() string {
 		return "counters"
 	case KindBlob:
 		return "blob"
+	case KindListenersKnown:
+		return "listeners known"
 	}
 	return fmt.Sprintf("Kind(%d)", uint8(k))
 }
@@ -183,6 +188,31 @@ func DecodeListeners(m Message) ([]Listener, error) {
 		return nil, fmt.Errorf("ipc: decode listeners: %w", err)
 	}
 	return ls, nil
+}
+
+// ListenersKnownMessage is the worker's answer to a Listeners message: the
+// ids of the listeners it has once it took the message in.
+func ListenersKnownMessage(ids []uint32) (Message, error) {
+	if ids == nil {
+		ids = []uint32{}
+	}
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return Message{}, fmt.Errorf("ipc: encode listeners known: %w", err)
+	}
+	return Message{Kind: KindListenersKnown, Payload: b}, nil
+}
+
+// DecodeListenersKnown decodes a ListenersKnown message.
+func DecodeListenersKnown(m Message) ([]uint32, error) {
+	var ids []uint32
+	if m.Kind != KindListenersKnown {
+		return nil, fmt.Errorf("ipc: expected %v, got %v", KindListenersKnown, m.Kind)
+	}
+	if err := json.Unmarshal(m.Payload, &ids); err != nil {
+		return nil, fmt.Errorf("ipc: decode listeners known: %w", err)
+	}
+	return ids, nil
 }
 
 // DatagramHeaderSize is the size of a DatagramHeader on the wire:
