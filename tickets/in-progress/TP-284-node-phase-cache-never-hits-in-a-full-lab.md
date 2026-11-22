@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-243]
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-284"
+branch: "tp-284-node-cache-across-checkouts"
 ---
 
 ## Goal
@@ -35,3 +35,4 @@ A full `make lab-test` of a commit whose packages already passed in nodes on thi
 
 ## Log
 - 2026-11-22 created in backlog (from the full-lab timing of b01eeccb)
+- 2026-11-22 backlog → in-progress, owner: agent-tp-284
