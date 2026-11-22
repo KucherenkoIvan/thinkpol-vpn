@@ -140,6 +140,27 @@
 // connection REALITY refuses and splices, so a legitimate hello at the
 // window's edge that REALITY refuses is cut after 15 s (known).
 //
+// Listen binds its address first, one address family only: "tcp4" for an
+// IPv4 address, "tcp6" (IPV6_V6ONLY) for an IPv6 one, as udp does. The map
+// gives a dual-stack server one listener per family on a port (0.0.0.0:443
+// and [::]:443), and on plain "tcp" Go would make the first wildcard a
+// dual-stack socket, leaving the second unable to bind for good. Only once
+// bound does Listen check the target (below), closing the socket if the
+// check fails: a listener that can't bind never dials the target. In the
+// meantime the port accepts connections into the kernel's backlog; the
+// listener takes them up once the check passed, and a failed check resets
+// them.
+//
+// The agent retries a listener that failed every few seconds
+// (agent.RetryAfter). A target whose check failed isn't checked again
+// before a wait drawn at random from the upper half of 10 s, doubling with
+// each failure in a row up to 10 minutes, per target and server names for
+// the transport's life; until then Listen fails at once with the last
+// check's error, dialling nothing. So a failing target is never dialled on
+// the retry's fixed period. A check that passed isn't repeated: the agent
+// keeps a listener that opened across its retries, until the map changes
+// it.
+//
 // Before checking the target, Listen has crypto/x509 read the system
 // roots, which on Linux and the BSDs it does from disk once per process,
 // on first use, with no bound: neither of the 10 s bounds below counts
@@ -190,7 +211,8 @@
 // silent never ends: its keys stay pending, and every later Listen for that
 // target fails until the process restarts. A caller retrying Listen should
 // know that a failure naming an earlier detection won't clear on retry while
-// the target stays silent.
+// the target stays silent; the checks' backoff (above) spaces those
+// retries out too.
 //
 // The dialer checks the certificate the same way. Anything else (a real
 // certificate: the connection was spliced, or a man in the middle
