@@ -55,6 +55,27 @@ func sharedServe(ctx context.Context, s worker.Session) error {
 	var bulk atomic.Uint64
 	var listeners []*udp.Listener
 	serving := map[uint32]bool{}
+	// As the real worker does, it opens its listeners only once its first
+	// config gave the peers: what was forwarded meanwhile waits for them.
+	configured := false
+	var pending []worker.SharedListener
+	open := func(ls []worker.SharedListener) error {
+		for _, l := range ls {
+			if serving[l.ID] || l.Stream || l.Transport != udp.Name {
+				continue
+			}
+			serving[l.ID] = true
+			tl, err := l.Listen(reg, transport.Admission{Peers: peers})
+			if err != nil {
+				return err
+			}
+			ul := tl.(*udp.Listener)
+			listeners = append(listeners, ul)
+			go acceptLinks(ctx, ul, say, &bulk)
+		}
+		say("listeners %d", len(serving))
+		return nil
+	}
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -73,21 +94,20 @@ func sharedServe(ctx context.Context, s worker.Session) error {
 			}
 			peers.Set(c.Inbound)
 			say("config links=%d", len(c.Inbound))
-		case ls := <-s.Listeners:
-			for _, l := range ls {
-				if serving[l.ID] || l.Stream || l.Transport != udp.Name {
-					continue
-				}
-				serving[l.ID] = true
-				tl, err := l.Listen(reg, transport.Admission{Peers: peers})
-				if err != nil {
+			if !configured {
+				configured = true
+				if err := open(pending); err != nil {
 					return err
 				}
-				ul := tl.(*udp.Listener)
-				listeners = append(listeners, ul)
-				go acceptLinks(ctx, ul, say, &bulk)
 			}
-			say("listeners %d", len(serving))
+		case ls := <-s.Listeners:
+			if !configured {
+				pending = ls
+				continue
+			}
+			if err := open(ls); err != nil {
+				return err
+			}
 		case c := <-s.SharedCounters:
 			say("shared forwarded=%d replies=%d replayed=%d", c.Forwarded, c.Replies, c.Replayed)
 		case <-tick.C:

@@ -483,8 +483,9 @@ func runBadKindWorker() int {
 	return 0
 }
 
-// runDeafWorker is a worker that reports Ready and then never reads its
-// control socket again.
+// runDeafWorker is a worker that reports Ready, answers its first
+// Listeners message (so only a stuck send ends it, not an unanswered
+// Listeners) and then never reads its control socket again.
 func runDeafWorker() int {
 	cf := os.NewFile(uintptr(ipc.ControlFD), "control")
 	c, err := ipc.FromFile(cf)
@@ -497,6 +498,15 @@ func runDeafWorker() int {
 		return 1
 	}
 	if err := c.Send(ipc.Message{Kind: ipc.KindReady}); err != nil {
+		return 1
+	}
+	m, err := c.Receive()
+	if err != nil {
+		return 1
+	}
+	m.CloseFiles()
+	if err := answerListeners(c, m, 1); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	time.Sleep(time.Hour) // alive, reading nothing, until the test kills it
@@ -520,6 +530,29 @@ const (
 	// listener opened, then the new set) fit in options' StopTimeout.
 	slowAnswer = time.Second
 )
+
+// answerListeners answers the Listeners message m times times, as a
+// worker does once.
+func answerListeners(c *ipc.Conn, m ipc.Message, times int) error {
+	ls, err := ipc.DecodeListeners(m)
+	if err != nil {
+		return err
+	}
+	ids := make([]uint32, len(ls))
+	for i, l := range ls {
+		ids[i] = l.ID
+	}
+	known, err := ipc.ListenersKnownMessage(ids)
+	if err != nil {
+		return err
+	}
+	for range times {
+		if err := c.Send(known); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // runAnsweringWorker is a worker that reports Ready at once (it does not
 // sandbox), then answers its Listeners messages as mode says.
@@ -547,20 +580,8 @@ func runAnsweringWorker(mode string) int {
 		case ipc.KindStop:
 			return 0
 		case ipc.KindListeners:
-			ls, err := ipc.DecodeListeners(m)
-			if err != nil {
-				return 1
-			}
 			if mode == answerFirst && answered > 0 {
 				continue
-			}
-			ids := make([]uint32, len(ls))
-			for i, l := range ls {
-				ids[i] = l.ID
-			}
-			known, err := ipc.ListenersKnownMessage(ids)
-			if err != nil {
-				return 1
 			}
 			times := 1
 			switch mode {
@@ -569,10 +590,8 @@ func runAnsweringWorker(mode string) int {
 			case answerSlow:
 				time.Sleep(slowAnswer)
 			}
-			for range times {
-				if err := c.Send(known); err != nil {
-					return 1
-				}
+			if err := answerListeners(c, m, times); err != nil {
+				return 1
 			}
 			answered++
 		}
