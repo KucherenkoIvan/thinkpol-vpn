@@ -189,8 +189,9 @@ func deliver(m ipc.Message, control *ipc.Conn, shared *sharedListeners, ch chann
 		}
 		known := shared.update(ls)
 		latest(ch.listeners, known)
-		// The supervisor serves a new listener only once every worker has
-		// it: what it forwards from then on finds the listener's entry.
+		// Answered once taken in: the supervisor routes to this process,
+		// and serves a new listener, only once it has the answer (or, for
+		// the listener, StopTimeout passed).
 		ids := make([]uint32, len(known))
 		for i, l := range known {
 			ids[i] = l.ID

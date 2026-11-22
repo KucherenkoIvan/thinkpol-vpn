@@ -4,9 +4,9 @@
 // Each worker has two AF_UNIX SOCK_SEQPACKET sockets, both halves of pairs
 // the supervisor makes, inherited as file descriptors:
 //
-//   - the control socket (ControlFD = 3): Init, Config, Listeners and
-//     their acknowledgement, Ready, Stop, and the stream handoff. Reliable; a control message is never
-//     queued behind bulk data. The supervisor hands a stream over without
+//   - the control socket (ControlFD = 3): Init, Config, Listeners and the
+//     answers to them, Ready, Stop, and the stream handoff. Reliable; a
+//     control message is never queued behind bulk data. The supervisor hands a stream over without
 //     blocking (Conn.TrySend): a full socket refuses the connection.
 //   - the data socket (DataFD = 4): forwarded datagrams both ways. The
 //     supervisor sends without blocking (Conn.TrySendDatagram), so a
