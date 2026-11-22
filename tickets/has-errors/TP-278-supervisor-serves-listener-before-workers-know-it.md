@@ -38,6 +38,17 @@ A shared listener the supervisor opens is served only once every worker knows it
   - A listener closed while waiting is never served (it leaves `s.listeners` under `s.mu`; `openListeners` and `close` wake the waiter). Listeners kept across a retry keep serving; a kept one not yet served is served by whichever `serveOpened` gets there.
   - The prober path is unchanged: what isn't authenticated is still spliced or dropped in the supervisor; a listener not yet served leaves connections in its backlog for at most `StopTimeout`.
 
+## Review findings
+Round 1 (2026-11-22, on 80021b18): correctness (fix first), style (fix first), design (fix first), second opinion (fix first). Decision: keep the acknowledgement barrier (a per-route gate would drop or defer at route time, the very first-connection case), scoped to each call's own listeners, bounded by StopTimeout, with a worker that doesn't answer killed and restarted.
+- [ ] R1.1 Blocker: a worker started but not attached yet (a server's first map, or a restart) is skipped by `unacknowledged` (no route end), so the new listener is served at once and the first authenticated connection is closed for lack of a worker (`routeStream`), TLS EOF after reality's target dial. Detach doesn't wake the waiter either. Wait, up to StopTimeout, for every served space that may be routed the listener, attached or not; attach and detach wake. A test with a worker not attached yet that fails on 80021b18 (a real worker if the lab tests allow, else a fake that attaches late).
+- [ ] R1.2 An attached worker that reads Listeners but never answers is never killed (`ackTimeout` is nil once attached), and the unattached timer counts from the session's start, not from the send. Arm the timer whenever answers lag, from the send or the last answer; kill and restart whether attached or not; factor the kill shared with `stuck`. A real-worker never-answering test that fails without the kill.
+- [ ] R1.3 An unsolicited ListenersKnown is accepted (a flood, or an answer ahead of its Listeners that masks lag). Count answers against the Listeners sent, `announceGained`'s TrySend included; an extra answer is a protocol error. Test plus mutation.
+- [ ] R1.4 TrySend doesn't take SendTimeout's lock: can a stream pass an in-flight Listeners? Verify the reachable cases, fix or document; say why `announceGained` relies on ordering and SetListeners on answers.
+- [ ] R1.5 `serveOpened` serves every unserved listener, not its own call's; the SetListeners doc says nothing about concurrent callers. Serve this call's ids; document a single caller.
+- [ ] R1.6 Docs overclaim: supervisor doc.go "Shared listeners" (a worker not running yet, restarts), the `serveOpened` comment, worker doc.go's ListenersKnown paragraph.
+- [ ] R1.7 Names: `acked` → a change signal, `unacknowledged` → `laggingSpaces` (a count if only its length is used), `acknowledged` → `setKnown`, the test helper `setListeners` → `openAndServe`; factor kill-on-stuck (R1.2).
+- [ ] R1.8 Tests: got/want messages (`handedOver`), the `time.Sleep` in `TestListenerClosedWhileWaitingIsNotServed` replaced by a hook, ignored errors, comment wrapping.
+
 ## Log
 - 2026-11-22 created in backlog (from TP-230's review)
 - 2026-11-22 backlog → in-progress, owner: agent-tp-278
@@ -48,3 +59,4 @@ A shared listener the supervisor opens is served only once every worker knows it
 - 2026-11-22 not verified by a dedicated test: the session side in a real worker process (the ack timer's kill, a worker restarting mid-update, attach after a resend); the supervisor's lab tests with real workers (TestTwoSpacesShareAListener, TestRealitySpacesShareAListener, TestDeafWorkerHoldsNothingUp) and the matrix rows pass through it. No full make lab-test (brief: targeted runs only; the orchestrator runs full labs on rewrite)
 - 2026-11-22 in-progress → review
 - 2026-11-22 rewrite fa427ca0 merged (4eb8f029), runs again on it: make lint 0 issues, make test pass; lab-gotest supervisor/reality/udp ok, none cached (56 s, 1m24.5 s, 1m6.3 s); matrix udp and reality rows ok in 258.8 s, five labs PASS, reality × active prober NOT JUDGED as before
+- 2026-11-22 review → has-errors: round 1 findings R1.1-R1.8 (fix first)
