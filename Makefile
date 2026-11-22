@@ -153,8 +153,8 @@ LAB_BUDGET ?= 15m
 # The tests under lab/ the long stream runs: exactly those that call
 # lab.LongTest or lab.SplitStreams (TestLongTestsNamed checks it). Today
 # the censor matrix, whose held cells are the long stream's (lab/README.md,
-# "Streams").
-LAB_LONG_TESTS := ^TestCensorMatrix$$
+# "Streams"), and idle links' probes and dead idle links (TP-080).
+LAB_LONG_TESTS := ^(TestCensorMatrix|TestIdleLinksProbeAtRandom)$$
 # $(call LAB_COUNT_CELLS,<label>,<files>): the cells the streams listed
 # in files (a line each, "<transport> / <censor>"), once each, as
 # "<label>: <n> (<cells>)", or nothing when none; for make lab-test's last
