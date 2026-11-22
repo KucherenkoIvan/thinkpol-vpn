@@ -34,6 +34,12 @@ branch: tp-273-workers-sandboxed-fd-leak
 - Cause (reproduced, see Log): Go's syscall writes a new child's `/proc/<pid>/uid_map`, `setgroups` and `gid_map` after its clone through `syscall.Open(path, O_RDWR, 0)` without O_CLOEXEC (`writeIDMappings`/`writeSetgroups`, src/syscall/exec_linux.go in go1.26.11), while `acquireForkLock` (src/syscall/forkpipe2.go) lets several forks run at once. The supervisor starts its workers from concurrent goroutines (`start`, internal/agent/supervisor/process_linux.go), so a worker cloned while another's maps are being written inherits that fd: the leaked `/proc/748/uid_map` is the other worker's map, open read-write, in the sandbox. A product defect, not a test one.
 - Fix: `forkMu` serializes `cmd.Start` in `start` (process_linux.go), the only fork with id maps in the process. No product open changed: the opens are the standard library's. Other forks in the process (ip, nft) may still inherit such an fd briefly; they are host tools, not sandboxed, and a written map can't be written again.
 
+## Review findings
+- [ ] R1.1 process_linux.go, the comment above forkMu: say that every fork with SysProcAttr UidMappings/GidMappings in the process must Start under forkMu, and that a Start stuck on its exec (a hung filesystem) holds up every worker start until it returns.
+- [ ] R1.2 process_linux.go start: unlock forkMu with defer (a small func around cmd.Start), so a panic in Start can't leave it held.
+- [ ] R1.3 supervisor_linux_test.go: procLeakedFiles flags host file paths only (it skips sockets, pipes, anon inodes, /dev), so the new test is named TestConcurrentWorkerStartsInheritNoHostFiles; its comment keeps only the constraint, the run history stays in the Log.
+- [ ] R1.4 doc.go: the new sentence moves after the no_new_privs sentence and reads "Worker starts are serialized (forkMu): Go writes a child's id maps through fds without close-on-exec, which a worker forked meanwhile would inherit."
+
 ## Log
 - 2026-11-22 created in backlog (final-lab small fixes)
 - 2026-11-22 backlog → in-progress, owner: agent-tp-273
@@ -44,3 +50,4 @@ branch: tp-273-workers-sandboxed-fd-leak
 - 2026-11-22 bc4d1454: make lab-gotest PKG=./internal/agent/supervisor/ RUN=TestConcurrentWorkerStartsInheritNoFds|TestWorkersAreSandboxed COUNT=20: 20/20 green each, EXIT 0 (2m59s, tests 1m35s); the whole package in the lab: green (59s); make lint and make test green
 - 2026-11-22 not verified: TestWorkersAreSandboxed's own flake rate before the fix (it passed its 3 runs on the unfixed tree; the new test is the reproduction). Code lab-tested by targeted runs only; the full lab is the orchestrator's after merge
 - 2026-11-22 in-progress → review
+- 2026-11-22 review → has-errors: R1.1–R1.4 (review confirmed the cause and the fix)
