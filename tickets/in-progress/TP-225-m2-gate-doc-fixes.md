@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: [TP-223]
 refs: [C3, RR59, RR61, RR64, RR65]
-owner: ""
-branch: ""
+owner: "agent-tp-225"
+branch: "tp-225-m2-gate-doc-fixes"
 ---
 
 ## Goal
@@ -30,6 +30,12 @@ Make the requirement and design docs say what M2 actually delivers, as the M2 ga
 - [ ] Every requirement-doc change carries "(owner, 2026-11-16)".
 
 ## Notes
+The orchestrator's per-item list for the macOS IPv6 box. The owner's proxy rule (2026-11-16): an IPv6 item counts as proven by proxy when it shares all the same logic as an IPv4 behaviour proven on a device.
+- A. The macOS kill switch's IPv6 half: proven by proxy (its block rule is family-agnostic, `all`), except the IPv6-only housekeeping passes (DHCPv6, ND, MLD), which stay unproven; they fail toward breakage, not toward a leak. The device sitting adds a step: kill switch on, allow-LAN off, disconnected, `ping6` to the router's link-local address → refused.
+- B. The macOS IPv6 guard (the pf anchor that blocks IPv6 when the tunnel has none): not proven by proxy: a different rule, table and anchor, and no cheap check on an IPv4-only network. RR15 narrows to exactly this: "the guard is unproven on a native-IPv6 network" (owner, 2026-11-17; the owner's phone hotspot has no IPv6, so no test there).
+- C. The macOS route table's IPv6 routes: proven by proxy except RR16 and zoned (link-local, `%iface`) gateways. The device sitting adds a read-only `netstat -rn -f inet6` and `route get -inet6` step while connected and after the agent is killed.
+- D1. Forwarded IPv6 (RR14): holds only if the sitting's S7 step runs, with the kill switch on and the guard absent.
 
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate review)
+- 2026-11-22 backlog → in-progress, owner: agent-tp-225
