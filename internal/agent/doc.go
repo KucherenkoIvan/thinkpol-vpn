@@ -279,8 +279,19 @@
 // its space, it comes up once a map includes the node again. -connect=false
 // (THINKPOL_CONNECT) starts a device disconnected, which then needs the
 // local API to connect. A server serves its spaces whenever it runs and
-// refuses both ([ErrServerMode]). A device whose node returned (stopped,
-// or its first start failed) reads disconnected.
+// refuses both ([ErrServerMode]). Its Status reads [Connecting] until its
+// first serve of the map has ended, then [Serving] if at least one of the
+// map's listeners serves (or it lists none), any other failed being
+// retried ([Status.Retrying], health degraded); with every listener
+// failed, or out of its space, it reads [Connecting] (health down:
+// retrying, removed_from_space). A listener serves once the worker of
+// each space it may be routed to is routed to and knows it, or after the
+// supervisor's StopTimeout, when a worker not routed to yet reads not
+// ready (health down: worker_down). A later map shows its version once its
+// serve has ended, served or retried, and the "map applied" log line
+// comes once one has served every listener. A node, device or server,
+// that isn't running (stopped, or its first start failed) reads
+// [Disconnected].
 //
 // The service runs `up -service` ([Config.Service], THINKPOL_SERVICE).
 // Connect-on-boot is the member's toggle in the device file ([DeviceFile]),

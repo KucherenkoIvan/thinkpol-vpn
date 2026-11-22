@@ -81,6 +81,44 @@ func TestOthersCantChangeTheWay(t *testing.T) {
 	})
 }
 
+func TestOpenOwnedByChecksThatUser(t *testing.T) {
+	dir := trusteddirtest.TempDir(t)
+	d, err := OpenOwnedBy(dir, os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = d.Close()
+	if os.Geteuid() != 0 {
+		if _, err := OpenOwnedBy(dir, os.Geteuid()+4321); err == nil || !strings.Contains(err.Error(), "owned by uid") {
+			t.Errorf("another user's view of this user's directory: %v", err)
+		}
+		// Root's directories pass the walk on the way, never as the
+		// directory itself.
+		if _, err := OpenOwnedBy("/usr", os.Geteuid()); err == nil {
+			t.Error("a directory of root's was opened as this user's")
+		}
+		return
+	}
+	// As root (the lab): a user's directory is that user's, not root's.
+	user := filepath.Join(dir, "user")
+	if err := os.Mkdir(user, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(user, 4321, 4321); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(user); err == nil {
+		t.Error("root opened another user's directory as its own")
+	}
+	if d, err = OpenOwnedBy(user, 4321); err != nil {
+		t.Fatal(err)
+	}
+	_ = d.Close()
+	if _, err := OpenOwnedBy(user, 1234); err == nil {
+		t.Error("opened as a third user's")
+	}
+}
+
 func TestLock(t *testing.T) {
 	dir := trusteddirtest.TempDir(t)
 	d, err := Open(dir)

@@ -59,5 +59,11 @@
 // settings from the Listeners message. The transport's listener on top of them
 // ([SharedListener.Listen]) decrypts and filters again, as on any other
 // listener. Replies are sent to the supervisor blocking, so a full data
-// socket holds up only this worker.
+// socket holds up only this worker. The worker answers each Listeners
+// message, once it has taken it in, with the ids it now has
+// (ListenersKnown), within the supervisor's StopTimeout or it is killed:
+// the supervisor routes to a new worker process only once it has answered
+// for every listener it may be routed, and serves a new listener only
+// once every such worker has it, or after StopTimeout (the supervisor
+// package's "Shared listeners").
 package worker

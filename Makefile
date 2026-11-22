@@ -52,11 +52,14 @@ help: ## list targets
 build: ## build bin/thinkpol for this machine
 	go build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/thinkpol ./cmd/thinkpol
 
+# test, test-race, lab-test (and its streams), lab-harness-cached and lab-gotest start with this, because lab/devicetest/safety refuses group-writable dirs: under a group-writable umask (0002) its tests' temp dirs are refused and they fail. In-node runs go through docker exec and don't inherit it.
+TEST_UMASK := umask 022
+
 test: ## unit tests (lab tests skip outside the lab)
-	go test ./...
+	$(TEST_UMASK) && go test ./...
 
 test-race: ## unit tests with the race detector (needs cgo)
-	CGO_ENABLED=1 go test -race ./...
+	$(TEST_UMASK) && CGO_ENABLED=1 go test -race ./...
 
 lint: $(TOOLS_STAMP) ## gofmt, then go vet + golangci-lint per OS (lab tests included), the Android build, the no-cgo check and vulncheck
 	@python3 tickets/test_board.py -q 2>&1 | tail -1 | grep -qx OK || { python3 tickets/test_board.py; exit 1; }
@@ -225,7 +228,7 @@ lab-test-long: LAB_STREAMS = long
 # but the default stream ran over LAB_BUDGET (make itself exits 2 either
 # way and quotes the recipe's status, "Error 3"); the last line says which.
 lab-test lab-test-default lab-test-long:
-	@start=$$(date +%s); run=; labctl=; \
+	@$(TEST_UMASK); start=$$(date +%s); run=; labctl=; \
 	tmp=$$(mktemp -d) || exit 1; \
 	trap 'rc=$$?; if [ -n "$$run" ] && [ -z "$$THINKPOL_LAB_KEEP" ]; then "$$labctl" down -run "$$run" || rc=1; fi; rm -rf "$$tmp"; exit $$rc' EXIT; \
 	tree() { for c in $$(pgrep -P "$$1"); do echo "$$c"; tree "$$c"; done; }; \
@@ -307,7 +310,7 @@ lab-harness-cached:
 	@hash=$$($(LAB_HARNESS_HASH)) && [ -n "$$hash" ] || { echo "lab-harness: can't hash the harness" >&2; exit 1; }; \
 	stamp="$(LAB_HARNESS_CACHE)/$$hash"; \
 	if [ -e "$$stamp" ]; then echo "lab-harness: passed before on harness $$hash, not run again"; $(if $(LAB_HARNESS_TIMES),: > "$(LAB_HARNESS_TIMES)";) exit 0; fi; \
-	echo "lab-harness: harness $$hash not passed before, running it"; \
+	echo "lab-harness: harness $$hash not passed before, running it"; $(TEST_UMASK); \
 	out=$$(mktemp) || exit 1; trap 'rm -f "$$out" "$$out.status" "$$out.testjson"' EXIT; \
 	{ $(LAB_HARNESS_GOTEST) -v $(if $(LAB_HARNESS_TIMES),-json); echo $$? > "$$out.status"; } 2>&1 $(if $(LAB_HARNESS_TIMES),| { TMPDIR="$(dir $(LAB_HARNESS_TIMES))" $(LABCTL) testjson -v -times "$(LAB_HARNESS_TIMES)" 2>&1; echo $$? > "$$out.testjson"; }) | tee "$$out"; \
 	[ "$$(cat "$$out.status" 2>/dev/null)" = 0 ] || exit 1; \
@@ -340,7 +343,7 @@ lab-gotest: export LAB_RUN = $(value RUN)
 lab-gotest: export LAB_SKIP = $(value SKIP)
 lab-gotest: ## run PKG's tests inside a lab node with THINKPOL_LAB=1, its lab-tagged tests on the host; fails if all skip (PKG=./internal/... required, RUN=regexp SKIP=regexp COUNT=n LAB_TIMEOUT=d)
 	$(if $(PKG),,$(error lab-gotest needs PKG, e.g. PKG=./internal/dataplane/netcfg/...; make lab-test runs every package))
-	@tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
+	@$(TEST_UMASK); tmp=$$(mktemp -d) || exit 1; trap 'rm -rf "$$tmp"' EXIT; \
 	$(LABCTL_BUILD) "$$tmp/labctl" ./lab/labctl || exit 1; \
 	"$$tmp/labctl" gotest -v -tagged -fail-skipped -run "$$LAB_RUN" -skip "$$LAB_SKIP" $(if $(COUNT),-count $(COUNT)) $(if $(LAB_GOTEST_TIMEOUT),-timeout $(LAB_GOTEST_TIMEOUT)) $(PKG)
 

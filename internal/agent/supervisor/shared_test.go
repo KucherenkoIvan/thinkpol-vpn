@@ -43,6 +43,13 @@ type fakeWorker struct {
 	streams chan handedStream
 	// onListeners, if set, is called with each Listeners message sent.
 	onListeners func([]ipc.Listener)
+	// acks, once set (acking), is the sockets the worker answers each
+	// Listeners message as, and known what it answered with last: like the
+	// real worker, it closes a connection naming a listener it doesn't
+	// know, and counts it in unknownStreams.
+	acks           *workerSockets
+	known          atomic.Pointer[map[uint32]bool]
+	unknownStreams atomic.Int64
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -92,6 +99,14 @@ func newFakeWorker(s *shared, space transport.SpaceID) *fakeWorker {
 
 func (w *fakeWorker) sockets() *workerSockets { return &workerSockets{data: w, control: w} }
 
+// acking makes the worker answer each Listeners message, as the sockets
+// it returns.
+func (w *fakeWorker) acking() *workerSockets {
+	w.acks = w.sockets()
+	w.known.Store(&map[uint32]bool{})
+	return w.acks
+}
+
 func (w *fakeWorker) TrySendDatagram(h ipc.DatagramHeader, d []byte) error {
 	if w.full.Load() {
 		return ipc.ErrFull
@@ -111,11 +126,29 @@ func (w *fakeWorker) TrySend(m ipc.Message) error {
 		if err == nil && w.onListeners != nil {
 			w.onListeners(ls)
 		}
+		if err == nil && w.acks != nil {
+			known := map[uint32]bool{}
+			ids := make([]uint32, 0, len(ls))
+			for _, l := range ls {
+				known[l.ID] = true
+				ids = append(ids, l.ID)
+			}
+			w.known.Store(&known)
+			err = w.s.setKnown(w.acks, ids)
+		}
 		return err
 	}
 	st, f, tf, err := ipc.DecodeStream(m)
 	if err != nil {
 		return err
+	}
+	if known := w.known.Load(); known != nil && !(*known)[st.Listener] {
+		w.unknownStreams.Add(1)
+		_ = f.Close()
+		if tf != nil {
+			_ = tf.Close()
+		}
+		return nil
 	}
 	conn, err := net.FileConn(f) // a descriptor of its own, as SCM_RIGHTS gives
 	if err != nil {
@@ -169,6 +202,15 @@ func (w *fakeWorker) SetDeadline(time.Time) error      { return nil }
 func (w *fakeWorker) SetReadDeadline(time.Time) error  { return nil }
 func (w *fakeWorker) SetWriteDeadline(time.Time) error { return nil }
 
+// openAndServe opens ls and serves what it opened, as SetListeners does
+// without telling the workers: it waits for them only answerTimeout, zero
+// unless a test sets it.
+func (s *shared) openAndServe(ctx context.Context, ls []Listener) (bool, error) {
+	opened, changed, err := s.openListeners(ctx, ls)
+	s.serveOpened(opened)
+	return changed, err
+}
+
 func newTestShared(t *testing.T, fair FairShare, transports ...transport.Transport) *shared {
 	t.Helper()
 	if len(transports) == 0 {
@@ -185,7 +227,7 @@ func newTestShared(t *testing.T, fair FairShare, transports ...transport.Transpo
 
 func listenUDP(t *testing.T, s *shared, camo transport.Camouflage) string {
 	t.Helper()
-	if _, err := s.setListeners(context.Background(), []Listener{{Transport: udp.Name, Address: "127.0.0.1:0", Camouflage: camo}}); err != nil {
+	if _, err := s.openAndServe(context.Background(), []Listener{{Transport: udp.Name, Address: "127.0.0.1:0", Camouflage: camo}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, pl := range *s.byID.Load() {
@@ -1078,24 +1120,24 @@ func TestASecretTwoSpacesShareIsRefused(t *testing.T) {
 func TestSetListenersKeepsWhatStays(t *testing.T) {
 	s := newTestShared(t, nil)
 	keep := Listener{Transport: udp.Name, Address: "127.0.0.1:0"}
-	if _, err := s.setListeners(context.Background(), []Listener{keep}); err != nil {
+	if _, err := s.openAndServe(context.Background(), []Listener{keep}); err != nil {
 		t.Fatal(err)
 	}
 	first := s.ipcListeners(transport.SpaceID{})
-	if changed, err := s.setListeners(context.Background(), []Listener{keep}); err != nil || changed {
+	if changed, err := s.openAndServe(context.Background(), []Listener{keep}); err != nil || changed {
 		t.Fatalf("the same set: changed %v, %v", changed, err)
 	}
 	if again := s.ipcListeners(transport.SpaceID{}); len(again) != 1 || !reflect.DeepEqual(again, first) {
 		t.Fatalf("listeners %v, then %v", first, again)
 	}
-	changed, err := s.setListeners(context.Background(), []Listener{keep, {Transport: "carrier-pigeon", Address: "127.0.0.1:0"}})
+	changed, err := s.openAndServe(context.Background(), []Listener{keep, {Transport: "carrier-pigeon", Address: "127.0.0.1:0"}})
 	if err == nil || changed {
 		t.Fatalf("an unknown transport: changed %v, %v", changed, err)
 	}
-	if _, err := s.setListeners(context.Background(), []Listener{keep, keep}); err == nil {
+	if _, err := s.openAndServe(context.Background(), []Listener{keep, keep}); err == nil {
 		t.Fatal("a listener listed twice")
 	}
-	if changed, err := s.setListeners(context.Background(), nil); err != nil || !changed || len(s.ipcListeners(transport.SpaceID{})) != 0 {
+	if changed, err := s.openAndServe(context.Background(), nil); err != nil || !changed || len(s.ipcListeners(transport.SpaceID{})) != 0 {
 		t.Fatalf("no listeners: changed %v, %v, %v", changed, err, s.ipcListeners(transport.SpaceID{}))
 	}
 }
@@ -1112,7 +1154,7 @@ func TestConformanceBehindTheSupervisor(t *testing.T) {
 			}
 			reg, _ := transport.NewRegistry(tr)
 			s := newShared(reg, nil, slog.New(slog.DiscardHandler), time.Now)
-			if _, err := s.setListeners(context.Background(), []Listener{{Transport: udp.Name, Address: address, Camouflage: camouflage}}); err != nil {
+			if _, err := s.openAndServe(context.Background(), []Listener{{Transport: udp.Name, Address: address, Camouflage: camouflage}}); err != nil {
 				t.Fatal(err)
 			}
 			w := newFakeWorker(s, transport.SpaceID{})
@@ -1195,6 +1237,11 @@ type lineTransport struct {
 	target string
 	camo   transport.Camouflage
 	waited chan struct{}
+	// hold, if set, is called before each listener opens, with its
+	// configured address; bound, if set, gets each listener's bound
+	// address once open.
+	hold  func(address string)
+	bound chan<- string
 }
 
 func (lineTransport) Name() string                                     { return "line" }
@@ -1211,8 +1258,14 @@ func (lt lineTransport) ListenStream(ctx context.Context, cfg transport.ListenCo
 	if !ok {
 		return nil, fmt.Errorf("a %T", r)
 	}
+	if lt.hold != nil {
+		lt.hold(cfg.Address)
+	}
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.Address)
+	if err == nil && lt.bound != nil {
+		lt.bound <- ln.Addr().String()
+	}
 	return lineListener{Listener: ln, lt: lt, peers: lr.peers}, err
 }
 func (lineTransport) Handoff(string, []byte, transport.Admission) (transport.HandoffListener, error) {
@@ -1310,7 +1363,7 @@ func TestStreamsAreHandedOver(t *testing.T) {
 	defer func() { _ = target.Close() }()
 	camo := streamCamouflage{got: make(chan []byte, 4)}
 	s := newTestShared(t, nil, lineTransport{target: target.Addr().String(), camo: camo})
-	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
+	if _, err := s.openAndServe(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
 		t.Fatal(err)
 	}
 	address := lineAddress(s)
@@ -1414,7 +1467,7 @@ func TestStreamsAreHandedOver(t *testing.T) {
 // is described with the address it is bound to.
 func TestAStreamListenersSettingsGoOnlyToSpacesWithItsLinks(t *testing.T) {
 	s := newTestShared(t, nil, lineTransport{}, udp.New(udp.Options{}))
-	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}, {Transport: udp.Name, Address: "127.0.0.1:0"}}); err != nil {
+	if _, err := s.openAndServe(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}, {Transport: udp.Name, Address: "127.0.0.1:0"}}); err != nil {
 		t.Fatal(err)
 	}
 	a, b := randomSpace(), randomSpace()
@@ -1454,7 +1507,7 @@ func TestAStreamListenersSettingsGoOnlyToSpacesWithItsLinks(t *testing.T) {
 // be closed.
 func TestASpaceGainingATransportIsToldItsListenerBeforeItsLinksRoute(t *testing.T) {
 	s := newTestShared(t, nil, lineTransport{}, udp.New(udp.Options{}))
-	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}, {Transport: udp.Name, Address: "127.0.0.1:0"}}); err != nil {
+	if _, err := s.openAndServe(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}, {Transport: udp.Name, Address: "127.0.0.1:0"}}); err != nil {
 		t.Fatal(err)
 	}
 	a := randomSpace()
@@ -1483,7 +1536,7 @@ func TestASpaceGainingATransportIsToldItsListenerBeforeItsLinksRoute(t *testing.
 func TestAStreamListenerTakesNoCamouflage(t *testing.T) {
 	s := newTestShared(t, nil, lineTransport{})
 	camo := streamCamouflage{got: make(chan []byte, 1)}
-	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0", Camouflage: camo}}); err == nil {
+	if _, err := s.openAndServe(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0", Camouflage: camo}}); err == nil {
 		t.Fatal("a stream listener with a camouflage was opened")
 	}
 	if len(s.infos()) != 0 {
@@ -1497,7 +1550,7 @@ func TestStreamRoutingIsBounded(t *testing.T) {
 	camo := streamCamouflage{got: make(chan []byte, 4)}
 	s := newTestShared(t, nil, lineTransport{camo: camo})
 	s.routingLimit = 2
-	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
+	if _, err := s.openAndServe(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
 		t.Fatal(err)
 	}
 	address := lineAddress(s)
@@ -1533,7 +1586,7 @@ func TestIdleStreamsDontStarveRouting(t *testing.T) {
 	waited := make(chan struct{}, 8)
 	s := newTestShared(t, nil, lineTransport{camo: camo, waited: waited})
 	s.routingLimit = 2
-	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
+	if _, err := s.openAndServe(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
 		t.Fatal(err)
 	}
 	address := lineAddress(s)
@@ -1580,7 +1633,7 @@ func TestIdleStreamsDontStarveRouting(t *testing.T) {
 func TestReplaysAcrossListeners(t *testing.T) {
 	s := newTestShared(t, nil)
 	a, b := Listener{Transport: udp.Name, Address: "127.0.0.1:0"}, Listener{Transport: udp.Name, Address: "[::1]:0"}
-	if _, err := s.setListeners(context.Background(), []Listener{a, b}); err != nil {
+	if _, err := s.openAndServe(context.Background(), []Listener{a, b}); err != nil {
 		t.Fatal(err)
 	}
 	addrs := map[string]string{}
@@ -1624,10 +1677,10 @@ func TestReplaysAcrossListeners(t *testing.T) {
 	send(addrs[b.Address])
 	eventually(t, "the replay on B", func() bool { return s.counters(space).Replayed == 1 })
 	// A reopened: a new socket, the same history.
-	if _, err := s.setListeners(context.Background(), []Listener{b}); err != nil {
+	if _, err := s.openAndServe(context.Background(), []Listener{b}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.setListeners(context.Background(), []Listener{a, b}); err != nil {
+	if _, err := s.openAndServe(context.Background(), []Listener{a, b}); err != nil {
 		t.Fatal(err)
 	}
 	for _, pl := range *s.byID.Load() {
@@ -1641,5 +1694,343 @@ func TestReplaysAcrossListeners(t *testing.T) {
 	}
 	if remotes := (*s.routes.Load())[space].remotesForTest(); len(remotes) != 1 {
 		t.Fatalf("remembered %v, want the genuine sender only", remotes)
+	}
+}
+
+// announce sends ws the Listeners message space's worker gets, as its
+// session does when the listeners change.
+func announce(s *shared, space transport.SpaceID, ws *workerSockets) error {
+	m, err := ipc.ListenersMessage(s.ipcListeners(space))
+	if err != nil {
+		return err
+	}
+	return ws.sendListeners(m, ws.control.TrySend)
+}
+
+// freeAddress is a loopback TCP address nothing listens on.
+func freeAddress(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().String()
+}
+
+func alphaLink() []transport.PeerLink {
+	return []transport.PeerLink{{Peer: transport.Identity{Node: transport.NodeID{1}}, Verifier: []byte("alpha")}}
+}
+
+// handedOver waits for w's next handoff and checks it is the member's.
+func handedOver(t *testing.T, w *fakeWorker, credential string) {
+	t.Helper()
+	select {
+	case hs := <-w.streams:
+		_ = hs.conn.Close()
+		if want := credential + "\n"; string(hs.consumed) != want {
+			t.Fatalf("handed over %q, want %q", hs.consumed, want)
+		}
+	case <-time.After(wait):
+		t.Fatalf("no handoff, want the member's (%d closed by the worker as an unknown listener's)", w.unknownStreams.Load())
+	}
+	if n := w.unknownStreams.Load(); n != 0 {
+		t.Fatalf("%d connections closed by the worker as an unknown listener's, want 0", n)
+	}
+}
+
+// dialMember connects to address and sends alpha's credential and hello.
+func dialMember(t *testing.T, address string) {
+	t.Helper()
+	conn, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := conn.Write([]byte("alpha\nhello")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A connection accepted on a listener while a later one of the same set
+// is still opening waits until the space's running worker has answered
+// with the listener, then is handed over under an id the worker knows, not
+// closed by the worker as an unknown listener's (as SetListeners does it:
+// open, tell the workers, serve).
+func TestConnectionDuringOpenWaitsForTheWorkers(t *testing.T) {
+	second := freeAddress(t)
+	opening, release := make(chan struct{}), make(chan struct{})
+	bound := make(chan string, 2)
+	s := newTestShared(t, nil, lineTransport{bound: bound, hold: func(address string) {
+		if address == second {
+			close(opening)
+			<-release
+		}
+	}})
+	s.answerTimeout = wait
+	space := randomSpace()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {"line": alphaLink()}})
+	w := newFakeWorker(s, space)
+	ws := w.acking()
+	s.attach(space, ws)
+
+	done := make(chan error, 1)
+	go func() {
+		opened, _, err := s.openListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}, {Transport: "line", Address: second}})
+		if err == nil {
+			err = announce(s, space, ws)
+		}
+		s.serveOpened(opened)
+		done <- err
+	}()
+	var first string
+	select {
+	case first = <-bound:
+	case <-time.After(wait):
+		t.Fatal("the first listener never opened")
+	}
+	<-opening
+	dialMember(t, first)
+	// Served now, the first listener would hand the connection to a worker
+	// that doesn't know it yet.
+	time.Sleep(quiet)
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	handedOver(t, w, "alpha")
+}
+
+// A new listener waits for a space whose worker is starting, or
+// restarting, and so not attached: served at once, it would refuse the
+// space's first connection for lack of a worker. It is served once the
+// new worker process has answered for it and is attached, and the
+// connection that waited meanwhile is handed over.
+func TestListenerWaitsForAWorkerNotAttachedYet(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		name := map[bool]string{false: "starting", true: "restarting"}[restart]
+		t.Run(name, func(t *testing.T) {
+			s := newTestShared(t, nil, lineTransport{})
+			s.answerTimeout = time.Minute
+			space := randomSpace()
+			s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {"line": alphaLink()}})
+			if restart {
+				w := newFakeWorker(s, space)
+				detach, ok := s.attachKnowing(space, w.acking())
+				if !ok {
+					t.Fatal("the first worker wasn't attached")
+				}
+				detach() // it died
+			}
+			waiting := make(chan struct{}, 1)
+			s.waiting = func() {
+				select {
+				case waiting <- struct{}{}:
+				default:
+				}
+			}
+			opened, _, err := s.openListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			served := make(chan struct{})
+			go func() {
+				s.serveOpened(opened)
+				close(served)
+			}()
+			select {
+			case <-waiting:
+			case <-served:
+				t.Fatal("served with no worker attached, want it to wait for the worker")
+			}
+			dialMember(t, lineAddress(s))
+
+			w := newFakeWorker(s, space) // the new process, as its session starts it
+			ws := w.acking()
+			if err := announce(s, space, ws); err != nil {
+				t.Fatal(err)
+			}
+			<-waiting // answered, not attached yet: still waiting
+			if _, ok := s.attachKnowing(space, ws); !ok {
+				t.Fatal("not attached once it answered with the listener")
+			}
+			select {
+			case <-served:
+			case <-time.After(wait):
+				t.Fatal("not served once the worker was attached")
+			}
+			handedOver(t, w, "alpha")
+			if c := s.counters(space); c.StreamsRefused != 0 {
+				t.Fatalf("%d connections refused, want 0", c.StreamsRefused)
+			}
+		})
+	}
+}
+
+// A worker process is attached, and so routed to, only once it has
+// answered with every listener it may be routed.
+func TestWorkerAttachedOnceItKnowsTheListeners(t *testing.T) {
+	s := newTestShared(t, nil, lineTransport{})
+	space := randomSpace()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {"line": alphaLink()}})
+	if _, err := s.openAndServe(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
+		t.Fatal(err)
+	}
+	w := newFakeWorker(s, space)
+	ws := w.acking()
+	if _, ok := s.attachKnowing(space, ws); ok {
+		t.Fatal("attached before it answered with the listener")
+	}
+	if err := announce(s, space, ws); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.attachKnowing(space, ws); !ok {
+		t.Fatal("not attached once it answered with the listener")
+	}
+	conn, err := net.Dial("tcp", lineAddress(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.Write([]byte("alpha\n")); err != nil {
+		t.Fatal(err)
+	}
+	handedOver(t, w, "alpha")
+}
+
+// A worker that never answers holds a new listener up for answerTimeout
+// only: then it is served, for the other spaces too.
+func TestUnansweringWorkerHoldsUpNothingLong(t *testing.T) {
+	s := newTestShared(t, nil, lineTransport{})
+	s.answerTimeout = quiet
+	deaf, live := randomSpace(), randomSpace()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{
+		deaf: {"line": {{Peer: transport.Identity{Node: transport.NodeID{9}}, Verifier: []byte("deaf")}}},
+		live: {"line": alphaLink()},
+	})
+	s.attach(deaf, newFakeWorker(s, deaf).sockets())
+	w := newFakeWorker(s, live)
+	ws := w.acking()
+	s.attach(live, ws)
+	begin := time.Now()
+	opened, _, err := s.openListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := announce(s, live, ws); err != nil {
+		t.Fatal(err)
+	}
+	s.serveOpened(opened)
+	if took := time.Since(begin); took < quiet || took > wait {
+		t.Fatalf("served after %v, want the answer timeout %v", took, quiet)
+	}
+	conn, err := net.Dial("tcp", lineAddress(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.Write([]byte("alpha\n")); err != nil {
+		t.Fatal(err)
+	}
+	handedOver(t, w, "alpha")
+}
+
+// A listener closed while it waits for the workers is never served, and
+// the wait ends with it.
+func TestListenerClosedWhileWaitingIsNotServed(t *testing.T) {
+	s := newTestShared(t, nil, lineTransport{})
+	s.answerTimeout = time.Minute
+	waiting := make(chan struct{}, 1)
+	s.waiting = func() {
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+	}
+	space := randomSpace()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {"line": alphaLink()}})
+	s.attach(space, newFakeWorker(s, space).sockets()) // never answers
+	opened, _, err := s.openListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pl := (*s.byID.Load())[opened[0]]
+	served := make(chan struct{})
+	go func() {
+		s.serveOpened(opened)
+		close(served)
+	}()
+	<-waiting
+	if _, _, err := s.openListeners(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-served:
+	case <-time.After(wait):
+		t.Fatal("still waiting for a listener that closed")
+	}
+	s.mu.Lock()
+	serving := pl.serving
+	s.mu.Unlock()
+	if serving {
+		t.Fatal("a closed listener was served")
+	}
+}
+
+// serveOpened serves the listeners its own call opened, not another
+// call's still waiting.
+func TestServeOpenedServesItsOwnListeners(t *testing.T) {
+	s := newTestShared(t, nil, lineTransport{})
+	first, _, err := s.openListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := s.openListeners(context.Background(), []Listener{
+		{Transport: "line", Address: "127.0.0.1:0"},
+		{Transport: "line", Address: "localhost:0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || len(second) != 1 || first[0] == second[0] {
+		t.Fatalf("opened %v, then %v, want one new listener each", first, second)
+	}
+	s.serveOpened(second)
+	byID := *s.byID.Load()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !byID[second[0]].serving || byID[first[0]].serving {
+		t.Fatalf("serving: own %v, the other call's %v; want true, false", byID[second[0]].serving, byID[first[0]].serving)
+	}
+}
+
+// Each answer must answer a Listeners message sent to the worker, the
+// one setSpaces sends a space gaining a transport included: an extra one
+// is a protocol error.
+func TestAnswerToNoListenersIsAProtocolError(t *testing.T) {
+	s := newTestShared(t, nil, lineTransport{})
+	space := randomSpace()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {}})
+	if _, err := s.openAndServe(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
+		t.Fatal(err)
+	}
+	ws := newFakeWorker(s, space).sockets()
+	s.attach(space, ws)
+	if err := s.setKnown(ws, nil); err == nil {
+		t.Fatal("an answer before any Listeners was taken, want a protocol error")
+	}
+	ws = newFakeWorker(s, space).sockets()
+	s.attach(space, ws)
+	if err := announce(s, space, ws); err != nil {
+		t.Fatal(err)
+	}
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {"line": alphaLink()}}) // gains line: told at once
+	for i := range 2 {
+		if err := s.setKnown(ws, nil); err != nil {
+			t.Fatalf("answer %d of 2 refused: %v", i+1, err)
+		}
+	}
+	if err := s.setKnown(ws, nil); err == nil {
+		t.Fatal("a third answer to two Listeners was taken, want a protocol error")
 	}
 }

@@ -24,9 +24,15 @@ type session struct {
 	p       *process
 	control *ipc.Conn
 	data    *ipc.Conn
-	log     *slog.Logger
-	ready   chan error // the worker's Ready
-	gone    chan error // anything on the control socket after Ready
+	// ws is the process's sockets as the shared listeners route to them,
+	// with the listeners it answered with.
+	ws    *workerSockets
+	log   *slog.Logger
+	ready chan error // the worker's Ready
+	gone  chan error // anything on the control socket after Ready
+	// answered is signalled, coalesced, at each answer to a Listeners
+	// message.
+	answered chan struct{}
 	// sentSeeds are the seeds the current process has had.
 	sentSeeds map[[32]byte]bool
 }
@@ -36,12 +42,14 @@ type session struct {
 func newSession(sup *Supervisor, w *worker, p *process, control, data *ipc.Conn, log *slog.Logger) *session {
 	return &session{
 		sup: sup, w: w, p: p, control: control, data: data, log: log,
+		ws:    &workerSockets{data: data, control: control},
 		ready: make(chan error, 1), gone: make(chan error, 1),
-		sentSeeds: map[[32]byte]bool{},
+		answered: make(chan struct{}, 1), sentSeeds: map[[32]byte]bool{},
 	}
 }
 
-// awaitReady sends the worker its Init message and waits for its Ready: a
+// awaitReady sends the worker its Init message and waits for its Ready
+// message (WorkerInfo.Ready waits for the listeners too: serve): a
 // read or protocol failure or the process's own exit end it before it is
 // ready, the ready timeout ends it after; a worker being stopped while not
 // yet ready is simply torn down (stopped, no error).
@@ -61,7 +69,16 @@ func (sn *session) awaitReady() (stopped bool, err error) {
 	if err := sn.control.Send(init); err != nil {
 		return false, err
 	}
-	go readControl(sn.control, sn.ready, sn.gone)
+	go readControl(sn.control, sn.ready, sn.gone, func(ids []uint32) error {
+		if err := sn.sup.shared.setKnown(sn.ws, ids); err != nil {
+			return err
+		}
+		select {
+		case sn.answered <- struct{}{}:
+		default:
+		}
+		return nil
+	})
 	timer := time.NewTimer(sn.sup.opts.ReadyTimeout)
 	defer timer.Stop()
 	select {
@@ -76,12 +93,17 @@ func (sn *session) awaitReady() (stopped bool, err error) {
 	case <-sn.w.ctx.Done():
 		return true, nil
 	}
+	return false, nil
+}
+
+// markReady marks the worker ready (WorkerInfo.Ready): sandboxed, and the
+// shared listeners route to it.
+func (sn *session) markReady() {
 	sn.w.mu.Lock()
 	sn.w.ready = true
 	sn.w.readyAt = sn.sup.opts.now()
 	sn.w.mu.Unlock()
 	sn.log.Info("worker ready")
-	return false, nil
 }
 
 // serve is one ready worker process's event loop, until it stops or ends:
@@ -91,18 +113,45 @@ func (sn *session) awaitReady() (stopped bool, err error) {
 // after Stop.
 func (sn *session) serve() error {
 	// The listeners and the current config once, then whenever they
-	// change; datagrams and connections from now on.
+	// change; datagrams and connections once the worker has answered with
+	// every listener it may be routed (attachKnowing).
 	if err := sn.sendInitial(); err != nil {
 		return err
 	}
 	countersTick := time.NewTicker(sn.sup.opts.CountersInterval)
 	defer countersTick.Stop()
-	detach := sn.sup.shared.attach(transport.SpaceID(sn.w.space), &workerSockets{data: sn.data, control: sn.control})
-	defer detach()
+	detach := func() {}
+	defer func() { detach() }()
+	attached := false
+	// A Listeners message left unanswered for StopTimeout, counted from its
+	// send or from the last answer, kills the worker, attached or not.
+	answerTimer := time.NewTimer(sn.sup.opts.StopTimeout)
+	defer answerTimer.Stop()
+	var answerTimeout <-chan time.Time
 	dataGone := make(chan error, 1)
 	go sn.readReplies(dataGone)
 	for {
+		if !attached {
+			if d, ok := sn.sup.shared.attachKnowing(transport.SpaceID(sn.w.space), sn.ws); ok {
+				detach, attached = d, true
+				sn.markReady()
+			}
+		}
+		switch lagging := sn.ws.listenersAnswered.Load() < sn.ws.listenersSent.Load(); {
+		case lagging && answerTimeout == nil:
+			answerTimer.Reset(sn.sup.opts.StopTimeout)
+			answerTimeout = answerTimer.C
+		case !lagging && answerTimeout != nil:
+			answerTimer.Stop()
+			answerTimeout = nil
+		}
 		select {
+		case <-sn.answered:
+			// The timer counts on from this answer for any later message.
+			answerTimer.Stop()
+			answerTimeout = nil
+		case <-answerTimeout:
+			return sn.unresponsive(fmt.Errorf("listeners not answered: %w", os.ErrDeadlineExceeded))
 		case <-sn.p.gone:
 			return sn.p.exit()
 		case err := <-dataGone:
@@ -195,9 +244,15 @@ func (sn *session) stuck(what string, err error) error {
 		sn.sup.awaitExit(sn.p)
 		return sn.p.exit()
 	}
+	return sn.unresponsive(fmt.Errorf("sending %s: %w", what, err))
+}
+
+// unresponsive kills a worker that stopped reading or answering its
+// control socket, to be restarted.
+func (sn *session) unresponsive(err error) error {
 	_ = sn.control.Close()
 	sn.p.kill()
-	return exitWith(ExitUnresponsive, fmt.Errorf("sending %s: %w", what, err))
+	return exitWith(ExitUnresponsive, err)
 }
 
 // sendListeners tells a worker which shared listeners it is forwarded from.
@@ -206,7 +261,9 @@ func (sn *session) sendListeners() error {
 	if err != nil {
 		return err
 	}
-	return sn.control.SendTimeout(m, sn.sup.opts.StopTimeout)
+	return sn.ws.sendListeners(m, func(m ipc.Message) error {
+		return sn.control.SendTimeout(m, sn.sup.opts.StopTimeout)
+	})
 }
 
 // sendSeeds sends the worker each of its space's current seeds it hasn't
@@ -277,9 +334,10 @@ func (sn *session) readReplies(gone chan<- error) {
 	}
 }
 
-// readControl reports the worker's Ready on ready, then anything after it on
-// gone (for now every further message is a protocol error, EOF included).
-func readControl(conn *ipc.Conn, ready, gone chan<- error) {
+// readControl reports the worker's Ready on ready, then passes each
+// ListenersKnown to known, and reports anything else, or known's error, on
+// gone (a protocol error, EOF included).
+func readControl(conn *ipc.Conn, ready, gone chan<- error, known func([]uint32) error) {
 	m, err := conn.Receive()
 	if err == nil && m.Kind != ipc.KindReady {
 		m.CloseFiles()
@@ -289,10 +347,23 @@ func readControl(conn *ipc.Conn, ready, gone chan<- error) {
 	if err != nil {
 		return
 	}
-	m, err = conn.Receive()
-	if err == nil {
+	for {
+		m, err = conn.Receive()
+		if err != nil {
+			break
+		}
 		m.CloseFiles()
-		err = fmt.Errorf("unexpected %v message", m.Kind)
+		if m.Kind != ipc.KindListenersKnown {
+			err = fmt.Errorf("unexpected %v message", m.Kind)
+			break
+		}
+		var ids []uint32
+		if ids, err = ipc.DecodeListenersKnown(m); err != nil {
+			break
+		}
+		if err = known(ids); err != nil {
+			break
+		}
 	}
 	gone <- err // io.EOF means the worker's socket closed (it is exiting)
 }

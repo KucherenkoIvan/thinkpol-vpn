@@ -46,13 +46,16 @@
 //
 // GoTestEach, given a GoTestCache, builds each package's test binary before
 // starting its lab and skips the lab when a pass recorded under the same key
-// still holds (lab/testcache: the binary, the image, the engine, the
-// harness, the args and env, and the files the binary read through package
-// os, which it lists in its -test.testlogfile, read back from the node
-// before the lab goes down). Only passes are recorded, for a week, and not
-// when a checkout input changed during the run. Each package run in a lab
-// reports its time split into its queue for one of the run's labs, slot
-// wait, lab start, tests and teardown (LabPhases).
+// still holds (lab/testcache: the binary, built with -trimpath so that the
+// same sources build the same binary from any checkout, the image, the
+// engine, the harness, the args and env, and the files the binary read
+// through package os, which it lists in its -test.testlogfile, read back
+// from the node before the lab goes down). Only passes are recorded, for a
+// week, and not when a checkout input changed during the run (so a test
+// that walks the checkout stays out of lab/bin, which the run's other
+// phases write meanwhile). Each package
+// run in a lab reports its time split into its queue for one of the run's
+// labs, slot wait, lab start, tests and teardown (LabPhases).
 //
 // GoTestEach's packages share their labs through a pool of its own
 // (nodePool, a Pool that Main doesn't know of, closed when GoTestEach
@@ -70,8 +73,9 @@
 //
 // A package marked with HostTestsFile needs no node: on a Linux machine,
 // run as a user (never as root), labctl gotest runs it there with
-// GoTestOnHost, plain go test without THINKPOL_LAB and without cgo, and
-// fails it if any of its tests skips.
+// GoTestOnHost, plain go test without THINKPOL_LAB and without cgo, built
+// with -trimpath so that go test's own cache serves it from another
+// checkout of the same sources, and fails it if any of its tests skips.
 //
 // The helpers build without tags so lint and unit tests cover them; the tests
 // that need Docker carry the lab build tag and run on the host through make

@@ -65,8 +65,9 @@
 // socket pairs (package ipc): a control socket (Init, config, lifecycle,
 // stream handoff) and a data socket (forwarded datagrams). The supervisor
 // sends Init, waits for Ready (ReadyTimeout, 10 s by default) and only then
-// routes traffic to the worker; Stop gives it StopTimeout (5 s) before a
-// kill.
+// routes traffic to the worker, once it has also answered for the shared
+// listeners ("Shared listeners"; [WorkerInfo.Ready] is set from then on);
+// Stop gives it StopTimeout (5 s) before a kill.
 //
 // A worker that exits is restarted with backoff ([DefaultBackoff]: 500 ms,
 // doubling up to 30 s, back to 500 ms after a run of a minute), each time
@@ -285,6 +286,43 @@
 // its target), and SetListeners refuses a stream listener given a
 // Camouflage.
 //
+// A new listener starts serving only once the worker of every space it
+// may be routed to (every datagram listener, and a stream listener of a
+// transport the space's inbound table has links of) is routed to and
+// knows it: a connection routed to a space with no worker attached is
+// refused, and what a worker is forwarded or handed names a listener id,
+// so a worker closes, as an unknown listener's, whatever names one it
+// doesn't have. The worker answers each Listeners message with the ids it
+// has now (ListenersKnown). SetListeners opens the new listeners without
+// serving them (what connects meanwhile waits in the socket's backlog),
+// sends every worker the new Listeners, and serves the listeners it
+// opened once every such space's worker has answered with them and is
+// attached: a running one, and one starting or restarting, which gets
+// them in its first Listeners and is attached (routed to) only once it
+// has answered for every listener it may be routed. The wait ends after
+// StopTimeout, so a worker that doesn't answer, or doesn't come up, holds
+// up no other space longer: the listener is served then, and that space's
+// connections are refused until its worker is attached, as during any
+// restart. A worker that leaves a Listeners message unanswered for
+// StopTimeout, counted from its send or from its last answer, is killed
+// and restarted, attached or not; an answer to no Listeners message is a
+// protocol error. So a server's first connection after it starts, or
+// after a map adds a listener, is served, not dropped, unless a worker
+// takes longer than StopTimeout to come up. SetListeners returns once
+// its new listeners serve; it has one caller at a time.
+//
+// Messages on one socket leave in the order their sends take the
+// descriptor's write lock: a blocking send holds it while it waits for
+// room, and a non-blocking one (Conn.TrySend) takes it too, failing only
+// for lack of room. So a stream handed over after a Listeners message
+// reaches the worker, which reads its control socket in order, after it.
+// SetSpaces relies on that ordering alone for a space that gains a
+// transport: its worker is sent the Listeners naming that transport's
+// stream listeners before the space's new links are routed. A new
+// listener needs the answers instead: a datagram listener's traffic goes
+// over the data socket, not ordered against the control socket, and a
+// worker not attached yet has to be waited for anyway.
+//
 // # Datagrams
 //
 // A datagram transport's connection id tells the Router which credential
@@ -337,9 +375,9 @@
 // and target included, and the target's records, learned here) reach,
 // with the Listeners message, only the workers of spaces whose inbound
 // table has links of its transport; a space's Listeners are sent again
-// when that changes. (A connection routed to a space in the moment
-// before its worker has the new Listeners is dropped by the worker.) Each
-// listener is described with the address it is bound to.
+// when that changes, before its new links are routed ("Shared
+// listeners"). Each listener is described with the address it is bound
+// to.
 //
 // The bounds on what a stream listener costs the supervisor are two
 // layers. The supervisor's: at most 1024 connections per listener in

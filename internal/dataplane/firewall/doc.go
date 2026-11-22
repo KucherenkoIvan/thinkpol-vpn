@@ -478,19 +478,20 @@
 // missing anchor is an empty one, and with no pfctl at all everything is
 // unreadable.
 //
-// Guard and snapshot alike, pfctl's answers of absence are each one exact
-// line, alone on stderr but for its ALTQ chatter (its two exact lines, "No
-// ALTQ support in kernel" and "ALTQ related functions disabled"; a rule's
-// label saying ALTQ is a rule): a missing anchor's rules, `pfctl:
-// DIOCGETRULES: Invalid argument` ([AnchorMissing]); a missing anchor's
-// children (`-s Anchors`), `Anchor '<name>' not found.` with nothing
-// listed, whatever the exit status (pfctl's source, which exits 0; both
-// unrecorded); a missing table, `pfctl: Table does not exist.` (macOS
-// answers it for a missing anchor's table too) or `pfctl: Anchor or Ruleset
-// does not exist.`. Any other failure, an "Invalid argument" of another
-// ioctl included, is an error, never an empty anchor or table. The parsers
-// are tested on listings a Mac printed (testdata/pfctl/recorded-*,
-// sanitized), and on built ones for what no device has printed.
+// Apply, Close and InspectIPv6Guard alike, pfctl's answers of absence are
+// each one exact line, alone on stderr but for its ALTQ chatter (its two
+// exact lines, "No ALTQ support in kernel" and "ALTQ related functions
+// disabled"; a rule's label saying ALTQ is a rule): a missing anchor's
+// rules, `pfctl: DIOCGETRULES: Invalid argument` ([AnchorMissing]); a
+// missing anchor's children (`-s Anchors`), `Anchor '<name>' not found.`
+// with nothing listed, whatever the exit status (pfctl's source, which
+// exits 0; both unrecorded); a missing table, `pfctl: Table does not
+// exist.` (macOS answers it for a missing anchor's table too) or `pfctl:
+// Anchor or Ruleset does not exist.`. Any other failure, an "Invalid
+// argument" of another ioctl included, is an error, never an empty anchor
+// or table. The parsers are tested on listings a Mac printed
+// (testdata/pfctl/recorded-*, sanitized), and on built ones for what no
+// device has printed.
 //
 // # What the macOS guard doesn't do
 //
@@ -507,6 +508,14 @@
 //
 // On a device the guard loads and passes its own check; that it blocks
 // its leak paths is not yet proven on a device (TP-096).
+//
+// Its readings of pf ([ParsePfEnabled], [SkippedNames], [AnchorMissing])
+// and of its own record ([GuardReferenceHeld]: a record of another boot,
+// a symlink or a non-regular file holds nothing) are exported for the
+// device-test harness (lab/devicetest), which compares pf with its
+// baseline through them, so a restore takes as absence only the answers
+// the guard does (above), and only from a pfctl that exited (not one cut
+// off at its timeout).
 //
 // # The kill switch
 //

@@ -59,6 +59,8 @@ func TestMain(m *testing.M) {
 		os.Exit(runBadKindWorker())
 	case os.Getenv("SUPERVISOR_TEST_DEAF") != "":
 		os.Exit(runDeafWorker())
+	case os.Getenv(envAnswers) != "":
+		os.Exit(runAnsweringWorker(os.Getenv(envAnswers)))
 	case os.Getenv(envWorker) != "":
 		os.Exit(runTestWorker())
 	case os.Getenv(envSupervisor) != "":
@@ -481,8 +483,9 @@ func runBadKindWorker() int {
 	return 0
 }
 
-// runDeafWorker is a worker that reports Ready and then never reads its
-// control socket again.
+// runDeafWorker is a worker that reports Ready, answers its first
+// Listeners message (so only a stuck send ends it, not an unanswered
+// Listeners) and then never reads its control socket again.
 func runDeafWorker() int {
 	cf := os.NewFile(uintptr(ipc.ControlFD), "control")
 	c, err := ipc.FromFile(cf)
@@ -497,8 +500,110 @@ func runDeafWorker() int {
 	if err := c.Send(ipc.Message{Kind: ipc.KindReady}); err != nil {
 		return 1
 	}
+	m, err := c.Receive()
+	if err != nil {
+		return 1
+	}
+	m.CloseFiles()
+	if err := answerListeners(c, m, 1); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	time.Sleep(time.Hour) // alive, reading nothing, until the test kills it
 	return 0
+}
+
+// envAnswers makes the test worker runAnsweringWorker, answering its
+// Listeners messages as the value says: answerFirst, answerTwice or
+// answerSlow.
+const envAnswers = "SUPERVISOR_TEST_ANSWERS"
+
+const (
+	// answerFirst answers its first Listeners message and every one of
+	// at most one listener; later ones of more are read and never
+	// answered.
+	answerFirst = "first"
+	// answerTwice answers each Listeners message twice.
+	answerTwice = "twice"
+	// answerSlow answers each Listeners message slowAnswer late.
+	answerSlow = "slow"
+	// slowAnswer: two answers in a row (a first Listeners sent before the
+	// listener opened, then the new set) fit in the StopTimeout
+	// TestWorkerIsReadyOnceRoutedTo sets, with 9 s to spare each.
+	slowAnswer = time.Second
+)
+
+// answerListeners answers the Listeners message m times times, as a
+// worker does once.
+func answerListeners(c *ipc.Conn, m ipc.Message, times int) error {
+	ls, err := ipc.DecodeListeners(m)
+	if err != nil {
+		return err
+	}
+	ids := make([]uint32, len(ls))
+	for i, l := range ls {
+		ids[i] = l.ID
+	}
+	known, err := ipc.ListenersKnownMessage(ids)
+	if err != nil {
+		return err
+	}
+	for range times {
+		if err := c.Send(known); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runAnsweringWorker is a worker that reports Ready at once (it does not
+// sandbox), then answers its Listeners messages as mode says.
+func runAnsweringWorker(mode string) int {
+	cf := os.NewFile(uintptr(ipc.ControlFD), "control")
+	c, err := ipc.FromFile(cf)
+	_ = cf.Close()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if _, err := c.Receive(); err != nil { // Init
+		return 1
+	}
+	if err := c.Send(ipc.Message{Kind: ipc.KindReady}); err != nil {
+		return 1
+	}
+	for answered := 0; ; {
+		m, err := c.Receive()
+		if err != nil {
+			return 0
+		}
+		m.CloseFiles()
+		switch m.Kind {
+		case ipc.KindStop:
+			return 0
+		case ipc.KindListeners:
+			if mode == answerFirst && answered > 0 {
+				ls, err := ipc.DecodeListeners(m)
+				if err != nil {
+					return 1
+				}
+				if len(ls) > 1 {
+					continue
+				}
+			}
+			times := 1
+			switch mode {
+			case answerTwice:
+				times = 2
+			case answerSlow:
+				time.Sleep(slowAnswer)
+			}
+			if err := answerListeners(c, m, times); err != nil {
+				return 1
+			}
+			answered++
+		}
+	}
 }
 
 // A worker that stops reading its control socket is killed once a control
