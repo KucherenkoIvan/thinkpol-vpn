@@ -13,15 +13,18 @@ LABEL org.thinkpol.lab.image="1"
 # matrix); openssl s_server and nginx: TLS and HTTP targets, nginx pinned
 # too, as the camouflage site the prober and server-hello compare servers
 # with (lab/RESULTS.md was scored against it; Debian's nginx-light is only
-# nginx plus an echo module nothing uses); netcat: raw TCP
-# and UDP; socat: the matrix's naive echo server;
+# nginx plus an echo module nothing uses). Debian drops a pinned revision
+# when it ships the next one: a new Debian revision of the same upstream
+# version (the part before the first "-") only patches it, so re-pin
+# without re-scoring; a new upstream version needs the matrix re-run.
+# netcat: raw TCP and UDP; socat: the matrix's naive echo server;
 # dbus-daemon and systemd-resolved: a device whose OS resolves through
 # resolved (started by the tests that need it, never by the image).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       iproute2 nftables iputils-ping tcpdump curl ca-certificates procps \
       wireguard-tools openvpn=2.6.14-0+deb12u2 openssl \
-      nginx=1.22.1-9+deb12u10 netcat-openbsd socat \
+      nginx=1.22.1-9+deb12u11 netcat-openbsd socat \
       dbus-daemon systemd-resolved \
  && rm -rf /var/lib/apt/lists/*
 # The lab CA, made when the image is built and private to it, and the
