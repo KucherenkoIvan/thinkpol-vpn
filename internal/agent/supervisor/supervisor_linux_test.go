@@ -506,8 +506,9 @@ func runDeafWorker() int {
 const (
 	envSlowAck = "SUPERVISOR_TEST_SLOW_ACK"
 	// slowAck is how long runSlowAckWorker takes to answer a Listeners
-	// message: within options' StopTimeout.
-	slowAck = 2 * time.Second
+	// message: two answers in a row (a first Listeners sent before the
+	// listener opened, then the new set) fit in options' StopTimeout.
+	slowAck = time.Second
 )
 
 // runSlowAckWorker is a worker that reports Ready at once (it does not

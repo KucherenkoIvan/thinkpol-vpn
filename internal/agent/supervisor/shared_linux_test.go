@@ -795,41 +795,49 @@ func sharedOf(s *supervisor.Supervisor, space netmap.SpaceID) supervisor.SharedC
 	return supervisor.SharedCounters{}
 }
 
-// A worker reads ready only once the shared listeners route to it: one
-// that answers its Listeners slowAck late isn't ready until then, though
-// it reported Ready at once.
+// A worker reads ready only once the shared listeners route to it, and
+// SetListeners returns only then: one that answers its Listeners slowAck
+// late, though it reported Ready at once, isn't ready before that, and is
+// ready the moment SetListeners returns. A server logs "map applied" and
+// reads serving only once SetListeners returns (the agent's
+// TestServerSaysAppliedOnceItsListenersServe), so neither comes before a
+// connection can reach the worker.
 func TestWorkerIsReadyOnceRoutedTo(t *testing.T) {
 	needsLab(t)
 	opts := sharedOptions()
 	opts.Env = append(opts.Env, envSlowAck+"=1")
 	space := netmap.NewSpaceID()
-	s, err := supervisor.New(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	if err := s.SetSpaces([]supervisor.Space{{ID: space, Config: []byte("config")}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetListeners([]supervisor.Listener{{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort)}}); err != nil {
-		t.Fatal(err)
-	}
+	s := start(t, opts, space)
+	begin := time.Now()
+	returned := make(chan error, 1)
+	go func() {
+		returned <- s.SetListeners([]supervisor.Listener{{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort)}})
+	}()
 	var started time.Time
-	for started.IsZero() || time.Since(started) < slowAck/2 {
+	for deadline := begin.Add(2*slowAck + opts.StopTimeout); ; time.Sleep(10 * time.Millisecond) {
+		select {
+		case err := <-returned:
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w, _ := info(s, space); !w.Ready || w.Starts != 1 {
+				t.Fatalf("SetListeners returned after %v with the worker %+v, want it ready, started once", time.Since(begin), w)
+			}
+			return
+		default:
+		}
 		w, _ := info(s, space)
 		if w.PID != 0 && started.IsZero() {
 			started = time.Now()
 		}
-		if w.Ready {
-			t.Fatalf("ready %v after its process started, before it acknowledged the listeners: %+v", time.Since(started), w)
+		if w.Ready && time.Since(started) < slowAck/2 {
+			t.Fatalf("ready %v after its process started, want not before it answered the listeners (%v): %+v", time.Since(started), slowAck, w)
 		}
 		if w.LastExit != "" {
 			t.Fatalf("the worker ended: %s", w.LastExit)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	waitReady(t, s, space)
-	if w, _ := info(s, space); w.Starts != 1 {
-		t.Fatalf("restarted: %+v", w)
+		if time.Now().After(deadline) {
+			t.Fatalf("SetListeners still waiting after %v, want it back once the worker answered", time.Since(begin))
+		}
 	}
 }
