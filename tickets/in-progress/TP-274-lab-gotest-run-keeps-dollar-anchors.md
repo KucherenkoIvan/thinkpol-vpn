@@ -28,7 +28,10 @@ branch: tp-274-lab-gotest-run-anchors
 - [ ] lab/README.md shows the plain form.
 
 ## Notes
+- Cause: `lab-gotest: export LAB_RUN = $(RUN)` (Makefile): a variable set on make's command line or taken from the environment is recursively expanded, so expanding `$(RUN)` expands `$` and `$/` inside its value too. `$(value RUN)` (and `$(value SKIP)`) hands over the text as given; the recipe passes it on in double quotes (`-run "$$LAB_RUN"`), which the shell doesn't touch further.
 
 ## Log
 - 2026-11-22 created in backlog (final-lab small fixes)
 - 2026-11-22 backlog → in-progress, owner: agent-tp-274
+- 2026-11-22 fix: Makefile lab-gotest exports LAB_RUN and LAB_SKIP as $(value RUN) and $(value SKIP); lab/README.md shows the plain form; TestMakefileLabGotestPassesRunVerbatim (lab/labgotestrun_test.go) runs make with a prerequisite that inherits the target's exports and prints them, RUN and SKIP from the command line and from the environment
+- 2026-11-22 mutations: the unfixed Makefile ($(RUN), $(SKIP)): the test fails both ways (`^TestCensorMatrix^(udp|reality)^off`); only SKIP back to $(SKIP): fails both ways; restored: passes
