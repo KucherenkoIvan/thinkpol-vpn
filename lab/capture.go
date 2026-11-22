@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/lab/pcap"
 )
 
 // Capture records the IP packets a node sees on all its interfaces, with
@@ -117,18 +119,18 @@ func (n *Node) startCapture(filter string) (*Capture, error) {
 func (c *Capture) readStream(r io.Reader) {
 	defer close(c.read)
 	defer func() { _, _ = io.Copy(io.Discard, r) }()
-	pr, err := newPcapReader(r)
+	pr, err := pcap.NewReader(r)
 	if err != nil {
 		c.setErr(err)
 		return
 	}
 	defer func() {
 		c.mu.Lock()
-		c.truncated = pr.truncated
+		c.truncated = pr.Truncated()
 		c.mu.Unlock()
 	}()
 	for {
-		pkt, err := pr.next()
+		pkt, err := pr.Next()
 		if errors.Is(err, io.EOF) {
 			return
 		}
