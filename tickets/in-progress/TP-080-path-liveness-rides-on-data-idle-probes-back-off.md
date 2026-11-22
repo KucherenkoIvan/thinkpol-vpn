@@ -89,3 +89,4 @@ The path package doc (internal/dataplane/path/doc.go) has the 6 s dead interval;
 - 2026-11-22 make lint and make test passed on 5dabdfe9
 - 2026-11-22 in-progress → review
 - 2026-11-22 review → has-errors: R1.1–R1.11 (four reviewers, two model families: fix first; owner decisions in Notes)
+- 2026-11-22 has-errors → in-progress, owner: agent-tp-080
