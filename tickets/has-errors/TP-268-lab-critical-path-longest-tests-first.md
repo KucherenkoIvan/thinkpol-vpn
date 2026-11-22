@@ -81,6 +81,19 @@ All four: every test passed, node phase 39 of 40 packages cached. During A1 and 
 ### Next steps (not done here)
 - Measure again once every runner's code has the queue share (other branches merged), on a quiet runner; consider a larger share if the default stream still waits behind other phases.
 
+## Review findings
+Round 2 (three reviewers: no leak, deadlock or changed test claim; the A/B doesn't show "≥ 2 min", and the five mechanisms were never measured one by one):
+- [ ] R2.1 pool.go startOrTake: a start that already holds its slot and finishes after its test took another lab, in an open pool, must put its lab back: a test, which fails with either putBack deleted.
+- [ ] R2.2 a start that gives way is noted `slot-wait … failed`: give it its own result (`gave-way`), and a pool timeline line where startOrTake takes a lab that came back, so a full lab shows whether the mechanism fired; correct the Log's claim.
+- [ ] R2.3 hostlock.go / startfirst.go: a start stopped before it reaches the queue can still take a free slot (the share's select, then one tryLock): check context.Cause before trying the slots; a test.
+- [ ] R2.4 timeline.go noteTest "cont": go test writes `=== CONT` on every -v output switch, not only on resume: note only the first per test.
+- [ ] R2.5 gotestpool.go: a package that took a lab that came back reports its whole wait as a lab start: startOrTake says whether it took one, and the wait is then reported as waiting for a lab.
+- [ ] R2.6 take → startOrTake: register the starter in take under the same lock as p.labs++ (no window where a returned lab sits idle with no starter registered).
+- [ ] R2.7 startfirst.go Pool.StartFirst: count labs and coming only once lockDir succeeded (or undo in t.Cleanup), so a Fatal there can't wedge the censor pool for 45 minutes; results_test.go: the wgTimerScaleErr check before StartFirst.
+- [ ] R2.8 style: startFirst's comment contradicts the code (it returns a wait func); the poll-until-n loop repeated 5× → one t.Helper() helper; lab.go launch's comment incomplete; errors.Is(context.Cause(ctx), errSlotWaitStopped); math.MaxInt; doc.go rewrap; TestSlotQueueShare → a behaviour name; war stories out of comments and lab/README.md into the ticket (comments state constraints).
+- [ ] R2.9 the 30 s first-start grace: the failure it causes says exactly what to do (a serial test that starts a lab while StartFirst tests wait), or the grace goes if the measurement shows the gate isn't needed.
+- [ ] R3 the deciding measurement: three arms (rewrite; rewrite + only the simplest part; the branch after the fixes), warm, alternating, 3 runs each on a quiet runner; keep only what is ≥ 2 min faster by median on the default stream and green.
+
 ## Log
 - 2026-11-19 created in backlog (owner: do 1-2)
 - 2026-11-19 backlog → in-progress, owner: agent-tp-268
@@ -100,3 +113,4 @@ All four: every test passed, node phase 39 of 40 packages cached. During A1 and 
 - 2026-11-22 not verified: that a start gave way to a lab that came back in the full labs (no timeline line for it; the unit tests cover the mechanism); targeted lab-gotest runs not done separately: the four full labs on bfe277f0 run every lab/ test and the node phase
 - 2026-11-22 on bfe277f0: make lint, make test passed; lab commit bfe277f0
 - 2026-11-22 in-progress → review
+- 2026-11-22 review → has-errors (round 2 findings R2.1–R2.9, R3: the deciding measurement)
