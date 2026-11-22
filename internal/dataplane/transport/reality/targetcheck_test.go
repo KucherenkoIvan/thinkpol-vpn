@@ -171,3 +171,49 @@ func TestTargetCheckWaitsGrowAtRandom(t *testing.T) {
 		}
 	}
 }
+
+// While Listen checks its target, its port is closed: held, it would take
+// connections it answers nothing on for as long as the check runs, which
+// a prober would see, and a supervisor would hand them all over the moment
+// it starts serving, before its workers know the listener.
+func TestTheListenersPortIsClosedWhileItsTargetIsChecked(t *testing.T) {
+	site, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = site.Close() })
+	checking := make(chan struct{})
+	go func() {
+		c, err := site.Accept()
+		if err != nil {
+			return
+		}
+		close(checking)
+		time.Sleep(500 * time.Millisecond)
+		_ = c.Close() // no TLS: the check fails
+	}()
+	addr := closedPort(t)
+	settings := mustMarshal(t, &transportv1.RealityListenSettings{
+		PrivateKey: newKeys(t).private, Target: site.Addr().String(), ServerNames: []string{serverName},
+	})
+	listened := make(chan error, 1)
+	go func() {
+		l, err := newTransport(Options{}).Listen(t.Context(), transport.ListenConfig{Address: addr, Settings: settings}, transport.Admission{Peers: transport.NewPeerTable()})
+		if err == nil {
+			_ = l.Close()
+		}
+		listened <- err
+	}()
+	select {
+	case <-checking:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Listen didn't check the target")
+	}
+	if c, err := net.DialTimeout("tcp4", addr, time.Second); err == nil {
+		_ = c.Close()
+		t.Errorf("%s took a connection while its target was checked", addr)
+	}
+	if err := <-listened; err == nil {
+		t.Fatal("listened with a target that doesn't speak TLS")
+	}
+}

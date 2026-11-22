@@ -144,12 +144,14 @@
 // IPv4 address, "tcp6" (IPV6_V6ONLY) for an IPv6 one, as udp does. The map
 // gives a dual-stack server one listener per family on a port (0.0.0.0:443
 // and [::]:443), and on plain "tcp" Go would make the first wildcard a
-// dual-stack socket, leaving the second unable to bind for good. Only once
-// bound does Listen check the target (below), closing the socket if the
-// check fails: a listener that can't bind never dials the target. In the
-// meantime the port accepts connections into the kernel's backlog; the
-// listener takes them up once the check passed, and a failed check resets
-// them.
+// dual-stack socket, leaving the second unable to bind for good. Listen
+// checks the target (below) only once its address bound, so a listener
+// that can't bind never dials the target; it closes that socket at once
+// and listens again after the check. Held through the check, the port
+// would take connections and answer none of them for seconds, which a
+// prober would see, and behind a shared listener they would all be handed
+// over the moment the supervisor starts serving, before its workers know
+// the listener (the lab's prober cell caught both).
 //
 // The agent retries a listener that failed every few seconds
 // (agent.RetryAfter). A target whose check failed isn't checked again

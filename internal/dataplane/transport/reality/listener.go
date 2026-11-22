@@ -57,10 +57,10 @@ func (t *Transport) Listen(ctx context.Context, cfg transport.ListenConfig, admi
 	return l, nil
 }
 
-// openListener listens on a listener of the map, then checks its target
-// (the target's certificate, then REALITY's detection of its records),
-// closing the socket if the check fails. Binding first means a listener
-// that can't bind never dials the target.
+// openListener checks that a listener of the map can bind its address,
+// then checks its target (the target's certificate, then REALITY's
+// detection of its records), then listens: a listener that can't bind
+// never dials the target.
 func (t *Transport) openListener(ctx context.Context, cfg transport.ListenConfig) (net.Listener, listenSettings, error) {
 	addr, err := netip.ParseAddrPort(cfg.Address)
 	if err != nil || !addr.Addr().IsValid() {
@@ -71,13 +71,23 @@ func (t *Transport) openListener(ctx context.Context, cfg transport.ListenConfig
 		return nil, ls, err
 	}
 	lc := net.ListenConfig{Control: t.control}
-	ln, err := lc.Listen(ctx, listenNetwork(addr), addr.String())
+	network := listenNetwork(addr)
+	// Closed at once rather than held through the check: held, the port
+	// would take connections it doesn't answer for as long as the check
+	// runs (seconds), and a prober's would show it; and a server's
+	// supervisor would then hand them all over the moment it starts
+	// serving, before its workers know the listener.
+	probe, err := lc.Listen(ctx, network, addr.String())
 	if err != nil {
 		return nil, ls, fmt.Errorf("reality: %w", err)
 	}
+	_ = probe.Close()
 	if err := t.checkTarget(ctx, ls); err != nil {
-		_ = ln.Close()
 		return nil, ls, err
+	}
+	ln, err := lc.Listen(ctx, network, addr.String())
+	if err != nil {
+		return nil, ls, fmt.Errorf("reality: %w", err)
 	}
 	return ln, ls, nil
 }
