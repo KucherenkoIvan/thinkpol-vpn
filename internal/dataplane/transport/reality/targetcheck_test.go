@@ -157,7 +157,8 @@ func TestAFailedTargetCheckBacksOff(t *testing.T) {
 }
 
 // The waits between checks of a failing target are random and grow to
-// checkBackoffMax, so retries can't settle into a fixed period.
+// checkBackoffMax. (The re-checks themselves still land on the agent's
+// apply retry: TP-281.)
 func TestTargetCheckWaitsGrowAtRandom(t *testing.T) {
 	d := checkBackoffMin
 	for n := 1; n <= 80; n++ {
@@ -174,6 +175,20 @@ func TestTargetCheckWaitsGrowAtRandom(t *testing.T) {
 		}
 		if len(seen) < 2 {
 			t.Fatalf("wait after %d failures: always %v", n, seen)
+		}
+	}
+}
+
+// At the cap, a failing target is held 1 to 2 minutes: a server that
+// started before its target came up serves within about 2 minutes of it
+// becoming reachable (the package doc's trade-off). The bounds are
+// literals, not checkBackoffMax, so changing the cap fails here.
+func TestTargetCheckWaitsAtTheCapAreOneToTwoMinutes(t *testing.T) {
+	for n := 20; n <= 80; n++ {
+		for range 20 {
+			if w := checkBackoff(n); w < time.Minute || w > 2*time.Minute {
+				t.Fatalf("wait after %d failures: %s, want within [1m, 2m]", n, w)
+			}
 		}
 	}
 }

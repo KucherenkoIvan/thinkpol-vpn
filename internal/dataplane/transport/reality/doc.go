@@ -153,19 +153,27 @@
 // prober would see. (How a shared listener's first connections reach the
 // workers is the supervisor's: TP-278.)
 //
-// The agent retries a listener that failed every few seconds
-// (agent.RetryAfter). A target whose check failed isn't checked again
-// before a wait drawn at random from the upper half of 10 s, doubling with
-// each failure in a row up to 2 minutes, per target and server names for
-// the transport's life; until then Listen fails at once with the last
-// check's error, dialling nothing. So a failing target is never dialled on
-// the retry's fixed period. The cap is a trade-off: a server that started
-// before its uplink (or its target) came up serves within about 2 minutes
-// of the target becoming reachable, and a target that stays down is
-// dialled about once every 1 to 2 minutes, at random, from the server's
-// address, one hello per server name, for as long as it stays down. A
-// check that passed isn't repeated: the agent keeps a listener that opened
-// across its retries, until the map changes it.
+// The agent retries a listener that failed every 5 s after its last apply
+// (agent.RetryAfter). A target whose check failed is held for a wait drawn
+// at random from the upper half of 10 s, doubling with each failure in a
+// row up to 2 minutes, per target and server names for the transport's
+// life; until then Listen fails at once with the last check's error,
+// dialling nothing. So a failing target isn't dialled at every retry. A
+// held check runs again only when a retry calls Listen after the wait
+// ended, so re-checks land on the retry's 5 s grid: about 10 s after the
+// first failure (a 5 to 10 s wait rounds up to the second retry), then 15
+// to 20 s, 25 to 40 s and, at the cap, 65 to 120 s apart, always whole
+// multiples of 5 s, which a censor folding their times by 5 s sees while
+// the target stays down (RESIDUAL-RISKS.md RR66; TP-281). The cap is a
+// trade-off: a server that started before its uplink (or its target) came
+// up serves within about 2 minutes of the target becoming reachable, and a
+// target that stays down is dialled about once every 1 to 2 minutes from
+// the server's address for as long as it stays down. Each re-check sends
+// one hello per server name, and after a check whose detection stalled it
+// re-runs REALITY's detection for the stalled keys (up to 6 connections
+// per server name, with ChangeCipherSpec records). A check that passed
+// isn't repeated: the agent keeps a listener that opened across its
+// retries, until the map changes it.
 //
 // Before checking the target, Listen has crypto/x509 read the system
 // roots, which on Linux and the BSDs it does from disk once per process,
