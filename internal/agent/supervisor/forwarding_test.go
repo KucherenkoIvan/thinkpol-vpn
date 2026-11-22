@@ -379,3 +379,225 @@ func TestMaxFlowsDefaultsToAQuarterOfConntrack(t *testing.T) {
 		t.Fatal("explicit caps not kept")
 	}
 }
+
+// crashSys copies the sysctls and the run dir before and after every write:
+// what a supervisor killed at that point leaves behind.
+type crashSys struct {
+	*fakeKernelSys
+	t       *testing.T
+	run     string
+	crashes []crashPoint
+}
+
+type crashPoint struct {
+	name     string
+	sys, run string
+}
+
+func (c *crashSys) Write(key, value string) error {
+	c.snapshot("before writing " + key + "=" + value)
+	err := c.fakeKernelSys.Write(key, value)
+	c.snapshot("after writing " + key + "=" + value)
+	return err
+}
+
+// afterWriteSys runs after, if set, once a write has gone through.
+type afterWriteSys struct {
+	*fakeKernelSys
+	after func(key string)
+}
+
+func (a *afterWriteSys) Write(key, value string) error {
+	err := a.fakeKernelSys.Write(key, value)
+	if err == nil && a.after != nil {
+		a.after(key)
+	}
+	return err
+}
+
+func (c *crashSys) snapshot(name string) {
+	p := crashPoint{name: name, sys: c.t.TempDir(), run: c.t.TempDir()}
+	for src, dst := range map[string]string{c.root: p.sys, c.run: p.run} {
+		if err := os.CopyFS(dst, os.DirFS(src)); err != nil && !errors.Is(err, os.ErrExist) {
+			c.t.Fatal(err)
+		}
+	}
+	c.crashes = append(c.crashes, p)
+}
+
+// sysctlTree is every sysctl under root, by key.
+func sysctlTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	tree := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(path)
+		key, _ := filepath.Rel(root, path)
+		tree[key] = strings.TrimSpace(string(b))
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tree
+}
+
+// checkSuccessor starts a successor on what a dead supervisor left (the
+// sysctls under sysRoot, the record in run): every forwarding switch it
+// finds on that was off at first is its own (so its tables confine it),
+// and once it restores, every sysctl is back to before (want).
+func checkSuccessor(t *testing.T, sysRoot, run string, want map[string]string) {
+	t.Helper()
+	sys := &fakeKernelSys{hookSysctls: hookSysctls{procSysFS: procSysFS{root: sysRoot}}}
+	next := rootForwarding{sys: sys}
+	if err := next.load(run); err != nil {
+		t.Fatalf("successor's load: %v", err)
+	}
+	for i, key := range forwardingKeys {
+		if v, _ := sys.Read(key); v != want[key] && !next.owned()[i] {
+			t.Errorf("%s = %s (was %s), owned by no one", key, v, want[key])
+		}
+	}
+	if err := next.restore(); err != nil {
+		t.Fatalf("successor's restore: %v", err)
+	}
+	got := sysctlTree(t, sysRoot)
+	for key, v := range want {
+		if got[key] != v {
+			t.Errorf("after the successor's restore: %s = %s, want %s", key, got[key], v)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(run, forwardingFile)); !os.IsNotExist(err) {
+		t.Errorf("the record outlived the successor's restore: %v", err)
+	}
+}
+
+// A supervisor killed before or after any of its writes leaves a record
+// its successor puts every value back from, or adopts the forwarding by
+// (and confines it): never forwarding on that no one owns, nor accept_ra
+// left at 2.
+func TestForwardingKilledAtAnyWriteIsPutBackOrAdopted(t *testing.T) {
+	fake, _ := fakeProcSys(t)
+	want := sysctlTree(t, fake.root)
+	run := t.TempDir()
+	sys := &crashSys{fakeKernelSys: fake, t: t, run: run}
+	f := rootForwarding{sys: sys}
+	if err := f.load(run); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ensure([2]bool{true, true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sys.crashes) != 8 { // the IPv4 switch, default's and eth0's accept_ra, the IPv6 switch
+		t.Fatalf("%d crash points, want 8", len(sys.crashes))
+	}
+	for _, p := range sys.crashes {
+		t.Run(p.name, func(t *testing.T) { checkSuccessor(t, p.sys, p.run, want) })
+	}
+}
+
+// A record that can't be saved fails the attempt, which puts back what it
+// wrote; once the switch is flipped its record is saved already, and the
+// family stays the supervisor's. A successor started then (the supervisor
+// dying right after) puts everything back or adopts it.
+func TestForwardingRecordThatCannotBeSavedFailsTheAttempt(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// failAfter makes saves fail once the write of this key returns;
+		// "": from the start.
+		failAfter string
+		wantOwned [2]bool
+	}{
+		{name: "before the accept_ra writes", wantOwned: [2]bool{}},
+		{name: "before the switch", failAfter: "net/ipv6/conf/eth0/accept_ra", wantOwned: [2]bool{}},
+		{name: "after the switch", failAfter: forwardingKeys[1], wantOwned: [2]bool{false, true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake, get := fakeProcSys(t)
+			want := sysctlTree(t, fake.root)
+			run := t.TempDir()
+			sys := &afterWriteSys{fakeKernelSys: fake}
+			f := rootForwarding{sys: sys}
+			if err := f.load(run); err != nil {
+				t.Fatal(err)
+			}
+			// A directory where the record's temporary file goes: every
+			// save fails (removing the record doesn't), root or not.
+			blocker := filepath.Join(run, forwardingFile+".new")
+			block := func() {
+				if err := os.Mkdir(blocker, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+					t.Error(err)
+				}
+			}
+			if tc.failAfter == "" {
+				block()
+			} else {
+				sys.after = func(key string) {
+					if key == tc.failAfter {
+						block()
+					}
+				}
+			}
+			if err := f.ensure([2]bool{false, true}); err == nil {
+				t.Fatal("ensure returned nil with the record unsaved")
+			}
+			if f.owned() != tc.wantOwned {
+				t.Errorf("owned = %v, want %v", f.owned(), tc.wantOwned)
+			}
+			if !tc.wantOwned[1] {
+				for key, v := range want {
+					if got := get(key); got != v {
+						t.Errorf("after the failed attempt: %s = %s, want %s", key, got, v)
+					}
+				}
+			}
+			if err := os.Remove(blocker); err != nil {
+				t.Fatal(err)
+			}
+			checkSuccessor(t, fake.root, run, want)
+		})
+	}
+}
+
+// A family the successor doesn't adopt, its switch turned off by someone
+// else after the supervisor died, gets back the accept_ra values that
+// still hold 2; one changed since is left.
+func TestForwardingRecordOfASwitchTurnedOffPutsBackAcceptRA(t *testing.T) {
+	sys, get := fakeProcSys(t)
+	run := t.TempDir()
+	f := rootForwarding{sys: sys}
+	if err := f.load(run); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ensure([2]bool{false, true}); err != nil {
+		t.Fatal(err)
+	}
+	// The supervisor dies; an admin turns IPv6 forwarding off and sets
+	// eth0's accept_ra.
+	for key, v := range map[string]string{forwardingKeys[1]: "0", "net/ipv6/conf/eth0/accept_ra": "0"} {
+		if err := sys.procSysFS.Write(key, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next := rootForwarding{sys: sys}
+	if err := next.load(run); err != nil {
+		t.Fatal(err)
+	}
+	if next.owned() != [2]bool{} {
+		t.Fatalf("adopted a switch someone else turned off: %v", next.owned())
+	}
+	for key, want := range map[string]string{
+		"net/ipv6/conf/default/accept_ra": "1",
+		"net/ipv6/conf/eth0/accept_ra":    "0", // changed by someone else: left
+		forwardingKeys[1]:                 "0",
+	} {
+		if got := get(key); got != want {
+			t.Errorf("after the successor's load: %s = %s, want %s", key, got, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(run, forwardingFile)); !os.IsNotExist(err) {
+		t.Errorf("the record outlived the successor's load: %v", err)
+	}
+}
