@@ -20,8 +20,9 @@ type Options struct {
 	Control func(network, address string, c syscall.RawConn) error
 	// Now is the clock; nil means time.Now. Nodes' clocks must agree within
 	// the listener's time window. It drives the dialer's seal and the
-	// listener's own freshness check; REALITY's check behind it uses the
-	// real clock.
+	// listener's own freshness check and the waits between failed checks
+	// of a listener's target; REALITY's check behind it uses the real
+	// clock.
 	Now func() time.Time
 	// TrustTargetRoots, for tests and the lab only, replaces the system
 	// roots Listen verifies the target's certificate against. Settings
@@ -37,6 +38,7 @@ type Transport struct {
 	// now.Sub(start), but for tests that move a fake clock.
 	elapsed     func(start, now time.Time) time.Duration
 	targetRoots *x509.CertPool // nil: the system roots
+	checks      *targetChecks
 	sent        *transport.SendMeter
 }
 
@@ -44,10 +46,11 @@ var _ transport.Transport = (*Transport)(nil)
 
 // New returns the reality adapter.
 func New(o Options) *Transport {
-	t := &Transport{control: o.Control, now: o.Now, targetRoots: o.TrustTargetRoots, sent: &transport.SendMeter{}, elapsed: func(start, now time.Time) time.Duration { return now.Sub(start) }}
+	t := &Transport{control: o.Control, now: o.Now, targetRoots: o.TrustTargetRoots, checks: newTargetChecks(), sent: &transport.SendMeter{}, elapsed: func(start, now time.Time) time.Duration { return now.Sub(start) }}
 	if t.now == nil {
 		t.now = time.Now
 	}
+	t.checks.now = t.now
 	return t
 }
 
