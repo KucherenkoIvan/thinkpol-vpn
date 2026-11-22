@@ -267,6 +267,11 @@ func TestFreshLabMarksSkipTheRunBinaries(t *testing.T) {
 	var rels []string
 	for _, m := range marks {
 		rels = append(rels, filepath.ToSlash(m.rel))
+		// The fixture has no comment: a mark read without its source
+		// would pass for a good one.
+		if m.problem == "" {
+			t.Errorf("%s: no problem reported for a mark without a comment", m.rel)
+		}
 	}
 	if want := []string{"pkg/" + FreshLabFile}; !slices.Equal(rels, want) {
 		t.Errorf("marks found %v, want %v", rels, want)
