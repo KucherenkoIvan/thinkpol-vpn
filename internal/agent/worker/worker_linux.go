@@ -141,7 +141,7 @@ func readData(data *ipc.Conn, shared *sharedListeners, cancel context.CancelCaus
 }
 
 // readControl delivers each Config and Listeners the supervisor sends
-// (latest-wins; each Listeners acknowledged) and each stream it hands
+// (latest-wins; each Listeners answered) and each stream it hands
 // over, and ends the worker on Stop, EOF or anything unexpected.
 func readControl(control *ipc.Conn, shared *sharedListeners, ch channels, seeds *Seeds, cancel context.CancelCauseFunc) {
 	for {
@@ -189,8 +189,9 @@ func deliver(m ipc.Message, control *ipc.Conn, shared *sharedListeners, ch chann
 		}
 		known := shared.update(ls)
 		latest(ch.listeners, known)
-		// The supervisor serves a new listener only once every worker has
-		// it: what it forwards from then on finds the listener's entry.
+		// Answered once taken in: the supervisor routes to this process,
+		// and serves a new listener, only once it has the answer (or, for
+		// the listener, StopTimeout passed).
 		ids := make([]uint32, len(known))
 		for i, l := range known {
 			ids[i] = l.ID

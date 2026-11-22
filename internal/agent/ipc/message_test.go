@@ -79,7 +79,9 @@ func TestListenersKnownRoundTrip(t *testing.T) {
 	if out, err := ipc.DecodeListenersKnown(m); err != nil || !reflect.DeepEqual(out, []uint32{3, 9}) {
 		t.Fatalf("round trip: %v, %v", out, err)
 	}
-	m, _ = ipc.ListenersKnownMessage(nil)
+	if m, err = ipc.ListenersKnownMessage(nil); err != nil {
+		t.Fatal(err)
+	}
 	if out, err := ipc.DecodeListenersKnown(m); err != nil || len(out) != 0 {
 		t.Fatalf("none known: %v, %v", out, err)
 	}

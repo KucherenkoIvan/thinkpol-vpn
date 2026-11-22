@@ -59,8 +59,8 @@ func TestMain(m *testing.M) {
 		os.Exit(runBadKindWorker())
 	case os.Getenv("SUPERVISOR_TEST_DEAF") != "":
 		os.Exit(runDeafWorker())
-	case os.Getenv(envSlowAck) != "":
-		os.Exit(runSlowAckWorker())
+	case os.Getenv(envAnswers) != "":
+		os.Exit(runAnsweringWorker(os.Getenv(envAnswers)))
 	case os.Getenv(envWorker) != "":
 		os.Exit(runTestWorker())
 	case os.Getenv(envSupervisor) != "":
@@ -503,17 +503,27 @@ func runDeafWorker() int {
 	return 0
 }
 
+// envAnswers makes the test worker runAnsweringWorker, answering its
+// Listeners messages as the value says: answerFirst, answerTwice or
+// answerSlow.
+const envAnswers = "SUPERVISOR_TEST_ANSWERS"
+
 const (
-	envSlowAck = "SUPERVISOR_TEST_SLOW_ACK"
-	// slowAck is how long runSlowAckWorker takes to answer a Listeners
-	// message: two answers in a row (a first Listeners sent before the
+	// answerFirst answers the first Listeners message only; later ones
+	// are read and never answered.
+	answerFirst = "first"
+	// answerTwice answers each Listeners message twice.
+	answerTwice = "twice"
+	// answerSlow answers each Listeners message slowAnswer late.
+	answerSlow = "slow"
+	// slowAnswer: two answers in a row (a first Listeners sent before the
 	// listener opened, then the new set) fit in options' StopTimeout.
-	slowAck = time.Second
+	slowAnswer = time.Second
 )
 
-// runSlowAckWorker is a worker that reports Ready at once (it does not
-// sandbox), then answers each Listeners message only after slowAck.
-func runSlowAckWorker() int {
+// runAnsweringWorker is a worker that reports Ready at once (it does not
+// sandbox), then answers its Listeners messages as mode says.
+func runAnsweringWorker(mode string) int {
 	cf := os.NewFile(uintptr(ipc.ControlFD), "control")
 	c, err := ipc.FromFile(cf)
 	_ = cf.Close()
@@ -527,7 +537,7 @@ func runSlowAckWorker() int {
 	if err := c.Send(ipc.Message{Kind: ipc.KindReady}); err != nil {
 		return 1
 	}
-	for {
+	for answered := 0; ; {
 		m, err := c.Receive()
 		if err != nil {
 			return 0
@@ -541,15 +551,30 @@ func runSlowAckWorker() int {
 			if err != nil {
 				return 1
 			}
+			if mode == answerFirst && answered > 0 {
+				continue
+			}
 			ids := make([]uint32, len(ls))
 			for i, l := range ls {
 				ids[i] = l.ID
 			}
-			time.Sleep(slowAck)
-			known, _ := ipc.ListenersKnownMessage(ids)
-			if err := c.Send(known); err != nil {
+			known, err := ipc.ListenersKnownMessage(ids)
+			if err != nil {
 				return 1
 			}
+			times := 1
+			switch mode {
+			case answerTwice:
+				times = 2
+			case answerSlow:
+				time.Sleep(slowAnswer)
+			}
+			for range times {
+				if err := c.Send(known); err != nil {
+					return 1
+				}
+			}
+			answered++
 		}
 	}
 }
