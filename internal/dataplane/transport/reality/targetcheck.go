@@ -15,11 +15,11 @@ import (
 // is up to checkBackoffMin, each later one doubles, up to checkBackoffMax,
 // and each is drawn at random from its upper half. The agent retries a
 // failed listener every few seconds (agent.RetryAfter); unbacked, each
-// retry would dial the target on that fixed period, from the server's
-// address, for as long as the check fails. checkBackoffMax is how late a
-// server serves once its target is reachable again (one that started
-// before its uplink, say), and about how often a target that stays down is
-// dialled: the package doc's trade-off.
+// retry would dial the target, from the server's address, for as long as
+// the check fails. checkBackoffMax is how late a server serves once its
+// target is reachable again (one that started before its uplink, say), and
+// about how often a target that stays down is dialled: the package doc's
+// trade-off.
 var (
 	checkBackoffMin = 10 * time.Second
 	checkBackoffMax = 2 * time.Minute
@@ -33,7 +33,7 @@ var (
 // until the map changes it.
 type targetChecks struct {
 	mu     sync.Mutex
-	now    func() time.Time // the real clock; tests replace it
+	now    func() time.Time // the transport's clock (Options.Now)
 	failed map[string]*failedCheck
 }
 

@@ -157,8 +157,7 @@ func TestAFailedTargetCheckBacksOff(t *testing.T) {
 }
 
 // The waits between checks of a failing target are random and grow to
-// checkBackoffMax. (The re-checks themselves still land on the agent's
-// apply retry: TP-281.)
+// checkBackoffMax.
 func TestTargetCheckWaitsGrowAtRandom(t *testing.T) {
 	d := checkBackoffMin
 	for n := 1; n <= 80; n++ {
