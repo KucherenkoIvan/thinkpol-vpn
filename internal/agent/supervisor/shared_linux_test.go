@@ -843,7 +843,11 @@ func startAnswering(t *testing.T, mode string) (*supervisor.Supervisor, netmap.S
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	// Not waiting for it ready: one that breaks the protocol may never be.
 	if err := s.SetSpaces(spacesOf(space)); err != nil {
 		t.Fatal(err)
