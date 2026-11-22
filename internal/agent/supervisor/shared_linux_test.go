@@ -885,12 +885,31 @@ func TestWorkerNotAnsweringListenersIsRestarted(t *testing.T) {
 	needsLab(t)
 	s, space, opts := startAnswering(t, answerFirst)
 	waitReady(t, s, space)
-	time.Sleep(500 * time.Millisecond) // its first answer in: routed to
+	// Every Listeners message so far answered: the kill can come only
+	// from the send below.
+	eventually(t, 10*time.Second, "the startup's Listeners answered", func() error {
+		if sent, answered, ok := supervisor.ListenersAnswered(s, space); !ok || sent == 0 || answered != sent {
+			return fmt.Errorf("attached %v, %d sent, %d answered", ok, sent, answered)
+		}
+		return nil
+	})
+	first, _ := info(s, space)
 	begin := time.Now()
-	if err := s.SetListeners([]supervisor.Listener{
-		{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort)},
-		{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort+1)},
-	}); err != nil {
+	set := make(chan error, 1)
+	go func() {
+		set <- s.SetListeners([]supervisor.Listener{
+			{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort)},
+			{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort+1)},
+		})
+	}()
+	// Alive until StopTimeout after the send, less a poll's slack.
+	for time.Since(begin) < opts.StopTimeout-200*time.Millisecond {
+		if w, _ := info(s, space); w.Starts != first.Starts || w.LastExitReason != first.LastExitReason {
+			t.Fatalf("killed %v after the send, want StopTimeout %v: %+v", time.Since(begin), opts.StopTimeout, w)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := <-set; err != nil {
 		t.Fatal(err)
 	}
 	if took := time.Since(begin); took > opts.StopTimeout+time.Second {
