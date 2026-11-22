@@ -23,8 +23,8 @@ While a reality target's check keeps failing, the server's re-checks of it are n
 - reality's own backoff bounds (TP-230 set them).
 
 ## Acceptance
-- [ ] A test that the re-check times of a target whose check keeps failing are not on a fixed grid (not all multiples of one period).
-- [ ] RESIDUAL-RISKS.md RR66, reality's doc.go and docs/design/transports.md describe the new spacing.
+- [x] A test that the re-check times of a target whose check keeps failing are not on a fixed grid (not all multiples of one period). `TestAHeldTargetIsCheckedAgainOffTheRetryGrid` (internal/agent/heldtarget_test.go:36): the real reality transport on a fake clock (also driving the server's retry timer), a local target that fails every check, 25 checks; for no period P from 1 s to 10 s in 10 ms steps are all 24 gaps within 50 ms of a multiple of P; each gap is within [least wait, wait's top + 7 s] for its failure count; the retry waits lie in 3–7 s, span below 3.5 s and above 6.5 s, and average 5 s ± 5σ. Mutations in the Log.
+- [x] RESIDUAL-RISKS.md RR66, reality's doc.go and docs/design/transports.md describe the new spacing. RESIDUAL-RISKS.md:69 (RR66's scope column), reality doc.go:156-169, docs/design/transports.md:19; each gives the 3–7 s retry, the re-check gaps (wait + 0–7 s: 5–17, 10–27, 20–47, 40–87, then 60–127 s) and what a censor still sees (the series of hellos to one target every 1–2 min while it stays down). Also targetcheck.go's comment, agent.RetryAfter's doc and lab idleHold's comment.
 
 ## Notes
 - Found in TP-230's final check (2026-11-22).
@@ -37,3 +37,7 @@ While a reality target's check keeps failing, the server's re-checks of it are n
 ## Log
 - 2026-11-22 created in backlog (from TP-230's review)
 - 2026-11-22 backlog → in-progress, owner: agent-tp-281
+- 2026-11-22 implemented (d04a54a0): idea (a), the server's apply retry waits a uniform 3–7 s (`serverSpaces.retryIn`, internal/agent/node.go:1115, used at :1059 and :1101); reality's target-check backoff reads Options.Now (transport.go:53); docs RR66, reality doc.go, transports.md. Why (a) over (b): Notes.
+- 2026-11-22 test TestAHeldTargetIsCheckedAgainOffTheRetryGrid passes, 200/200 with -count=200. Mutations (run locally, not pushed): retry back to a fixed `retryAfter` → fails ("every gap is within 50ms of a multiple of 1s", gaps 10s 15s 35s 1m5s …); retry 5–9 s (slower) → fails ("a retry after 7.84s, want 3 to 7 s"). reality package unit tests pass with the clock change.
+- 2026-11-22 make lint exit 0 (466 s), make test exit 0 (300 s), both at d04a54a0; lab run `make lab-gotest PKG=./internal/dataplane/transport/reality/...` at d04a54a0: exit 0, 94 s. No full lab run (the brief asks for none; the orchestrator runs full labs on rewrite). The reality matrix's setup was not re-run: only a comment changed there (idleHold). Merged origin/rewrite (3b28a2fd, a board-only change).
+- 2026-11-22 in-progress → review
