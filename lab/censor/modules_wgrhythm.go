@@ -643,8 +643,12 @@ func (m *wgRhythm) record(c *wgConn, dir int, f *Flow, size int, end time.Time) 
 func (m *wgRhythm) idleExchange(c *wgConn, r wgRecord, afterQuiet bool) {
 	o := c.opener
 	switch {
-	case afterQuiet:
+	case afterQuiet && o == nil:
 		c.opener, c.idle = &r, nil
+		return
+	case afterQuiet:
+		// The opener before went unanswered: no exchange, the run ends.
+		c.opener, c.idle, c.steady = &r, nil, wgSteadyRun{}
 		return
 	case o != nil && r.dir != o.dir && r.end.Sub(o.end) <= m.pairWindow():
 		var sizes [2]int

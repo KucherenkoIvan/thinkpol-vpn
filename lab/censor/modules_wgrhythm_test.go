@@ -1814,8 +1814,9 @@ func every(first, step time.Duration, n int) []time.Duration {
 // fixed rhythm show the steady signal at the tenth, judged once the quiet
 // after it has passed (on the next packet); intervals spread by more than
 // wgSteadyJitter, an exchange of other sizes, a second record before the
-// quiet, an answer outside the pair window or another record between
-// exchanges each keep a run short of ten.
+// quiet, an answer outside the pair window, another record between
+// exchanges or an unanswered one after the quiet each keep a run short of
+// ten; a third record in an exchange starts the run over at the next.
 func TestWGRhythmSteadyExchanges(t *testing.T) {
 	s, ms := time.Second, time.Millisecond
 	jittered := every(6*s, 6*s, 12)
@@ -1832,10 +1833,16 @@ func TestWGRhythmSteadyExchanges(t *testing.T) {
 	sized[11].size = 41 // the sixth exchange's answer
 	twice := pinger(every(6*s, 6*s, 12), 30*ms, 40, 40)
 	twice = append(twice, wireRecord{30*s + 60*ms, false, 40}) // a second answer in the fifth exchange
-	late := pinger(every(6*s, 6*s, 12), 30*ms, 40, 40)
-	late[9].at = 30*s + 2100*ms // the fifth answer after the pair window
+	late := pinger(every(8*s, 8*s, 12), 30*ms, 40, 40)
+	late[9].at = 40*s + 2100*ms // the fifth answer after the pair window, the quiet passed before the next
 	between := pinger(every(6*s, 6*s, 12), 30*ms, 40, 40)
 	between = append(between, wireRecord{33 * s, true, 300}) // a record halfway, before the quiet
+	lone := pinger(every(12*s, 12*s, 12), 30*ms, 40, 40)
+	lone = append(lone, wireRecord{66 * s, false, 40}) // an unanswered record after the quiet, halfway
+	// A third record in the fifth exchange, then exchanges 12 s apart:
+	// the run starts over at the first of those, its tenth at 150 s.
+	third := pinger(slices.Concat(every(6*s, 6*s, 5), every(42*s, 12*s, 11)), 30*ms, 40, 40)
+	third = append(third, wireRecord{30*s + 60*ms, true, 40})
 	for _, c := range []struct {
 		name string
 		recs []wireRecord
@@ -1855,6 +1862,8 @@ func TestWGRhythmSteadyExchanges(t *testing.T) {
 		{"a second answer", twice, 0},
 		{"an answer outside the pair window", late, 0},
 		{"a record between exchanges", between, 0},
+		{"an unanswered record after the quiet", lone, 0},
+		{"a third record in an exchange", third, 162 * s},
 	} {
 		recs := slices.Clone(c.recs)
 		slices.SortStableFunc(recs, func(a, b wireRecord) int { return int(a.at - b.at) })
