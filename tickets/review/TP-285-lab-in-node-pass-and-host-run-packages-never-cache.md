@@ -25,9 +25,9 @@ A second full `make lab-test` of the same commit, from another checkout, serves 
 - The `lab/` phase's own speed (the censor matrix).
 
 ## Acceptance
-- [ ] Two consecutive full labs of the same commit from different checkout paths: the second serves `./lab`'s in-node pass and the host-run packages from the cache, and its default stream time is reported.
-- [ ] Every new or changed test mutation-checked, mutations in the Log.
-- [ ] lab/README.md says what each cache covers.
+- [x] Two consecutive full labs of the same commit from different checkout paths: the second serves `./lab`'s in-node pass and the host-run packages from the cache, and its default stream time is reported. Evidence: the two full labs of bf05ff02 in the Log: run 2 served all 30 in-node packages (`./lab` included, no node lab started) and 12 of the 16 host-run packages; default stream 12m26s. The other 4 host-run packages open paths in the checkout, which go test's cache keys by absolute name and mtime, so they can't hit from another checkout (Log, README "What each cache covers").
+- [x] Every new or changed test mutation-checked, mutations in the Log. Evidence: TestFreshLabMarksSkipTheRunBinaries, TestGoTestOnHostCachesAcrossCheckouts, TestHostGoTestCommand; mutations in the Log (2026-11-22).
+- [x] lab/README.md says what each cache covers. Evidence: "What each cache covers" (after "Cached passes"): labctl's passes for node runs, go test's own cache for the host run (what its key holds, which packages it can't serve from another checkout), the harness stamp; "Cached passes" says a test walking the checkout skips lab/bin.
 
 ## Notes
 - Found in TP-284's two full labs of 18bfa3b3 (2026-11-22): run 2 served 29 of the 30 in-node packages, default stream 13m28s.
@@ -42,3 +42,7 @@ A second full `make lab-test` of the same commit, from another checkout, serves 
 - 2026-11-22 mutations, each caught (targeted go test on the Mac, restored after): freshLabMarks without the lab/bin skip (TestFreshLabMarksSkipTheRunBinaries: "marks found [lab/bin/run-x/tests/freshlab_test.go pkg/freshlab_test.go]"); -trimpath dropped from hostGoTestCommand (TestGoTestOnHostCachesAcrossCheckouts: "the same sources from another checkout ran again"; TestHostGoTestCommand: args)
 - 2026-11-22 make lint, make test green at c2b84954
 - 2026-11-22 filed TP-286 (labctl tests fail on macOS: TestGotestSkipAndTimes, TestGotestRunsNodelessPackagesOnTheHost, temp dir through the /var symlink; reproduced on rewrite b7beec15)
+- 2026-11-22 two full make lab-test runs of bf05ff02, back to back on a quiet runner (no other lab containers), each from a fresh checkout at its own path: run 1 (cold: labctl changed, so every node key is new) exit 3 (passed, over budget; NOT JUDGED: reality / active prober), default stream 16m23s, long 4m29s, node phase 0 of 46 cached (in-node 0 of 30, ./lab's pass 2m18s and recorded: no "pass not recorded" line; host-run 0 of 16), 12 node labs; run 2 exit 0 (NOT JUDGED: reality / active prober), default stream 12m26s, long 3m5s, node phase "46 packages, 42 of them cached": in-node 30 of 30 (./lab included), no node lab started; host-run 12 of 16 (ran: internal/devmap 0.6s, internal/lists 2.5s, internal/dataplane/path 21.8s, internal/netmap 31.5s)
+- 2026-11-22 not verified / left open: the 4 host-run packages whose tests open checkout paths still run from a fresh checkout (go test's cache keys those by absolute name and mtime; making them hit would mean labctl caching the host run itself or the tests not opening checkout paths; out of scope); make lint, make test ran at c2b84954, the code of bf05ff02 (only a board-only merge and this ticket since)
+- 2026-11-22 lab commit bf05ff02 (the two full labs above)
+- 2026-11-22 in-progress → review
