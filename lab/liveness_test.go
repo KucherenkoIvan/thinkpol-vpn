@@ -333,7 +333,7 @@ func deadUnderTraffic(t *testing.T, k *livenessLink) {
 	lift = k.blackhole(t, false)
 	defer lift()
 	devAfter, devWhy = closed(t, k.devUp, "device-a", devFrom, todayBound+10*time.Second)
-	serverAfter, serverWhy = closed(t, k.serverUp, "server-1", serverFrom, todayBound+10*time.Second)
+	serverAfter, serverWhy = closed(t, k.serverUp, "server-1", serverFrom, idleBound[k.transport]+loadSlack+10*time.Second)
 	t.Logf("%s, cut from server-1 under device-a's one-way stream: device-a closed its link %v after its last answer (%q); server-1 %v after its last answer (%q)",
 		k.transport, devAfter, devWhy, serverAfter, serverWhy)
 	checkBusyBound(t, k.transport+", one-way stream, cut from server-1", "device-a", devAfter)
