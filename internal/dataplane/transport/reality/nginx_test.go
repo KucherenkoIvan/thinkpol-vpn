@@ -24,7 +24,10 @@ const (
 )
 
 // startLabSite runs the lab's camouflage site on a loopback port of this
-// node, as lab.StartCamouflage configures it, and returns its address.
+// node, as lab.StartCamouflage configures it, and returns its address. It
+// runs as one process (master_process off): a killed master leaves its
+// worker running, orphaned, and the site's TLS and TCP behaviour is the
+// worker's either way.
 func startLabSite(t *testing.T) string {
 	t.Helper()
 	nginx, err := exec.LookPath("nginx")
@@ -47,7 +50,7 @@ func startLabSite(t *testing.T) string {
 	if err := os.WriteFile(path, []byte(conf), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(nginx, "-c", path, "-g", "daemon off;")
+	cmd := exec.Command(nginx, "-c", path, "-g", "daemon off; master_process off;")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
