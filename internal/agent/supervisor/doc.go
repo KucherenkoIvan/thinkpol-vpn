@@ -210,19 +210,43 @@
 // every interface's forwarding; IPv6: every interface's forwarding), and
 // turning it off resets them again, so the record keeps their earlier
 // values. An attempt that fails before its switch is flipped puts back
-// the accept_ra values it wrote (what it can't is in the error), and
-// nothing else: a switch someone else turned on meanwhile stays on.
+// the accept_ra values it wrote, and nothing else: a switch someone else
+// turned on meanwhile stays on. An accept_ra value that can't be put back
+// (here, on Close, or by a successor) stays in the record under a switch
+// that isn't the supervisor's, so the next attempt or start tries again.
 //
 // It records what it changed in [DefaultRuntimeDir] (forwarding.json, on a
-// tmpfs like the sysctls' own lifetime), so a successor after a crash
-// adopts the families whose switch still holds what was written. It puts
-// everything back, side effects included and each only if still unchanged
-// since, when no space needs it and on Close, before it removes its
-// tables, never the other way round, or the root would forward everything
-// for a moment. Forwarding it can't turn off keeps its tables and its
-// record, so the root still forwards nothing else and the next start tries
-// again. Not yet: a crash between turning forwarding on and the record's
-// save, or a failed save, leaves it unrecorded (TP-276).
+// tmpfs like the sysctls' own lifetime, so no earlier boot's record is
+// ever read), so a successor after a crash adopts the families whose
+// switch still holds what was written. Every write is in the record before
+// it is made, so a crash at any point leaves nothing unrecorded: the
+// accept_ra values are recorded before they are written; then the switch,
+// with the earlier values of what flipping it resets, before it is
+// flipped; what those hold after is recorded on the next save, and a
+// successor that finds them missing takes what they hold then. A record
+// that can't be saved fails the attempt, which puts back what it wrote; a
+// record of a flipped switch is saved already. The record is written to a
+// temporary file and renamed over the old one, so a reader never sees half
+// of it (no fsync: a tmpfs keeps it across a crash, and a reboot clears it
+// with the sysctls). Only the holder of the node's supervisor role reads
+// or writes it, so a successor never starts while its predecessor lives.
+// A successor puts back the accept_ra values of a family it doesn't adopt
+// (its switch never flipped, or turned off since) that still hold 2. A
+// switch someone else turns on after the supervisor read it at 0 is taken
+// as the supervisor's: by the live supervisor, which keeps it as its own
+// until it puts forwarding back, and, if it died between the record's save
+// and its own write of 1, by a successor when it next loads the record,
+// however long the service stays down until then. That
+// fails closed: the successor's tables confine that forwarding to the
+// spaces (dropping, say, a container runtime's forwarded traffic), and it
+// turns it off when no space needs it.
+//
+// It puts everything back, side effects included and each only if still
+// unchanged since, when no space needs it and on Close, before it removes
+// its tables, never the other way round, or the root would forward
+// everything for a moment. Forwarding it can't turn off keeps its tables
+// and its record, so the root still forwards nothing else and the next
+// start tries again.
 //
 // A service uninstall leaves no next start, so [ClearLeftovers] does a
 // dead supervisor's cleanup there and then: holding the node's supervisor
