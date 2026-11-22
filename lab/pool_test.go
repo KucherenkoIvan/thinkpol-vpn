@@ -198,6 +198,7 @@ func TestPoolWaitsForLabsComing(t *testing.T) {
 // closed, its lab is torn down, and closing waits for it, so no lab
 // outlives the run.
 func TestPoolTearsDownAStartNobodyNeedsAtClose(t *testing.T) {
+	t.Setenv(TimelineEnv, "") // its labs aren't the run's
 	p := &Pool{size: 2, name: "router", labs: 1} // one lab in use
 	far := time.Now().Add(time.Minute)
 	late := &fakeLab{project: "lab-late"}
@@ -298,6 +299,7 @@ func TestPoolStarterGetsALabBeforeItsStartBegins(t *testing.T) {
 // open, its lab joins the pool, idle, and the next test takes it instead
 // of starting one.
 func TestPoolKeepsAStartNobodyNeedsForTheNextTest(t *testing.T) {
+	t.Setenv(TimelineEnv, "") // its labs aren't the run's
 	p := &Pool{size: 2, name: "router", labs: 1} // one lab in use
 	far := time.Now().Add(time.Minute)
 	late := &pooledLab{ops: &fakeLab{project: "lab-late"}, timer: time.NewTimer(time.Hour)}
