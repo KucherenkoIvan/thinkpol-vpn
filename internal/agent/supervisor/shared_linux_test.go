@@ -807,7 +807,14 @@ func TestWorkerIsReadyOnceRoutedTo(t *testing.T) {
 	opts := sharedOptions()
 	opts.Env = append(opts.Env, envSlowAck+"=1")
 	space := netmap.NewSpaceID()
-	s := start(t, opts, space)
+	s, err := supervisor.New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.SetSpaces(spacesOf(space)); err != nil {
+		t.Fatal(err)
+	}
 	begin := time.Now()
 	returned := make(chan error, 1)
 	go func() {
