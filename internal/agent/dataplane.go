@@ -140,7 +140,8 @@ type tuning struct {
 }
 
 // RetryAfter is how long a data plane waits before retrying an Apply, a
-// start or a listener that failed.
+// start or a listener that failed; a server's apply retry waits a random
+// 60% to 140% of it (serverSpaces.retryIn).
 const RetryAfter = 5 * time.Second
 
 // statusEvery paces the status line at debug level.

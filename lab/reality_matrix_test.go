@@ -5,6 +5,7 @@ package lab_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -28,7 +29,8 @@ const rowReality = "reality"
 // ClientHello names the camouflage site, which the prober and the
 // server-hello comparison point at. The device comes up in the cell's
 // probe (or hold), after censord (deviceUp), so the censor reads its TLS
-// connection from the first byte.
+// connection from the first byte. The row's recorded off cell also
+// watches server-1 idle after start-up (idleServerLeavesItsTarget).
 var realityRow = transport{
 	name: rowReality, setup: setupReality, probe: probeWithDevice, sawFlows: sawReality,
 	hold: holdWithDevice, tunnel: realityFlow, tls: true, labs: 3, cellTime: 20 * time.Second,
@@ -40,21 +42,112 @@ var realityRow = transport{
 }
 
 func setupReality(t *testing.T, l *lab.Lab) (probeTarget, error) {
-	server, dev := l.Node(lab.Server1), l.Node(lab.DeviceA)
+	server, dev, site := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Camouflage)
 	camouflage := lab.StartCamouflage(t, l)
-	space := newM0Space(t, l.Node(lab.Camouflage), server)
+	space := newM0Space(t, site, server)
 	space.spec = "/src/lab/maps/reality.yaml"
 	space.env = append(space.env, "CAMOUFLAGE_IPV4="+camouflage[0].Addr().String())
 	envelope, version := space.build(t)
 	space.install(t, dev, "device-a", envelope)
 	space.install(t, server, "server-1", envelope)
-	startUp(t, server)
+	up := startUp(t, server)
 	if _, err := statusWithin(server, 60*time.Second, nil, mapApplied(version)); err != nil {
 		return probeTarget{}, err
+	}
+	if recordedOffCell(t, rowReality) {
+		if err := idleServerLeavesItsTarget(t, server, site, up, version); err != nil {
+			return probeTarget{}, err
+		}
 	}
 	deferDevice(t, l)
 	o4, o6 := space.overlay(1)
 	return probeTarget{o4, o6}, nil
+}
+
+// idleHold is how long idleServerLeavesItsTarget watches an idle server:
+// at least two of the server's apply retries (3 to 7 s apart, 5 s on
+// average: agent.RetryAfter, a wall clock constant the lab doesn't speed
+// up).
+const idleHold = 15 * time.Second
+
+// recordedOffCell says whether t is the off cell the row's first lab
+// records (TestCensorMatrix/<row>/off, in each stream that runs it): a
+// check of the row's setup that holds the cell runs there once, not in
+// every cell.
+func recordedOffCell(t *testing.T, row string) bool {
+	parts := strings.Split(t.Name(), "/")
+	n := len(parts)
+	return n >= 2 && parts[n-2] == row && parts[n-1] == offCase
+}
+
+// offCase is the name of the matrix's off cell, censorCases[0].
+const offCase = "off"
+
+// idleServerLeavesItsTarget watches server-1, serving the reality map
+// with no client (device-a starts later, deferDevice), for idleHold after
+// its start-up: the map's listeners are derived from its endpoints
+// (reality 0.0.0.0:443 and reality [::]:443), both must open, so the
+// apply doesn't retry, and nothing it retries may dial the target. Before
+// TP-230, [::]:443 couldn't bind next to 0.0.0.0:443's dual-stack socket,
+// and every retry, every 5 s, made a TLS handshake with the target from
+// the server's address.
+func idleServerLeavesItsTarget(t *testing.T, server, site *lab.Node, up *lab.Process, version string) error {
+	// The supervisor's own line ends start-up: the status (mapApplied)
+	// reads the map applied, not retrying, while the first apply still
+	// opens the listeners and checks the target (TP-279).
+	applied := regexp.MustCompile(`msg="map applied" service=thinkpol version=` + regexp.QuoteMeta(version) + ` `)
+	for start := time.Now(); !applied.MatchString(up.Output()); {
+		if time.Since(start) > 60*time.Second {
+			return fmt.Errorf("server-1 didn't log map %s applied within 60s\n%s", version, failedLines(up.Output()))
+		}
+		time.Sleep(time.Second)
+	}
+	// The target is IPv4 (CAMOUFLAGE_IPV4): every connection to it opens
+	// with a SYN this filter sees.
+	dials := site.Capture(t, "tcp dst port 443 and tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn")
+	logged := len(up.Output())
+	var errs []error
+	for deadline := time.Now().Add(idleHold); ; {
+		st, err := readStatus(server, pollTimeout)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("server-1's status: %w", err))
+			break
+		}
+		if st.Retrying {
+			errs = append(errs, fmt.Errorf("server-1 retries its map %s while idle", st.MapVersion))
+			break
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(min(5*time.Second, time.Until(deadline)))
+	}
+	if syns := dials.Stop(); len(syns) > 0 {
+		var from []string
+		for _, p := range syns {
+			from = append(from, fmt.Sprintf("%s %s", p.Time.UTC().Format("15:04:05.000"), p.Src))
+		}
+		errs = append(errs, fmt.Errorf("the target got %d connections from an idle server-1 within %v of its start-up: %s",
+			len(syns), idleHold, strings.Join(from, ", ")))
+	}
+	if lines := failedLines(up.Output()[logged:]); lines != "" {
+		errs = append(errs, fmt.Errorf("server-1 logged failures while idle:\n%s", lines))
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%w\n%s", errors.Join(errs...), failedLines(up.Output()))
+	}
+	return nil
+}
+
+// failedLines are the lines of a node's log that say something failed.
+func failedLines(log string) string {
+	var out []string
+	for line := range strings.Lines(log) {
+		if strings.Contains(line, "failed") {
+			out = append(out, strings.TrimRight(line, "\n"))
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // holdTunnel keeps device-a's tunnel to server-1 up for d before the

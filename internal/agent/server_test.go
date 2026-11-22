@@ -29,6 +29,8 @@ type fakeSupervisor struct {
 	spaces                [][]supervisor.Space
 	listeners             [][]supervisor.Listener
 	failSpaces, failLists int // calls left to fail
+	// listen, if set, opens the listeners in place of failLists.
+	listen func([]supervisor.Listener) error
 	// egress is what Egress reports; egressSeq, if set, gives one
 	// snapshot per read, then egress.
 	egress    supervisor.EgressInfo
@@ -68,6 +70,9 @@ func (f *fakeSupervisor) SetListeners(ls []supervisor.Listener) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listeners = append(f.listeners, ls)
+	if f.listen != nil {
+		return f.listen(ls)
+	}
 	if f.failLists > 0 {
 		f.failLists--
 		return errors.New("address in use")
