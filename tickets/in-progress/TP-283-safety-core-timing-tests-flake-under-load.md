@@ -9,8 +9,8 @@ size: S
 depends_on: [TP-082]
 refs: []
 needs_human: decision
-owner: ""
-branch: ""
+owner: agent-tp-283
+branch: tp-283-safety-timing-tests
 ---
 
 ## Goal
@@ -35,3 +35,4 @@ The device-test safety core's timing tests and the self-test's 10 s bound pass o
 
 ## Log
 - 2026-11-22 created in backlog (from TP-082's last round)
+- 2026-11-22 backlog → in-progress, owner: agent-tp-283
