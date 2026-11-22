@@ -180,7 +180,7 @@ func (k *livenessLink) blackhole(t *testing.T, bothWays bool) func() {
 
 // linkClosed matches a node's log line for a link it closed, with how
 // long before the close its last answer came and why.
-var linkClosed = regexp.MustCompile(`msg="link closed" reason="([^"]*)".* last_answer=(\S+)`)
+var linkClosed = regexp.MustCompile(`msg="link closed" .*?reason="([^"]*)".* last_answer=(\S+)`)
 
 // closed waits up to within for p's log, past offset from, to say the
 // link closed, and returns how long after its last answer and why.
