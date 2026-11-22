@@ -528,7 +528,8 @@ const (
 	// answerSlow answers each Listeners message slowAnswer late.
 	answerSlow = "slow"
 	// slowAnswer: two answers in a row (a first Listeners sent before the
-	// listener opened, then the new set) fit in options' StopTimeout.
+	// listener opened, then the new set) fit in the StopTimeout
+	// TestWorkerIsReadyOnceRoutedTo sets, with 9 s to spare each.
 	slowAnswer = time.Second
 )
 

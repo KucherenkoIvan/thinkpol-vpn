@@ -954,6 +954,9 @@ func TestWorkerIsReadyOnceRoutedTo(t *testing.T) {
 	needsLab(t)
 	opts := sharedOptions()
 	opts.Env = append(opts.Env, envAnswers+"="+answerSlow)
+	// Room for a loaded machine: an answer slowAnswer late is far inside
+	// the answer timeout, which would kill the worker.
+	opts.StopTimeout = slowAnswer + 9*time.Second
 	space := netmap.NewSpaceID()
 	s, err := supervisor.New(opts)
 	if err != nil {
