@@ -1,12 +1,17 @@
 package lab
 
 import (
+	"context"
+	"fmt"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTallyTestsCountsTopLevelResultsOnly(t *testing.T) {
@@ -149,4 +154,142 @@ func TestGoTestLabTaggedRunsTheTaggedTests(t *testing.T) {
 	if err == nil || !res.Failed || res.Tests.Failed != 1 {
 		t.Errorf("fail: result %+v, err %v; want a failure\n%s", res, err, out.String())
 	}
+}
+
+// TestLabPhases: a package's time in a node splits into its queue for
+// the run's lab, its slot wait, the rest of its lab's start, its tests and
+// its tear-down, which add up to the whole; a start that failed has no
+// test time, and its tear-down follows the start.
+func TestLabPhases(t *testing.T) {
+	queued := time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) time.Time { return queued.Add(d) }
+	began := at(30 * time.Second)
+	got := labPhases(queued, began, at(100*time.Second), at(105*time.Second), at(108*time.Second), time.Minute)
+	want := LabPhases{Queue: 30 * time.Second, SlotWait: time.Minute, Start: 10 * time.Second, Tests: 5 * time.Second, Teardown: 3 * time.Second}
+	if got != want {
+		t.Errorf("phases %+v, want %+v", got, want)
+	}
+	if sum := got.Queue + got.SlotWait + got.Start + got.Tests + got.Teardown; sum != 108*time.Second {
+		t.Errorf("phases add up to %v, want the run's 1m48s", sum)
+	}
+	got = labPhases(began, began, at(80*time.Second), time.Time{}, at(82*time.Second), 45*time.Second)
+	want = LabPhases{SlotWait: 45 * time.Second, Start: 5 * time.Second, Teardown: 2 * time.Second}
+	if got != want {
+		t.Errorf("a failed start: %+v, want %+v", got, want)
+	}
+	got = labPhases(began, began, at(80*time.Second), time.Time{}, time.Time{}, 50*time.Second)
+	if want = (LabPhases{SlotWait: 50 * time.Second}); got != want {
+		t.Errorf("no slot, no lab: %+v, want %+v", got, want)
+	}
+}
+
+// TestLabTimerTimesTheSlotWait: the clock a package's lab start gets from
+// its timer notes the start's slot wait, and the timer's phases have it
+// apart from the package's queue and the rest of the start.
+func TestLabTimerTimesTheSlotWait(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv(MaxLabsEnv, "1")
+	ctx := context.Background()
+	held, err := waitForSlot(ctx, labBudget.begin(time.Time{}), "tplab-x-t-a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const hold, queue = 300 * time.Millisecond, 2 * time.Second
+	go func() {
+		time.Sleep(hold)
+		held()
+	}()
+	now := time.Now()
+	timer := labTimer{queued: now.Add(-queue), began: now}
+	release, err := waitForSlot(ctx, timer.startClock(), "tplab-x-t-b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	timer.started = time.Now()
+	p := timer.phases(timer.started)
+	if p.Queue != queue || p.SlotWait < hold || p.SlotWait > time.Minute || p.Start > 100*time.Millisecond {
+		t.Errorf("phases %+v: want a %v queue, a slot wait of at least %v, a start of little more", p, queue, hold)
+	}
+}
+
+// TestLabTimeLine: the node phase's line for a package gives its time and
+// the five phases apart.
+func TestLabTimeLine(t *testing.T) {
+	p := LabPhases{Queue: 5 * time.Second, SlotWait: 2*time.Minute + 3*time.Second, Start: 12340 * time.Millisecond, Tests: 4100 * time.Millisecond, Teardown: 3 * time.Second}
+	got := labTimeLine("example.net/m/pkg", 2*time.Minute+27440*time.Millisecond, p)
+	want := "lab gotest example.net/m/pkg: took 2m27.4s (queue 5s, slot wait 2m3s, lab start 12.3s, tests 4.1s, teardown 3s)\n"
+	if got != want {
+		t.Errorf("line %q, want %q", got, want)
+	}
+}
+
+// TestFreshLabMarksSayWhat: every FreshLabFile in the module holds only
+// its package clause and a comment saying what the package's tests change
+// that the reset doesn't read (freshLabMarkProblem).
+func TestFreshLabMarksSayWhat(t *testing.T) {
+	root, err := Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marked []string
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && path != root && (strings.HasPrefix(d.Name(), ".") || d.Name() == "testdata") {
+			return filepath.SkipDir
+		}
+		if d.Name() != FreshLabFile {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		marked = append(marked, filepath.ToSlash(filepath.Dir(rel)))
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if p := freshLabMarkProblem(src); p != "" {
+			t.Errorf("%s: %s", rel, p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("packages on fresh labs: %v", marked)
+}
+
+func TestFreshLabMarkProblem(t *testing.T) {
+	for _, c := range []struct{ src, want string }{
+		{"// Its tests write kernel.* sysctls, which the reset doesn't read.\npackage x_test\n", ""},
+		{"package x\n\n// The tests change /usr/share, which the reset doesn't read.\n", ""},
+		{"package x\n", "no comment saying what its tests change that the reset doesn't read"},
+		{"//\npackage x // \n", "no comment saying what its tests change that the reset doesn't read"},
+		{"// Why.\npackage x\n\nfunc init() {}\n", "holds more than its package clause and a comment"},
+		{"// Why.\npackage x\n\nimport _ \"os\"\n", "holds more than its package clause and a comment"},
+		{"not go", "doesn't parse"},
+	} {
+		if got := freshLabMarkProblem([]byte(c.src)); !strings.HasPrefix(got, c.want) || (c.want == "") != (got == "") {
+			t.Errorf("%q: %q, want %q", c.src, got, c.want)
+		}
+	}
+}
+
+// freshLabMarkProblem is what is wrong with a FreshLabFile's source src,
+// or "".
+func freshLabMarkProblem(src []byte) string {
+	f, err := parser.ParseFile(token.NewFileSet(), FreshLabFile, src, parser.ParseComments)
+	if err != nil {
+		return fmt.Sprintf("doesn't parse: %v", err)
+	}
+	if len(f.Decls) > 0 {
+		return "holds more than its package clause and a comment"
+	}
+	for _, c := range f.Comments {
+		if strings.TrimSpace(c.Text()) != "" {
+			return ""
+		}
+	}
+	return "no comment saying what its tests change that the reset doesn't read"
 }

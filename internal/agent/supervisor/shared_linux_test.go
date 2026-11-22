@@ -611,7 +611,9 @@ func TestSharedListenerThroughput(t *testing.T) {
 			}
 		}
 	}
-	// One-way: the worker counts what it gets.
+	// One-way: the worker counts what it gets. The sleeps of oneWay, echo
+	// and measure are measurement windows of make lab-perf's gate alone
+	// (THINKPOL_LAB_PERF, its own stream): a rate needs a span of time.
 	oneWay := func() float64 {
 		stop = make(chan struct{})
 		wg.Add(1)

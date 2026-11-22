@@ -39,6 +39,12 @@ var runIDPattern = regexp.MustCompile(`^[a-z0-9]{1,8}$`)
 // practically never share one.
 func NewRunID() string { return strings.ToLower(rand.Text()[:6]) }
 
+// processID tells apart the processes of one run: it is hashed into their
+// test and gotest labs' names, so two processes sharing a run id (make
+// lab-test's phases, a retry or a shard of the same tests) never claim, or
+// replace, the same lab.
+var processID = NewRunID()
+
 // runID is this process's run id: RunEnv's, or a fresh one.
 var runID = sync.OnceValues(func() (string, error) {
 	v := os.Getenv(RunEnv)
@@ -83,11 +89,17 @@ func Root() (string, error) {
 // worktree is named after its branch) and a hash of its path, so two
 // checkouts never share a name; or ProjectPrefix and ProjectEnv.
 func CheckoutProject(root string) (string, error) {
-	if v := os.Getenv(ProjectEnv); v != "" {
-		if !overridePattern.MatchString(v) {
-			return "", fmt.Errorf("lab: %s=%q: want %s", ProjectEnv, v, overridePattern)
+	return checkoutProject(root, os.Getenv(ProjectEnv))
+}
+
+// checkoutProject is CheckoutProject with override in ProjectEnv's place,
+// so tests can name a checkout without changing the process's environment.
+func checkoutProject(root, override string) (string, error) {
+	if override != "" {
+		if !overridePattern.MatchString(override) {
+			return "", fmt.Errorf("lab: %s=%q: want %s", ProjectEnv, override, overridePattern)
 		}
-		return ProjectPrefix + v, nil
+		return ProjectPrefix + override, nil
 	}
 	name := slug(filepath.Base(root), 32)
 	if name == "" {
@@ -96,11 +108,16 @@ func CheckoutProject(root string) (string, error) {
 	return ProjectPrefix + name + "-" + shortHash(root), nil
 }
 
-// testProject is the Compose project of one test's lab in the run run. The
-// package directory is hashed in because packages are tested in parallel
-// and may share test names.
-func testProject(checkout, run, pkgDir, testName string) string {
-	return checkout + "-t-" + run + "-" + slug(testName, 24) + "-" + shortHash(pkgDir+"\x00"+testName)
+// testProject is the Compose project of one test's lab, started by the
+// process proc (processID) of the run run. The package directory is hashed
+// in because packages are tested in parallel and may share test names.
+func testProject(checkout, run, proc, pkgDir, testName string) string {
+	return checkout + "-t-" + run + "-" + slug(testName, 24) + "-" + shortHash(pkgDir+"\x00"+testName+"\x00"+proc)
+}
+
+// ownTestProject is testProject for a test this process starts.
+func ownTestProject(checkout, run, pkgDir, testName string) string {
+	return testProject(checkout, run, processID, pkgDir, testName)
 }
 
 // GoTestProject is the Compose project prefix of the labs that run packages'
@@ -108,9 +125,15 @@ func testProject(checkout, run, pkgDir, testName string) string {
 func GoTestProject(checkout string) string { return checkout + "-gotest" }
 
 // goTestPackageProject is the Compose project of the lab that runs a
-// package's tests in a node, in the run run.
-func goTestPackageProject(checkout, run, importPath string) string {
-	return GoTestProject(checkout) + "-" + run + "-" + shortHash(importPath)
+// package's tests in a node, started by the process proc of the run run.
+func goTestPackageProject(checkout, run, proc, importPath string) string {
+	return GoTestProject(checkout) + "-" + run + "-" + shortHash(importPath+"\x00"+proc)
+}
+
+// ownGoTestPackageProject is goTestPackageProject for a package this
+// process tests.
+func ownGoTestPackageProject(checkout, run, importPath string) string {
+	return goTestPackageProject(checkout, run, processID, importPath)
 }
 
 // belongsTo reports whether a Compose project was started from the checkout

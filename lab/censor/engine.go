@@ -108,7 +108,9 @@ func (e *Engine) Unnoticed() uint64 { return e.flows.unnoticed.Load() }
 // in config order, and the most severe verdict among a pinned Throttle
 // and theirs decides it, the first module to give it winning a tie. A
 // Throttle, pinned or not, never stops a later module from dropping or
-// resetting the packet; Accept, pinned or not, never stops anything.
+// resetting the packet; Accept, pinned or not, never stops anything. A
+// packet every module accepts is the first module's to give a reason (an
+// exemption, say), so the verdict log names it, or no module's.
 func (e *Engine) Handle(p *Packet) Action {
 	now := e.now()
 	f, isNew := e.flows.flow(FlowKey{p.Proto, p.Src, p.Dst, p.SrcPort, p.DstPort}, now)
@@ -151,7 +153,7 @@ func (e *Engine) Handle(p *Packet) Action {
 		if r.severity() == 2 {
 			return e.apply(f, p, r, now)
 		}
-		if r.severity() > best.severity() {
+		if r.severity() > best.severity() || r.verdict == Accept && best.verdict == Accept && best.why == "" && r.why != "" {
 			best = r
 		}
 	}
@@ -318,6 +320,17 @@ func (e *Engine) apply(f *Flow, p *Packet, r rule, now time.Time) Action {
 func reverseThrottle(r rule) rule {
 	r.why = fmt.Sprintf("the other direction is throttled: %s", r.why)
 	return r
+}
+
+// Handled tells the verdict log the queue's packet id is decided (a
+// verdict set, whether Handle decided it or the queue did without it):
+// the log's next watermark covers it ([EventWatermark]). The queue's
+// callback calls it after every packet, in the order the kernel numbered
+// them.
+func (e *Engine) Handled(id uint32) {
+	if e.log != nil {
+		e.log.handled(uint64(id))
+	}
 }
 
 func (e *Engine) logEntry(entry LogEntry) {

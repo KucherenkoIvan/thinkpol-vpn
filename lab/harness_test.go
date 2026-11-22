@@ -2,12 +2,17 @@ package lab
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -46,7 +51,7 @@ func TestTopologyValidateRejects(t *testing.T) {
 func TestWithReplacesAndAddsWithoutTouchingTheOriginal(t *testing.T) {
 	std := Standard()
 	topo := std.With(
-		NodeSpec{Name: Server1, Networks: []string{NetServers}, Command: []string{"thinkpol", "up"}},
+		NodeSpec{Name: Server1, Networks: []string{NetServers}, Command: []string{"sleep", "infinity"}},
 		NodeSpec{Name: "server-3", Networks: []string{NetServers}, Gateway: Router},
 	)
 	if len(topo.Nodes) != len(std.Nodes)+1 {
@@ -58,6 +63,138 @@ func TestWithReplacesAndAddsWithoutTouchingTheOriginal(t *testing.T) {
 	if std.Nodes[std.nodeIndex(Server1)].Command != nil {
 		t.Error("With changed the original topology")
 	}
+}
+
+// A lab start's bounds: the part before the slot counts from the start's
+// beginning, across prepare and beforeSlot; the slot wait has its own,
+// longer bound; and the start counts from when the slot is held, so a wait
+// longer than the whole start bound leaves the start all of it.
+func TestStartBudgetCountsFromTheSlot(t *testing.T) {
+	base := time.Now()
+	now := base
+	b := startBudget{before: time.Minute, wait: time.Hour, start: time.Minute, teardown: time.Minute}
+	c := b.clock(func() time.Time { return now }, time.Time{})
+
+	now = base.Add(40 * time.Second)
+	if dl, cut := c.deadline(phaseBeforeSlot); !dl.Equal(base.Add(b.before)) || cut {
+		t.Errorf("before the slot: deadline %v after the start began, want %v", dl.Sub(base), b.before)
+	}
+	now = base.Add(b.before)
+	if dl, cut := c.deadline(phaseSlotWait); !dl.Equal(now.Add(b.wait)) || cut {
+		t.Errorf("the slot wait: deadline %v after it began, want %v", dl.Sub(now), b.wait)
+	}
+	now = now.Add(50 * time.Minute)
+	if dl, cut := c.deadline(phaseAfterSlot); !dl.Equal(now.Add(b.start)) || cut {
+		t.Errorf("the start: deadline %v after the slot, want %v", dl.Sub(now), b.start)
+	}
+}
+
+// Under make lab-test's LAB_TIMEOUT (60m), a lab beginning at any minute of
+// the run, each phase taking all the time it is given, ends before the
+// test binary's deadline with the tear-down's time to spare, and its slot
+// wait leaves the start its whole bound: a lab still waiting fails with
+// what it waited for, not in the timeout's panic.
+func TestLabStartEndsBeforeTheTestDeadline(t *testing.T) {
+	const labTimeout = 60 * time.Minute
+	base := time.Now()
+	deadline := base.Add(labTimeout)
+	end := deadline.Add(-labBudget.teardown)
+	for offset := time.Duration(0); offset < labTimeout; offset += time.Minute {
+		now := base.Add(offset)
+		c := labBudget.clock(func() time.Time { return now }, deadline)
+		now, _ = c.deadline(phaseBeforeSlot)
+		waitEnd, _ := c.deadline(phaseSlotWait)
+		if waitEnd.After(end.Add(-labBudget.start)) {
+			t.Errorf("a lab begun at %v: its slot wait ends %v before the deadline, leaving the start less than %v", offset, deadline.Sub(waitEnd), labBudget.start)
+		}
+		if waitEnd.After(now) {
+			now = waitEnd
+		}
+		now, _ = c.deadline(phaseAfterSlot)
+		if now.After(end) {
+			t.Errorf("a lab begun at %v ends %v after the deadline less the tear-down", offset, now.Sub(end))
+		}
+		if offset == 0 && !waitEnd.After(c.began.Add(labBudget.before)) {
+			t.Errorf("a lab begun with the run has no time to wait for a slot")
+		}
+	}
+	if labBudget.wait <= labBudget.start {
+		t.Errorf("lab budget %+v: the slot wait must be longer than the start", labBudget)
+	}
+}
+
+// A phase that runs out of time says which bound it was; an error with
+// time left, or after the caller gave up, is the phase's own.
+func TestLabStartSaysWhichBoundExpired(t *testing.T) {
+	b := startBudget{before: time.Minute, wait: 20 * time.Millisecond, start: time.Minute, teardown: time.Minute}
+	waitDone := func(ctx context.Context) error {
+		<-ctx.Done()
+		return fmt.Errorf("lab: waiting for a free lab slot: %w", ctx.Err())
+	}
+
+	err := b.clock(time.Now, time.Time{}).run(t.Context(), "tplab-x", phaseSlotWait, waitDone)
+	if want := "lab tplab-x: no lab slot within 20ms: lab: waiting for a free lab slot: context deadline exceeded"; err == nil || err.Error() != want {
+		t.Errorf("slot wait: %v, want %q", err, want)
+	}
+	past := b.clock(time.Now, time.Now().Add(-time.Hour))
+	err = past.run(t.Context(), "tplab-x", phaseAfterSlot, waitDone)
+	if want := "lab tplab-x: start not done 0s after the slot, cut short by the test's deadline"; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("start: %v, want %q", err, want)
+	}
+	err = past.run(t.Context(), "tplab-x", phaseBeforeSlot, waitDone)
+	if want := "lab tplab-x: not ready for a lab slot within 0s"; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("before the slot: %v, want %q", err, want)
+	}
+
+	refused := errors.New("refused")
+	if err := b.clock(time.Now, time.Time{}).run(t.Context(), "tplab-x", phaseAfterSlot, func(context.Context) error { return refused }); err != refused {
+		t.Errorf("an error with time left: %v, want it as is", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := b.clock(time.Now, time.Time{}).run(ctx, "tplab-x", phaseSlotWait, waitDone); err == nil || strings.Contains(err.Error(), "within") {
+		t.Errorf("a cancelled wait: %v, want no bound named", err)
+	}
+}
+
+func TestOnlyKeepsTheNamedNodesAndTheirNetworks(t *testing.T) {
+	topo := Upstream().Only(Router, Server1, Camouflage)
+	var nodes, nets []string
+	for _, n := range topo.Nodes {
+		nodes = append(nodes, n.Name)
+	}
+	for _, n := range topo.Networks {
+		nets = append(nets, n.Name)
+	}
+	if want := []string{Router, Server1, Camouflage}; !slices.Equal(nodes, want) {
+		t.Errorf("nodes %v, want %v", nodes, want)
+	}
+	// Every kept node is the topology's own, settings and all.
+	upstream := Upstream()
+	for _, n := range topo.Nodes {
+		if want := upstream.Nodes[upstream.nodeIndex(n.Name)]; !reflect.DeepEqual(n, want) {
+			t.Errorf("Only changed %s: %+v, want %+v", n.Name, n, want)
+		}
+	}
+	// The router is still on the devices network, so it stays.
+	if want := []string{NetDevices, NetServers, NetWorld}; !slices.Equal(nets, want) {
+		t.Errorf("networks %v, want %v", nets, want)
+	}
+	if err := topo.Validate(); err != nil {
+		t.Error(err)
+	}
+	if got := Standard().Only(Server1, Internet).With(NodeSpec{Name: Router, Networks: []string{NetServers}}).Networks; len(got) != 1 || got[0].Name != NetServers {
+		t.Errorf("networks of server-side nodes: %v, want servers only", got)
+	}
+	if err := Standard().Only(DeviceA, Server1).Validate(); err == nil {
+		t.Error("a topology without the nodes' gateway is valid")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("Only of a node the topology doesn't have didn't panic")
+		}
+	}()
+	Standard().Only(Router, "server-3")
 }
 
 func TestRenderCompose(t *testing.T) {
@@ -246,18 +383,18 @@ func TestProjectNames(t *testing.T) {
 	if odd, _ := CheckoutProject("/x/---"); odd != ProjectPrefix+"checkout-"+shortHash("/x/---") {
 		t.Errorf("a checkout without usable characters: %q", odd)
 	}
-	p1 := testProject(a, "r1", "/x/lab", "TestSmoke/IPv4 over UDP")
-	p2 := testProject(a, "r1", "/x/other", "TestSmoke/IPv4 over UDP")
+	p1 := testProject(a, "r1", "p1", "/x/lab", "TestSmoke/IPv4 over UDP")
+	p2 := testProject(a, "r1", "p1", "/x/other", "TestSmoke/IPv4 over UDP")
 	if p1 == p2 || !belongsTo(p1, a) || belongsTo(p1, b) || !startedByTests(p1, a) || startedByTests(a, a) {
 		t.Errorf("test projects %q, %q", p1, p2)
 	}
-	if !startedByTests(goTestPackageProject(a, "r1", "example.net/x"), a) {
+	if !startedByTests(goTestPackageProject(a, "r1", "p1", "example.net/x"), a) {
 		t.Error("labctl gotest's labs don't count as started by tests")
 	}
 	if belongsTo(a+"x", a) {
 		t.Error("a checkout whose name extends another's belongs to it")
 	}
-	for _, p := range []string{a, p1, goTestPackageProject(a, "r1", "example.net/x")} {
+	for _, p := range []string{a, p1, goTestPackageProject(a, "r1", "p1", "example.net/x")} {
 		if slug(p, 100) != p {
 			t.Errorf("%q is not a valid Compose project name", p)
 		}
@@ -280,20 +417,20 @@ func TestProjectNames(t *testing.T) {
 // and a run's labs are told apart from another run's, from lab-up's and
 // from another checkout's, even when one run id extends the other.
 func TestRunProjectNames(t *testing.T) {
-	t.Setenv(ProjectEnv, "")
-	a, _ := CheckoutProject("/x/a")
-	b, _ := CheckoutProject("/x/b")
+	t.Parallel()
+	a, _ := checkoutProject("/x/a", "")
+	b, _ := checkoutProject("/x/b", "")
 	mine := []string{
-		testProject(a, "r1", "/x/a/lab", "TestSmoke"),
-		goTestPackageProject(a, "r1", "example.net/x"),
+		testProject(a, "r1", "p1", "/x/a/lab", "TestSmoke"),
+		goTestPackageProject(a, "r1", "p1", "example.net/x"),
 	}
 	theirs := []string{
-		testProject(a, "r12", "/x/a/lab", "TestSmoke"),
-		goTestPackageProject(a, "r12", "example.net/x"),
-		testProject(a, "r2", "/x/a/lab", "TestSmoke"),
-		goTestPackageProject(a, "r2", "example.net/x"),
-		testProject(b, "r1", "/x/b/lab", "TestSmoke"),
-		goTestPackageProject(b, "r1", "example.net/x"),
+		testProject(a, "r12", "p1", "/x/a/lab", "TestSmoke"),
+		goTestPackageProject(a, "r12", "p1", "example.net/x"),
+		testProject(a, "r2", "p1", "/x/a/lab", "TestSmoke"),
+		goTestPackageProject(a, "r2", "p1", "example.net/x"),
+		testProject(b, "r1", "p1", "/x/b/lab", "TestSmoke"),
+		goTestPackageProject(b, "r1", "p1", "example.net/x"),
 		a,
 	}
 	for i, p := range mine {
@@ -309,26 +446,80 @@ func TestRunProjectNames(t *testing.T) {
 			t.Errorf("%q counts as run r1's", p)
 		}
 	}
+	// Another process of the same run (make lab-test's other phase, a retry,
+	// a shard) names the same test's and package's labs apart, still the run's.
+	for i, p := range []string{
+		testProject(a, "r1", "p2", "/x/a/lab", "TestSmoke"),
+		goTestPackageProject(a, "r1", "p2", "example.net/x"),
+	} {
+		if p == mine[i] || !startedByRun(p, a, "r1") {
+			t.Errorf("process p2's %q: process p1's is %q", p, mine[i])
+		}
+	}
+}
+
+const printOwnProjectsEnv = "THINKPOL_LAB_TEST_PRINT_OWN_PROJECTS"
+
+// ownProjects names a test's and a package's labs as this process would
+// start them.
+func ownProjects() string {
+	return ownTestProject("tplab-a", "r1", "/x/a/lab", "TestSmoke") + "\n" +
+		ownGoTestPackageProject("tplab-a", "r1", "example.net/x") + "\n"
+}
+
+// Two processes of one run name the same test's and package's labs apart
+// through the names start and GoTestEach use, not only when handed
+// different process ids.
+func TestProcessesOfOneRunNameTheirLabsApart(t *testing.T) {
+	if os.Getenv(printOwnProjectsEnv) != "" {
+		t.Skip("the child of this test")
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestPrintOwnProjects$")
+	cmd.Env = append(os.Environ(), printOwnProjectsEnv+"=1")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("child: %v\n%s", err, out)
+	}
+	theirs := strings.Split(string(out), "\n")
+	mine := strings.Split(ownProjects(), "\n")
+	for i, p := range mine[:2] {
+		if !startedByRun(p, "tplab-a", "r1") {
+			t.Errorf("%q is not run r1's", p)
+		}
+		if slices.Contains(theirs, p) {
+			t.Errorf("the other process also names its lab %q", p)
+		}
+		if i >= len(theirs) || !startedByRun(theirs[i], "tplab-a", "r1") {
+			t.Errorf("the other process's lab names: %q", out)
+		}
+	}
+}
+
+func TestPrintOwnProjects(t *testing.T) {
+	if os.Getenv(printOwnProjectsEnv) == "" {
+		t.Skip("the child of TestProcessesOfOneRunNameTheirLabsApart")
+	}
+	fmt.Print(ownProjects())
 }
 
 // longestOverride, longestRunID and longestTestProject make the longest
 // project names the harness can give: the longest override and run id, a
 // test name past the slug's cap, and claimProject's number. Docker
-// accepting them is TestDownRunRemovesOnlyItsRun (a lab test).
+// accepting them is TestHarnessDownRunRemovesOnlyItsRun (a lab test).
 var (
 	longestOverride = strings.Repeat("a", 40)
 	longestRunID    = strings.Repeat("9", 8)
 )
 
 func longestTestProject(checkout, run string) string {
-	return testProject(checkout, run, "/x/lab", strings.Repeat("T", 100)) + "-99"
+	return testProject(checkout, run, "p1", "/x/lab", strings.Repeat("T", 100)) + "-99"
 }
 
 // The longest names are valid project names of their run. Their length
 // can't be checked here: Docker's acceptance is proven by the lab test.
 func TestLongestProjectNames(t *testing.T) {
-	t.Setenv(ProjectEnv, longestOverride)
-	checkout, err := CheckoutProject("/x")
+	t.Parallel()
+	checkout, err := checkoutProject("/x", longestOverride)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +528,7 @@ func TestLongestProjectNames(t *testing.T) {
 	}
 	for _, p := range []string{
 		longestTestProject(checkout, longestRunID),
-		goTestPackageProject(checkout, longestRunID, "example.net/x"),
+		goTestPackageProject(checkout, longestRunID, "p1", "example.net/x"),
 	} {
 		if slug(p, 200) != p || !startedByRun(p, checkout, longestRunID) {
 			t.Errorf("%q is not a valid Compose project name of the run", p)

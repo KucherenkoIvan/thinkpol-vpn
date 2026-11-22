@@ -333,6 +333,154 @@ func TestProberReportsUpstreamTell(t *testing.T) {
 	}
 }
 
+// TestProberUpstreamTellAcrossHostAddresses: an entry that dials the
+// reference from another of its addresses (an IPv4-only site, probed over
+// IPv6) shows the tell only when the hosts setting names both addresses as
+// one host; otherwise its connections say nothing about the probed one.
+func TestProberUpstreamTellAcrossHostAddresses(t *testing.T) {
+	ref := webServer(t, webTLS(t, siteName))
+	uplink := netip.MustParseAddr("192.0.2.77")
+	for _, c := range []struct {
+		hosts, want string
+	}{
+		{`, "hosts": [["127.0.0.1", "192.0.2.77"]]`, "upstream tell: a connection from 127.0.0.1 or another address of its host to the reference during every probe (7 of 7; 7 dials in "},
+		{`, "hosts": [["192.0.2.77", "127.0.0.1"]]`, "(7 of 7; 7 dials in "},
+		{"", "connections to the reference during 0 of 7 probes"},
+		{`, "hosts": [["127.0.0.1", "192.0.2.78"]]`, "connections to the reference during 0 of 7 probes"},
+	} {
+		p := newTestProber(t, ref, `, "upstreamTell": "report"`+c.hosts)
+		flows, flags := runProber(t, p)
+		entry := listen(t, relay(ref, func() {
+			flows <- FlowSnapshot{Key: FlowKey{Proto: ProtoTCP, Src: uplink, Dst: ref.Addr(), SrcPort: 50000, DstPort: ref.Port()}, Started: time.Now()}
+		}))
+		s := suspectTo(entry, 40026, helloFor(t, siteName))
+		flows <- s
+		if f := waitFlag(t, flags, s.Key); f.verdict != Accept || !strings.Contains(f.why, c.want) {
+			t.Errorf("hosts %q: %+v, want a verdict saying %q", c.hosts, f, c.want)
+		}
+	}
+}
+
+// TestProberUpstreamTellUnattributable: an entry whose host also connects
+// to the reference while nothing probes it, as often as during the probes
+// (its own clients' connections, a REALITY entry's dials for them), shows
+// no tell, whatever upstreamTell says: the connections during the probes
+// may be its own. The verdict says how many came outside the probes.
+func TestProberUpstreamTellUnattributable(t *testing.T) {
+	ref := webServer(t, webTLS(t, siteName))
+	for _, settings := range []string{`, "upstreamTell": "flag"`, `, "upstreamTell": "report"`} {
+		p := newTestProber(t, ref, settings+`, "hosts": [["127.0.0.1", "192.0.2.77"]]`)
+		flows, flags := runProber(t, p)
+		uplink := netip.MustParseAddr("192.0.2.77")
+		dial := func() {
+			flows <- FlowSnapshot{Key: FlowKey{Proto: ProtoTCP, Src: uplink, Dst: ref.Addr(), SrcPort: 50000, DstPort: ref.Port()}, Started: time.Now()}
+		}
+		entry := listen(t, relay(ref, dial))
+		ctx, cancel := context.WithCancel(context.Background())
+		background := make(chan struct{})
+		go func() {
+			defer close(background)
+			tick := time.NewTicker(20 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-tick.C:
+					dial()
+				}
+			}
+		}()
+		// The baseline: the host dialing before anything probes it, longer
+		// than the probing, or it is too short to judge the tell.
+		time.Sleep(2 * time.Second)
+		s := suspectTo(entry, 40027, helloFor(t, siteName))
+		flows <- s
+		f := waitFlag(t, flags, s.Key)
+		cancel()
+		<-background
+		if f.verdict != Accept || !strings.Contains(f.why, "upstream tell: unattributable (") || !strings.Contains(f.why, "outside them, at least half the rate") {
+			t.Errorf("settings %q, the host dialing between probes: %+v", settings, f)
+		}
+	}
+}
+
+// TestProberUpstreamTellOverOccasionalDials: an entry whose host dialed
+// the reference once before the probes, then on every probe, shows the
+// tell: one dial outside the probes is far under half their rate, so it
+// doesn't make the tell unattributable.
+func TestProberUpstreamTellOverOccasionalDials(t *testing.T) {
+	ref := webServer(t, webTLS(t, siteName))
+	p := newTestProber(t, ref, `, "upstreamTell": "report"`)
+	// Watching for 10 s already, rather than waiting that long.
+	p.started = time.Now().Add(-10 * time.Second)
+	flows, flags := runProber(t, p)
+	var entry netip.AddrPort
+	dial := func() {
+		flows <- FlowSnapshot{Key: FlowKey{Proto: ProtoTCP, Src: entry.Addr(), Dst: ref.Addr(), SrcPort: 50000, DstPort: ref.Port()}, Started: time.Now()}
+	}
+	entry = listen(t, relay(ref, dial))
+	dial()
+	s := suspectTo(entry, 40028, helloFor(t, siteName))
+	flows <- s
+	if f := waitFlag(t, flags, s.Key); f.verdict != Accept || !strings.Contains(f.why, "upstream tell: a connection") || !strings.Contains(f.why, ", 1 in ") || !strings.Contains(f.why, "reported, not flagged") {
+		t.Errorf("a relay that dialed once before its probes: %+v, want the tell reported, one dial outside the probes", f)
+	}
+}
+
+// TestProberBaseline: the baseline counts the host's connections to the
+// reference that started outside every probe of the host, from its other
+// addresses too, over the time the prober watched outside those probes,
+// at most upstreamKeep back; other hosts' connections and probes don't
+// count.
+func TestProberBaseline(t *testing.T) {
+	p := newTestProber(t, netip.MustParseAddrPort("198.51.100.10:443"), `, "hosts": [["192.0.2.9", "2001:db8::9"]]`)
+	t0 := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	at := func(s float64) time.Time { return t0.Add(time.Duration(s * float64(time.Second))) }
+	host, other := netip.MustParseAddr("192.0.2.9"), netip.MustParseAddr("192.0.2.7")
+	p.started = t0
+	p.probed(host, at(10), at(12))
+	p.probed(netip.MustParseAddr("2001:db8::9"), at(20), at(21))
+	p.probed(other, at(30), at(35))
+	p.upstream = []upstreamConn{
+		{host, at(5)}, {host, at(11)}, {netip.MustParseAddr("2001:db8::9"), at(20.5)}, {host, at(32)},
+		{netip.MustParseAddr("2001:db8::9"), at(39)}, {other, at(6)},
+	}
+	if n, d := p.baseline(host, at(40)); n != 3 || d != 37*time.Second {
+		t.Errorf("40 s watched, 3 s of the host's probes: %d dials in %s, want 3 in 37s", n, d)
+	}
+	// Watched longer than upstreamKeep: the minute before now.
+	if n, d := p.baseline(host, at(80)); n != 2 || d != 59*time.Second {
+		t.Errorf("80 s watched: %d dials in %s, want 2 in 59s (the last minute, its 1 s of probes out)", n, d)
+	}
+}
+
+// TestUpstreamTallyUnattributable: the tell is unattributable when the
+// host dials outside its probes at half their rate or more, over a
+// baseline at least as long as the probing, and only then.
+func TestUpstreamTallyUnattributable(t *testing.T) {
+	s := time.Second
+	for _, c := range []struct {
+		name string
+		u    upstreamTally
+		want bool
+	}{
+		{"no dial outside", upstreamTally{during: 7, probing: 4 * s, outside: 30 * s}, false},
+		{"one dial in 30 s outside", upstreamTally{during: 7, probing: 4 * s, between: 1, outside: 30 * s}, false},
+		{"a dial every 5 s, probes every 0.6 s", upstreamTally{during: 8, probing: 4 * s, between: 6, outside: 30 * s}, false},
+		{"just under half the rate", upstreamTally{during: 8, probing: 4 * s, between: 29, outside: 30 * s}, false},
+		{"half the rate", upstreamTally{during: 8, probing: 4 * s, between: 30, outside: 30 * s}, true},
+		{"the same rate", upstreamTally{during: 8, probing: 4 * s, between: 60, outside: 30 * s}, true},
+		{"a baseline as long as the probing", upstreamTally{during: 8, probing: 4 * s, between: 4, outside: 4 * s}, true},
+		{"one dial in a short baseline", upstreamTally{during: 7, probing: 7500 * time.Millisecond, between: 1, outside: 1500 * time.Millisecond}, false},
+		{"many dials in a short baseline", upstreamTally{during: 8, probing: 4 * s, between: 20, outside: 3 * s}, false},
+	} {
+		if got := c.u.unattributable(); got != c.want {
+			t.Errorf("%s: unattributable %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 // TestProberTagsListedDestinations: with destinations, the passive half
 // tags a client's TCP flow to one once it has sent data, and nothing
 // else.
@@ -480,9 +628,57 @@ func TestProberSettings(t *testing.T) {
 		"bad timeout":       `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "timeout": "-1s"}`,
 		"bad verdict":       `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "verdict": "poison"}`,
 		"bad upstream tell": `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "upstreamTell": "ignore"}`,
+		"bad host address":  `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "hosts": [["192.0.2.9", "x"]]}`,
+		"host listed twice": `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "hosts": [["192.0.2.9", "192.0.2.10"], ["192.0.2.9", "2001:db8::9"]]}`,
+		"one-address host":  `{"reference": {"name": "a.example.net", "addresses": ["198.51.100.10:443"]}, "hosts": [["192.0.2.9"]]}`,
 	} {
 		if _, err := newProber(json.RawMessage(settings)); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// TestUpstreamTellReportedOverAnyBaseline: in report mode an attributable
+// tell over a long baseline (TP-255's tightest run, 8 dials in 5.52 s of
+// probes, against none more in 12 s outside them) is reported as a short
+// one is, with UpstreamTellReported, which the matrix scores not judged
+// (owner, 2026-11-19: a); in flag mode it flags.
+func TestUpstreamTellReportedOverAnyBaseline(t *testing.T) {
+	server := netip.MustParseAddr("192.0.2.9")
+	for _, u := range []upstreamTally{
+		{probes: 7, total: 7, during: 8, probing: 5520 * time.Millisecond, between: 8, outside: 12 * time.Second},
+		{probes: 7, total: 7, during: 8, probing: 5520 * time.Millisecond, between: 0, outside: 120 * time.Second},
+		{probes: 7, total: 7, during: 9, probing: 7551 * time.Millisecond, between: 7, outside: 4399 * time.Millisecond},
+	} {
+		report, diff := (&prober{hostOf: map[netip.Addr]netip.Addr{}, reportTell: true}).upstreamTell(server, u)
+		if diff != "" || !strings.HasPrefix(report, "upstream tell: a connection") || !strings.HasSuffix(report, ", "+UpstreamTellReported) {
+			t.Errorf("report, %+v: report %q, diff %q, want the tell reported", u, report, diff)
+		}
+		report, diff = (&prober{hostOf: map[netip.Addr]netip.Addr{}}).upstreamTell(server, u)
+		if report != "" || !strings.HasPrefix(diff, "upstream tell: a connection") || strings.Contains(diff, UpstreamTellReported) {
+			t.Errorf("flag, %+v: report %q, diff %q, want the tell flagged", u, report, diff)
+		}
+	}
+}
+
+// TestUpstreamTellShortBaseline: a splicing entry's own dial for the
+// suspected client, in the second or so the censor ran before the first
+// probe, doesn't hide the tell (relay-tcp in the matrix: 1 dial in 1.5 s
+// outside, 7 in 7.5 s of probes); the verdict says the baseline was short.
+func TestUpstreamTellShortBaseline(t *testing.T) {
+	server := netip.MustParseAddr("192.0.2.9")
+	u := upstreamTally{probes: 7, total: 7, during: 7, probing: 7500 * time.Millisecond, between: 1, outside: 1500 * time.Millisecond}
+	const short = "a baseline shorter than the probing, too short to call the tell unattributable"
+	report, diff := (&prober{hostOf: map[netip.Addr]netip.Addr{}}).upstreamTell(server, u)
+	if report != "" || !strings.Contains(diff, "upstream tell: a connection from 192.0.2.9 to the reference during every probe (7 of 7; ") || !strings.Contains(diff, short) {
+		t.Errorf("flag: report %q, diff %q, want the tell flagged, its baseline short", report, diff)
+	}
+	report, diff = (&prober{hostOf: map[netip.Addr]netip.Addr{}, reportTell: true}).upstreamTell(server, u)
+	if diff != "" || !strings.Contains(report, "upstream tell: a connection") || !strings.Contains(report, short) || !strings.Contains(report, "reported, not flagged") {
+		t.Errorf("report: report %q, diff %q, want the tell reported, its baseline short", report, diff)
+	}
+	u.outside = 30 * time.Second
+	if _, diff := (&prober{hostOf: map[netip.Addr]netip.Addr{}}).upstreamTell(server, u); strings.Contains(diff, short) {
+		t.Errorf("a 30 s baseline: diff %q, want no word of a short baseline", diff)
 	}
 }

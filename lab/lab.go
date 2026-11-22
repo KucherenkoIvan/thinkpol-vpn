@@ -33,6 +33,13 @@ type Lab struct {
 	gateways map[string][]netip.Addr // Docker's bridge addresses, by network
 	bridges  map[string]Bridge       // by network
 	release  func()                  // the host-wide lab slot
+	subnets  *reservation            // held until the lab is down or kept
+	// The last docker compose up's start and end, and its attempt number.
+	upFrom, upTo time.Time
+	upAttempt    int
+	// The last start's steps, kept only for TestLabStartTimes (the
+	// timeline has them too, as text).
+	started startTimes
 }
 
 // Bridge is Docker's own end of a lab network: the bridge in the Docker VM.
@@ -63,29 +70,59 @@ func StartOwnSlot(t testing.TB, topo Topology) *Lab {
 
 func start(t testing.TB, topo Topology, slotKey string) *Lab {
 	t.Helper()
-	if !mainInstalled.Load() {
-		t.Fatal("lab: this package's TestMain must call lab.Main(m), or the binaries its labs run are never removed")
+	return startAs(t, topo, slotKey, os.Getenv(ProjectEnv))
+}
+
+// startAs is start with override in ProjectEnv's place (checkoutProject).
+func startAs(t testing.TB, topo Topology, slotKey, override string) *Lab {
+	t.Helper()
+	if err := mainCalled(); err != nil {
+		t.Fatal(err)
+	}
+	l, bins, keep, err := launch(t, topo, func(string) string { return slotKey }, t.Name(), override)
+	if l != nil {
+		t.Cleanup(func() { l.cleanup(t, bins, keep, time.Time{}) })
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// launch brings up a lab for t, named after name, holding the slot
+// slotKey gives for its project, without tying its tear-down to t: Start
+// ties it to the test, a Pool keeps the lab for the tests after. It
+// returns the run's binaries the lab mounts and whether KeepEnv is set;
+// a lab returned with an error still needs its clean-up.
+func launch(t testing.TB, topo Topology, slotKey func(project string) string, name, override string) (*Lab, *runBinaries, bool, error) {
+	t.Helper()
+	if err := mainCalled(); err != nil {
+		return nil, nil, false, err
 	}
 	root, err := Root()
 	if err != nil {
-		t.Fatal(err)
+		return nil, nil, false, err
 	}
-	checkout, err := CheckoutProject(root)
+	checkout, err := checkoutProject(root, override)
 	if err != nil {
-		t.Fatal(err)
+		return nil, nil, false, err
 	}
 	run, err := runID()
 	if err != nil {
-		t.Fatal(err)
+		return nil, nil, false, err
 	}
 	cwd, _ := os.Getwd()
-	project := claimProject(testProject(checkout, run, cwd, t.Name()))
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	// The run's directory, for .kept; up gets the same one.
-	p, err := prepare(ctx, root)
+	project := claimProject(ownTestProject(checkout, run, cwd, name))
+	clock := labBudget.begin(testDeadline(t))
+	// The run's directory, for .kept; up gets the same one, within the
+	// same bound.
+	var p preparedRun
+	err = clock.run(context.Background(), project, phaseBeforeSlot, func(ctx context.Context) (err error) {
+		p, err = prepare(ctx, root)
+		return err
+	})
 	if err != nil {
-		t.Fatal(err)
+		return nil, nil, false, err
 	}
 	// With KeepEnv set, the lab may outlive the run (kept, or left up by a
 	// -timeout panic): .kept lists it before it starts, so its binaries stay
@@ -96,17 +133,19 @@ func start(t testing.TB, topo Topology, slotKey string) *Lab {
 	keep := os.Getenv(KeepEnv) != ""
 	if keep {
 		if err := p.bin.recordLab(project); err != nil {
-			t.Fatal(err)
+			return nil, nil, false, err
 		}
 	}
-	l, err := up(ctx, root, project, topo, slotKey, runInputs)
-	if l != nil {
-		t.Cleanup(func() { l.cleanup(t, p.bin, keep) })
+	l, err := up(context.Background(), clock, root, project, topo, slotKey(project), runInputs)
+	return l, p.bin, keep, err
+}
+
+// mainCalled is an error unless the test binary runs through Main.
+func mainCalled() error {
+	if !mainInstalled.Load() {
+		return errors.New("lab: this package's TestMain must call lab.Main(m), or the binaries its labs run are never removed")
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	return l
+	return nil
 }
 
 var (
@@ -126,22 +165,22 @@ func claimProject(project string) string {
 }
 
 // cleanup tears the lab down, or with keep (KeepEnv) keeps a failed
-// test's lab and the run directory bins it mounts.
-func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+// test's lab and the run directory bins it mounts. A failed test's log
+// gets the containers' logs since since (all of them when zero: a lab
+// that served other tests before has theirs too).
+func (l *Lab) cleanup(t labUser, bins *runBinaries, keep bool, since time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), labBudget.teardown)
 	defer cancel()
 	if t.Failed() {
-		if res, err := runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "logs", "--no-color", "--timestamps"); err == nil {
+		logs := []string{"docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "logs", "--no-color", "--timestamps"}
+		if !since.IsZero() {
+			logs = append(logs, "--since", since.UTC().Format(time.RFC3339Nano))
+		}
+		if res, err := runEnv(ctx, nil, environWithoutCompose(), logs[0], logs[1:]...); err == nil {
 			t.Logf("lab %s logs:\n%s", l.Project, res.Stdout)
 		}
-		if keep {
-			err := bins.keep(l.Project)
-			if err == nil {
-				t.Logf("lab %s kept: docker compose -p %s exec <node> bash; make lab-down removes it", l.Project, l.Project)
-				l.releaseSlot()
-				return
-			}
-			t.Errorf("lab %s: can't keep it, tearing it down: %v", l.Project, err)
+		if keep && l.keepRunning(t, bins) {
+			return
 		}
 	}
 	if err := l.Down(ctx); err != nil {
@@ -149,12 +188,157 @@ func (l *Lab) cleanup(t testing.TB, bins *runBinaries, keep bool) {
 	}
 }
 
+// keepRunning keeps the lab up for inspection, and the run directory bins
+// it mounts (KeepEnv), letting go of its slot and subnets; false when it
+// couldn't, the lab still up for the caller to tear down.
+func (l *Lab) keepRunning(t labUser, bins *runBinaries) bool {
+	if err := bins.keep(l.Project); err != nil {
+		t.Errorf("lab %s: can't keep it, tearing it down: %v", l.Project, err)
+		return false
+	}
+	t.Logf("lab %s kept: docker compose -p %s exec <node> bash; make lab-down removes it", l.Project, l.Project)
+	l.releaseSubnets()
+	l.releaseSlot()
+	return true
+}
+
 // UpDetached brings up a topology, for a lab that outlives this process
 // (make lab-up), as the Compose project named project (see up). Its
 // binaries are its own, built into its directory under lab/.run, and go
 // with it (Down, or labctl down).
 func UpDetached(ctx context.Context, root, project string, topo Topology) (*Lab, error) {
-	return up(ctx, root, project, topo, "", detachedInputs)
+	return up(ctx, labBudget.begin(time.Time{}), root, project, topo, "", detachedInputs)
+}
+
+// labBudget bounds a lab's start in three phases, each with a bound of its
+// own: what comes before the lab slot (a leftover lab removed, the image
+// and binaries ready), the wait for the slot, and the start once the slot
+// is held, so a lab queued behind others under load doesn't fail its start
+// before it began. In a test, none runs past the test binary's deadline
+// (go test -timeout, make lab-test's LAB_TIMEOUT) less the tear-down, and
+// the slot wait ends early enough to leave the start its whole bound: a
+// lab still waiting fails with what it waited for, not in the timeout's
+// panic.
+var labBudget = startBudget{before: 15 * time.Minute, wait: 45 * time.Minute, start: 10 * time.Minute, teardown: 2 * time.Minute}
+
+type startBudget struct {
+	before   time.Duration // everything before the slot, counted from the start's beginning
+	wait     time.Duration // for a lab slot
+	start    time.Duration // from when the slot is held until the lab is sealed
+	teardown time.Duration // a test lab's clean-up (Lab.cleanup)
+}
+
+// testDeadline is the test binary's deadline, if t has one.
+func testDeadline(t testing.TB) time.Time {
+	if d, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		if dl, ok := d.Deadline(); ok {
+			return dl
+		}
+	}
+	return time.Time{}
+}
+
+// begin fixes one lab start's bounds from now; deadline is its test's
+// (zero for none).
+func (b startBudget) begin(deadline time.Time) startClock {
+	return b.clock(time.Now, deadline)
+}
+
+func (b startBudget) clock(now func() time.Time, deadline time.Time) startClock {
+	c := startClock{b: b, now: now, began: now()}
+	if !deadline.IsZero() {
+		c.end = deadline.Add(-b.teardown)
+	}
+	return c
+}
+
+type startPhase int
+
+const (
+	phaseBeforeSlot startPhase = iota
+	phaseSlotWait
+	phaseAfterSlot
+)
+
+// startClock is one lab start's bounds (startBudget.begin).
+type startClock struct {
+	b     startBudget
+	now   func() time.Time
+	began time.Time
+	end   time.Time // the test's deadline less the tear-down; zero without one
+	// slotWait, when set, gets how long the start waited for its slot,
+	// whether or not it got one.
+	slotWait *time.Duration
+}
+
+// deadline is when phase p, beginning now, must end, and whether the
+// test's deadline cut it short.
+func (c startClock) deadline(p startPhase) (time.Time, bool) {
+	var dl time.Time
+	var reserve time.Duration
+	switch p {
+	case phaseBeforeSlot:
+		dl = c.began.Add(c.b.before)
+	case phaseSlotWait:
+		dl, reserve = c.now().Add(c.b.wait), c.b.start
+	case phaseAfterSlot:
+		dl = c.now().Add(c.b.start)
+	}
+	if !c.end.IsZero() && c.end.Add(-reserve).Before(dl) {
+		return c.end.Add(-reserve), true
+	}
+	return dl, false
+}
+
+// run runs f under phase p's bound. An error of f's once the bound has
+// passed says which bound it was; the slot wait still takes a free slot
+// with no time left when no waiter is queued ahead of it (acquireSlotLock
+// tries once).
+func (c startClock) run(ctx context.Context, project string, p startPhase, f func(context.Context) error) error {
+	from := c.now()
+	if p == phaseBeforeSlot {
+		from = c.began
+	}
+	dl, cut := c.deadline(p)
+	pctx, cancel := context.WithDeadline(ctx, dl)
+	defer cancel()
+	err := f(pctx)
+	if err == nil || pctx.Err() == nil || ctx.Err() != nil {
+		return err
+	}
+	within := max(dl.Sub(from), 0).Round(time.Millisecond)
+	if within >= time.Second {
+		within = within.Round(time.Second)
+	}
+	var what string
+	switch p {
+	case phaseBeforeSlot:
+		what = fmt.Sprintf("not ready for a lab slot within %v (removing a leftover lab, building the image and binaries, reading the daemon's subnets)", within)
+	case phaseSlotWait:
+		what = fmt.Sprintf("no lab slot within %v", within)
+	case phaseAfterSlot:
+		what = fmt.Sprintf("start not done %v after the slot", within)
+	}
+	if cut {
+		what += ", cut short by the test's deadline"
+	}
+	return fmt.Errorf("lab %s: %s: %w", project, what, err)
+}
+
+// waitForSlot is a lab start's wait for its slot (acquireSlot) under
+// clock's bound, noted in the timeline whether or not it got one.
+func waitForSlot(ctx context.Context, clock startClock, project, slotKey string) (release func(), err error) {
+	from := time.Now()
+	err = clock.run(ctx, project, phaseSlotWait, func(ctx context.Context) (err error) {
+		release, err = acquireSlot(ctx, slotKey)
+		return err
+	})
+	to := time.Now()
+	noteSlotWait(project, from, to, err)
+	if clock.slotWait != nil {
+		*clock.slotWait = to.Sub(from)
+	}
+	return release, err
 }
 
 // labInputs builds the image and the binaries a lab runs, and returns the
@@ -185,28 +369,37 @@ func detachedInputs(ctx context.Context, root, stateDir string) (image, string, 
 // start with ProjectPrefix), and returns once every node is running and
 // sealed into the lab. A lab of this checkout left over under the same name
 // is removed first; another checkout's lab under that name is an error. On
-// error the returned Lab, if any, still needs Down.
-func up(ctx context.Context, root, project string, topo Topology, slotKey string, inputs labInputs) (*Lab, error) {
+// error the returned Lab, if any, still needs Down. clock bounds each phase.
+func up(ctx context.Context, clock startClock, root, project string, topo Topology, slotKey string, inputs labInputs) (*Lab, error) {
 	if !strings.HasPrefix(project, ProjectPrefix) {
 		return nil, fmt.Errorf("lab: project %q doesn't start with %q", project, ProjectPrefix)
 	}
 	if err := topo.Validate(); err != nil {
 		return nil, err
 	}
-	if err := downProject(ctx, project, root); err != nil {
+	stateDir := filepath.Join(root, "lab", ".run", project)
+	var img image
+	var binDir string
+	var onDaemon []netip.Prefix
+	err := clock.run(ctx, project, phaseBeforeSlot, func(ctx context.Context) (err error) {
+		if img, binDir, err = beforeSlot(ctx, root, project, stateDir, inputs); err != nil {
+			return err
+		}
+		// Read before the slot rather than holding one through it: under
+		// load the daemon answers network reads behind every network it is
+		// creating or removing, which took 20 s and more.
+		from := time.Now()
+		onDaemon, err = daemonSubnets.get(ctx, time.Time{})
+		noteSubnetRead(project, from, time.Now(), err)
+		if err != nil {
+			return errors.Join(err, os.RemoveAll(stateDir))
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	// Until the lab is created nothing of it is up: on error its state
-	// directory goes, a detached lab's binaries with it.
-	stateDir := filepath.Join(root, "lab", ".run", project)
-	img, binDir, err := inputs(ctx, root, stateDir)
-	if err != nil {
-		return nil, errors.Join(err, os.RemoveAll(stateDir))
-	}
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		return nil, errors.Join(fmt.Errorf("lab: %w", err), os.RemoveAll(stateDir))
-	}
-	release, err := acquireSlot(ctx, slotKey)
+	release, err := waitForSlot(ctx, clock, project, slotKey)
 	if err != nil {
 		return nil, errors.Join(err, os.RemoveAll(stateDir))
 	}
@@ -219,61 +412,145 @@ func up(ctx context.Context, root, project string, topo Topology, slotKey string
 		nodes:    map[string]*Node{},
 		release:  release,
 	}
-	if err := l.create(ctx, img); err != nil {
-		return l, err
-	}
-	if err := l.inspect(ctx); err != nil {
-		return l, err
-	}
-	if err := l.learnBridges(ctx); err != nil {
-		return l, err
-	}
-	if err := l.configure(ctx); err != nil {
-		return l, err
-	}
-	return l, nil
+	return l, clock.run(ctx, project, phaseAfterSlot, func(ctx context.Context) error {
+		st := startTimes{slot: time.Now()}
+		err := l.startOnSlot(ctx, img, onDaemon, &st)
+		l.started = st
+		noteStart(l, st, err)
+		return err
+	})
 }
 
-// create allocates the lab's subnets and starts it. Allocation and network
-// creation are serialized host-wide; a subnet another daemon user took in
-// the meantime means another try.
-func (l *Lab) create(ctx context.Context, img image) error {
+// startTimes marks the end of each step of a lab's start once it holds its
+// slot, for the timeline (noteStart); a step that never ran stays zero.
+type startTimes struct {
+	slot, created, inspected, bridged, sealed time.Time
+}
+
+// startOnSlot creates the lab and seals its nodes; onDaemon is the
+// daemon's subnets, as read before the slot.
+func (l *Lab) startOnSlot(ctx context.Context, img image, onDaemon []netip.Prefix, st *startTimes) error {
+	if err := l.create(ctx, img, onDaemon); err != nil {
+		return err
+	}
+	st.created = time.Now()
+	if err := l.inspect(ctx); err != nil {
+		return err
+	}
+	st.inspected = time.Now()
+	if err := l.learnBridges(ctx); err != nil {
+		return err
+	}
+	st.bridged = time.Now()
+	if err := l.configure(ctx); err != nil {
+		return err
+	}
+	st.sealed = time.Now()
+	return nil
+}
+
+// beforeSlot removes a leftover lab of the name and gets the lab's inputs.
+// Until the lab is created nothing of it is up: on error its state
+// directory goes, a detached lab's binaries with it.
+func beforeSlot(ctx context.Context, root, project, stateDir string, inputs labInputs) (image, string, error) {
+	if err := downProject(ctx, project, root); err != nil {
+		return image{}, "", err
+	}
+	img, binDir, err := inputs(ctx, root, stateDir)
+	if err != nil {
+		return image{}, "", errors.Join(err, os.RemoveAll(stateDir))
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return image{}, "", errors.Join(fmt.Errorf("lab: %w", err), os.RemoveAll(stateDir))
+	}
+	return img, binDir, nil
+}
+
+// create reserves the lab's subnets and starts it. Only the reservation is
+// serialized host-wide (reserveSubnets); docker compose up runs outside the
+// allocation lock, beside other labs' start-ups.
+func (l *Lab) create(ctx context.Context, img image, onDaemon []netip.Prefix) error {
 	pool, err := subnetPool()
 	if err != nil {
 		return err
 	}
-	unlock, err := lockAllocation(ctx)
+	dir, err := lockDir()
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	return createTries(ctx, onDaemon, daemonSubnets.get,
+		func(ctx context.Context, used func(context.Context) ([]netip.Prefix, error)) (err error) {
+			l.releaseSubnets()
+			l.subnets, err = reserveSubnets(ctx, dir, l.Topology.Networks, pool, used)
+			return err
+		},
+		func(ctx context.Context, attempt int) error {
+			if err := l.composeUp(ctx, img, l.subnets, attempt); err != nil {
+				return fmt.Errorf("lab %s: up: %w", l.Project, err)
+			}
+			return nil
+		},
+		func(ctx context.Context) error { return downProject(ctx, l.Project, l.root) })
+}
+
+// createTries is create's tries: reserve, then up. The first try avoids
+// onDaemon, the daemon's subnets as read before the slot, and the live
+// reservations, which cover every lab of the host's slots started since. A
+// subnet another daemon user took in the meantime (an overlap from up)
+// means another try after down, on a read that began after the overlap.
+// onDaemon is as old as the slot wait: a pool it shows full gets one more
+// try on a read that began after.
+func createTries(ctx context.Context, onDaemon []netip.Prefix,
+	read func(ctx context.Context, notBefore time.Time) ([]netip.Prefix, error),
+	reserve func(ctx context.Context, used func(context.Context) ([]netip.Prefix, error)) error,
+	up func(ctx context.Context, attempt int) error,
+	down func(context.Context) error,
+) error {
+	var notBefore time.Time
 	for attempt := 1; ; attempt++ {
-		used, err := usedSubnets(ctx)
-		if err != nil {
+		used := func(ctx context.Context) ([]netip.Prefix, error) {
+			if attempt == 1 {
+				return onDaemon, nil
+			}
+			return read(ctx, notBefore)
+		}
+		if err := reserve(ctx, used); err != nil {
+			if attempt == 1 && errors.Is(err, errNoFreeSubnet) {
+				notBefore = time.Now()
+				continue
+			}
 			return err
 		}
-		subnets, err := allocateSubnets(l.Topology.Networks, pool, used)
-		if err != nil {
-			return err
-		}
-		file, err := renderCompose(l.Project, l.Topology, img, l.root, l.binDir, subnets)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(l.ComposeFile(), file, 0o644); err != nil {
-			return err
-		}
-		_, err = runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "up", "-d", "--wait")
+		err := up(ctx, attempt)
 		if err == nil {
 			return nil
 		}
 		if !isOverlap(err) || attempt == 5 {
-			return fmt.Errorf("lab %s: up: %w", l.Project, err)
+			return err
 		}
-		if err := downProject(ctx, l.Project, l.root); err != nil {
+		notBefore = time.Now()
+		if err := down(ctx); err != nil {
 			return err
 		}
 	}
+}
+
+// composeUp starts the lab on r's subnets, and notes when in the timeline.
+func (l *Lab) composeUp(ctx context.Context, img image, r *reservation, attempt int) error {
+	file, err := renderCompose(l.Project, l.Topology, img, l.root, l.binDir, r.subnets)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(l.ComposeFile(), file, 0o644); err != nil {
+		return err
+	}
+	from := time.Now()
+	// No --wait: it polls the containers every half second after they
+	// started; a node that died at once fails the sealing instead.
+	_, err = runEnv(ctx, nil, environWithoutCompose(), "docker", "compose", "-f", l.ComposeFile(), "-p", l.Project, "up", "-d")
+	l.upFrom, l.upTo, l.upAttempt = from, time.Now(), attempt
+	noteTimeline(l.Project, attempt, r, from, l.upTo, err)
+	return err
 }
 
 // ComposeFile is the generated Compose file, under lab/.run.
@@ -282,10 +559,21 @@ func (l *Lab) ComposeFile() string { return filepath.Join(l.stateDir, "compose.j
 // Down removes the lab's containers and networks.
 func (l *Lab) Down(ctx context.Context) error {
 	defer l.releaseSlot()
-	if err := downProject(ctx, l.Project, l.root); err != nil {
+	from := time.Now()
+	err := downProject(ctx, l.Project, l.root)
+	noteDown(l.Project, from, time.Now(), err)
+	if err != nil {
 		return err
 	}
+	l.releaseSubnets()
 	return os.RemoveAll(l.stateDir)
+}
+
+// releaseSubnets gives up the lab's subnet reservation: its networks are
+// gone, or stay on the daemon, which every allocation reads.
+func (l *Lab) releaseSubnets() {
+	l.subnets.release()
+	l.subnets = nil
 }
 
 func (l *Lab) releaseSlot() {
@@ -375,62 +663,94 @@ func (l *Lab) inspect(ctx context.Context) error {
 		}
 	}
 
-	l.gateways = map[string][]netip.Addr{}
+	args := []string{"network", "inspect", "--format", "{{.Name}} {{range .IPAM.Config}}{{.Gateway}} {{end}}"}
 	for _, net := range l.Topology.Networks {
-		res, err := docker(ctx, "network", "inspect", "--format", "{{range .IPAM.Config}}{{.Gateway}} {{end}}", l.Project+"_"+net.Name)
-		if err != nil {
-			return err
+		args = append(args, l.Project+"_"+net.Name)
+	}
+	res, err = docker(ctx, args...)
+	if err != nil {
+		return err
+	}
+	l.gateways, err = parseGateways(l.Project, res.Stdout)
+	return err
+}
+
+// parseGateways reads one docker network inspect of a lab's networks, a
+// line of name and gateways per network, into gateways by network.
+func parseGateways(project, out string) (map[string][]netip.Addr, error) {
+	gateways := map[string][]netip.Addr{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
 		}
-		for _, s := range strings.Fields(res.Stdout) {
+		network, ok := strings.CutPrefix(f[0], project+"_")
+		if !ok {
+			return nil, fmt.Errorf("lab %s: docker network inspect: unexpected network %q", project, f[0])
+		}
+		for _, s := range f[1:] {
 			s, _, _ = strings.Cut(s, "/")
 			if a, err := netip.ParseAddr(s); err == nil {
-				l.gateways[net.Name] = append(l.gateways[net.Name], a)
+				gateways[network] = append(gateways[network], a)
 			}
 		}
 	}
-	return nil
+	return gateways, nil
 }
 
 // learnBridges finds each network's bridge MAC from a node on it, before
 // any node is sealed: the bridge answers ARP for the network's gateway
-// address. The MAC also gives the bridge's link-local address.
+// address. The MAC also gives the bridge's link-local address. Networks
+// are asked all at once.
 func (l *Lab) learnBridges(ctx context.Context) error {
+	bridges := make([]Bridge, len(l.Topology.Networks))
+	errs := make([]error, len(l.Topology.Networks))
+	var wg sync.WaitGroup
+	for i, net := range l.Topology.Networks {
+		wg.Go(func() { bridges[i], errs[i] = l.learnBridge(ctx, net) })
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
 	l.bridges = map[string]Bridge{}
-	for _, net := range l.Topology.Networks {
-		var b Bridge
-		for _, gw := range l.gateways[net.Name] {
-			if gw.Is4() {
-				b.IPv4 = gw
-			} else {
-				b.IPv6 = gw
-			}
-		}
-		if !b.IPv4.IsValid() {
-			return fmt.Errorf("lab %s: network %s has no IPv4 gateway", l.Project, net.Name)
-		}
-		i := slices.IndexFunc(l.Topology.Nodes, func(n NodeSpec) bool { return slices.Contains(n.Networks, net.Name) })
-		if i < 0 {
-			l.bridges[net.Name] = b
-			continue
-		}
-		n := l.nodes[l.Topology.Nodes[i].Name]
-		res, err := n.Exec(ctx, "sh", "-c", `ping -c 1 -W 1 "$0" >/dev/null 2>&1; ip -j neigh show "$0"`, b.IPv4.String())
-		if err != nil {
-			return fmt.Errorf("lab %s: network %s: %w", l.Project, net.Name, err)
-		}
-		var neigh []struct {
-			LLAddr string `json:"lladdr"`
-		}
-		if err := json.Unmarshal([]byte(res.Stdout), &neigh); err != nil || len(neigh) == 0 || neigh[0].LLAddr == "" {
-			return fmt.Errorf("lab %s: network %s: no MAC for the bridge at %s: %q", l.Project, net.Name, b.IPv4, res.Stdout)
-		}
-		b.MAC = strings.ToLower(neigh[0].LLAddr)
-		if b.LinkLocal, err = linkLocalFromMAC(b.MAC); err != nil {
-			return err
-		}
-		l.bridges[net.Name] = b
+	for i, net := range l.Topology.Networks {
+		l.bridges[net.Name] = bridges[i]
 	}
 	return nil
+}
+
+// learnBridge is learnBridges for one network.
+func (l *Lab) learnBridge(ctx context.Context, network Network) (Bridge, error) {
+	var b Bridge
+	for _, gw := range l.gateways[network.Name] {
+		if gw.Is4() {
+			b.IPv4 = gw
+		} else {
+			b.IPv6 = gw
+		}
+	}
+	if !b.IPv4.IsValid() {
+		return b, fmt.Errorf("lab %s: network %s has no IPv4 gateway", l.Project, network.Name)
+	}
+	i := slices.IndexFunc(l.Topology.Nodes, func(n NodeSpec) bool { return slices.Contains(n.Networks, network.Name) })
+	if i < 0 {
+		return b, nil
+	}
+	n := l.nodes[l.Topology.Nodes[i].Name]
+	res, err := n.Exec(ctx, "sh", "-c", `ping -c 1 -W 1 "$0" >/dev/null 2>&1; ip -j neigh show "$0"`, b.IPv4.String())
+	if err != nil {
+		return b, fmt.Errorf("lab %s: network %s: %w", l.Project, network.Name, err)
+	}
+	var neigh []struct {
+		LLAddr string `json:"lladdr"`
+	}
+	if err := json.Unmarshal([]byte(res.Stdout), &neigh); err != nil || len(neigh) == 0 || neigh[0].LLAddr == "" {
+		return b, fmt.Errorf("lab %s: network %s: no MAC for the bridge at %s: %q", l.Project, network.Name, b.IPv4, res.Stdout)
+	}
+	b.MAC = strings.ToLower(neigh[0].LLAddr)
+	b.LinkLocal, err = linkLocalFromMAC(b.MAC)
+	return b, err
 }
 
 // linkLocalFromMAC is the EUI-64 link-local address Linux gives an

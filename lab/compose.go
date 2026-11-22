@@ -159,7 +159,7 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 			cmd = []string{"sleep", "infinity"}
 		}
 		// Nothing of the node's own runs before the harness has sealed it.
-		cmd = append([]string{"sh", "-c", `while [ ! -e ` + sealedMarker + ` ]; do sleep 0.1; done; exec "$@"`, "wait-for-seal"}, cmd...)
+		cmd = append([]string{"sh", "-c", `while [ ! -e ` + sealedMarker + ` ]; do sleep 0.1; done; exec "$@"`, sealWait}, cmd...)
 		if n.Systemd {
 			cmd = systemdCommand
 		}
@@ -207,6 +207,10 @@ func renderCompose(project string, topo Topology, img image, root, binDir string
 	return json.MarshalIndent(f, "", "  ")
 }
 
+// sealWait is the $0 of a node's command while it waits for the seal,
+// which a snapshot waits to see gone (Node.waitCommand).
+const sealWait = "wait-for-seal"
+
 // sealScript, in a systemd node, is its sealing script (configureNode),
 // kept for the node's next start: /run, where the marker is, is a tmpfs.
 const sealScript = "/etc/lab/seal.sh"
@@ -220,6 +224,6 @@ var systemdCommand = []string{"sh", "-c",
 	`if [ -x ` + sealScript + ` ]; then ` + sealScript + ` || exit 1; fi; ` +
 		`while [ ! -e ` + sealedMarker + ` ]; do sleep 0.1; done; ` +
 		`mount -o remount,rw /sys/fs/cgroup || exit 1; exec "$@"`,
-	"wait-for-seal", "/lib/systemd/systemd",
+	sealWait, "/lib/systemd/systemd",
 	"systemd.mask=systemd-resolved.service", "systemd.mask=systemd-networkd.service", "systemd.mask=nginx.service",
 }

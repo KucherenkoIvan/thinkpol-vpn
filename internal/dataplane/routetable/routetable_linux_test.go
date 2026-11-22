@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"maps"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -180,6 +181,7 @@ func (d *device) state(t *testing.T) string {
 func local() *lists.Set { return lists.Local() }
 
 func TestEnforcesInANamespace(t *testing.T) {
+	t.Parallel()
 	d := newDevice(t)
 	before := d.state(t)
 	e := d.enforcer(t)
@@ -335,6 +337,8 @@ func countrySized(t testing.TB) *lists.Set {
 	return s
 }
 
+// Not parallel, like TestTheGuardComesBackOnItsOwn: its time bounds
+// hold for this test alone on the CPU.
 func TestCountrySizedTable(t *testing.T) {
 	d := newDevice(t)
 	before := d.state(t)
@@ -390,6 +394,7 @@ func TestCountrySizedTable(t *testing.T) {
 // range (a classless route, an address inside it, an advertised prefix
 // inside the overlay's /48: TunnelVision on the overlay).
 func TestHostileLocalNetworkRoutes(t *testing.T) {
+	t.Parallel()
 	d := newDevice(t)
 	e := d.enforcer(t)
 	overlay := []netip.Prefix{netip.MustParsePrefix("100.64.0.0/16"), netip.MustParsePrefix("fd12:3456:789a::/48")}
@@ -443,6 +448,7 @@ func TestHostileLocalNetworkRoutes(t *testing.T) {
 // and what routing can't confine, sockets bound to an interface, the
 // IPv6 leak guard does (TP-021).
 func TestGatewaysOnLinksAndBoundSockets(t *testing.T) {
+	t.Parallel()
 	d := newDevice(t)
 	e := d.enforcer(t)
 	overlay := []netip.Prefix{netip.MustParsePrefix("100.64.0.0/16"), netip.MustParsePrefix("fd12:3456:789a::/48")}
@@ -484,9 +490,23 @@ func TestGatewaysOnLinksAndBoundSockets(t *testing.T) {
 	// The rules tunnel 10.20.0.0/16: a network handing out 10.0.0.50/8
 	// doesn't make it on-link around the tunnel; the rest of 10/8 is
 	// direct, and on-link.
+	before := e.Status().Reapplies
 	d.ip(t, "addr", "add", "10.0.0.50/8", "dev", "eth0")
-	time.Sleep(time.Second) // the re-apply after the new address
-	d.expect(t, map[string]string{"10.20.1.5": "tunnel", "10.21.0.5": "on-link"})
+	onLink := map[string]string{"10.20.1.5": "tunnel", "10.21.0.5": "on-link"}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		got := map[string]string{}
+		for dst := range onLink {
+			got[dst] = d.route(t, dst, false)
+		}
+		reapplies := e.Status().Reapplies
+		if reapplies > before && maps.Equal(got, onLink) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the re-apply after the new address: %d re-applies since, routes %v, want %v\nrules:\n%smain:\n%s",
+				reapplies-before, got, onLink, d.ip(t, "rule"), d.ip(t, "route"))
+		}
+	}
 
 	// Sockets bound to the physical interface (SO_BINDTODEVICE,
 	// IP_UNICAST_IF, a PKTINFO ifindex: `ping -I eth0`, connectivity
@@ -534,7 +554,9 @@ func TestGatewaysOnLinksAndBoundSockets(t *testing.T) {
 
 // The guard deleted from outside (`nft flush ruleset`, a firewall
 // service's reload, `nft delete table`) is back within about a second,
-// without an Enforce and long before the Backstop.
+// without an Enforce and long before the Backstop. Not parallel: the 3 s
+// bounds hold for this test alone on the CPU, not beside
+// TestCountrySizedTable.
 func TestTheGuardComesBackOnItsOwn(t *testing.T) {
 	d := newDevice(t)
 	e := d.enforcer(t)

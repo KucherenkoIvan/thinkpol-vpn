@@ -58,6 +58,16 @@ func (s *m0Space) build(t *testing.T) ([]byte, string) {
 	return s.file(t, "map.bin"), v[1]
 }
 
+// nodeID is the node id of name's key, as the status names its neighbors.
+func (s *m0Space) nodeID(t *testing.T, name string) string {
+	t.Helper()
+	m := regexp.MustCompile(`node-id: "([0-9a-f]+)"`).FindSubmatch(s.file(t, "keys/"+name+".pub"))
+	if m == nil {
+		t.Fatalf("no node id for %s", name)
+	}
+	return string(m[1])
+}
+
 func (s *m0Space) file(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := base64.StdEncoding.DecodeString(s.builder.MustExec(t, "base64", "-w0", "/tmp/m0/"+name))
@@ -76,17 +86,6 @@ func (s *m0Space) install(t *testing.T, n *lab.Node, name string, envelope []byt
 	n.WriteFile(t, stateDir+"/space.pub", s.file(t, "keys/space.pub"))
 	n.MustExec(t, "chmod", "600", stateDir+"/node.key")
 	putMap(t, n, envelope)
-}
-
-// upFor is `thinkpol up` with args for the node called name: a server-*
-// in server mode, which a node runs in only when told to, whatever its
-// kind in the map (TP-111).
-func upFor(name string, args ...string) []string {
-	cmd := []string{"thinkpol", "up"}
-	if strings.HasPrefix(name, "server-") {
-		cmd = append(cmd, "-mode", "server")
-	}
-	return append(cmd, args...)
 }
 
 // putMap replaces a node's map the way a map arrives: written aside, then
@@ -124,8 +123,16 @@ func waitLog(t *testing.T, p *lab.Process, pattern string) {
 	})
 }
 
-// applied matches the log line of a node, or its worker, applying a map.
-func applied(version string) string { return `msg="map applied" .*version=` + version + ` ` }
+// workerApplied matches the log line of a server's worker applying map
+// version, any version if it is "". The status has no worker's map version:
+// a server's map_version is the supervisor's, which its workers apply
+// after.
+func workerApplied(version string) string {
+	if version == "" {
+		return `worker space=\S+ .*msg="map applied"`
+	}
+	return `worker space=\S+ .*msg="map applied" .*version=` + version + ` `
+}
 
 // TestUpRunsTheM0Space brings the M0 space up with `thinkpol up` on every
 // node (server-1 as a supervisor with a sandboxed worker, the devices in
@@ -133,9 +140,9 @@ func applied(version string) string { return `msg="map applied" .*version=` + ve
 // by SIGHUP, and stops it, leaving nothing behind.
 func TestUpRunsTheM0Space(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
+	l := twoDevicePool.Acquire(t)
 	server, devA, devB := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.DeviceB)
-	space := newM0Space(t, l.Node(lab.Internet), server)
+	space := newM0Space(t, l.Node(lab.Router), server)
 	envelope, v1 := space.build(t)
 	nodes := map[string]*lab.Node{"server-1": server, "device-a": devA, "device-b": devB}
 	resolvConf := map[string]string{}
@@ -146,14 +153,14 @@ func TestUpRunsTheM0Space(t *testing.T) {
 	}
 
 	up := map[string]*lab.Process{
-		"server-1": server.Start(t, "thinkpol", "up", "-mode", "server", "-map-poll", "1s"),
-		"device-a": devA.Start(t, "thinkpol", "up", "-map-poll", "1s"),
+		"server-1": startUp(t, server, "-map-poll", "1s"),
+		"device-a": startUp(t, devA, "-map-poll", "1s"),
 		// device-b takes new maps on SIGHUP only.
-		"device-b": devB.Start(t, "thinkpol", "up", "-map-poll", "1h"),
+		"device-b": startUp(t, devB, "-map-poll", "1h"),
 	}
-	waitLog(t, up["server-1"], "mode=server")
-	waitLog(t, up["device-a"], "mode=device")
-	waitLog(t, up["server-1"], `worker space=\S+ .*`+applied(v1))
+	waitStatus(t, server, inMode("server"))
+	waitStatus(t, devA, inMode("device"))
+	waitLog(t, up["server-1"], workerApplied(v1))
 
 	s4, s6 := space.overlay(1)
 	a4, a6 := space.overlay(2)
@@ -169,8 +176,8 @@ func TestUpRunsTheM0Space(t *testing.T) {
 		ping(t, devB, s4)
 	}
 	pingAll(t)
-	for _, p := range up {
-		waitLog(t, p, applied(v1))
+	for _, n := range nodes {
+		waitStatus(t, n, mapApplied(v1))
 	}
 	// What a stop must take away is there while it runs.
 	devA.MustExec(t, "ip", "link", "show", "thinkpol0")
@@ -184,10 +191,10 @@ func TestUpRunsTheM0Space(t *testing.T) {
 		putMap(t, n, envelope)
 	}
 	devB.MustExec(t, "pkill", "-HUP", "-f", "thinkpol up")
-	for _, p := range up {
-		waitLog(t, p, applied(v2))
+	for _, n := range nodes {
+		waitStatus(t, n, mapApplied(v2))
 	}
-	waitLog(t, up["server-1"], `worker space=\S+ .*`+applied(v2))
+	waitLog(t, up["server-1"], workerApplied(v2))
 	waitLog(t, up["device-b"], "reload requested")
 	pingAll(t)
 

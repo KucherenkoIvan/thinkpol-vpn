@@ -25,9 +25,7 @@ import (
 // (TP-014): either way, it never goes around.
 func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().With(
-		lab.NodeSpec{Name: abroad, Networks: []string{lab.NetServers}, Gateway: lab.Router},
-	))
+	l := abroadPool.Acquire(t)
 	server, dev, router, internet, far := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Router), l.Node(lab.Internet), l.Node(abroad)
 	for site, a := range map[*lab.Node]netip.Addr{internet: domestic6, far: foreign6} {
 		site.MustExec(t, "ip", "addr", "add", a.String()+"/128", "dev", "lo")
@@ -49,10 +47,10 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 	server.WriteFile(t, seed, list)
 	server.MustExec(t, "chmod", "600", seed)
 
-	srv := server.Start(t, "thinkpol", "up", "-mode", "server", "-map-poll", "1s")
-	up := dev.Start(t, "thinkpol", "up", "-map-poll", "1s")
-	waitLog(t, srv, `worker space=\S+ .*`+applied(v1))
-	waitLog(t, up, applied(v1)+`.*route_table_routes=`)
+	srv := startUp(t, server, "-map-poll", "1s")
+	up := startUp(t, dev, "-map-poll", "1s")
+	waitLog(t, srv, workerApplied(v1))
+	waitStatus(t, dev, mapApplied(v1), routeTableEnforced)
 	waitLog(t, up, `msg="blob fetched" .*name=dm`)
 	dev.MustExec(t, "thinkpol", "rules", "preset", "all-but-domestic")
 	s4, _ := space.overlay(1)
@@ -160,8 +158,8 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 	if err := wantGuard(dev, execTimeout, guardAbsent); err != nil {
 		t.Fatal(err)
 	}
-	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-link-mtu", "1300")
-	waitLog(t, up, applied(v1)+`.*ipv6_off=`)
+	up = startUp(t, dev, "-map-poll", "1h", "-link-mtu", "1300")
+	waitStatus(t, dev, mapApplied(v1), ipv6Off)
 	ping(t, dev, s4)
 	check("IPv6 off in the overlay", func() { attempts("IPv6 off in the overlay") })
 
@@ -173,8 +171,8 @@ func TestNoIPv6LeavesAroundTheTunnel(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("after a crash", func() { attempts("after a crash") })
-	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-connect=false")
-	waitLog(t, up, `msg=starting`)
+	up = startUp(t, dev, "-map-poll", "1h", "-connect=false")
+	waitStatus(t, dev, inMode("device"), connection("disconnected"))
 	lab.Eventually(t, 30*time.Second, func() error { return wantGuard(dev, pollTimeout, guardAbsent) })
 	// The negative control: disconnected, with no guard, the same
 	// attempts leave the physical side, and the capture shows them, ICMPv6

@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/netip"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -46,10 +45,7 @@ const domesticList = "198.51.100.0,198.51.100.255,DM\n2001:db8:d0::,2001:db8:d0:
 // it; a stop leaves the routing as it was.
 func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard().With(
-		lab.NodeSpec{Name: abroad, Networks: []string{lab.NetServers}, Gateway: lab.Router},
-		lab.NodeSpec{Name: router2, Networks: []string{lab.NetDevices, lab.NetServers}, Forward: true},
-	))
+	l := abroadPool.Acquire(t)
 	server, dev, router, internet, far := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Router), l.Node(lab.Internet), l.Node(abroad)
 	for site, addrs := range map[*lab.Node][2]netip.Addr{internet: {domestic4, domestic6}, far: {foreign4, foreign6}} {
 		site.MustExec(t, "ip", "addr", "add", addrs[0].String()+"/32", "dev", "lo")
@@ -80,10 +76,10 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	}
 	tablesBefore := dev.MustExec(t, "sh", "-c", "ip route show table all; ip -6 route show table all")
 
-	srv := server.Start(t, "thinkpol", "up", "-mode", "server", "-map-poll", "1s")
-	up := dev.Start(t, "thinkpol", "up", "-map-poll", "1s")
-	waitLog(t, srv, `worker space=\S+ .*`+applied(v1))
-	waitLog(t, up, applied(v1)+`.*route_table_routes=`)
+	srv := startUp(t, server, "-map-poll", "1s")
+	up := startUp(t, dev, "-map-poll", "1s")
+	waitLog(t, srv, workerApplied(v1))
+	waitStatus(t, dev, mapApplied(v1), routeTableEnforced)
 	waitLog(t, up, `msg="blob fetched" .*name=dm`)
 	s4, s6 := space.overlay(1)
 	ping(t, dev, s4) // the overlay goes on working, through the tunnel
@@ -273,16 +269,7 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	// (TP-057: always there, it would refuse the gateways of interfaces
 	// added meanwhile); the status says the TUN is down.
 	dev.MustExec(t, "ip", "link", "set", "thinkpol0", "down")
-	lab.Eventually(t, 30*time.Second, func() error {
-		st, err := execRead(dev, pollTimeout, "thinkpol", "status")
-		if err != nil {
-			return err
-		}
-		if !strings.Contains(st, "route_table_not_enforced") {
-			return fmt.Errorf("the status doesn't say the route table isn't enforced")
-		}
-		return nil
-	})
+	waitStatusFor(t, dev, 30*time.Second, nil, problem("route_table_not_enforced"))
 	expectRoutes(map[string]string{foreign4.String(): "unreachable"})
 	tryPing(foreign4)
 	dev.MustExec(t, "ip", "link", "set", "thinkpol0", "up")
@@ -335,8 +322,8 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	// An overlay too small for IPv6 (a 1300-byte link): IPv6 is dropped,
 	// not sent around the tunnel, but domestic IPv6 still goes direct.
 	// The preset and the list are the device's from before.
-	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-link-mtu", "1300")
-	waitLog(t, up, applied(v1)+`.*ipv6_off=`)
+	up = startUp(t, dev, "-map-poll", "1h", "-link-mtu", "1300")
+	waitStatus(t, dev, mapApplied(v1), ipv6Off)
 	ping(t, dev, s4)
 	atRouter = router.Capture(t, "icmp6")
 	noPing(t, dev, "-6", "-c", "1", "-W", "2", foreign6.String()) // the overlay is IPv4-only
@@ -373,8 +360,8 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	} else if !routeTableRulesUp(rules4, rules6) {
 		t.Fatal("no rules left by the crash: the test proves nothing")
 	}
-	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-connect=false")
-	waitLog(t, up, `msg=starting`)
+	up = startUp(t, dev, "-map-poll", "1h", "-connect=false")
+	waitStatus(t, dev, inMode("device"), connection("disconnected"))
 	lab.Eventually(t, 30*time.Second, func() error {
 		v4, v6, err := policyRules(dev, pollTimeout)
 		if err != nil {
@@ -390,8 +377,8 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 	// A crash while connected, then a start that fails before the route
 	// table is taken over (no TUN): the leftovers go anyway, rather than
 	// keep the device's traffic blocked while it fails.
-	up = dev.Start(t, "thinkpol", "up", "-map-poll", "1h")
-	waitLog(t, up, applied(v1))
+	up = startUp(t, dev, "-map-poll", "1h")
+	waitStatus(t, dev, mapApplied(v1))
 	dev.MustExec(t, "pkill", "-KILL", "-f", "thinkpol up")
 	<-up.Done()
 	if rules4, rules6, err := policyRules(dev, execTimeout); err != nil {
@@ -400,7 +387,7 @@ func TestRouteTableSendsOnlyDirectAroundTheTunnel(t *testing.T) {
 		t.Fatal("no rules left by the second crash: the test proves nothing")
 	}
 	// eth0 exists and isn't a TUN: creating the TUN fails at run time.
-	failing := dev.Start(t, "thinkpol", "up", "-map-poll", "1h", "-interface", dev.Interface(lab.NetDevices))
+	failing := startUp(t, dev, "-map-poll", "1h", "-interface", dev.Interface(lab.NetDevices))
 	<-failing.Done()
 	if failing.Err() == nil || !strings.Contains(failing.Output(), "tun") {
 		t.Fatalf("thinkpol up didn't fail at the TUN: %v\n%s", failing.Err(), failing.Output())
@@ -444,22 +431,23 @@ func routeDev(n *lab.Node, timeout time.Duration, dst string) (string, error) {
 	return out, nil
 }
 
-var counterRE = regexp.MustCompile(`"([a-z_]+\.[a-z_]+)":\s*"?(\d+)"?`)
-
 // deviceCounters are the device's data-plane counters, from `thinkpol
 // status -json`.
 func deviceCounters(n *lab.Node, timeout time.Duration) (map[string]uint64, error) {
-	out, err := execRead(n, timeout, "thinkpol", "status", "-json")
+	st, err := readStatus(n, timeout)
 	if err != nil {
 		return nil, err
 	}
-	c := map[string]uint64{}
-	for _, m := range counterRE.FindAllStringSubmatch(out, -1) {
-		v, _ := strconv.ParseUint(m[2], 10, 64)
-		c[m[1]] = v
+	if st.DataPlane == nil || len(st.DataPlane.Counters) == 0 {
+		return nil, fmt.Errorf("no counters in the status:\n%s", st.raw)
 	}
-	if len(c) == 0 {
-		return nil, fmt.Errorf("no counters in the status:\n%s", out)
+	c := map[string]uint64{}
+	for name, s := range st.DataPlane.Counters {
+		v, err := strconv.ParseUint(s, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("counter %s: %w", name, err)
+		}
+		c[name] = v
 	}
 	return c, nil
 }

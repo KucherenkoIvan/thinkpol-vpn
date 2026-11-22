@@ -19,18 +19,25 @@ import (
 // again on shutdown; a stale one from an unclean stop is deleted at start.
 const table = "censor"
 
-// Run drives the censor: it installs the router's queue rule, serves the
-// queue with the engine until ctx is done, and removes the rule after. It
-// logs "censor ready" once packets are being served.
+// Run drives the censor: it serves the queue with the engine until ctx is
+// done, installing the router's queue rule once the queue is bound, and
+// removes the rule after. It logs "censor ready" once packets are being
+// served.
 func Run(ctx context.Context, cfg Config, eng *Engine) error {
-	if err := installQueueRule(cfg.Queue); err != nil {
-		return err
-	}
+	return run(ctx, cfg, eng, "forward")
+}
+
+// run is Run with the queue rule on hook: the router's forward; tests
+// queue a node's own output, which forward never sees.
+func run(ctx context.Context, cfg Config, eng *Engine, hook string) error {
+	// A table an unclean stop left would queue packets while the queue is
+	// set up (see serveQueue).
+	removeQueueRule()
 	defer removeQueueRule()
 	// serveQueue returns once the queue is closed and its callback has
 	// returned, so nothing publishes to the active modules' channels when
 	// Shutdown closes them.
-	err := serveQueue(ctx, cfg, eng)
+	err := serveQueue(ctx, cfg, eng, func() error { return installQueueRule(cfg.Queue, hook) })
 	eng.Shutdown()
 	if n := eng.Unnoticed(); n > 0 {
 		log.Printf("censor: %d new flows never reached an active module (its channel was full)", n)
@@ -38,11 +45,20 @@ func Run(ctx context.Context, cfg Config, eng *Engine) error {
 	return err
 }
 
-// serveQueue opens the queue and serves it with the engine. The queue rule
-// itself is the caller's (Run's forward hook; tests queue output instead).
-func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
+// serveQueue opens the queue and serves it with the engine, calling
+// queueRule to send packets to it once it is set up. The rule itself is
+// the caller's (Run's forward hook; tests queue output instead).
+func serveQueue(ctx context.Context, cfg Config, eng *Engine, queueRule func() error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Created before the queue so that it closes after it: nf.Close waits
+	// for the callback, which may be sending a Reset's RSTs.
+	rst, err := newRSTSender()
+	if err != nil {
+		return err
+	}
+	defer rst.close()
 
 	nf, err := nfqueue.Open(&nfqueue.Config{
 		NfQueue:      cfg.Queue,
@@ -58,12 +74,6 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
 	if err := nf.SetOption(netlink.NoENOBUFS, true); err != nil {
 		return fmt.Errorf("censor: netlink option: %w", err)
 	}
-
-	rst, err := newRSTSender()
-	if err != nil {
-		return err
-	}
-	defer rst.close()
 
 	var applyMu sync.Mutex
 	var applyErr error
@@ -83,25 +93,21 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
 			return 0
 		}
 		id := *a.PacketID
-		ip := *a.Payload
-		if isFragment(ip) {
-			log.Printf("censor: a fragment escaped reassembly, dropping it")
-			setVerdict(nf, id, Drop)
-			return 0
-		}
-		p, ok := decodePacket(ip)
-		if !ok {
-			// Malformed: nothing for a module to judge, and the
-			// receiver's stack discards it anyway.
-			setVerdict(nf, id, Accept)
-			return 0
-		}
-		setVerdictFor := func(v Verdict) { setVerdict(nf, id, v) }
-		decide(eng, rst, &p, setVerdictFor)
+		handlePacket(eng, rst, id, *a.Payload, func(v Verdict) { setVerdict(ctx, nf, id, v) })
 		return 0
 	}, failed)
 	if err != nil {
 		return fmt.Errorf("censor: register on queue %d: %w", cfg.Queue, err)
+	}
+	// Only now may packets come: go-nfqueue binds the queue, then sets it
+	// up with requests on the socket packets arrive on, taking the next
+	// message for each request's ack, and a packet queued meanwhile fails
+	// the start with "mismatched sequence in netlink reply".
+	if err := queueRule(); err != nil {
+		// Canceled first, so the closing queue's error isn't logged as a
+		// failure of its own.
+		cancel()
+		return err
 	}
 	log.Printf("censor ready: queue=%d", cfg.Queue)
 	<-ctx.Done()
@@ -109,6 +115,26 @@ func serveQueue(ctx context.Context, cfg Config, eng *Engine) error {
 	err = applyErr
 	applyMu.Unlock()
 	return err
+}
+
+// handlePacket decides the queued packet id, then tells the engine it is
+// handled: the verdict log's watermark covering id must come after the
+// packet's entries.
+func handlePacket(eng *Engine, rst *rstSender, id uint32, ip []byte, setVerdict func(Verdict)) {
+	defer eng.Handled(id)
+	if isFragment(ip) {
+		log.Printf("censor: a fragment escaped reassembly, dropping it")
+		setVerdict(Drop)
+		return
+	}
+	p, ok := decodePacket(ip)
+	if !ok {
+		// Malformed: nothing for a module to judge, and the receiver's
+		// stack discards it anyway.
+		setVerdict(Accept)
+		return
+	}
+	decide(eng, rst, &p, setVerdict)
 }
 
 // decide applies the engine's action: a verdict for the kernel, after
@@ -126,12 +152,15 @@ func decide(eng *Engine, rst *rstSender, p *Packet, setVerdict func(Verdict)) {
 	setVerdict(a.Verdict)
 }
 
-func setVerdict(nf *nfqueue.Nfqueue, id uint32, v Verdict) {
+func setVerdict(ctx context.Context, nf *nfqueue.Nfqueue, id uint32, v Verdict) {
 	nfv := nfqueue.NfDrop
 	if v == Accept {
 		nfv = nfqueue.NfAccept
 	}
-	if err := nf.SetVerdict(id, nfv); err != nil {
+	// Once shutdown has begun the socket is closing ("netlink send: ...
+	// closed file"): harmless, since the censor's table goes too and the
+	// kernel drops what its closed queue still held, so it isn't logged.
+	if err := nf.SetVerdict(id, nfv); err != nil && ctx.Err() == nil {
 		log.Printf("censor: verdict for packet %d: %v", id, err)
 	}
 }
@@ -144,19 +173,18 @@ func setVerdict(nf *nfqueue.Nfqueue, id uint32, v Verdict) {
 // arrives escaped reassembly and is dropped, counted; the masks leave DF
 // out, which nearly every TCP segment carries. The router forwards only the
 // lab's own traffic, so the rule needs no match of its own.
-func installQueueRule(queue uint16) error {
-	removeQueueRule()
+func installQueueRule(queue uint16, hook string) error {
 	rule := fmt.Sprintf(`
 table inet %s {
-  chain forward {
-    type filter hook forward priority filter; policy accept;
+  chain judge {
+    type filter hook %s priority filter; policy accept;
     ct state invalid counter
     ip frag-off & 0x3fff != 0 counter drop
     exthdr frag exists counter drop
     queue num %d
   }
 }
-`, table, queue)
+`, table, hook, queue)
 	cmd := exec.Command("nft", "-f", "-")
 	cmd.Stdin = strings.NewReader(rule)
 	if out, err := cmd.CombinedOutput(); err != nil {

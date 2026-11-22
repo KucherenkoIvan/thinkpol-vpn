@@ -3,8 +3,10 @@
 package lab_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -17,31 +19,57 @@ import (
 	"testing"
 	"time"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/agent/localapi"
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab/censor"
 )
 
-// TestCensorMatrix scores every transport against every censor module
-// (PRD C4, success metric 1) and regenerates lab/RESULTS.md. Every cell is
-// probed in its own lab, and a transport's censored cells run in parallel:
-// a transport passes when its data crossed the censor in the lab router
-// over IPv4 and over IPv6, fails when it crossed over neither, and is
-// partial when only one family crossed, which only a row that varies
-// (censorCase.varies) may be. A cell whose outcome contradicts what its
-// censor means to produce fails the test, and a cell whose censor can't be
-// trusted (censord died, the kernel dropped queued packets, an active
-// module missed a snapshot, the verdict log doesn't show the probe's flows,
-// the module the cell quotes didn't compare what it must) is an error.
-// RESULTS.md is written only by a complete run with no error.
+// TestCensorMatrix scores every transport against every censor module (PRD
+// C4, success metric 1) and regenerates lab/RESULTS.md. Each transport's
+// row runs in a lab of its own, or a slow row's cells split across a few
+// (transport.labs, rowLabs), each lab with router, device-a, server-1 and
+// camouflage, holding its own lab slot (lab.StartOwnSlot), the labs in
+// parallel, the longest expected started first (matrixLabs), and a lab's
+// cells one after another: a transport passes when its data crossed the
+// censor in the lab router over IPv4 and over IPv6, fails when it crossed
+// over neither, and is partial when only one family crossed, which only a row that varies (censorCase.varies) or a known
+// flake (censorCase.flakes) may be. A cell whose outcome contradicts what
+// its censor means to produce fails the test, and a cell whose censor
+// can't be trusted (censord died, the kernel dropped queued packets, an
+// active module missed a snapshot, the verdict log doesn't show the
+// probe's flows, the module the cell quotes didn't compare what it must)
+// is an error. RESULTS.md is written only by a complete run with no error.
 //
-// A transport's off cell (no censor) runs before its censored cells and
-// they read its result: a transport must pass without a censor before it
-// is judged against one. A censored cell without a passing off cell is an
-// error and fails fast, whether the off cell didn't run (a -run filter can
-// select the cell alone) or it failed. Every cell holds its own lab slot
-// (lab.StartOwnSlot).
+// Every cell sets its transport up afresh, and after it the cell's lab is
+// reset to the state the row recorded when it took the lab
+// (matrixRow.reset, lab.Lab.Reset): the cell's processes, censord with
+// them, stopped, its TCP connections aborted (and none left), what it
+// left on the nodes removed (the router's censor table, the verdict log),
+// every node's conntrack cleared. A reset that didn't hold makes the cell
+// an error, and every later cell of its lab.
+//
+// A transport's off cell (no censor) runs first in each of its labs and
+// the lab's censored cells read its result: a transport must pass without
+// a censor before it is judged against one, in the lab that judges it.
+// The row's first lab records the off cell; in the others it is only the
+// gate. A censored cell without a passing off cell is an error and fails
+// fast, whether the off cell didn't run (a -run filter can select the cell
+// alone) or it failed.
+//
+// The held cells (heldCell: a row holding its tunnel through three of
+// WireGuard's rekeys, rhythmHold) are the long stream's (lab.StreamLong),
+// every other cell the default stream's: each stream runs its own cells,
+// a held row's off cell in both, in a lab of its own, as each held cell's
+// gate. A stream writes its cells to lab.ResultsDirEnv's directory, and
+// make lab-test assembles RESULTS.md from both (TestAssembleCensorMatrix);
+// with lab.StreamEnv unset the test runs every cell and writes RESULTS.md
+// itself.
 func TestCensorMatrix(t *testing.T) {
 	t.Parallel()
+	if wgTimerScaleErr != nil {
+		t.Fatal(wgTimerScaleErr)
+	}
+	stream := lab.SplitStreams(t)
 	var (
 		mu    sync.Mutex
 		cells []matrixCell
@@ -51,19 +79,38 @@ func TestCensorMatrix(t *testing.T) {
 		defer mu.Unlock()
 		cells = append(cells, cell)
 	}
-	t.Cleanup(func() { writeResults(t, cells, len(transports)*len(censorCases)) })
-
-	// runCell probes one cell and records it: t.Fatal below ends the
-	// function before its return, the deferred record is what survives.
-	runCell := func(t *testing.T, tr transport, cc censorCase) matrixCell {
-		cell := matrixCell{transport: tr.name, censor: cc.name, result: "error"}
-		defer func() { record(cell) }()
-
-		topology := lab.Standard()
-		if cc.upstream || tr.upstream {
-			topology = lab.Upstream()
+	t.Cleanup(func() {
+		for _, n := range []string{knownFlakes(cells), notJudgedCount(cells)} {
+			if n != "" {
+				t.Log(n)
+			}
 		}
-		l := lab.StartOwnSlot(t, topology)
+		if stream == "" {
+			writeResults(t, cells, len(transports)*len(censorCases), wgTimerScale)
+			return
+		}
+		writeMatrixShare(t, stream, cells)
+	})
+
+	// runCell probes one cell, resets the row's lab after it, and records
+	// it unless it ran only as its lab's gate (a row's off cell in its
+	// other labs): t.Fatal below ends the function before its return, the
+	// cleanup is what survives.
+	runCell := func(t *testing.T, row *matrixRow, tr transport, cc censorCase, recorded bool) matrixCell {
+		cell := &matrixCell{transport: tr.name, censor: cc.name, result: "error"}
+		// Registered first, so it runs after the cleanups that stop the
+		// cell's processes.
+		t.Cleanup(func() {
+			if err := row.reset(t.Logf); err != nil {
+				cell.result, cell.detail = "error", "the lab's reset after the cell didn't hold"
+				t.Errorf("%s against %s: %s: %v", tr.name, cc.name, cell.detail, err)
+			}
+			if recorded {
+				record(*cell)
+			}
+		})
+
+		l := row.lab
 		target, err := tr.setup(t, l)
 		if err != nil {
 			cell.detail = "setup failed"
@@ -80,33 +127,43 @@ func TestCensorMatrix(t *testing.T) {
 		}
 
 		want := cc.want(tr.name)
+		budget := probeBudget{pass: want == "pass"}
+		if want == "fail" && c != nil {
+			budget.watch = c.watchBlocked(t, l, cc.blocker, tr.oneUnderlay)
+		}
 		held := cc.hold > 0 && tr.hold != nil
 		if held {
-			tr.hold(t, l, target, cc.hold)
+			tr.hold(t, l, target, cc.hold, cc.idle, func() int { return c.blocks(t, cc.watch) })
 		}
 		if cc.settle {
 			// An active module judges a connection after it has crossed:
 			// the first probe shows it the transport, the cell is the
-			// probe after its verdicts.
-			tr.probe(t, l, target, false)
+			// probe after its verdicts. A cell that should not cross
+			// may stop on the censor's verdict here too (deviceUp's
+			// once keeps the first budget).
+			tr.probe(t, l, target, probeBudget{watch: budget.watch})
 			if err := c.settled(t, l); err != nil {
 				cell.result, cell.detail = "error", "the active modules didn't settle"
 				t.Fatal(err)
 			}
 		}
-		got := tr.probe(t, l, target, want == "pass")
+		got := tr.probe(t, l, target, budget)
 		cell.result, cell.detail = score(got)
 		if held {
 			// The probe after the hold crosses on a redialled connection
 			// even if the censor cut the one it held: what it blocked
 			// during the hold is the cell's verdict.
-			if how, err := blockedBy(t, l, c, cc.watch, crossed{}, true); err == nil {
-				cell.result, cell.detail = "fail", fmt.Sprintf("the censor %s the connection held for %v", how, cc.hold)
+			how, err := blockedBy(t, l, c, cc.watch, crossed{}, true)
+			if err == nil {
+				cell.result, cell.detail = "fail", fmt.Sprintf("the censor %s the connection %s for %v: %s", how, cc.heldHow(), cc.hold, c.blockReason(t, cc.watch))
 			} else if cell.result == "pass" {
-				cell.detail = strings.TrimPrefix(fmt.Sprintf("%s; held %v first", cell.detail, cc.hold), "; ")
+				cell.detail = strings.TrimPrefix(fmt.Sprintf("%s; %s %v first", cell.detail, cc.heldHow(), cc.hold), "; ")
 			}
-			if err := judgedFromTheStart(t, l, c, cc.watch); err != nil {
-				cell.result, cell.detail = "error", "the censor didn't frame the held connection"
+			if cc.trace != "" {
+				t.Logf("%s's trace of the connection %s for %v:\n%s", cc.watch, cc.heldHow(), cc.hold, c.traceSummary(t, cc.trace, tr.name+" - "+cc.name))
+			}
+			if err := judgedFromTheStart(t, l, c, cc, tr); err != nil {
+				cell.result, cell.detail = "error", "the censor didn't read the held connection from its start"
 				t.Fatal(err)
 			}
 		}
@@ -120,14 +177,33 @@ func TestCensorMatrix(t *testing.T) {
 				cell.result, cell.detail = "error", "the verdict log misses the probe's flows"
 				t.Fatal(err)
 			}
+			// Evidence only: the score doesn't read it (owner, TP-250).
+			if passed, err := c.acceptedFor(); err != nil {
+				t.Logf("%s against %s: reading the accepts with a reason: %v", tr.name, cc.name, err)
+			} else if len(passed) > 0 {
+				t.Logf("%s against %s: accepted with a reason: %s", tr.name, cc.name, strings.Join(passed, "; "))
+			}
 		}
 		if want == "fail" || want == "varies" && cell.result != "pass" {
 			how, err := blockedBy(t, l, c, cc.blocker, got, tr.oneUnderlay)
 			if err != nil {
 				t.Error(err)
-			} else if cell.result != "pass" {
+			} else if cell.result != "pass" && how != "" {
+				// how is "" when the probe after a hold crossed: what the
+				// hold's connection met is already in the detail.
 				cell.detail += "; the censor " + how + " them"
 			}
+		}
+		if k, ok := cc.accepted[tr.name]; ok && cell.result == "fail" {
+			reasons, err := c.blockReasons(cc.blocker)
+			if err == nil {
+				err = k.covers(reasons)
+			}
+			if err != nil {
+				cell.result, cell.detail = "error", fmt.Sprintf("%s; %v", cell.detail, err)
+				t.Fatalf("%s against %s: %v", tr.name, cc.name, err)
+			}
+			cell.detail += "; known, accepted: " + k.why
 		}
 		if want == "varies" {
 			cell.detail = strings.TrimPrefix(cell.detail+"; varies: "+cc.varies[tr.name], "; ")
@@ -146,46 +222,358 @@ func TestCensorMatrix(t *testing.T) {
 				cell.result, cell.detail = "error", err.Error()
 				t.Fatalf("%s against %s: %v", tr.name, cc.name, err)
 			}
+			if why, ok := unjudged(flags); ok && cell.result == "pass" {
+				cell.result = notJudged
+				if why != flags[0].why {
+					cell.detail += "; " + cc.report + ": " + why
+				}
+				if want == "pass" {
+					want = cell.result
+				}
+			}
 		}
-		if cell.result != want {
-			t.Errorf("%s against %s: %s (%s), want %s", tr.name, cc.name, cell.result, cell.detail, want)
-		}
-		return cell
+		finishCell(t, cc, cell, want)
+		return *cell
 	}
 
 	if err := checkMatrix(censorCases, transports); err != nil {
 		t.Fatal(err)
 	}
-	off, censored := censorCases[0], censorCases[1:]
-	for _, tr := range transports {
-		t.Run(tr.name, func(t *testing.T) {
+	for _, ml := range matrixLabs(stream, transports, censorCases) {
+		tr := ml.tr
+		t.Run(ml.name(), func(t *testing.T) {
 			t.Parallel()
+			row := startRow(t)
+			gate, cells := ml.cells[0], ml.cells[1:]
 			offResult := "" // the off cell's result; "" when it didn't run
-			t.Run(off.name, func(t *testing.T) {
+			t.Run(gate.cc.name, func(t *testing.T) {
 				// runCell records the cell even when t.Fatal stops it,
 				// but the assignment would not happen: claim that the
 				// cell ran before it can fail.
 				offResult = "error"
-				offResult = runCell(t, tr, off).result
+				offResult = runCell(t, row, tr, gate.cc, gate.record).result
 			})
-			for _, cc := range censored {
-				t.Run(cc.name, func(t *testing.T) {
-					t.Parallel()
-					if offResult == "" {
-						record(matrixCell{transport: tr.name, censor: cc.name,
-							result: "error", detail: gateNotRun})
-						t.Fatal(gateNotRun)
+			for _, lc := range cells {
+				t.Run(lc.cc.name, func(t *testing.T) {
+					reason := ""
+					switch {
+					case offResult == "":
+						reason = gateNotRun
+					case offResult != "pass":
+						reason = gateNotPassed
+					case row.broken != nil:
+						reason = row.broken.Error()
 					}
-					if offResult != "pass" {
-						record(matrixCell{transport: tr.name, censor: cc.name,
-							result: "error", detail: gateNotPassed})
-						t.Fatal(gateNotPassed)
+					if reason != "" {
+						if lc.record {
+							record(matrixCell{transport: tr.name, censor: lc.cc.name, result: "error", detail: reason})
+						}
+						t.Fatal(reason)
 					}
-					runCell(t, tr, cc)
+					runCell(t, row, tr, lc.cc, lc.record)
 				})
 			}
 		})
 	}
+}
+
+// matrixLab is one of a row's labs in a stream: its cells one after
+// another, the row's off cell first, as the lab's gate.
+type matrixLab struct {
+	tr    transport
+	part  int       // the lab's index among the row's labs in the stream
+	cells []labCell // cells[0] is the off cell
+}
+
+// labCell is a cell a lab runs, and whether the lab records it: a row's
+// off cell is recorded by its first lab only, the others run it only as
+// their gate.
+type labCell struct {
+	cc     censorCase
+	record bool
+}
+
+// name is the lab's subtest: the row's name for its first lab, "<row> lab
+// <n>" for the others.
+func (ml matrixLab) name() string {
+	if ml.part == 0 {
+		return ml.tr.name
+	}
+	return fmt.Sprintf("%s lab %d", ml.tr.name, ml.part+1)
+}
+
+// expected is how long the lab's cells take on a quiet machine: the row's
+// cellTime each, and a held cell's hold on top.
+func (ml matrixLab) expected() time.Duration {
+	var d time.Duration
+	for _, lc := range ml.cells {
+		d += ml.tr.cellTime
+		if heldCell(ml.tr, lc.cc) {
+			d += lc.cc.hold
+		}
+	}
+	return d
+}
+
+// matrixLabs is every row's labs in the stream (rowLabs), the longest
+// expected first: go test starts parallel subtests in about this order as
+// -parallel slots free up (fewer than the lab slots), so a long lab
+// started last would set the matrix's wall time.
+func matrixLabs(stream string, rows []transport, cases []censorCase) []matrixLab {
+	var labs []matrixLab
+	for _, tr := range rows {
+		labs = append(labs, rowLabs(stream, tr, cases)...)
+	}
+	slices.SortStableFunc(labs, func(a, b matrixLab) int { return cmp.Compare(b.expected(), a.expected()) })
+	return labs
+}
+
+// rowLabs is the row's labs in the stream, each starting with the off
+// cell (cases[0]) as its gate: the stream's censored cells, in cases'
+// order, held cells (heldCell) in the row's first lab, the rest dealt in
+// turn across the other labs, or across all of them when none is held, up
+// to transport.labs labs (fewer when the row has fewer cells). Only the
+// first lab records the off cell, so every cell is recorded once, and
+// the held cells are in the lab named after the row, the one make
+// lab-test-rhythm-real selects. A stream with none of the row's censored
+// cells starts no lab for it, except that the default stream (and no
+// stream) runs the off cell in one lab of its own.
+func rowLabs(stream string, tr transport, cases []censorCase) []matrixLab {
+	off := cases[0]
+	var cells []censorCase
+	for _, cc := range cases[1:] {
+		if inStream(stream, tr, cc) {
+			cells = append(cells, cc)
+		}
+	}
+	if len(cells) == 0 && stream == lab.StreamLong {
+		return nil
+	}
+	n := min(max(tr.labs, 1), max(len(cells), 1))
+	labs := make([]matrixLab, n)
+	for i := range labs {
+		labs[i] = matrixLab{tr: tr, part: i, cells: []labCell{{cc: off, record: i == 0}}}
+	}
+	first := 0
+	if n > 1 && slices.ContainsFunc(cells, func(cc censorCase) bool { return heldCell(tr, cc) }) {
+		first = 1
+	}
+	dealt := 0
+	for _, cc := range cells {
+		i := 0
+		if !heldCell(tr, cc) {
+			i = first + dealt%(n-first)
+			dealt++
+		}
+		labs[i].cells = append(labs[i].cells, labCell{cc: cc, record: true})
+	}
+	return labs
+}
+
+// TestRowLabs: in each stream, every row's cells of the stream are in
+// exactly one of its labs, each lab with at least one of them (a default
+// stream's row with none has one lab, for its off cell), named apart, no
+// more labs than the row asks for; every lab runs the off cell first and
+// its cells in censorCases' order, and one lab records the off cell (the
+// long stream's share leaves it out, matrixShareOf), so the labs record
+// the stream's cells once each; a held cell is in the row's first lab,
+// alone when the row has more; the long stream starts labs only for held
+// rows. A split row splits its default stream's cells evenly, and the
+// labs start longest expected first.
+func TestRowLabs(t *testing.T) {
+	split := false
+	order := map[string]int{}
+	for i, cc := range censorCases {
+		order[cc.name] = i
+	}
+	for _, stream := range []string{"", lab.StreamDefault, lab.StreamLong} {
+		names := map[string]bool{}
+		recorded := 0
+		labs := matrixLabs(stream, transports, censorCases)
+		for i := 1; i < len(labs); i++ {
+			if labs[i].expected() > labs[i-1].expected() {
+				t.Errorf("%q stream: %s (%v expected) starts after %s (%v)", stream, labs[i].name(), labs[i].expected(), labs[i-1].name(), labs[i-1].expected())
+			}
+		}
+		for _, ml := range labs {
+			if names[ml.name()] {
+				t.Errorf("%q stream: two labs named %q", stream, ml.name())
+			}
+			names[ml.name()] = true
+			if len(ml.cells) == 0 || ml.cells[0].cc.name != censorCases[0].name {
+				t.Errorf("%q stream: %s doesn't run the off cell first", stream, ml.name())
+				continue
+			}
+			for i := 1; i < len(ml.cells); i++ {
+				if order[ml.cells[i].cc.name] <= order[ml.cells[i-1].cc.name] {
+					t.Errorf("%q stream: %s runs %q after %q, against censorCases' order", stream, ml.name(), ml.cells[i].cc.name, ml.cells[i-1].cc.name)
+				}
+			}
+			for _, lc := range ml.cells {
+				if lc.record && (stream != lab.StreamLong || lc.cc.name != censorCases[0].name) {
+					recorded++
+				}
+			}
+		}
+		for _, tr := range transports {
+			var rowLabs []matrixLab
+			for _, ml := range labs {
+				if ml.tr.name == tr.name {
+					rowLabs = append(rowLabs, ml)
+				}
+			}
+			slices.SortFunc(rowLabs, func(a, b matrixLab) int { return cmp.Compare(a.part, b.part) })
+			got, offs := map[string]int{}, 0
+			for i, ml := range rowLabs {
+				labHolds := slices.ContainsFunc(ml.cells, func(lc labCell) bool { return heldCell(tr, lc.cc) })
+				if ml.part != i {
+					t.Errorf("%q stream, %s: lab %d says part %d", stream, tr.name, i, ml.part)
+				}
+				if len(ml.cells) < 2 && len(rowLabs) > 1 {
+					t.Errorf("%q stream: %s has no cell", stream, ml.name())
+				}
+				for j, lc := range ml.cells {
+					if j == 0 {
+						if lc.record {
+							offs++
+						}
+						continue
+					}
+					got[lc.cc.name]++
+					if !lc.record {
+						t.Errorf("%q stream: %s doesn't record %s", stream, ml.name(), lc.cc.name)
+					}
+					if heldCell(tr, lc.cc) && ml.part != 0 {
+						t.Errorf("%q stream: held cell %s / %s in %s, not the row's first lab", stream, tr.name, lc.cc.name, ml.name())
+					}
+					if !heldCell(tr, lc.cc) && labHolds && len(rowLabs) > 1 {
+						t.Errorf("%q stream: %s / %s beside a held cell in %s, though the row has other labs", stream, tr.name, lc.cc.name, ml.name())
+					}
+				}
+			}
+			if len(rowLabs) > 0 && offs != 1 {
+				t.Errorf("%q stream: %s's labs record its off cell %d times", stream, tr.name, offs)
+			}
+			if len(rowLabs) > max(tr.labs, 1) {
+				t.Errorf("%q stream: %s has %d labs, asks for %d", stream, tr.name, len(rowLabs), tr.labs)
+			}
+			if tr.cellTime <= 0 {
+				t.Errorf("%s has no cellTime to order its labs by", tr.name)
+			}
+			want := 0
+			for _, cc := range censorCases[1:] {
+				if !inStream(stream, tr, cc) {
+					continue
+				}
+				want++
+				if got[cc.name] != 1 {
+					t.Errorf("%q stream: %s / %s is in %d labs, want 1", stream, tr.name, cc.name, got[cc.name])
+				}
+			}
+			if n := len(got); n != want {
+				t.Errorf("%q stream: %s's labs have %d cells, want %d", stream, tr.name, n, want)
+			}
+			if stream == lab.StreamLong && (len(rowLabs) > 0) != (want > 0) {
+				t.Errorf("long stream: %s has %d labs for %d held cells", tr.name, len(rowLabs), want)
+			}
+			if stream == lab.StreamDefault && len(rowLabs) > 1 {
+				split = true
+				for _, ml := range rowLabs {
+					if d := len(ml.cells) - len(rowLabs[0].cells); d < -1 || d > 1 {
+						t.Errorf("%s: lab %q has %d cells, its first lab %d", tr.name, ml.name(), len(ml.cells), len(rowLabs[0].cells))
+					}
+				}
+			}
+		}
+		if recorded != streamCells(stream) {
+			t.Errorf("%q stream: its labs record %d cells, the stream has %d", stream, recorded, streamCells(stream))
+		}
+	}
+	if !split {
+		t.Error("no row splits its default stream's cells across labs")
+	}
+}
+
+// TestRhythmRealTarget: make lab-test-rhythm-real's -run filter, matched
+// as go test matches it, selects every held cell and the off cell of its
+// lab, and no other cell or lab, in the run without a stream it makes.
+func TestRhythmRealTarget(t *testing.T) {
+	mk, err := os.ReadFile("../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^lab-test-rhythm-real: ##.*\n\t.*-run '([^']*)'`).FindSubmatch(mk)
+	if m == nil {
+		t.Fatal("no -run filter in make lab-test-rhythm-real's recipe")
+	}
+	filter := strings.ReplaceAll(string(m[1]), "$$", "$")
+	var res []*regexp.Regexp
+	for _, part := range strings.Split(filter, "/") {
+		res = append(res, regexp.MustCompile(part))
+	}
+	if len(res) != 3 || !res[0].MatchString("TestCensorMatrix") {
+		t.Fatalf("filter %q: want TestCensorMatrix/<lab>/<cell>", filter)
+	}
+	// go test's subtest names: spaces become underscores.
+	matches := func(re *regexp.Regexp, name string) bool { return re.MatchString(strings.ReplaceAll(name, " ", "_")) }
+	held := 0
+	for _, ml := range matrixLabs("", transports, censorCases) {
+		labHolds := slices.ContainsFunc(ml.cells, func(lc labCell) bool { return heldCell(ml.tr, lc.cc) })
+		if !matches(res[1], ml.name()) {
+			if labHolds {
+				t.Errorf("filter %q leaves out %s, which has a held cell", filter, ml.name())
+			}
+			continue
+		}
+		if !labHolds {
+			t.Errorf("filter %q starts %s, which has no held cell", filter, ml.name())
+		}
+		for i, lc := range ml.cells {
+			want := i == 0 || heldCell(ml.tr, lc.cc)
+			if got := matches(res[2], lc.cc.name); got != want {
+				t.Errorf("filter %q: %s / %s selected %v, want %v", filter, ml.name(), lc.cc.name, got, want)
+			}
+			if i > 0 && heldCell(ml.tr, lc.cc) {
+				held++
+			}
+		}
+	}
+	if held == 0 {
+		t.Error("the filter selects no held cell")
+	}
+}
+
+// heldCell says whether a cell holds its row's tunnel before the probe
+// (censorCase.hold, transport.hold): the matrix's longest waits (7.5
+// minutes at real time, rhythmHold), the long stream's.
+func heldCell(tr transport, cc censorCase) bool { return cc.hold > 0 && tr.hold != nil }
+
+// inStream says whether a censored cell is the stream's: held cells are
+// the long stream's, the rest the default stream's; "" (no stream) runs
+// both. A row's off cell runs in each stream that runs one of its cells.
+func inStream(stream string, tr transport, cc censorCase) bool {
+	switch stream {
+	case lab.StreamLong:
+		return heldCell(tr, cc)
+	case lab.StreamDefault:
+		return !heldCell(tr, cc)
+	}
+	return true
+}
+
+// streamCells is how many of the matrix's cells are the stream's: the long
+// stream's are its held cells, the default stream's every other cell, off
+// cells included.
+func streamCells(stream string) int {
+	n := 0
+	for _, tr := range transports {
+		for i, cc := range censorCases {
+			if stream == "" || (i > 0 && inStream(stream, tr, cc)) || (i == 0 && stream == lab.StreamDefault) {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // checkMatrix refuses cases and rows that would let a cell pass without
@@ -199,6 +587,9 @@ func checkMatrix(cases []censorCase, rows []transport) error {
 			if !censor.Registered(module) {
 				return fmt.Errorf("%s sets settings of %q, which is no censor module", tr.name, module)
 			}
+		}
+		if tr.hold != nil && tr.tunnel == nil {
+			return fmt.Errorf("%s is held, but names no flow for its tunnel (transport.tunnel): judgedFromTheStart couldn't read it", tr.name)
 		}
 	}
 	for _, cc := range cases[1:] {
@@ -218,8 +609,29 @@ func checkMatrix(cases []censorCase, rows []transport) error {
 				return fmt.Errorf("censor case %q lets %s vary: only a reference row may, a gate row's result is never chance", cc.name, tr)
 			}
 		}
+		for tr := range cc.flakes {
+			if cc.expect[tr] != "fail" {
+				return fmt.Errorf("censor case %q marks %s a known flake, but doesn't expect it to fail", cc.name, tr)
+			}
+		}
+		for tr, k := range cc.accepted {
+			if cc.expect[tr] != "fail" {
+				return fmt.Errorf("censor case %q accepts %s's fail, but doesn't expect it to fail", cc.name, tr)
+			}
+			if len(k.reasons) == 0 {
+				return fmt.Errorf("censor case %q accepts %s's fail, but names no block reason it accepts it for", cc.name, tr)
+			}
+		}
 		if len(cc.verdictSays) > 0 && cc.report == "" {
 			return fmt.Errorf("censor case %q checks verdicts but names no module to report", cc.name)
+		}
+		// udp shows WireGuard's timing untouched: a held row's pass means
+		// something only if the same hold catches udp.
+		if cc.hold > 0 {
+			i := slices.IndexFunc(rows, func(tr transport) bool { return tr.name == rowUDP })
+			if i < 0 || rows[i].hold == nil || cc.expect[rowUDP] != "fail" {
+				return fmt.Errorf("censor case %q holds tunnels, but %s, the control, isn't a row held and expected to fail", cc.name, rowUDP)
+			}
 		}
 		for _, tr := range rows {
 			if _, tuned := tr.moduleSettings[cc.report]; tuned && cc.report != "" && cc.verdictSays[tr.name] == "" {
@@ -250,8 +662,10 @@ func isReferenceOrControl(row string) bool {
 // TestCheckMatrix: the matrix as written passes its own checks; a TCP
 // gate row missing from the prober case's verdictSays, a TLS gate row
 // missing from the server-hello case's, a row tuning a report module
-// without a verdictSays entry, and a row tuning a module that doesn't
-// exist each fail the run.
+// without a verdictSays entry, a row tuning a module that doesn't exist,
+// a held case without udp held and expected to fail (the control), an
+// accepted fail the case doesn't expect, and one that names no block
+// reason each fail the run.
 func TestCheckMatrix(t *testing.T) {
 	if err := checkMatrix(censorCases, transports); err != nil {
 		t.Fatalf("the matrix: %v", err)
@@ -282,6 +696,78 @@ func TestCheckMatrix(t *testing.T) {
 			t.Errorf("%s: %v, want an error saying %q", c.name, err, c.wantErr)
 		}
 	}
+	// A held case must catch the control: udp held and expected to fail.
+	held := func(expect map[string]string) []censorCase {
+		return []censorCase{{name: "off"}, {name: "held", modules: on, hold: time.Minute, expect: expect, blocker: "wireguard-rhythm"}}
+	}
+	hold := func(*testing.T, *lab.Lab, probeTarget, time.Duration, bool, func() int) {}
+	tunnel := func(*lab.Lab, censor.FlowKey) bool { return true }
+	for _, c := range []struct {
+		name    string
+		cases   []censorCase
+		rows    []transport
+		wantErr bool
+	}{
+		{"control held, expected to fail", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowUDP, udp: true, hold: hold, tunnel: tunnel}}, false},
+		{"control expected to pass", held(nil), []transport{{name: rowUDP, udp: true, hold: hold, tunnel: tunnel}}, true},
+		{"control not held", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowUDP, udp: true}}, true},
+		{"no control row", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowReality, hold: hold, tunnel: tunnel}}, true},
+		{"held row names no tunnel", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowUDP, udp: true, hold: hold}}, true},
+	} {
+		if err := checkMatrix(c.cases, c.rows); (err != nil) != c.wantErr {
+			t.Errorf("%s: %v, want an error %v", c.name, err, c.wantErr)
+		}
+	}
+	// An accepted fail is an expected fail, nothing else.
+	accepting := censorCase{name: "accepting", modules: on, blocker: "wireguard-rhythm",
+		expect: map[string]string{rowReality: "fail"}, accepted: map[string]knownTell{rowReality: {why: "a known tell", reasons: []string{censor.WGRhythmByBurst}}}}
+	if err := checkMatrix([]censorCase{{name: "off"}, accepting}, nil); err != nil {
+		t.Errorf("an accepted, expected fail: %v", err)
+	}
+	accepting.accepted = map[string]knownTell{rowReality: {why: "a known tell"}}
+	if err := checkMatrix([]censorCase{{name: "off"}, accepting}, nil); err == nil {
+		t.Error("an accepted fail that names no block reason passed the checks")
+	}
+	accepting.accepted = map[string]knownTell{rowReality: {why: "a known tell", reasons: []string{censor.WGRhythmByBurst}}}
+	accepting.expect = nil
+	if err := checkMatrix([]censorCase{{name: "off"}, accepting}, nil); err == nil {
+		t.Error("an accepted fail the case doesn't expect passed the checks")
+	}
+}
+
+// TestKnownTellCovers: reality's accepted rhythm fail covers blocks by the
+// count and burst signals only. A block for a size or quiet tell (the
+// rekey signal's reason, keepalives), beside them or alone, or no block
+// reason at all, is news: an error that names the reason.
+func TestKnownTellCovers(t *testing.T) {
+	k := rhythmCase("wireguard-rhythm", false).accepted[rowReality]
+	const (
+		burst     = "WireGuard rekey by burst: 3 records one way and 2 the other within 10ms, 3 times, the last 2m0s apart"
+		count     = "WireGuard rekey by record count: the difference each way stepped 3 times by +1, the last 2m0s apart, flat in between"
+		sizes     = "WireGuard rekey: records of 167 and 111 bytes exchanged 3 times, the last 2m0s apart"
+		keepalive = "WireGuard keepalives: 3 idle records of 507 bytes, 25s apart"
+	)
+	for _, c := range []struct {
+		name    string
+		reasons []string
+		bad     string // the reason the error must name; "" when covered
+	}{
+		{"burst", []string{burst}, ""},
+		{"count", []string{count}, ""},
+		{"both counting signals", []string{count, burst}, ""},
+		{"sizes", []string{sizes}, sizes},
+		{"keepalives", []string{keepalive}, keepalive},
+		{"a burst and keepalives", []string{burst, keepalive}, keepalive},
+		{"no reason", nil, "no block reason"},
+	} {
+		err := k.covers(c.reasons)
+		switch {
+		case c.bad == "" && err != nil:
+			t.Errorf("%s: %v", c.name, err)
+		case c.bad != "" && (err == nil || !strings.Contains(err.Error(), c.bad)):
+			t.Errorf("%s: %v, want an error naming %q", c.name, err, c.bad)
+		}
+	}
 }
 
 // The off-cell gate messages: a censored cell sees them when its baseline
@@ -300,8 +786,9 @@ type crossed struct{ v4, v6 bool }
 
 // score is a cell's result: pass when data crossed over both families,
 // fail when it crossed over neither, and partial when only one did, which
-// only a row that varies may be: a blocking censor that one family slips
-// past leaks, and a transport that loses a family doesn't pass.
+// only a row that varies or a known flake may be: a blocking censor that
+// one family slips past leaks, and a transport that loses a family
+// doesn't pass.
 func score(c crossed) (result, detail string) {
 	switch {
 	case c.v4 && c.v6:
@@ -312,6 +799,111 @@ func score(c crossed) (result, detail string) {
 		return "partial", "only IPv6 crossed"
 	}
 	return "fail", "neither IPv4 nor IPv6 crossed"
+}
+
+// TestKnownFlake: udp's partial against fully-encrypted, which expects a
+// fail, is reported as its known flake (TP-236) and counted, in the test
+// log and RESULTS.md's header, not failed; its pass or error still fails
+// the run, as does a partial in any other cell or where the case wants
+// other than a fail, and no other cell of the matrix carries a known
+// flake.
+func TestKnownFlake(t *testing.T) {
+	caseNamed := func(name string) censorCase {
+		i := slices.IndexFunc(censorCases, func(cc censorCase) bool { return cc.name == name })
+		if i < 0 {
+			t.Fatalf("no censor case %q", name)
+		}
+		return censorCases[i]
+	}
+	fe, blocklist := caseNamed("fully-encrypted"), caseNamed("ip-blocklist (entry)")
+	for _, c := range []struct {
+		name  string
+		cc    censorCase
+		cell  matrixCell
+		want  string
+		err   string // what the failed run says, "" when it doesn't fail
+		flake bool   // reported as the known flake
+	}{
+		{"udp's partial", fe, matrixCell{rowUDP, fe.name, "partial", "only IPv6 crossed"}, "fail", "", true},
+		{"udp's fail", fe, matrixCell{rowUDP, fe.name, "fail", "neither IPv4 nor IPv6 crossed"}, "fail", "", false},
+		{"udp's pass", fe, matrixCell{rowUDP, fe.name, "pass", ""}, "fail",
+			"udp against fully-encrypted: pass (), want fail", false},
+		{"udp's error", fe, matrixCell{rowUDP, fe.name, "error", "censor unhealthy"}, "fail",
+			"udp against fully-encrypted: error (censor unhealthy), want fail", false},
+		{"udp's partial, wanted to pass", fe, matrixCell{rowUDP, fe.name, "partial", "only IPv4 crossed"}, "pass",
+			"udp against fully-encrypted: partial (only IPv4 crossed), want pass", false},
+		{"random-tcp's partial, same case", fe, matrixCell{rowRandomTCP, fe.name, "partial", "only IPv4 crossed"}, "fail",
+			rowRandomTCP + " against fully-encrypted: partial (only IPv4 crossed), want fail", false},
+		{"udp's partial, another case", blocklist, matrixCell{rowUDP, blocklist.name, "partial", "only IPv4 crossed"}, blocklist.want(rowUDP),
+			"udp against ip-blocklist (entry): partial (only IPv4 crossed), want " + blocklist.want(rowUDP), false},
+	} {
+		if c.want == "fail" && c.cc.want(c.cell.transport) != "fail" {
+			t.Fatalf("%s: the matrix wants %s, not fail", c.name, c.cc.want(c.cell.transport))
+		}
+		cell := c.cell
+		rec := &recordingTB{}
+		finishCell(rec, c.cc, &cell, c.want)
+		if c.err == "" && len(rec.errs) > 0 || c.err != "" && !slices.Equal(rec.errs, []string{c.err}) {
+			t.Errorf("%s: the test's errors %q, want %q", c.name, rec.errs, c.err)
+		}
+		if isKnownFlake(cell) != c.flake {
+			t.Errorf("%s: detail %q, want the known flake marked: %v", c.name, cell.detail, c.flake)
+		}
+		if c.flake {
+			if want := "KNOWN FLAKE (TP-236): "; !strings.HasPrefix(cell.detail, want) || !strings.HasSuffix(cell.detail, "; "+c.cell.detail) {
+				t.Errorf("%s: detail %q, want %q, the flake's why and the score's detail", c.name, cell.detail, want)
+			}
+			if want := "udp against fully-encrypted: partial (" + cell.detail + ")"; !slices.Equal(rec.logs, []string{want}) {
+				t.Errorf("%s: the test's log %q, want %q", c.name, rec.logs, want)
+			}
+		} else if cell.detail != c.cell.detail {
+			t.Errorf("%s: detail changed to %q", c.name, cell.detail)
+		}
+	}
+
+	flaked := matrixCell{rowUDP, fe.name, "partial", "only IPv4 crossed"}
+	if err := fe.verdict(&flaked, "fail"); err != nil {
+		t.Fatal(err)
+	}
+	cells := []matrixCell{{rowRandomTCP, fe.name, "fail", ""}, flaked, {rowUDP, "off", "pass", ""}}
+	if got, want := knownFlakes(cells), "KNOWN FLAKES: 1 (udp / fully-encrypted)"; got != want {
+		t.Errorf("the summary: %q, want %q", got, want)
+	}
+	if got := knownFlakes(cells[:1]); got != "" {
+		t.Errorf("the summary of a run without a flake: %q, want none", got)
+	}
+	if md := resultsMarkdown(slices.Clone(cells), 1); !strings.Contains(md, "\nKNOWN FLAKES: 1 (udp / fully-encrypted).\n") {
+		t.Errorf("RESULTS.md doesn't count the known flake:\n%s", md)
+	}
+	if md := resultsMarkdown(slices.Clone(cells[:1]), 1); strings.Contains(md, "KNOWN FLAKES:") {
+		t.Errorf("RESULTS.md of a run without a flake counts one:\n%s", md)
+	}
+
+	for _, cc := range censorCases {
+		for row := range cc.flakes {
+			if cc.name != fe.name || row != rowUDP {
+				t.Errorf("%s against %s is marked a known flake: only udp against fully-encrypted is (owner, 2026-11-19)", row, cc.name)
+			}
+		}
+	}
+	on := func(*testing.T, *lab.Lab) []censor.ModuleConfig { return nil }
+	unexpected := censorCase{name: "x", modules: on, flakes: map[string]knownFlake{rowUDP: {ticket: "TP-0", why: "chance"}}}
+	want := `censor case "x" marks udp a known flake, but doesn't expect it to fail`
+	if err := checkMatrix([]censorCase{{name: "off"}, unexpected}, nil); err == nil || err.Error() != want {
+		t.Errorf("a known flake on a row its case doesn't expect to fail: %v, want %q", err, want)
+	}
+}
+
+// recordingTB is a test as finishCell sees it.
+type recordingTB struct {
+	testing.TB
+	errs, logs []string
+}
+
+func (r *recordingTB) Helper()           {}
+func (r *recordingTB) Error(args ...any) { r.errs = append(r.errs, fmt.Sprint(args...)) }
+func (r *recordingTB) Logf(format string, args ...any) {
+	r.logs = append(r.logs, fmt.Sprintf(format, args...))
 }
 
 // TestScore: a cell meant to block, where one family still crossed, is
@@ -350,14 +942,24 @@ type censorCase struct {
 	// blocker is the module a cell expected to fail must find blocking
 	// in the verdict log.
 	blocker string
-	// hold keeps the tunnel of a row with a hold (a TLS-shaped transport)
-	// in use this long before the probe, and the cell fails if watch, a
-	// module of the case, blocked its connection meanwhile.
+	// hold keeps the tunnel of a row with a hold up this long before the
+	// probe, in use or, with idle, idle after one ping, and the cell fails
+	// if watch, a module of the case, blocked its connection meanwhile.
+	// trace is the path watch writes its trace to, which the cell logs a
+	// summary of.
 	hold  time.Duration
+	idle  bool
 	watch string
-	// upstream runs the cell in lab.Upstream: the camouflage site behind
-	// the router.
-	upstream bool
+	trace string
+	// flakes holds the rows expected to fail that score partial by a
+	// known chance (knownFlake): that partial is marked and accepted, any
+	// other result than fail still fails the run.
+	flakes map[string]knownFlake
+	// accepted holds the rows expected to fail on a tell the design
+	// accepts: a failing cell's detail says so, so the fail reads as
+	// known, never as news, and stays a correct cell like any expected
+	// fail, as long as the blocker blocked for that tell alone.
+	accepted map[string]knownTell
 	// settle probes twice, the cell scoring the second, once the active
 	// modules have flagged every flow of server-1 a module tagged.
 	settle bool
@@ -372,6 +974,173 @@ type censorCase struct {
 	// a family with no flag is an error, never a pass: the IPv4
 	// connection's match says nothing of the IPv6 one's.
 	verdictSays map[string]string
+}
+
+// finishCell fails the test unless the cell's result is what its case
+// wants or the row's known flake (verdict), and logs it otherwise.
+func finishCell(t testing.TB, cc censorCase, cell *matrixCell, want string) {
+	t.Helper()
+	if err := cc.verdict(cell, want); err != nil {
+		t.Error(err)
+		return
+	}
+	t.Logf("%s against %s: %s (%s)", cell.transport, cell.censor, cell.result, cell.detail)
+}
+
+// knownFlake is a cell expected to fail that a censor working as meant
+// lets one family through by chance: the ticket that measured it and why,
+// with the rate.
+type knownFlake struct{ ticket, why string }
+
+// knownFlakeMark starts a known flake's detail, in the test output and
+// RESULTS.md alike.
+const knownFlakeMark = "KNOWN FLAKE"
+
+func (k knownFlake) mark() string { return fmt.Sprintf("%s (%s): %s", knownFlakeMark, k.ticket, k.why) }
+
+func isKnownFlake(c matrixCell) bool { return strings.HasPrefix(c.detail, knownFlakeMark+" (") }
+
+// verdict is an error when the cell's result isn't want, except a partial
+// where the row's known flake expects a fail: the cell's detail then
+// starts with the flake's mark. A pass there is still an error: both
+// families crossing is no known chance.
+func (cc censorCase) verdict(cell *matrixCell, want string) error {
+	// A cell sees both families, so one alone is partial; a row split per
+	// family (one cell per family) could never be, and the mark would stop.
+	if k, ok := cc.flakes[cell.transport]; ok && want == "fail" && cell.result == "partial" {
+		cell.detail = strings.TrimSuffix(k.mark()+"; "+cell.detail, "; ")
+		return nil
+	}
+	if cell.result != want {
+		return fmt.Errorf("%s against %s: %s (%s), want %s", cell.transport, cell.censor, cell.result, cell.detail, want)
+	}
+	return nil
+}
+
+// knownTell is a tell the design accepts: what shows and the residual
+// risk that accepts it (why), and the starts of the blocker's reasons it
+// is (reasons).
+type knownTell struct {
+	why     string
+	reasons []string
+}
+
+// covers is an error unless every reason the blocker blocked for is the
+// tell's: a block for anything else is news, never the known fail.
+func (k knownTell) covers(reasons []string) error {
+	if len(reasons) == 0 {
+		return errors.New("the blocker logged no block reason: not the known tell")
+	}
+	for _, r := range reasons {
+		if !slices.ContainsFunc(k.reasons, func(p string) bool { return strings.HasPrefix(r, p) }) {
+			return fmt.Errorf("blocked for %q, not the known tell (%s)", r, strings.Join(k.reasons, " or "))
+		}
+	}
+	return nil
+}
+
+// unjudged finds a flag that couldn't judge what its cell is for: the
+// prober's upstream tell, unattributable, or reported rather than flagged
+// (upstreamTell "report", the reality row's), over any baseline. A
+// reported tell is scored on the tell alone (owner, 2026-11-19: a): its
+// counts and times stay in the detail as evidence, but the cell is "not
+// judged", never a pass, so no baseline's length can make it one. Only an
+// accept counts: a tell that flags blocks with the same words, and a
+// block is judged.
+func unjudged(flags []judgment) (string, bool) {
+	for _, f := range flags {
+		if !strings.HasPrefix(f.why, censor.Accept.String()+", ") {
+			continue
+		}
+		if strings.Contains(f.why, censor.UpstreamTellUnattributable) || strings.Contains(f.why, censor.UpstreamTellReported) {
+			return f.why, true
+		}
+	}
+	return "", false
+}
+
+// TestUnjudged: a flag whose upstream tell is unattributable, or reported
+// over any baseline (short: the reality cell's pass in about 3 runs of 10
+// before TP-255; long: a pass before TP-264), on either family, makes the
+// cell not judged; no tell, or a tell that flags, doesn't.
+func TestUnjudged(t *testing.T) {
+	const (
+		shown  = "accept, server 192.0.2.9:443 answers like the reference: upstream tell: a connection from 192.0.2.9 to the reference during every probe (7 of 7; 8 dials in 4s of probes, 1 in 30s outside them), reported, not flagged"
+		unsure = "accept, server [2001:db8::9]:443 answers like the reference: upstream tell: unattributable (8 dials in 4s of probes, 30 in 30s outside them, at least half the rate; a connection from 2001:db8::9 to the reference during 7 of 7 probes)"
+		short  = "accept, server 192.0.2.9:443 answers like the reference: upstream tell: a connection from 192.0.2.9 or another address of its host to the reference during every probe (7 of 7; 9 dials in 7.551s of probes, 7 in 4.399s outside them, a baseline shorter than the probing, too short to call the tell unattributable), reported, not flagged"
+		// TP-255's tightest run, 8 dials in 5.52 s of probes, with a
+		// baseline past about 11 s and no more dials in it: attributable.
+		long   = "accept, server 192.0.2.9:443 answers like the reference: upstream tell: a connection from 192.0.2.9 or another address of its host to the reference during every probe (7 of 7; 8 dials in 5.52s of probes, 8 in 12s outside them), reported, not flagged"
+		absent = "accept, server 192.0.2.9:443 answers like the reference: connections to the reference during 0 of 7 probes"
+		// A flag-mode tell, over any baseline, blocks: judged.
+		blocked = "drop, server 192.0.2.9:443 unlike the reference: upstream tell: a connection from 192.0.2.9 to the reference during every probe (7 of 7; 9 dials in 7.551s of probes, 7 in 4.399s outside them, a baseline shorter than the probing, too short to call the tell unattributable)"
+		flagged = "drop, server 192.0.2.9:443 unlike the reference: upstream tell: a connection from 192.0.2.9 to the reference during every probe (7 of 7; 8 dials in 5.52s of probes, 8 in 12s outside them)"
+	)
+	for _, c := range []struct {
+		name  string
+		flags []judgment
+		want  string
+	}{
+		{"shown over a long baseline", []judgment{{true, shown}}, shown},
+		{"attributable over a baseline past 11 s", []judgment{{true, long}}, long},
+		{"attributable over a baseline past 11 s on IPv6", []judgment{{true, absent}, {false, long}}, long},
+		{"absent", []judgment{{true, absent}}, ""},
+		{"unattributable on IPv6", []judgment{{true, absent}, {false, unsure}}, unsure},
+		{"a short baseline", []judgment{{true, short}}, short},
+		{"a short baseline on IPv6", []judgment{{true, absent}, {false, short}}, short},
+		{"no flag", nil, ""},
+		{"a flag-mode block over a short baseline", []judgment{{true, blocked}}, ""},
+		{"a flag-mode block over a long baseline", []judgment{{true, flagged}}, ""},
+	} {
+		if why, ok := unjudged(c.flags); ok != (c.want != "") || why != c.want {
+			t.Errorf("%s: %q, %v, want %q", c.name, why, ok, c.want)
+		}
+	}
+}
+
+// TestNotJudgedCounted: cells not judged are counted as known flakes are,
+// in RESULTS.md's header (after the flakes) and the test log's summary,
+// every one of them, sorted; a run without one says nothing.
+func TestNotJudgedCounted(t *testing.T) {
+	cells := []matrixCell{
+		{rowReality, "active prober", notJudged, "upstream tell: ..., reported, not flagged"},
+		{rowRelayTCP, "active prober", "fail", "upstream tell: ..."},
+		{rowHTTPS, "active prober", notJudged, "upstream tell: unattributable (...)"},
+		{rowUDP, "fully-encrypted", "partial", "KNOWN FLAKE (TP-236): chance; only IPv4 crossed"},
+		{rowReality, "off", "pass", ""},
+	}
+	want := "NOT JUDGED: 2 (" + rowHTTPS + " / active prober, " + rowReality + " / active prober)"
+	if got := notJudgedCount(cells); got != want {
+		t.Errorf("the summary: %q, want %q", got, want)
+	}
+	if got := notJudgedCount(cells[1:2]); got != "" {
+		t.Errorf("the summary of a run without a cell not judged: %q, want none", got)
+	}
+	md := resultsMarkdown(slices.Clone(cells), 1)
+	if !strings.Contains(md, "\nKNOWN FLAKES: 1 (udp / fully-encrypted).\n\n"+want+".\n\n| transport |") {
+		t.Errorf("RESULTS.md doesn't count both, flakes first, before the table:\n%s", md)
+	}
+	if md := resultsMarkdown(slices.Clone(cells[1:2]), 1); strings.Contains(md, "NOT JUDGED:") {
+		t.Errorf("RESULTS.md of a run without a cell not judged counts one:\n%s", md)
+	}
+}
+
+// heldHow says how the case held the tunnel, and at what speed its
+// WireGuard ran.
+func (cc censorCase) heldHow() string {
+	how := "held in use"
+	if cc.idle {
+		how = "held idle"
+	}
+	return how + " (" + wgTimersHow(wgTimerScale) + ")"
+}
+
+// wgTimersHow says how fast the lab's WireGuard timers ran.
+func wgTimersHow(scale int) string {
+	if scale == 1 {
+		return "WireGuard's timers at real time"
+	}
+	return fmt.Sprintf("WireGuard's timers ×%d", scale)
 }
 
 // judgment is a flag of the report module on a connection between
@@ -506,23 +1275,41 @@ var censorCases = []censorCase{
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			return []censor.ModuleConfig{{Name: "openvpn-fingerprint", Settings: json.RawMessage(`{}`)}}
 		}},
-	// An M2 gate check (docs/design/milestones.md). A TLS-shaped
-	// transport's pass means something only when its probe runs long
-	// enough for the rhythm to show: three rekeys (up to 7 minutes, up to
-	// about 10 minutes when batched), or three idle keepalives. So reality,
-	// which doesn't batch, holds its tunnel in use for 7.5 minutes first,
-	// with its default settings; the other rows aren't TLS and pass.
-	{name: "wireguard-rhythm", hold: 450 * time.Second, watch: "wireguard-rhythm",
-		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
-			return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: json.RawMessage(`{}`)}}
-		}},
+	// M2 gate checks (docs/design/milestones.md). A transport's pass means
+	// something only when its tunnel runs long enough for the rhythm to
+	// show: three rekeys (up to 7 minutes, up to about 10 minutes when
+	// batched), or three idle keepalives. So reality, which doesn't batch,
+	// and udp, the control (WireGuard's timing untouched), hold their
+	// tunnels first (rhythmHold, 7.5 minutes at real time), in use (a ping
+	// every rhythmPing, 2 s at real time), with the module's default
+	// settings; udp must be caught for the case to mean anything. The
+	// lab's thinkpol runs WireGuard's timers sped up (lab.WGTimerScale):
+	// the hold, the ping and the module's rekey period are scaled to match
+	// (rhythmCase), and make lab-test-rhythm-real runs these cells at real
+	// time. reality is caught too, by counting its records each way: a
+	// known tell, accepted in RR65 until cover records go both ways (owner,
+	// 2026-11-16). The other rows aren't held, and pass. The idle case,
+	// rhythmCase("wireguard-rhythm (idle)", true), is out of the matrix
+	// until TP-080 (liveness rides on data, idle path probes back off)
+	// brings it back: an idle thinkpol tunnel sends no WireGuard rhythm,
+	// so udp can't be caught there, and thinkpol's path probes are the
+	// idle tell (TP-223's Notes).
+	rhythmCase("wireguard-rhythm", false),
 	// M2 gate checks (docs/design/milestones.md). Wu et al.'s exemptions
-	// on each connection's first data, UDP's first datagram too: thinkpol's
-	// udp sends random bytes first (exempt by chance about once in 400
-	// tunnels: six printable bytes first); OpenVPN's first packet is mostly
-	// zeros, and HTTPS starts with a TLS record. A WireGuard initiation
-	// ends in 16 zero bytes, and is exempt about one time in four.
+	// on each connection's first data, UDP's first datagram too, and
+	// residual censorship after a block: thinkpol's udp sends random bytes
+	// first (exempt by chance: six printable bytes first, about once in
+	// 400 tunnels, or more than half printable, about once in 175 84-byte
+	// datagrams, which residual censorship leaves one judgement per
+	// 3-tuple and residual window, a link's first connection over each
+	// underlay family: about 1 run in 120 one family crosses, udp's known
+	// flake, TP-236); OpenVPN's first packet is
+	// mostly zeros, and HTTPS starts with a TLS record. A WireGuard
+	// initiation ends in 16 zero bytes, and is exempt about one time in
+	// four.
 	{name: "fully-encrypted", expect: map[string]string{rowUDP: "fail", rowRandomTCP: "fail"},
+		flakes: map[string]knownFlake{rowUDP: {ticket: "TP-236", why: "about 1 run in 120 one family crosses: " +
+			"a new client/server pair's first datagram passes one of Wu et al.'s exemptions by chance, and the censor judges each new pair afresh"}},
 		varies: map[string]string{rowWireGuard: "a WireGuard initiation (mac2's 16 zero bytes) averages about 3.47 set bits per byte, " +
 			"and Wu et al.'s first exemption (3.4 or fewer) passes about one in four, its tunnel with it"},
 		blocker: "fully-encrypted",
@@ -537,26 +1324,31 @@ var censorCases = []censorCase{
 	// answers, and shows the upstream tell. So does reality, which splices
 	// every probe to its target; its tell is reported, not flagged (owner,
 	// 2026-11-09: REALITY's design can't avoid it), and its verdict must
-	// show the tell was looked for. The prober counts the tell by the
-	// probed address: reality's target is one IPv4 address, so a link over
-	// IPv6 dials it from server-1's IPv4 address and the report reads
-	// "connections to the reference during 0 of n probes"; a censor that
-	// knows both addresses are one host sees it anyway (RR31).
+	// judge the tell: shown on every probe (n of n), or unattributable
+	// when server-1 dialed the site outside the probes at half their rate
+	// or more (device-a's own connections make it dial). Either scores the
+	// cell not judged, never a pass, over any baseline (owner, 2026-11-19:
+	// a): how long the prober watched before the first probe is a race
+	// between censord's start and the transport's setup. reality's target
+	// is one IPv4 address, so a link over IPv6 dials it from server-1's
+	// IPv4 address: the prober is told server-1's two addresses are one
+	// host, as a censor that knows them would (RR31), so the tell shows
+	// over either family.
 	{name: "active prober", expect: map[string]string{rowRandomTCP: "fail", rowOpenVPNTCP: "fail", rowRelayTCP: "fail"}, blocker: "prober",
-		upstream: true, settle: true, report: "prober",
-		verdictSays: map[string]string{rowHTTPS: "TLS: the server", rowRelayTCP: "upstream tell: a connection", rowReality: "to the reference during"},
+		settle: true, report: "prober",
+		verdictSays: map[string]string{rowHTTPS: "TLS: the server", rowRelayTCP: "upstream tell: a connection", rowReality: "upstream tell: "},
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			camouflage := lab.StartCamouflage(t, l)
 			return []censor.ModuleConfig{
 				{Name: "fully-encrypted", Settings: json.RawMessage(`{"tagOnly": true}`)},
-				{Name: "prober", Settings: proberSettings(t, l, camouflage)},
+				{Name: "prober", Settings: withServerHost(t, l, proberSettings(t, l, camouflage))},
 			}
 		}},
 	// The https, relay and reality rows' ClientHellos name the camouflage
 	// site: their server hellos are compared with the site's answer to the
 	// same ClientHello (the relay's is the site's own, reality's REALITY's
 	// imitation of it).
-	{name: "server-hello", upstream: true, settle: true, report: "server-hello",
+	{name: "server-hello", settle: true, report: "server-hello",
 		verdictSays: map[string]string{rowHTTPS: "server hello matches the site", rowRelayTCP: "server hello matches the site", rowReality: "server hello matches the site"},
 		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
 			camouflage := lab.StartCamouflage(t, l)
@@ -566,6 +1358,88 @@ var censorCases = []censorCase{
 			}
 			return []censor.ModuleConfig{{Name: "server-hello", Settings: b}}
 		}},
+}
+
+// rhythmTrace is where the rhythm cases' module writes its trace, in the
+// router.
+const rhythmTrace = "/run/censor/rhythm.jsonl"
+
+// realityRhythmCounted is why reality's fail of the rhythm case is known
+// (lab/censor/doc.go, TP-223).
+const realityRhythmCounted = "each rekey leaves one more record from the device than from the server, " +
+	"counted each way and in a burst of 3 against 2 every 2 minutes: the floor hides sizes, not counts; " +
+	"RR65 accepts it until cover records go both ways"
+
+// rhythmCase is the wireguard-rhythm case that holds the held rows'
+// tunnels in use, or idle. reality's fail is a known tell: its cell says
+// so.
+func rhythmCase(name string, idle bool) censorCase {
+	settings := map[string]string{"trace": rhythmTrace}
+	if wgTimerScale > 1 {
+		settings["rekey"] = (censor.WGRekeyAfterTime / time.Duration(wgTimerScale)).String()
+	}
+	b, err := json.Marshal(settings)
+	if err != nil {
+		panic(err)
+	}
+	return censorCase{name: name, hold: rhythmHold(wgTimerScale), idle: idle, watch: "wireguard-rhythm", trace: rhythmTrace,
+		expect: map[string]string{rowUDP: "fail", rowReality: "fail"}, blocker: "wireguard-rhythm",
+		accepted: map[string]knownTell{rowReality: {why: realityRhythmCounted, reasons: []string{censor.WGRhythmByCount, censor.WGRhythmByBurst}}},
+		modules: func(t *testing.T, l *lab.Lab) []censor.ModuleConfig {
+			return []censor.ModuleConfig{{Name: "wireguard-rhythm", Settings: b}}
+		}}
+}
+
+// wgTimerScale is the factor the lab's thinkpol runs WireGuard's timers
+// sped up by (lab.WGTimerScale): the rhythm cells' rekey period, hold and
+// ping follow it. A bad setting, wgTimerScaleErr, fails the matrix (and
+// the lab's build) with its reason.
+var wgTimerScale, wgTimerScaleErr = func() (int, error) {
+	n, err := lab.WGTimerScale()
+	if err != nil {
+		return lab.DefaultWGTimerScale, err
+	}
+	return n, nil
+}()
+
+// rhythmHold is how long the rhythm cells hold the tunnel at the scale:
+// three rekeys and their windows, 7.5 minutes at real time, scaled; sped
+// up, 10 s more for what keeps real time (a redial after a block, the
+// tunnel's first handshake).
+func rhythmHold(scale int) time.Duration {
+	hold := 450 * time.Second / time.Duration(scale)
+	if scale > 1 {
+		hold += 10 * time.Second
+	}
+	return hold
+}
+
+// rhythmPing is how often the rhythm cells' hold pings: every 2 s, or
+// sooner where the timers are sped up so far that 2 s would pass 0.4
+// KEEPALIVE_TIMEOUT (0.4 s at a factor of 10). Each end then sends
+// before wireguard-go would add a passive keepalive, records come closer
+// together than wireguard-rhythm's quiet (half KEEPALIVE_TIMEOUT) and
+// further apart than its 300 ms count settle, as a 2 s ping's do at real
+// time: the scaled cell is the same experiment (lab/censor/doc.go).
+func rhythmPing(scale int) time.Duration {
+	return min(2*time.Second, censor.WGKeepaliveTimeout*2/5/time.Duration(scale))
+}
+
+// withServerHost adds to the prober's settings that server-1's addresses
+// are one host.
+func withServerHost(t *testing.T, l *lab.Lab, settings json.RawMessage) json.RawMessage {
+	t.Helper()
+	var s map[string]any
+	if err := json.Unmarshal(settings, &s); err != nil {
+		t.Fatal(err)
+	}
+	server := l.Node(lab.Server1)
+	s["hosts"] = [][]string{{server.IPv4(lab.NetServers).String(), server.IPv6(lab.NetServers).String()}}
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 // entryIPBlocklist lists server-1's addresses.
@@ -588,14 +1462,12 @@ type probeTarget struct{ v4, v6 netip.Addr }
 type transport struct {
 	name  string
 	setup func(t *testing.T, l *lab.Lab) (probeTarget, error)
-	// probe reports whether data crossed over each family; wantPass gives
-	// it time to retry, otherwise it settles a blocked family quickly.
-	probe func(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed
+	// probe reports whether data crossed over each family, retrying each
+	// as its budget says.
+	probe func(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed
 	// sawFlows checks the verdict log has the probe's flows on the
 	// underlay: the censor saw what it judged.
 	sawFlows func(t *testing.T, l *lab.Lab, c *censorRun) error
-	// upstream runs every cell of the row in lab.Upstream.
-	upstream bool
 	// udp: the row's underlay is UDP, which the prober never probes.
 	udp bool
 	// oneUnderlay: both overlay families ride one underlay family, so a
@@ -613,9 +1485,20 @@ type transport struct {
 	// the camouflage site, so the server-hello comparison has something
 	// to compare (checkMatrix).
 	tls bool
-	// hold, if set, keeps the transport in use for a while (a case's
-	// hold) before the probe.
-	hold func(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration)
+	// hold, if set, keeps the transport up for a while (a case's hold)
+	// before the probe: in use, or idle. blocks counts the connections the
+	// case's module blocked so far, each a redial for the hold to allow.
+	hold func(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool, blocks func() int)
+	// tunnel, on a held row, matches the held connection's flows from
+	// device-a to server-1, either family: what judgedFromTheStart reads.
+	tunnel func(l *lab.Lab, k censor.FlowKey) bool
+	// labs splits the row's cells of a stream across this many labs, run
+	// in parallel (rowLabs); 0 is one. Each lab costs 4 container starts
+	// and its own off cell, and shortens the row to its longest lab.
+	labs int
+	// cellTime is the row's mean time per cell, held cells' holds aside,
+	// measured on a quiet machine: what matrixLabs orders the labs by.
+	cellTime time.Duration
 }
 
 // withRowSettings is the case's module configs with a row's overrides
@@ -641,6 +1524,74 @@ func withRowSettings(configs []censor.ModuleConfig, overrides map[string]map[str
 		out[i].Settings = b
 	}
 	return out, nil
+}
+
+// TestSeenBeforeUp: a censor that saw a udp tunnel's first datagram has
+// a line on it from before device-a's link came up; one that joined later
+// has its first line after. A line on the tunnel after it came up (a
+// verdict on a later datagram) doesn't undo the first.
+func TestSeenBeforeUp(t *testing.T) {
+	dev := netip.MustParseAddr("192.0.2.2")
+	tunnel := func(k censor.FlowKey) bool { return k.Proto == censor.ProtoUDP && k.Src == dev }
+	up := time.Date(2026, 11, 19, 0, 0, 10, 0, time.UTC)
+	out := "udp 192.0.2.2:40000->192.0.2.10:4500"
+	back := "udp 192.0.2.10:4500->192.0.2.2:40000"
+	other := "udp 192.0.2.3:40000->192.0.2.10:4500"
+	line := func(flow string, at time.Duration) string {
+		return fmt.Sprintf(`{"time":%q,"event":"decision","flow":%q,"packets":1,"bytes":84,"verdict":"accept"}`, up.Add(at).Format(time.RFC3339Nano), flow)
+	}
+	for _, tc := range []struct {
+		name string
+		log  []string
+		ok   bool
+	}{
+		{"from the start", []string{line(other, -time.Second), line(out, -time.Millisecond), line(back, -time.Millisecond/2)}, true},
+		{"server-1's datagram doesn't count", []string{line(back, -time.Millisecond), line(out, time.Millisecond)}, false},
+		{"at the instant", []string{line(out, 0)}, true},
+		{"the first line decides, not the last", []string{line(out, -time.Millisecond), line(out, time.Second)}, true},
+		{"joined: device-a's datagram after", []string{line(other, -time.Second), line(out, 300*time.Millisecond)}, false},
+		{"another flow only", []string{line(other, -time.Second)}, false},
+		{"empty", nil, false},
+	} {
+		err := seenBeforeUp(strings.Join(tc.log, "\n"), tunnel, up)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: %v, want ok %v", tc.name, err, tc.ok)
+		}
+	}
+}
+
+// TestUpSince: the link-up time is server-1's neighbor's, by node id, not
+// the first neighbor up's; without it the error says it wasn't read.
+func TestUpSince(t *testing.T) {
+	status := func(neighbors string) nodeStatus {
+		st, err := parseStatus(fmt.Sprintf(`{"schema_version": %d, "data_plane": {"neighbors": [%s]}}`, localapi.SchemaVersion, neighbors))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	other := `{"node_id": "bb", "up": true, "up_since": "2026-11-19T10:00:00Z"}`
+	server1 := `{"node_id": "aa", "up": true, "up_since": "2026-11-19T10:00:05.5Z"}`
+	down := `{"node_id": "aa", "up": false, "up_since": null}`
+	for _, tc := range []struct {
+		name string
+		d    *deferredDevice
+		want time.Time
+	}{
+		{"server-1's, not the first up", &deferredDevice{server1: "aa", up: status(other + "," + server1)}, time.Date(2026, 11, 19, 10, 0, 5, 5e8, time.UTC)},
+		{"server-1 down", &deferredDevice{server1: "aa", up: status(other + "," + down)}, time.Time{}},
+		{"server-1 absent", &deferredDevice{server1: "aa", up: status(other)}, time.Time{}},
+		{"no server-1 id", &deferredDevice{up: status(server1)}, time.Time{}},
+		{"never up", &deferredDevice{server1: "aa"}, time.Time{}},
+	} {
+		got, err := tc.d.upSince()
+		switch {
+		case tc.want.IsZero() && (err == nil || !strings.Contains(err.Error(), "link-up time wasn't read")):
+			t.Errorf("%s: %v, %v; want the link-up time unread", tc.name, got, err)
+		case !tc.want.IsZero() && (err != nil || !got.Equal(tc.want)):
+			t.Errorf("%s: %v, %v; want %v", tc.name, got, err, tc.want)
+		}
+	}
 }
 
 // TestWithRowSettings: a row's override reaches the module it names, and
@@ -692,27 +1643,139 @@ func TestWithRowSettings(t *testing.T) {
 	}
 }
 
+// transports is the matrix's rows (RESULTS.md sorts them by name; the
+// labs start in matrixLabs' order). Under make lab-test the holds
+// (rhythmHold; at real time 7.5 minutes) run in the long stream, a lab per
+// held row, and the default stream's rows are all short; the slowest of
+// those split their cells across labs (labs), so no default-stream lab
+// runs much past its start and 1 to 2 minutes of cells. cellTime is from
+// a targeted default-stream matrix run (2026-11-19).
 var transports = []transport{
-	{name: rowPlainTCP, setup: setupPlainTCP, probe: probePlainTCP, sawFlows: sawPlainTCP},
-	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPSOn(443), sawFlows: sawHTTPS, tls: true},
-	{name: rowUDP, setup: setupUDP, probe: probeUDP, sawFlows: sawUDP, udp: true, oneUnderlay: true},
-	{name: rowWireGuard, setup: setupWireGuard, probe: probeUDP, sawFlows: sawWireGuard, udp: true},
-	{name: rowOpenVPNUDP, setup: openVPN{"udp"}.setup, probe: openVPN{"udp"}.probe, sawFlows: openVPN{"udp"}.sawFlows, udp: true},
-	{name: rowOpenVPNTCP, setup: openVPN{"tcp"}.setup, probe: openVPN{"tcp"}.probe, sawFlows: openVPN{"tcp"}.sawFlows},
-	{name: rowRandomTCP, setup: setupRandom, probe: probeRandom, sawFlows: sawRandom},
-	{name: rowRelayTCP, setup: setupRelay, probe: probeHTTPSOn(relayRowPort), sawFlows: sawRelay, upstream: true, tls: true},
 	realityRow,
+	{name: rowUDP, setup: setupUDP, probe: probeWithDevice, sawFlows: sawUDP, udp: true, oneUnderlay: true, hold: holdWithDevice, tunnel: udpFlow, labs: 2, cellTime: 16 * time.Second},
+	{name: rowPlainTCP, setup: setupPlainTCP, probe: probePlainTCP, sawFlows: sawPlainTCP, cellTime: 8 * time.Second},
+	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPSOn(443), sawFlows: sawHTTPS, tls: true, cellTime: 11 * time.Second},
+	{name: rowWireGuard, setup: setupWireGuard, probe: probeUDP, sawFlows: sawWireGuard, udp: true, cellTime: 11 * time.Second},
+	{name: rowOpenVPNUDP, setup: openVPN{"udp"}.setup, probe: openVPN{"udp"}.probe, sawFlows: openVPN{"udp"}.sawFlows, udp: true, labs: 2, cellTime: 15 * time.Second},
+	{name: rowOpenVPNTCP, setup: openVPN{"tcp"}.setup, probe: openVPN{"tcp"}.probe, sawFlows: openVPN{"tcp"}.sawFlows, labs: 2, cellTime: 14 * time.Second},
+	{name: rowRandomTCP, setup: setupRandom, probe: probeRandom, sawFlows: sawRandom, labs: 2, cellTime: 12 * time.Second},
+	{name: rowRelayTCP, setup: setupRelay, probe: probeHTTPSOn(relayRowPort), sawFlows: sawRelay, tls: true, cellTime: 11 * time.Second},
 }
 
 // probeWindow is how long a probe retries a family that should cross; one
-// that should not gets blockedWindow.
+// that should not gets blockedWindow, unless its budget's watch says
+// sooner that the censor blocked an attempt.
 const probeWindow, blockedWindow = 30 * time.Second, 8 * time.Second
 
-func window(wantPass bool) time.Duration {
-	if wantPass {
-		return probeWindow
+// probeBudget is how a probe retries each family: for probeWindow when
+// the cell should cross (pass), else for blockedWindow, or, with watch,
+// until an attempt failed that the censor blocked.
+type probeBudget struct {
+	pass  bool
+	watch *blockWatch
+}
+
+// blockWatch tells whether the censor blocked one attempt of a probe, by
+// the verdict log's lines written while it ran.
+type blockWatch struct {
+	// read is the verdict log caught up with the queue (censorRun.caughtUp):
+	// every packet queued before the call has its decisions in it.
+	read func() string
+	// blocked says whether one attempt's lines show its family (v6)
+	// blocked (attemptBlocked).
+	blocked func(lines string, v6 bool) bool
+}
+
+// retry runs attempt for one family (v6) until it says yes or the budget
+// says no (untilAnswerOr).
+func (b probeBudget) retry(v6 bool, attempt func() (bool, error)) (bool, error) {
+	within := blockedWindow
+	if b.pass {
+		within = probeWindow
 	}
-	return blockedWindow
+	if b.watch == nil {
+		return untilAnswerOr(within, nil, attempt)
+	}
+	return untilAnswerOr(within, b.watch.attempts(v6), attempt)
+}
+
+// attempts is untilAnswerOr's watch for one family (v6): before each
+// attempt it marks the caught-up log's end, after a failed one it reads
+// the log caught up again and judges only the lines past the mark:
+// decisions on packets queued while the attempt ran. What an earlier
+// attempt, the settle probe or a hold left in the log doesn't count. The
+// mark is read again before each attempt, not taken from the last
+// attempt's read: a late packet of that attempt decided during the pause
+// between them would count toward the next.
+func (w *blockWatch) attempts(v6 bool) func() func() bool {
+	return func() func() bool {
+		mark := len(w.read())
+		return func() bool {
+			log := w.read()
+			var lines string
+			if len(log) >= mark { // shorter: cleared, nothing to judge
+				lines = log[mark:]
+			}
+			return w.blocked(lines, v6)
+		}
+	}
+}
+
+// watchBlocked is the watch of a cell that should not cross: blocker's
+// verdicts on server-1's address of the family a probe tries, or of
+// either family on a row whose tunnels share one underlay
+// (transport.oneUnderlay), where the cell claims the transport blocked
+// whichever family carries it. A failed read fails the test.
+func (c *censorRun) watchBlocked(t *testing.T, l *lab.Lab, blocker string, oneUnderlay bool) *blockWatch {
+	server := l.Node(lab.Server1)
+	v4, v6 := server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)
+	return &blockWatch{
+		read: func() string {
+			log, err := c.caughtUp()
+			if err != nil {
+				t.Fatal(err)
+			}
+			return log
+		},
+		blocked: func(lines string, isV6 bool) bool {
+			addrs := []netip.Addr{v4}
+			switch {
+			case oneUnderlay:
+				addrs = append(addrs, v6)
+			case isV6:
+				addrs = []netip.Addr{v6}
+			}
+			blocked, err := attemptBlocked(lines, blocker, addrs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return blocked
+		},
+	}
+}
+
+// attemptBlocked says whether one attempt's verdict log lines show it
+// blocked: a decision of blocker's dropping or resetting a flow to or
+// from addrs, with no accept on that flow after it. The log has one
+// decision per flow, verdict and module, so a censor that drops a flow's
+// first packet and lets the rest through shows its accept; one that
+// accepts, drops, then accepts again shows no second accept, and looks
+// blocked.
+func attemptBlocked(lines, blocker string, addrs []netip.Addr) (bool, error) {
+	blocked := map[censor.FlowKey]bool{}
+	_, err := matchVerdicts(lines, func(e verdictLine) bool {
+		if e.Event != censor.EventDecision || !slices.Contains(addrs, e.Key.Dst) && !slices.Contains(addrs, e.Key.Src) {
+			return false
+		}
+		switch {
+		case e.Module == blocker && (e.Verdict == censor.Drop || e.Verdict == censor.Reset):
+			blocked[e.Key] = true
+		case e.Verdict == censor.Accept:
+			delete(blocked, e.Key)
+		}
+		return false
+	})
+	return len(blocked) > 0, err
 }
 
 func setupPlainTCP(t *testing.T, l *lab.Lab) (probeTarget, error) {
@@ -721,11 +1784,14 @@ func setupPlainTCP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	return probeTarget{server.IPv4(lab.NetServers), server.IPv6(lab.NetServers)}, nil
 }
 
-func probePlainTCP(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
+func probePlainTCP(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
 	dev := l.Node(lab.DeviceA)
+	connects := func(a netip.Addr) func() (bool, error) {
+		return func() (bool, error) { return tcpReaches(dev, a, tcpProbePort, 2) }
+	}
 	return crossed{
-		v4: mustProbe(t)(tcpCrosses(dev, to.v4, window(wantPass))),
-		v6: mustProbe(t)(tcpCrosses(dev, to.v6, window(wantPass))),
+		v4: mustProbe(t)(b.retry(false, connects(to.v4))),
+		v6: mustProbe(t)(b.retry(true, connects(to.v6))),
 	}
 }
 
@@ -742,50 +1808,224 @@ func sawPlainTCP(t *testing.T, l *lab.Lab, c *censorRun) error {
 	return nil
 }
 
+// setupUDP brings server-1 up; device-a comes up in the cell's probe (or
+// hold), after censord (deviceUp), so the censor sees the link from its
+// first datagram.
 func setupUDP(t *testing.T, l *lab.Lab) (probeTarget, error) {
 	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
-	space := newM0Space(t, l.Node(lab.Internet), server)
+	space := newM0Space(t, l.Node(lab.Camouflage), server)
 	envelope, version := space.build(t)
 	space.install(t, dev, "device-a", envelope)
 	space.install(t, server, "server-1", envelope)
-	upDev := dev.Start(t, "thinkpol", "up")
-	upSrv := server.Start(t, "thinkpol", "up", "-mode", "server")
-	applied := applied(version)
-	if err := waitOutput(upSrv, applied, 60*time.Second); err != nil {
-		return probeTarget{}, fmt.Errorf("server-1: %w", err)
-	}
-	if err := waitOutput(upDev, applied, 60*time.Second); err != nil {
-		return probeTarget{}, fmt.Errorf("device-a: %w", err)
-	}
-	if err := waitOutput(upDev, `link up`, 60*time.Second); err != nil {
+	startUp(t, server)
+	if _, err := statusWithin(server, 60*time.Second, nil, mapApplied(version)); err != nil {
 		return probeTarget{}, err
 	}
+	deferDevice(t, l).server1 = space.nodeID(t, "server-1")
 	o4, o6 := space.overlay(1)
 	return probeTarget{o4, o6}, nil
 }
 
+// deferredDevices are the device-a agents of the rows that start theirs
+// in the cell, after censord (udp, reality): started once per cell (a
+// row's lab runs one cell at a time) by whichever of hold and probe runs
+// first.
+var deferredDevices sync.Map // *lab.Lab → *deferredDevice
+
+type deferredDevice struct {
+	once sync.Once
+	err  error
+	// server1 is server-1's node id, set by a row whose held cells read
+	// when the link came up (upSince).
+	server1 string
+	// up is the status that showed the link up.
+	up nodeStatus
+}
+
+// deferDevice leaves device-a's agent, installed, to the cell's deviceUp.
+func deferDevice(t *testing.T, l *lab.Lab) *deferredDevice {
+	d := &deferredDevice{}
+	deferredDevices.Store(l, d)
+	t.Cleanup(func() { deferredDevices.Delete(l) })
+	return d
+}
+
+// upSince is when device-a's link to server-1 came up, the engine's own
+// instant (`up_since`) from the status deviceUp's poll ended on: no read
+// of its own to fail.
+func (d *deferredDevice) upSince() (time.Time, error) {
+	switch {
+	case d.server1 == "":
+		return time.Time{}, fmt.Errorf("device-a's link-up time wasn't read: the row names no server-1 node id")
+	case d.up.raw == "":
+		return time.Time{}, fmt.Errorf("device-a's link-up time wasn't read: its link never showed up")
+	}
+	for _, n := range d.up.DataPlane.Neighbors {
+		if n.NodeID != d.server1 {
+			continue
+		}
+		if !n.Up || n.UpSince.IsZero() {
+			return time.Time{}, fmt.Errorf("device-a's link-up time wasn't read: server-1 (%s) isn't up since a time in the status that showed the link up:\n%s", d.server1, d.up.raw)
+		}
+		return n.UpSince, nil
+	}
+	return time.Time{}, fmt.Errorf("device-a's link-up time wasn't read: server-1 (%s) isn't a neighbor in the status that showed the link up:\n%s", d.server1, d.up.raw)
+}
+
+// deviceUp starts device-a's agent once per lab and waits for its link,
+// for a minute, or, with the budget's watch, until the censor blocked a
+// 2 s wait of it (its redials are new flows): a cell that should not
+// cross doesn't wait out the minute. The first caller's budget decides:
+// a cell's warm-up probe passes the cell's watch on.
+func deviceUp(t *testing.T, l *lab.Lab, b probeBudget) error {
+	v, ok := deferredDevices.Load(l)
+	if !ok {
+		return fmt.Errorf("the row didn't defer device-a in this lab")
+	}
+	d := v.(*deferredDevice)
+	d.once.Do(func() {
+		dev := l.Node(lab.DeviceA)
+		start := time.Now()
+		defer func() {
+			t.Logf("deviceUp: %v after device-a's start (err %v)", time.Since(start).Round(time.Millisecond), d.err)
+		}()
+		startUp(t, dev)
+		deadline := time.Now().Add(60 * time.Second)
+		var watch func() func() bool
+		if b.watch != nil {
+			// One link, over either family (oneUnderlay): the watch
+			// counts both.
+			watch = b.watch.attempts(false)
+		}
+		for {
+			var blocked func() bool
+			if watch != nil {
+				blocked = watch()
+			}
+			st, err := statusWithin(dev, 2*time.Second, nil, linkUp)
+			switch {
+			case err == nil:
+				d.up = st
+				return
+			case errors.Is(err, errSchemaVersion):
+				d.err = err
+				return
+			case blocked != nil && blocked():
+				d.err = fmt.Errorf("the censor blocked device-a's link: %w", err)
+				return
+			case time.Now().After(deadline):
+				d.err = err
+				return
+			}
+		}
+	})
+	return d.err
+}
+
+// probeWithDevice brings device-a's link up (deviceUp) and pings through
+// it (probeUDP).
+func probeWithDevice(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
+	if err := deviceUp(t, l, b); err != nil && b.pass {
+		t.Fatal(err)
+	}
+	return probeUDP(t, l, to, b)
+}
+
+// holdWithDevice brings device-a's link up (deviceUp) and holds it
+// (holdTunnel).
+func holdWithDevice(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool, blocks func() int) {
+	if err := deviceUp(t, l, probeBudget{pass: true}); err != nil {
+		t.Fatal(err)
+	}
+	holdTunnel(t, l, to, d, idle, blocks)
+}
+
+// judgedFromTheStart checks that the held cell's censor read the row's
+// held connection (transport.tunnel) from its first packet, without which
+// a pass would mean nothing: the module never tagged a TCP one "stream
+// not framed" (not TLS, or joined midstream), and the censor saw a UDP
+// one, which has no stream to frame, before device-a's link came up
+// (seenBeforeUp, deferredDevice.upSince).
+func judgedFromTheStart(t *testing.T, l *lab.Lab, c *censorRun, cc censorCase, tr transport) error {
+	if tr.tunnel == nil {
+		return fmt.Errorf("%s is held, but names no flow for its tunnel (transport.tunnel)", tr.name)
+	}
+	if c.logged(t, func(e verdictLine) bool {
+		return tr.tunnel(l, e.Key) && e.Event == censor.EventTag && e.Module == cc.watch && strings.HasSuffix(e.Reason, "stream not framed")
+	}) {
+		return fmt.Errorf("%s couldn't frame the transport's connection: its pass would mean nothing", cc.watch)
+	}
+	if !tr.udp {
+		return nil
+	}
+	v, ok := deferredDevices.Load(l)
+	if !ok {
+		return fmt.Errorf("%s didn't defer device-a: nothing says when its link came up", tr.name)
+	}
+	upSince, err := v.(*deferredDevice).upSince()
+	if err != nil {
+		return err
+	}
+	log, err := c.caughtUp()
+	if err != nil {
+		return err
+	}
+	return seenBeforeUp(log, func(k censor.FlowKey) bool { return tr.tunnel(l, k) }, upSince)
+}
+
+// seenBeforeUp checks, from the verdict log, that the censor saw a udp
+// tunnel (its flows from device-a: tunnel) from its first datagram: the
+// log's first line on it comes no later than upSince, when device-a's
+// link came up. The link is up once a reply to its probe came back, and
+// the censor stamps a line when it judges the packet, before forwarding
+// it, so a censor that saw the probe has a line from before; one that
+// joined a link already up has its first after. Containers share the
+// kernel's clock.
+func seenBeforeUp(log string, tunnel func(censor.FlowKey) bool, upSince time.Time) error {
+	var first verdictLine
+	found, err := matchVerdicts(log, func(e verdictLine) bool {
+		if tunnel(e.Key) {
+			first = e
+			return true
+		}
+		return false
+	})
+	switch {
+	case err != nil:
+		return err
+	case !found:
+		return fmt.Errorf("no line on the tunnel in the verdict log")
+	case first.Time.After(upSince):
+		return fmt.Errorf("the censor joined the tunnel already up: its first line on it (%s, %s) is %v after device-a's link came up",
+			first.Flow, first.Time.Format(time.RFC3339Nano), first.Time.Sub(upSince))
+	}
+	return nil
+}
+
 // probeUDP pings server-1's overlay addresses, IPv4 and IPv6, through the
 // tunnel.
-func probeUDP(t *testing.T, l *lab.Lab, to probeTarget, wantPass bool) crossed {
+func probeUDP(t *testing.T, l *lab.Lab, to probeTarget, b probeBudget) crossed {
 	dev := l.Node(lab.DeviceA)
 	return crossed{
-		v4: mustProbe(t)(pingCrosses(dev, to.v4, window(wantPass), pingNoReply)),
-		v6: mustProbe(t)(pingCrosses(dev, to.v6, window(wantPass), pingNoReply)),
+		v4: mustProbe(t)(b.retry(false, pingOnce(dev, to.v4, pingNoReply))),
+		v6: mustProbe(t)(b.retry(true, pingOnce(dev, to.v6, pingNoReply))),
 	}
 }
 
 // sawUDP: the tunnel runs over one underlay family (m0.yaml's first
 // endpoint), so the log needs UDP from device-a to server-1 in either.
 func sawUDP(t *testing.T, l *lab.Lab, c *censorRun) error {
-	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
-	if !c.logged(t, func(e verdictLine) bool {
-		return e.Key.Proto == censor.ProtoUDP &&
-			(e.Key.Src == dev.IPv4(lab.NetDevices) && e.Key.Dst == server.IPv4(lab.NetServers) ||
-				e.Key.Src == dev.IPv6(lab.NetDevices) && e.Key.Dst == server.IPv6(lab.NetServers))
-	}) {
+	if !c.logged(t, func(e verdictLine) bool { return udpFlow(l, e.Key) }) {
 		return fmt.Errorf("no UDP flow device-a -> server-1 in the verdict log")
 	}
 	return nil
+}
+
+func udpFlow(l *lab.Lab, k censor.FlowKey) bool {
+	dev, server := l.Node(lab.DeviceA), l.Node(lab.Server1)
+	return k.Proto == censor.ProtoUDP &&
+		(k.Src == dev.IPv4(lab.NetDevices) && k.Dst == server.IPv4(lab.NetServers) ||
+			k.Src == dev.IPv6(lab.NetDevices) && k.Dst == server.IPv6(lab.NetServers))
 }
 
 // blockedBy checks the verdict log blamed the case's blocker for the
@@ -884,25 +2124,102 @@ func TestBlames(t *testing.T) {
 	}
 }
 
-func waitOutput(p *lab.Process, pattern string, timeout time.Duration) error {
-	re := regexp.MustCompile(pattern)
-	deadline := time.Now().Add(timeout)
-	for {
-		if re.MatchString(p.Output()) {
-			return nil
+// TestProbeStopsOnItsOwnBlockOnly: a probe that should not cross stops
+// early only after a failed attempt during which the blocker dropped or
+// reset a flow to or from server-1's address (and didn't accept it
+// after); what the log had before the attempt, a late decision on the
+// attempt before, another module's drop or the other family's don't stop
+// it, and it goes on to the attempt that crosses. The window is counted
+// in attempts, so load can't change how many fit.
+func TestProbeStopsOnItsOwnBlockOnly(t *testing.T) {
+	server4, server6 := netip.MustParseAddr("192.0.2.9"), netip.MustParseAddr("2001:db8::9")
+	line := func(sport uint16, dst netip.Addr, module string, v censor.Verdict) string {
+		src := netip.MustParseAddr("192.0.2.1")
+		if dst.Is6() {
+			src = netip.MustParseAddr("2001:db8::1")
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("no %q within %s, last output:\n%s", pattern, timeout, p.Output())
+		key := censor.FlowKey{Proto: censor.ProtoTCP, Src: src, SrcPort: sport, Dst: dst, DstPort: 443}
+		b, err := json.Marshal(censor.LogEntry{Event: censor.EventDecision, Flow: key.String(), Module: module, Verdict: v})
+		if err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(200 * time.Millisecond)
+		return string(b) + "\n"
+	}
+	drop := func(sport uint16) string { return line(sport, server4, "ip-blocklist", censor.Drop) }
+	const window = 5 // attempts
+	for _, c := range []struct {
+		name string
+		// before is the log before the probe; attempts what each attempt
+		// adds to it, the last one crossing (if crosses); late what the
+		// log gains just after the read that judged attempt i failed.
+		before   string
+		attempts []string
+		late     []string
+		crosses  bool
+		// tries is how many attempts ran, 0 for "until the window ran
+		// out"; failing is the one attempt (1-based) that fails to run.
+		tries, failing int
+	}{
+		{"the blocker dropped the flow's first packet before the probe", drop(1), []string{"", ""}, nil, true, 2, 0},
+		{"its packet dropped, then accepted", "", []string{drop(2) + line(2, server4, "", censor.Accept), ""}, nil, true, 2, 0},
+		{"its packet dropped", "", []string{drop(3)}, nil, false, 1, 0},
+		{"its packet reset", "", []string{line(4, server4, "ip-blocklist", censor.Reset)}, nil, false, 1, 0},
+		{"another module's drop", "", []string{line(5, server4, "sni-blocklist", censor.Drop)}, nil, false, 0, 0},
+		{"the other family's drop", "", []string{line(6, server6, "ip-blocklist", censor.Drop)}, nil, false, 0, 0},
+		{"a drop in an attempt that failed to run", "", []string{drop(7), "", ""}, nil, true, 3, 1},
+		{"a drop decided after the attempt was judged", "", []string{"", "", ""}, []string{drop(8)}, true, 3, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			log, late, tries := c.before, "", 0
+			w := &blockWatch{
+				read: func() string {
+					read := log
+					log, late = log+late, ""
+					return read
+				},
+				blocked: func(lines string, v6 bool) bool {
+					if v6 {
+						t.Fatal("asked for IPv6")
+					}
+					blocked, err := attemptBlocked(lines, "ip-blocklist", []netip.Addr{server4})
+					if err != nil {
+						t.Fatal(err)
+					}
+					return blocked
+				},
+			}
+			left := func() (out, gaveUp bool) { return tries >= window, tries >= 2*window }
+			crossed, err := answerWhile(left, 0, w.attempts(false), func() (bool, error) {
+				tries++
+				i := min(tries, len(c.attempts)) - 1
+				log += c.attempts[i]
+				if tries <= len(c.late) {
+					late = c.late[tries-1]
+				}
+				if tries == c.failing {
+					return false, errors.New("docker exec failed")
+				}
+				return c.crosses && tries == len(c.attempts), nil
+			})
+			switch {
+			case err != nil:
+				t.Fatal(err)
+			case crossed != c.crosses:
+				t.Errorf("crossed %v after %d attempts, want %v", crossed, tries, c.crosses)
+			case c.tries > 0 && tries != c.tries:
+				t.Errorf("%d attempts, want %d", tries, c.tries)
+			case c.tries == 0 && tries != window:
+				t.Errorf("stopped after %d attempts, want the window's %d", tries, window)
+			}
+		})
 	}
 }
 
-// pingCrosses pings until a reply comes or within runs out (untilAnswer):
-// "doesn't cross" is a failed ping noReply accepts (pingNoReply: only
-// ping's own "no reply"), any other failure an error.
-func pingCrosses(from *lab.Node, to netip.Addr, within time.Duration, noReply func(lab.Result) bool) (bool, error) {
-	return untilAnswer(within, func() (bool, error) {
+// pingOnce is one ping attempt for a probe's budget: "doesn't cross" is
+// a failed ping noReply accepts (pingNoReply: only ping's own "no
+// reply"), any other failure an error.
+func pingOnce(from *lab.Node, to netip.Addr, noReply func(lab.Result) bool) func() (bool, error) {
+	return func() (bool, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		res, err := from.Exec(ctx, "ping", "-c", "1", "-W", "1", to.String())
@@ -913,7 +2230,7 @@ func pingCrosses(from *lab.Node, to netip.Addr, within time.Duration, noReply fu
 			return false, nil
 		}
 		return false, fmt.Errorf("ping %s from %s: %w\n%s", to, from.Name, err, res.Stdout)
-	})
+	}
 }
 
 // mustProbe passes a probe's answer on and fails the cell (an "error"
@@ -1011,18 +2328,37 @@ func (c *censorRun) healthy(t *testing.T) error {
 	return nil
 }
 
+// acceptedFor is every flow a module accepted with a reason (a
+// fully-encrypted exemption), as "flow: module: reason", in log order.
+func (c *censorRun) acceptedFor() ([]string, error) {
+	log, err := execRead(c.router, pollTimeout, "cat", censorLogPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading the verdict log: %w", err)
+	}
+	var passed []string
+	_, err = matchVerdicts(completeLines(log), func(e verdictLine) bool {
+		if e.Event == censor.EventDecision && e.Verdict == censor.Accept && e.Module != "" {
+			passed = append(passed, fmt.Sprintf("%s: %s: %s", e.Flow, e.Module, e.Reason))
+		}
+		return false
+	})
+	return passed, err
+}
+
 // verdictLine is a verdict log entry with its flow parsed.
 type verdictLine struct {
 	censor.LogEntry
 	Key censor.FlowKey
 }
 
-// logged reports whether a verdict log entry matches, waiting briefly for
-// the log to catch up. A failed read is retried; "no" comes only from a
-// read that succeeded after the deadline, and the test fails if none
-// does. A whole line that doesn't parse fails the test (censord writes
-// whole lines); the part after the last newline is a write in progress,
-// left for the next read.
+// logged reports whether a verdict log entry matches once the log has
+// caught up with every packet the kernel queued so far (caughtUp): a
+// passive module's decisions, and the flags already written. A read that
+// fails is retried; the test fails if none succeeds within the bound. A
+// whole line that doesn't parse fails the test (censord writes whole
+// lines); the part after the last newline is a write in progress, left
+// for the next read. An active module's flag comes on its own time: wait
+// for it (flagged).
 func (c *censorRun) logged(t *testing.T, match func(verdictLine) bool) bool {
 	t.Helper()
 	found, err := c.pollLog(match)
@@ -1032,26 +2368,109 @@ func (c *censorRun) logged(t *testing.T, match func(verdictLine) bool) bool {
 	return found
 }
 
-func (c *censorRun) pollLog(match func(verdictLine) bool) (bool, error) {
-	deadline := time.Now().Add(3 * time.Second)
-	giveUp := deadline.Add(30 * time.Second)
-	for {
-		log, err := execRead(c.router, pollTimeout, "cat", censorLogPath)
-		if err == nil {
-			found, err := matchVerdicts(completeLines(log), match)
-			switch {
-			case err != nil:
-				return false, err // a whole line: not transient
-			case found:
-				return true, nil
-			case time.Now().After(deadline):
-				return false, nil
+// flagged waits for an entry, an active module's flag, within.
+func (c *censorRun) flagged(t *testing.T, within time.Duration, what string, match func(verdictLine) bool) verdictLine {
+	t.Helper()
+	var got verdictLine
+	lab.Eventually(t, within, func() error {
+		found, err := c.pollLog(func(e verdictLine) bool {
+			if match(e) {
+				got = e
+				return true
 			}
-		} else if time.Now().After(giveUp) {
-			return false, fmt.Errorf("reading the verdict log: %w", err)
+			return false
+		})
+		switch {
+		case err != nil:
+			return err
+		case !found:
+			return fmt.Errorf("no %s in the verdict log yet", what)
+		}
+		return nil
+	})
+	return got
+}
+
+func (c *censorRun) pollLog(match func(verdictLine) bool) (bool, error) {
+	log, err := c.caughtUp()
+	if err != nil {
+		return false, err
+	}
+	return matchVerdicts(log, match)
+}
+
+// caughtUpWithin bounds caughtUp: censord decides a packet in
+// microseconds and flushes every 100 ms, so only a stalled censord takes
+// seconds.
+const caughtUpWithin = 30 * time.Second
+
+// caughtUp reads the queue's id_sequence, then the verdict log until its
+// watermark (censor.EventWatermark) reaches it, and returns the log's
+// whole lines: every packet queued before the call has its decisions in
+// them. A failed read is retried until the bound. A packet netlink fails
+// to deliver to censord (UserDropped) takes an id censord never sees, so
+// once that count rose it fails at once with it, rather than wait out
+// the bound. One dropped from a full queue (QueueDropped) takes no id
+// and changes nothing here; only a failed insert into the kernel's table
+// of waiting packets, rare and counted in QueueDropped too, takes one and
+// waits out the bound (net/netfilter/nfnetlink_queue.c,
+// __nfqnl_enqueue_packet, Linux 7.0: the full-queue check comes before
+// ++id_sequence, the insert and the unicast after it). The watermark only
+// grows: the kernel numbers each packet and delivers it under one lock,
+// so in id order, on censord's one socket, whose callback decides them
+// one at a time: no lower id comes after a higher one is handled.
+func (c *censorRun) caughtUp() (string, error) {
+	deadline := time.Now().Add(caughtUpWithin)
+	var queued censor.QueueStats
+	for {
+		var err error
+		if queued, err = c.stats(); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			return "", fmt.Errorf("the queue's stats: %w", err)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	var through uint64
+	var lastErr error
+	for {
+		log, err := execRead(c.router, pollTimeout, "cat", censorLogPath)
+		if err == nil {
+			log = completeLines(log)
+			if through = watermark(log); through >= queued.Sequence {
+				return log, nil
+			}
+		}
+		lastErr = err
+		if now, err := c.stats(); err == nil {
+			if now.UserDropped > queued.UserDropped {
+				return "", fmt.Errorf("netlink failed to deliver %d packets to censord while the verdict log caught up (%d in all, queue full %d), which it can't have the decisions of",
+					now.UserDropped-queued.UserDropped, now.UserDropped, now.QueueDropped)
+			}
+		}
+		if time.Now().After(deadline) {
+			now, serr := c.stats()
+			return "", fmt.Errorf("the verdict log's watermark is at packet %d after %s, the kernel had queued %d (now %+v, %v; the last read: %v; censord:\n%s)",
+				through, caughtUpWithin, queued.Sequence, now, serr, lastErr, c.proc.Output())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// watermark is the highest packet id the log's watermarks cover, 0 for
+// none.
+func watermark(log string) uint64 {
+	var through uint64
+	for line := range strings.Lines(log) {
+		if !strings.Contains(line, `"event":"`+censor.EventWatermark+`"`) {
+			continue
+		}
+		var e censor.LogEntry
+		if json.Unmarshal([]byte(line), &e) == nil && e.Event == censor.EventWatermark {
+			through = max(through, e.Through)
+		}
+	}
+	return through
 }
 
 // completeLines is s up to its last newline: what a reader racing the
@@ -1083,8 +2502,90 @@ func matchVerdicts(log string, match func(verdictLine) bool) (bool, error) {
 	return false, nil
 }
 
-func writeResults(t *testing.T, cells []matrixCell, expected int) {
+// recordedTwice is a cell recorded more than once, if any: two labs
+// recording one cell would count toward a complete matrix in place of a
+// cell that didn't run.
+func recordedTwice(cells []matrixCell) (matrixCell, bool) {
+	seen := map[[2]string]bool{}
+	for _, c := range cells {
+		key := [2]string{c.transport, c.censor}
+		if seen[key] {
+			return c, true
+		}
+		seen[key] = true
+	}
+	return matrixCell{}, false
+}
+
+// TestRecordedTwice: a cell recorded twice is found, whatever its result;
+// one transport's cells against different censors, and one censor's
+// against different transports, are not.
+func TestRecordedTwice(t *testing.T) {
+	cells := []matrixCell{
+		{transport: rowUDP, censor: "off", result: "pass"},
+		{transport: rowUDP, censor: "fully-encrypted", result: "fail"},
+		{transport: rowReality, censor: "off", result: "pass"},
+	}
+	if c, ok := recordedTwice(cells); ok {
+		t.Errorf("distinct cells: %s / %s found twice", c.transport, c.censor)
+	}
+	twice := append(slices.Clone(cells), matrixCell{transport: rowUDP, censor: "fully-encrypted", result: "error"})
+	if c, ok := recordedTwice(twice); !ok || c.transport != rowUDP || c.censor != "fully-encrypted" {
+		t.Errorf("udp / fully-encrypted recorded twice: got %s / %s, %v", c.transport, c.censor, ok)
+	}
+}
+
+// notJudged is a cell's result when it crossed but its module couldn't
+// judge what the cell is for (unjudged).
+const notJudged = "not judged"
+
+// cellsWhere are the cells that keep says, "<transport> / <censor>" each,
+// sorted.
+func cellsWhere(cells []matrixCell, keep func(matrixCell) bool) []string {
+	var which []string
+	for _, c := range cells {
+		if keep(c) {
+			which = append(which, c.transport+" / "+c.censor)
+		}
+	}
+	slices.Sort(which)
+	return which
+}
+
+// counted is "<label>: <n> (<which>)", as make lab-test's last line says
+// it too (LAB_COUNT_CELLS), or "" when which is empty.
+func counted(label string, which []string) string {
+	if len(which) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s: %d (%s)", label, len(which), strings.Join(which, ", "))
+}
+
+// flakedCells are the known flakes among cells.
+func flakedCells(cells []matrixCell) []string { return cellsWhere(cells, isKnownFlake) }
+
+// knownFlakes is the summary of the known flakes among cells ("" when
+// none occurred).
+func knownFlakes(cells []matrixCell) string { return counted("KNOWN FLAKES", flakedCells(cells)) }
+
+// unjudgedCells are the cells not judged among cells.
+func unjudgedCells(cells []matrixCell) []string {
+	return cellsWhere(cells, func(c matrixCell) bool { return c.result == notJudged })
+}
+
+// notJudgedCount is the summary of the cells not judged ("" when there
+// were none), so a cell drifting to not judged shows beside the one that
+// is by design (reality against the active prober).
+func notJudgedCount(cells []matrixCell) string { return counted("NOT JUDGED", unjudgedCells(cells)) }
+
+// writeResults writes RESULTS.md from the matrix's cells, run with
+// WireGuard's timers sped up by scale.
+func writeResults(t *testing.T, cells []matrixCell, expected, scale int) {
 	t.Helper()
+	if c, ok := recordedTwice(cells); ok {
+		t.Errorf("cell %s / %s recorded twice: RESULTS.md not written", c.transport, c.censor)
+		return
+	}
 	if len(cells) < expected {
 		t.Logf("partial matrix run (%d of %d cells): RESULTS.md not written", len(cells), expected)
 		return
@@ -1103,6 +2604,14 @@ func writeResults(t *testing.T, cells []matrixCell, expected int) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "lab", "RESULTS.md"), []byte(resultsMarkdown(cells, scale)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// resultsMarkdown is RESULTS.md for the matrix's cells, sorted in place,
+// run with WireGuard's timers sped up by scale.
+func resultsMarkdown(cells []matrixCell, scale int) string {
 	slices.SortFunc(cells, func(a, b matrixCell) int {
 		if c := strings.Compare(a.transport, b.transport); c != 0 {
 			return c
@@ -1114,18 +2623,26 @@ func writeResults(t *testing.T, cells []matrixCell, expected int) {
 	b.WriteString("<!-- Generated by `make lab` (TestCensorMatrix); do not edit. -->\n\n")
 	b.WriteString("Did a transport's data cross the censor in the lab router, device-a to server-1: " +
 		"pass when it crossed over IPv4 and over IPv6, fail when it crossed over neither " +
-		"(one family alone is partial, which only a row that varies may be; anywhere else the run fails and this file is not written). Every cell is probed. " +
+		"(one family alone is partial, which only a row that varies or a known flake may be; anywhere else the run fails and this file is not written). Every cell is probed. " +
 		"The `(control)` rows are not transports: they show that plain TCP and HTTPS on the underlay cross the censor, and that the censor sees them. " +
 		"The `(reference)` rows are real WireGuard and OpenVPN, which the fingerprint modules must block, " +
 		"random-tcp, a naive echo server fed random bytes (what a fully encrypted proxy looks like), which fully-encrypted and the prober must block, " +
 		"and relay-tcp, an entry that splices every connection to the camouflage site as REALITY does with what it doesn't recognize, which the prober's upstream tell must block. " +
 		"A cell of the active prober or server-hello quotes the module's verdict on the row's first connection to server-1. " +
-		"A cell whose detail says `varies` is chance by nature, and says why: it shows what this run got, and only a `(reference)` row may vary.\n\n")
+		"A cell whose detail says `varies` is chance by nature, and says why: it shows what this run got, and only a `(reference)` row may vary. " +
+		"A cell whose detail starts `KNOWN FLAKE` was expected to fail and let one family through by a known chance, which its ticket measured: it is reported, not a failure, and the run counts it. " +
+		"A cell `not judged` crossed, but its module couldn't judge what the cell is for: the prober's upstream tell, unattributable when server-1 dialed the site outside the probes at half their rate or more, " +
+		"or reported rather than flagged (the reality row's), which is scored on the tell alone over any baseline, its counts and times kept as evidence (owner, 2026-11-19: a); the run counts these cells too.\n\n")
+	fmt.Fprintf(&b, "This run: %s (`%s`, lab/README.md \"WireGuard's timers\"); the `wireguard-rhythm` cells held their tunnels %v, a ping every %v, the module's rekey period %v.\n\n",
+		wgTimersHow(scale), lab.WGTimerScaleEnv, rhythmHold(scale), rhythmPing(scale), censor.WGRekeyAfterTime/time.Duration(scale))
+	for _, n := range []string{knownFlakes(cells), notJudgedCount(cells)} {
+		if n != "" {
+			fmt.Fprintf(&b, "%s.\n\n", n)
+		}
+	}
 	b.WriteString("| transport | censor | result | detail |\n|---|---|---|---|\n")
 	for _, c := range cells {
 		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.transport, c.censor, c.result, strings.ReplaceAll(c.detail, "|", `\|`))
 	}
-	if err := os.WriteFile(filepath.Join(root, "lab", "RESULTS.md"), []byte(b.String()), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	return b.String()
 }

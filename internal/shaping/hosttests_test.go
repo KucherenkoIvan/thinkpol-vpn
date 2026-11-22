@@ -1,0 +1,5 @@
+package shaping
+
+// make lab-test's node phase runs this package's tests on a Linux machine,
+// as a user, instead of in a lab node (lab.HostTestsFile): it computes
+// shaping in memory.

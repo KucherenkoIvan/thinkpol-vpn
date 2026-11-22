@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/netcfg"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/trusteddir"
@@ -88,6 +89,9 @@ func NewKillSwitch() *KillSwitch {
 	return newKillSwitch(execPfctl{path: pfctlPath, timeout: pfctlTimeout},
 		tokenStore{dir: netcfg.StateDir, boot: trusteddir.BootSession, record: killSwitchRecord, header: killSwitchHeader}, hostAddrs)
 }
+
+// SetDirectTimeout does nothing: pf can't expire Direct (KillSwitchRules).
+func (k *KillSwitch) SetDirectTimeout(time.Duration) {}
 
 func newKillSwitch(pf pfctl, tokens tokenStore, own func() ([]netip.Addr, error)) *KillSwitch {
 	k := &KillSwitch{own: own, pfEnabler: pfEnabler{pf: pf, tokens: tokens}}

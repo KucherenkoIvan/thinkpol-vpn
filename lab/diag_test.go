@@ -398,13 +398,13 @@ type ipLink struct {
 // report. No snapshot shows a key.
 func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 	t.Parallel()
-	l := lab.Start(t, lab.Standard())
-	server, dev, internet := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Internet)
-	space := newM0Space(t, internet, server)
+	l := tunnelPool.Acquire(t)
+	server, dev, router := l.Node(lab.Server1), l.Node(lab.DeviceA), l.Node(lab.Router)
+	space := newM0Space(t, router, server)
 	space.spec = "/src/lab/maps/routetable.yaml"
 	space.env = append(space.env, "DM_LIST=/tmp/m0/lists/dm.geoip")
-	internet.WriteFile(t, "/tmp/m0/domestic.csv", []byte(domesticList))
-	internet.MustExec(t, "sh", "-ec", "cd /tmp/m0 && thinkpol dev lists build -only dm -out lists domestic.csv >/dev/null")
+	router.WriteFile(t, "/tmp/m0/domestic.csv", []byte(domesticList))
+	router.MustExec(t, "sh", "-ec", "cd /tmp/m0 && thinkpol dev lists build -only dm -out lists domestic.csv >/dev/null")
 	envelope, v1 := space.build(t)
 	space.install(t, server, "server-1", envelope)
 	space.install(t, dev, "device-a", envelope)
@@ -416,16 +416,17 @@ func TestDiagShowsWhatTheHostHolds(t *testing.T) {
 	server.MustExec(t, "chmod", "600", seed)
 	dev.MustExec(t, "groupadd", "-g", apiGID, "thinkpol")
 	// The device resolves through systemd-resolved: the snapshot shows its
-	// links and resolv.conf (its stub).
-	startResolved(t, dev, internet.IPv4(lab.NetServers))
+	// links and resolv.conf (its stub). No name is looked up: the resolver
+	// is the router's far address, where nothing answers.
+	startResolved(t, dev, router.IPv4(lab.NetServers))
 
-	srv := server.Start(t, "thinkpol", "up", "-mode", "server", "-map-poll", "1s")
+	srv := startUp(t, server, "-map-poll", "1s")
 	// The crash posture (TP-048) would put the kill switch in place under
 	// "all but domestic", and its chain would refuse the guard's test
 	// ping before the guard's counts it: both are last at output.
-	up := dev.Start(t, "thinkpol", "up", "-map-poll", "1s", "-fail-closed-after-crash=false")
-	waitLog(t, srv, `worker space=\S+ .*`+applied(v1))
-	waitLog(t, up, applied(v1)+`.*route_table_routes=`)
+	up := startUp(t, dev, "-map-poll", "1s", "-fail-closed-after-crash=false")
+	waitLog(t, srv, workerApplied(v1))
+	waitStatus(t, dev, mapApplied(v1), routeTableEnforced)
 	waitLog(t, up, `msg="blob fetched" .*name=dm`)
 	dev.MustExec(t, "thinkpol", "rules", "preset", "all-but-domestic")
 	s4, _ := space.overlay(1)
