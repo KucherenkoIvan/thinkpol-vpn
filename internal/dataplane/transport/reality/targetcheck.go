@@ -16,10 +16,13 @@ import (
 // and each is drawn at random from its upper half. The agent retries a
 // failed listener every few seconds (agent.RetryAfter); unbacked, each
 // retry would dial the target on that fixed period, from the server's
-// address, for as long as the check fails.
+// address, for as long as the check fails. checkBackoffMax is how late a
+// server serves once its target is reachable again (one that started
+// before its uplink, say), and about how often a target that stays down is
+// dialled: the package doc's trade-off.
 var (
 	checkBackoffMin = 10 * time.Second
-	checkBackoffMax = 10 * time.Minute
+	checkBackoffMax = 2 * time.Minute
 )
 
 // targetChecks gates a transport's checks of its targets (verifyTarget,

@@ -1,10 +1,13 @@
 package reality
 
 import (
+	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -127,6 +130,9 @@ func TestAFailedTargetCheckBacksOff(t *testing.T) {
 		for dials.Load() < want && time.Now().Before(deadline) {
 			time.Sleep(10 * time.Millisecond)
 		}
+		// The dials happen inside Listen, which has returned: an extra
+		// one would have been accepted by now, and this settle lets the
+		// accept loop count it.
 		time.Sleep(50 * time.Millisecond)
 		if got := dials.Load(); got != want {
 			t.Fatalf("the target was dialled %d times, want %d", got, want)
@@ -174,8 +180,7 @@ func TestTargetCheckWaitsGrowAtRandom(t *testing.T) {
 
 // While Listen checks its target, its port is closed: held, it would take
 // connections it answers nothing on for as long as the check runs, which
-// a prober would see, and a supervisor would hand them all over the moment
-// it starts serving, before its workers know the listener.
+// a prober would see.
 func TestTheListenersPortIsClosedWhileItsTargetIsChecked(t *testing.T) {
 	site, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -183,13 +188,18 @@ func TestTheListenersPortIsClosedWhileItsTargetIsChecked(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = site.Close() })
 	checking := make(chan struct{})
+	// The site holds the check open until the dial below is done, so the
+	// dial is made while the check runs.
+	checked := make(chan struct{})
+	release := sync.OnceFunc(func() { close(checked) })
+	t.Cleanup(release)
 	go func() {
 		c, err := site.Accept()
 		if err != nil {
 			return
 		}
 		close(checking)
-		time.Sleep(500 * time.Millisecond)
+		<-checked
 		_ = c.Close() // no TLS: the check fails
 	}()
 	addr := closedPort(t)
@@ -213,7 +223,79 @@ func TestTheListenersPortIsClosedWhileItsTargetIsChecked(t *testing.T) {
 		_ = c.Close()
 		t.Errorf("%s took a connection while its target was checked", addr)
 	}
+	release()
 	if err := <-listened; err == nil {
 		t.Fatal("listened with a target that doesn't speak TLS")
+	}
+}
+
+// checkThrough runs a check through c whose result is err, and says whether it ran.
+func checkThrough(ctx context.Context, t *testing.T, c *targetChecks, names map[string]bool, err error) bool {
+	t.Helper()
+	ran := false
+	_ = c.run(ctx, "192.0.2.1:443", names, func() error { ran = true; return err })
+	return ran
+}
+
+// A check that passes clears the target's failures: the next failure
+// waits as the first did, not as the next in the old run would.
+func TestAPassedTargetCheckResetsTheBackoff(t *testing.T) {
+	c := newTargetChecks()
+	now := time.Now()
+	c.now = func() time.Time { return now }
+	names := map[string]bool{serverName: true}
+	failed := errors.New("refused")
+	for n := 1; n <= 4; n++ {
+		if !checkThrough(t.Context(), t, c, names, failed) {
+			t.Fatalf("failure %d: the check didn't run", n)
+		}
+		now = now.Add(checkBackoffMin << (n - 1))
+	}
+	if !checkThrough(t.Context(), t, c, names, nil) {
+		t.Fatal("the check didn't run after its wait")
+	}
+	if !checkThrough(t.Context(), t, c, names, failed) {
+		t.Fatal("a check right after one that passed didn't run")
+	}
+	// After 4 failures in a row the wait would be at least
+	// 4*checkBackoffMin; after a first failure it is at most
+	// checkBackoffMin.
+	now = now.Add(checkBackoffMin)
+	if !checkThrough(t.Context(), t, c, names, failed) {
+		t.Fatalf("a first failure after a pass still held the check %s later", checkBackoffMin)
+	}
+}
+
+// A check cut short by its context isn't a failure of the target: the
+// next Listen checks it at once.
+func TestATargetCheckWhoseContextEndedDoesntBackOff(t *testing.T) {
+	c := newTargetChecks()
+	now := time.Now()
+	c.now = func() time.Time { return now }
+	names := map[string]bool{serverName: true}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	checkThrough(ctx, t, c, names, ctx.Err())
+	if !checkThrough(t.Context(), t, c, names, nil) {
+		t.Fatal("a check whose context had ended held the next one back")
+	}
+}
+
+// Failures are kept per target and server names: a listener of the same
+// target with other names is checked, and the same names in any order
+// aren't.
+func TestTargetChecksAreKeptPerServerNames(t *testing.T) {
+	c := newTargetChecks()
+	now := time.Now()
+	c.now = func() time.Time { return now }
+	names := map[string]bool{"a.example.net": true, "b.example.net": true, "c.example.net": true, "d.example.net": true, "e.example.net": true}
+	checkThrough(t.Context(), t, c, names, errors.New("refused"))
+	for range 20 {
+		if checkThrough(t.Context(), t, c, names, nil) {
+			t.Fatal("the same target and names were checked again before their wait ended")
+		}
+	}
+	if !checkThrough(t.Context(), t, c, map[string]bool{"a.example.net": true}, nil) {
+		t.Fatal("the same target with other names wasn't checked: its wait belongs to other names")
 	}
 }

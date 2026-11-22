@@ -74,9 +74,9 @@ func (t *Transport) openListener(ctx context.Context, cfg transport.ListenConfig
 	network := listenNetwork(addr)
 	// Closed at once rather than held through the check: held, the port
 	// would take connections it doesn't answer for as long as the check
-	// runs (seconds), and a prober's would show it; and a server's
-	// supervisor would then hand them all over the moment it starts
-	// serving, which can be before its workers know the listener.
+	// runs (seconds), and a prober would see that; what a server's
+	// supervisor does with connections accepted before its workers know
+	// the listener is TP-278's.
 	probe, err := lc.Listen(ctx, network, addr.String())
 	if err != nil {
 		return nil, ls, fmt.Errorf("reality: %w", err)

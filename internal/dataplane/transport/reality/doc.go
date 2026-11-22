@@ -141,7 +141,8 @@
 // window's edge that REALITY refuses is cut after 15 s (known).
 //
 // Listen binds its address first, one address family only: "tcp4" for an
-// IPv4 address, "tcp6" (IPV6_V6ONLY) for an IPv6 one, as udp does. The map
+// IPv4 or IPv4-mapped address, "tcp6" (IPV6_V6ONLY) for an IPv6 one, as udp
+// does. The map
 // gives a dual-stack server one listener per family on a port (0.0.0.0:443
 // and [::]:443), and on plain "tcp" Go would make the first wildcard a
 // dual-stack socket, leaving the second unable to bind for good. Listen
@@ -149,19 +150,22 @@
 // that can't bind never dials the target; it closes that socket at once
 // and listens again after the check. Held through the check, the port
 // would take connections and answer none of them for seconds, which a
-// prober would see, and behind a shared listener they would all be handed
-// over the moment the supervisor starts serving, which can be before its
-// workers know the listener (the lab's active prober cell failed on it).
+// prober would see. (How a shared listener's first connections reach the
+// workers is the supervisor's: TP-278.)
 //
 // The agent retries a listener that failed every few seconds
 // (agent.RetryAfter). A target whose check failed isn't checked again
 // before a wait drawn at random from the upper half of 10 s, doubling with
-// each failure in a row up to 10 minutes, per target and server names for
+// each failure in a row up to 2 minutes, per target and server names for
 // the transport's life; until then Listen fails at once with the last
 // check's error, dialling nothing. So a failing target is never dialled on
-// the retry's fixed period. A check that passed isn't repeated: the agent
-// keeps a listener that opened across its retries, until the map changes
-// it.
+// the retry's fixed period. The cap is a trade-off: a server that started
+// before its uplink (or its target) came up serves within about 2 minutes
+// of the target becoming reachable, and a target that stays down is
+// dialled about once every 1 to 2 minutes, at random, from the server's
+// address, one hello per server name, for as long as it stays down. A
+// check that passed isn't repeated: the agent keeps a listener that opened
+// across its retries, until the map changes it.
 //
 // Before checking the target, Listen has crypto/x509 read the system
 // roots, which on Linux and the BSDs it does from disk once per process,
