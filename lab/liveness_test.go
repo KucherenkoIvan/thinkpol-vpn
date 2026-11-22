@@ -225,13 +225,14 @@ func closed(t *testing.T, p *lab.Process, name string, from int, within time.Dur
 // udp no probe-sized datagram crosses the router, and on both transports
 // device-a's probe counters stand still. The capture and the counters
 // see the probes that brought the link up, so they count what they
-// should. Then the dead link under traffic (TestDeadUnderTraffic's
-// rules, in the same lab): a blackhole both ways, then, after the link
-// is back, one from server-1 to device-a under a one-way stream from
-// device-a: each end finds it dead within the busy bound of its last
-// answer (S + R + T, 4.5 s; today's rule took up to 6.5 s), server-1 in
-// the one-way case by device-a's close notice or by its own unanswered
-// frames, whichever comes first.
+// should. Then, in the same lab, a link dead under traffic: a blackhole
+// both ways under the pings, where each end finds it dead within the
+// busy bound of its last answer (S + R + T, 4.5 s; today's rule took up
+// to 6.5 s), and, once the link is back, one from server-1 to device-a
+// under a one-way stream from device-a, where device-a, the sender,
+// does the same and server-1, the receive-only end, closes on
+// device-a's notice or its own deadlines, within the unhinted bound
+// (the idle rule's: 26 s, 16 s) at worst.
 func TestBusyLinksSendNoProbes(t *testing.T) {
 	t.Parallel()
 	for _, transport := range []string{"reality", "udp"} {
@@ -336,9 +337,15 @@ func deadUnderTraffic(t *testing.T, k *livenessLink) {
 	t.Logf("%s, cut from server-1 under device-a's one-way stream: device-a closed its link %v after its last answer (%q); server-1 %v after its last answer (%q)",
 		k.transport, devAfter, devWhy, serverAfter, serverWhy)
 	checkBusyBound(t, k.transport+", one-way stream, cut from server-1", "device-a", devAfter)
-	// The receive-only end: the notice comes a one-way trip after
-	// device-a's close.
-	checkBusyBound(t, k.transport+", one-way stream, cut from server-1", "server-1", serverAfter)
+	// The receive-only end: device-a's close notice reaches it a one-way
+	// trip after device-a's close when it can cross; on reality it can't,
+	// since device-a's TCP stalls without server-1's acknowledgements and
+	// the notice waits behind the stream. Without the notice it has its
+	// own frames' deadlines, or none (it sends only what expects no
+	// answer), and then the unhinted bound, the idle rule's.
+	if bound := idleBound[k.transport]; serverAfter > bound+loadSlack {
+		t.Errorf("%s, one-way stream, cut from server-1: server-1, the receive-only end, closed its link %v after its last answer, want within %v (the idle rule's bound, unhinted)", k.transport, serverAfter, bound)
+	}
 }
 
 // checkBusyBound fails the test when a node took longer than today's rule
