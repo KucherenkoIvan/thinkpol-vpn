@@ -233,9 +233,10 @@
 // A successor puts back the accept_ra values of a family it doesn't adopt
 // (its switch never flipped, or turned off since) that still hold 2. A
 // switch someone else turns on after the supervisor read it at 0 is taken
-// as the supervisor's: by it until its own write of 1, and, if it died
-// between the record's save and that write, by a successor when it next
-// loads the record, however long the service stays down until then. That
+// as the supervisor's: by the live supervisor, which keeps it as its own
+// until it puts forwarding back, and, if it died between the record's save
+// and its own write of 1, by a successor when it next loads the record,
+// however long the service stays down until then. That
 // fails closed: the successor's tables confine that forwarding to the
 // spaces (dropping, say, a container runtime's forwarded traffic), and it
 // turns it off when no space needs it.

@@ -1,10 +1,12 @@
 package supervisor
 
 import (
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -763,7 +765,8 @@ func TestForwardingAcceptRAThatCannotBePutBackStaysRecorded(t *testing.T) {
 }
 
 // Forwarding turned on again after an attempt whose accept_ra put-back
-// failed takes those values as its own, and puts them back with the rest.
+// failed takes those values still at 2 as its own, and puts them back with
+// the rest; one someone changed since is theirs, left alone.
 func TestForwardingRetriedAfterAFailedPutBackOwnsItsAcceptRA(t *testing.T) {
 	sys, get := fakeProcSys(t)
 	want := sysctlTree(t, sys.root)
@@ -773,8 +776,9 @@ func TestForwardingRetriedAfterAFailedPutBackOwnsItsAcceptRA(t *testing.T) {
 		t.Fatal(err)
 	}
 	eth0RA := "net/ipv6/conf/eth0/accept_ra"
+	defaultRA := "net/ipv6/conf/default/accept_ra"
 	sys.arm(func(key, value string) error {
-		if (key == forwardingKeys[1] || key == eth0RA) && value == "1" {
+		if (key == forwardingKeys[1] || key == eth0RA || key == defaultRA) && value == "1" {
 			return errors.New("refused")
 		}
 		return nil
@@ -783,14 +787,36 @@ func TestForwardingRetriedAfterAFailedPutBackOwnsItsAcceptRA(t *testing.T) {
 		t.Fatal("ensure returned nil with IPv6 forwarding refused")
 	}
 	sys.disarm()
-	if got := get(eth0RA); got != "2" {
-		t.Fatalf("%s = %s, want 2 (its put-back refused)", eth0RA, got)
+	for _, key := range []string{eth0RA, defaultRA} {
+		if got := get(key); got != "2" {
+			t.Fatalf("%s = %s, want 2 (its put-back refused)", key, got)
+		}
 	}
+	sys.set(defaultRA, "0") // someone else's now
+	want[defaultRA] = "0"
 	if err := f.ensure([2]bool{false, true}); err != nil {
 		t.Fatal(err)
 	}
 	if f.owned() != [2]bool{false, true} {
 		t.Fatalf("owned = %v after the retry, want IPv6", f.owned())
+	}
+	b, err := os.ReadFile(filepath.Join(run, forwardingFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec [2]*forwardingChange
+	if err := json.Unmarshal(b, &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec[1] == nil {
+		t.Fatalf("no IPv6 record after the retry: %s", b)
+	}
+	var before []string
+	for _, s := range rec[1].Before {
+		before = append(before, s.Key)
+	}
+	if !slices.Contains(before, eth0RA) || slices.Contains(before, defaultRA) {
+		t.Errorf("the retry's record holds accept_ra %v, want %s and not %s (changed since)", before, eth0RA, defaultRA)
 	}
 	if err := f.restore(); err != nil {
 		t.Fatal(err)
