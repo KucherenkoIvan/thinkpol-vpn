@@ -60,3 +60,4 @@ Round 1 (2026-11-22, on 80021b18): correctness (fix first), style (fix first), d
 - 2026-11-22 in-progress → review
 - 2026-11-22 rewrite fa427ca0 merged (4eb8f029), runs again on it: make lint 0 issues, make test pass; lab-gotest supervisor/reality/udp ok, none cached (56 s, 1m24.5 s, 1m6.3 s); matrix udp and reality rows ok in 258.8 s, five labs PASS, reality × active prober NOT JUDGED as before
 - 2026-11-22 review → has-errors: round 1 findings R1.1-R1.8 (fix first)
+- 2026-11-22 has-errors → in-progress, owner: agent-tp-278
