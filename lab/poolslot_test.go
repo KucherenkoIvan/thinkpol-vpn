@@ -133,6 +133,7 @@ func TestPoolStartGivesWayToALabThatCameBack(t *testing.T) {
 // slot queue held it back or not and whether the queue can be used or
 // not, so no lab starts that nobody waits for.
 func TestAStoppedStartTakesNoFreeSlot(t *testing.T) {
+	t.Setenv(TimelineEnv, "") // its start isn't the run's
 	for _, c := range []struct {
 		share    int
 		unusable bool // slot-queue is a file: the wait polls the slots
