@@ -123,7 +123,7 @@ func (f *testFilter) event(ev testEvent) error {
 		defer delete(f.reported, key)
 		defer delete(f.resumed, key)
 	}
-	if f.timeline.File != "" && strings.Count(ev.Test, "/") <= 1 && !(ev.Action == "cont" && f.resumed[key]) {
+	if f.timeline.File != "" && strings.Count(ev.Test, "/") <= 1 && (ev.Action != "cont" || !f.resumed[key]) {
 		if ev.Action == "cont" {
 			f.resumed[key] = true
 		}
