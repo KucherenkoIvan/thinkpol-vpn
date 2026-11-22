@@ -36,8 +36,20 @@ The orchestrator's per-item list for the macOS IPv6 box. The owner's proxy rule 
 - C. The macOS route table's IPv6 routes: proven by proxy except RR16 and zoned (link-local, `%iface`) gateways. The device sitting adds a read-only `netstat -rn -f inet6` and `route get -inet6` step while connected and after the agent is killed.
 - D1. Forwarded IPv6 (RR14): holds only if the sitting's S7 step runs, with the kill switch on and the guard absent.
 
+## Review findings
+- [ ] R1.1 (privacy) Notes B and D1 name a private network and a private runbook step: B ends "…no cheap check on an IPv4-only network."; D1 reads "holds only if a device check runs with the kill switch on and the guard absent". No other owner, device or private-step detail in the diff.
+- [ ] R1.2 (rhythm) The lab accepts reality's rhythm fail by record count or by burst (censor.WGRhythmByCount, censor.WGRhythmByBurst): milestones.md M2, RR65 and PRD success metric 1 name both signals; "no 2-minute rekey pair standing out" goes.
+- [ ] R1.3 (PRD success metric 1) Keep the three exceptions and add the other two accepted results, the rhythm cell (an accepted fail, RR65) and the active prober's cell (not judged by design, RR31, TP-264), in one sentence that the next doesn't contradict.
+- [ ] R1.4 (milestones M2) reality fails `sni-blocklist (entry)` and `ip-blocklist (entry)` (RR67): "blocklists of other addresses and names".
+- [ ] R1.5 (macOS kill switch's IPv6 half by proxy: PRD D6, RR15, milestones) While the guard's anchor is in place its quick passes decide IPv6 first (link-local unicast and multicast pass whole): that path is the guard's and stays under RR15.
+- [ ] R1.6 "fail toward breakage, not toward a leak" is false: neighbour discovery (ICMPv6 133–137) passes to any destination by design. Drop it; add the kill switch's neighbour-discovery pass to RR13.
+- [ ] R1.7 (RR14) A check with the kill switch on and the guard absent proves only the kill switch's block; the guard's own refusal, the default case, stays under RR15.
+- [ ] R1.8 The kill switch's state kill reads IPv6 states through a parser branch (`addr[port]`) tested only on hand-written fixtures: a further exception to the IPv6 proxy claim until real `pfctl -s states` output with IPv6 states is recorded.
+- [ ] R1.9 (nits) api-overview.md: THINKPOL_API_SOCKET is also read by every API client, and node.json can carry 11 of the 17 keys; "(updated 2026-11-22)"; milestones.md M1/M2: the device-sitting test plan sentences go.
+
 ## Log
 - 2026-11-16 created in backlog (from the M2 gate review)
 - 2026-11-22 backlog → in-progress, owner: agent-tp-225
 - 2026-11-22 docs changed per Acceptance, each checked against the code at the branch's base 5c0685dd; docs only (one package doc.go comment), no lab-tested code, so no lab run; `make lint` and `python3 tickets/board.py --check` pass
 - 2026-11-22 in-progress → review
+- 2026-11-22 review → has-errors (round 1: R1.1–R1.9)
