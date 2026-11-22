@@ -38,6 +38,16 @@ type fakeSupervisor struct {
 	// hold, if set, holds each SetListeners (its listeners still opening)
 	// until it gets a value or closes, telling holding (buffered) first.
 	hold, holding chan struct{}
+	// open is what Listeners reports: the last SetListeners' listeners,
+	// or, when it failed, its first servedOnFailure.
+	open            []supervisor.ListenerInfo
+	servedOnFailure int
+}
+
+func (f *fakeSupervisor) Listeners() []supervisor.ListenerInfo {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.open)
 }
 
 func (f *fakeSupervisor) Egress() supervisor.EgressInfo {
@@ -70,14 +80,23 @@ func (f *fakeSupervisor) SetListeners(ls []supervisor.Listener) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listeners = append(f.listeners, ls)
-	if f.listen != nil {
-		return f.listen(ls)
-	}
-	if f.failLists > 0 {
+	var err error
+	switch {
+	case f.listen != nil:
+		err = f.listen(ls)
+	case f.failLists > 0:
 		f.failLists--
-		return errors.New("address in use")
+		err = errors.New("address in use")
 	}
-	return nil
+	served := ls
+	if err != nil {
+		served = ls[:min(f.servedOnFailure, len(ls))]
+	}
+	f.open = f.open[:0]
+	for i, l := range served {
+		f.open = append(f.open, supervisor.ListenerInfo{ID: uint32(i + 1), Transport: l.Transport, Address: l.Address})
+	}
+	return err
 }
 
 func (f *fakeSupervisor) last() ([]supervisor.Space, []supervisor.Listener, int) {
@@ -231,29 +250,93 @@ func TestServerSaysAppliedOnceItsListenersServe(t *testing.T) {
 	}
 	<-sup.holding
 	time.Sleep(50 * time.Millisecond) // nothing may show it meanwhile
-	if st := r.report.status(); st.Connection == Serving || applied(1) {
-		t.Fatalf("while the listeners open: connection %v, log:\n%s", st.Connection, r.log)
+	if st := r.report.status(); st.Connection != Connecting || applied(1) {
+		t.Fatalf("while the listeners open: connection %v, want %v, and no map applied line; log:\n%s", st.Connection, Connecting, r.log)
 	}
 	if h := r.report.status().Health(); !slices.Contains(h.Problems, ProblemStarting) {
-		t.Fatalf("health while the listeners open: %+v", h)
+		t.Fatalf("health while the listeners open: %+v, want %q among its problems", h, ProblemStarting)
 	}
 	sup.hold <- struct{}{}
 	eventually(t, func() bool { st := r.report.status(); return st.Connection == Serving && !st.Retrying })
 	if !applied(1) {
-		t.Fatalf("log:\n%s", r.log)
+		t.Fatalf("no map applied line for version 1 once served; log:\n%s", r.log)
 	}
 
 	r.maps <- s.build(t, 2)
 	<-sup.holding
 	time.Sleep(50 * time.Millisecond)
 	if st := r.report.status(); st.MapVersion != 1 || applied(2) {
-		t.Fatalf("while map 2's listeners open: version %d, log:\n%s", st.MapVersion, r.log)
+		t.Fatalf("while map 2's listeners open: version %d, want 1, and no map applied line for 2; log:\n%s", st.MapVersion, r.log)
 	}
 	sup.hold <- struct{}{}
 	r.served(t, 2)
 	if !applied(2) {
-		t.Fatalf("log:\n%s", r.log)
+		t.Fatalf("no map applied line for version 2 once served; log:\n%s", r.log)
 	}
+}
+
+// statusReads waits until r's status is want's (Connection, Retrying,
+// MapVersion, Removed) with the health level and problems given.
+func (r *runningServer) statusReads(t *testing.T, what string, want Status, level HealthLevel, problems ...Problem) {
+	t.Helper()
+	var st Status
+	var h Health
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		st = r.report.status()
+		h = st.Health()
+		if st.Connection == want.Connection && st.Retrying == want.Retrying && st.MapVersion == want.MapVersion && st.Removed == want.Removed &&
+			h.Level == level && slices.Equal(h.Problems, problems) {
+			return
+		}
+	}
+	t.Fatalf("%s: connection %v, retrying %v, version %d, removed %v, health %v %v; want %v, %v, %d, %v, %v %v",
+		what, st.Connection, st.Retrying, st.MapVersion, st.Removed, h.Level, h.Problems,
+		want.Connection, want.Retrying, want.MapVersion, want.Removed, level, problems)
+}
+
+// A running server reads serving while at least one of its map's
+// listeners serves (others failing: retrying, degraded), connecting while
+// none does (first apply, a later map, removal), and disconnected once it
+// stopped.
+func TestServerConnectionSaysWhetherItsListenersServe(t *testing.T) {
+	s := newTestSpace(t)
+	second := func(sec *netmap.Section) {
+		sec.Node.Listeners = append(sec.Node.Listeners, netmap.Listener{Transport: "memory", Address: netip.MustParseAddrPort("192.0.2.1:4501")})
+	}
+	sup := &fakeSupervisor{failLists: 1}
+	retry := make(chan time.Time)
+	r := runServerSpacesIn(t, s, sup, "", func(ss *serverSpaces) {
+		ss.report.mode = ModeServer
+		ss.after = func(time.Duration) <-chan time.Time { return retry }
+	}, second)
+	failNext := func(served int) {
+		sup.mu.Lock()
+		defer sup.mu.Unlock()
+		sup.failLists, sup.servedOnFailure = 1, served
+	}
+	r.statusReads(t, "every listener failed at the start", Status{Connection: Connecting, Retrying: true, MapVersion: 1}, HealthDown, ProblemRetrying)
+	retry <- time.Now()
+	r.statusReads(t, "retried, all serving", Status{Connection: Serving, MapVersion: 1}, HealthOK)
+
+	failNext(1)
+	r.maps <- s.buildEditing(t, 2, s.a, second)
+	r.statusReads(t, "one of map 2's listeners failed", Status{Connection: Serving, Retrying: true, MapVersion: 2}, HealthDegraded, ProblemRetrying)
+	retry <- time.Now()
+	r.statusReads(t, "map 2 retried", Status{Connection: Serving, MapVersion: 2}, HealthOK)
+
+	failNext(0)
+	r.maps <- s.buildEditing(t, 3, s.a, second)
+	r.statusReads(t, "every listener of map 3 failed", Status{Connection: Connecting, Retrying: true, MapVersion: 3}, HealthDown, ProblemRetrying)
+	retry <- time.Now()
+	r.statusReads(t, "map 3 retried", Status{Connection: Serving, MapVersion: 3}, HealthOK)
+
+	r.maps <- s.buildWithout(t, 4, s.a)
+	r.statusReads(t, "out of its space", Status{Connection: Connecting, MapVersion: 4, Removed: true}, HealthDown, ProblemRemoved)
+
+	r.stop()
+	err := <-r.done
+	r.done <- err // for the cleanup
+	r.statusReads(t, "stopped", Status{Connection: Disconnected, MapVersion: 4, Removed: true}, HealthDown, ProblemRemoved, ProblemDisconnected)
 }
 
 // Listeners that fail at the start are retried; the node runs on.
@@ -738,4 +821,15 @@ func TestUpstreamChangesPassOnlyChangedLists(t *testing.T) {
 	if ups, ok := passed(); !ok || ups != nil {
 		t.Errorf("after two changes, passed %v, %v; want the later, none", ups, ok)
 	}
+}
+
+// A server whose map lists no listener serves once its serve has ended,
+// and reads connecting once out of its space.
+func TestServerWithoutListenersServesUntilRemoved(t *testing.T) {
+	s := newTestSpace(t)
+	none := func(sec *netmap.Section) { sec.Node.Listeners = nil }
+	r := runServerSpacesIn(t, s, &fakeSupervisor{}, "", func(ss *serverSpaces) { ss.report.mode = ModeServer }, none)
+	r.statusReads(t, "no listener listed", Status{Connection: Serving, MapVersion: 1}, HealthOK)
+	r.maps <- s.buildWithout(t, 2, s.a)
+	r.statusReads(t, "out of its space", Status{Connection: Connecting, MapVersion: 2, Removed: true}, HealthDown, ProblemRemoved)
 }

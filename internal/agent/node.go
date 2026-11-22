@@ -878,7 +878,7 @@ func (n *Node) runServer(ctx context.Context, reg *transport.Registry, maps chan
 	}()
 	// Cleared before the supervisor closes (deferred calls run last first).
 	n.report.set(func(p *report) { p.workers = sup })
-	defer n.report.set(func(p *report) { p.workers, p.dnsUpstreamsRefused, p.serving = nil, 0, false })
+	defer n.report.set(func(p *report) { p.workers, p.dnsUpstreamsRefused = nil, 0 })
 	s := &serverSpaces{
 		sup: sup, reg: reg, trust: n.state.Trust,
 		iface: n.cfg.Interface, linkMTU: n.cfg.LinkMTU,
@@ -910,6 +910,7 @@ type spaceServer interface {
 	SetSpaces([]supervisor.Space) error
 	SetListeners([]supervisor.Listener) error
 	Egress() supervisor.EgressInfo
+	Listeners() []supervisor.ListenerInfo
 }
 
 // serverSpaces keeps the supervisor serving the node's current map; the
@@ -1049,9 +1050,11 @@ func dials(section netmap.Section, reg *transport.Registry) []supervisor.Dial {
 // run serves the current map, then every newer one, until ctx ends. Only
 // the first SetSpaces failing is fatal (the node can't serve its space);
 // anything else is retried. The report shows a map once its serve ended
-// (SetListeners returns once its listeners serve): the first's as
-// serving, a later one's version.
+// (SetListeners returns once its new listeners serve), served or retried:
+// its version, and whether the node serves it (servesMap).
 func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
+	s.report.set(func(p *report) { p.serverRunning = true })
+	defer s.report.set(func(p *report) { p.serverRunning, p.serving = false, false })
 	var retry <-chan time.Time
 	if err := s.apply(); err != nil {
 		if !errors.As(err, new(errListeners)) {
@@ -1066,7 +1069,7 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 	for {
 		s.report.set(func(p *report) {
 			p.version, p.removed, p.retrying = s.follow.cur.Header().Version, s.follow.removed, retry != nil
-			p.serving = true
+			p.serving = s.servesMap()
 		})
 		for _, kind := range told {
 			s.events.emit(kind, s.follow.cur.Header().Version)
@@ -1107,6 +1110,16 @@ func (s *serverSpaces) run(ctx context.Context, maps <-chan []byte) error {
 			retry = nil
 		}
 	}
+}
+
+// servesMap reports whether the node serves its map once a serve of it
+// has ended: it is in its space and lists no listener, or at least one of
+// them serves (any other failed, retried).
+func (s *serverSpaces) servesMap() bool {
+	if s.follow.removed {
+		return false
+	}
+	return len(s.follow.section.Node.Listeners) == 0 || len(s.sup.Listeners()) > 0
 }
 
 // retryIn starts the wait before a failed apply is retried and says how

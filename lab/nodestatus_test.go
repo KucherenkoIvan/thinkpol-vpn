@@ -221,11 +221,12 @@ func connection(c string) statusCheck {
 
 // mapApplied: the node runs map version, applied: a server serves it, a
 // device's data plane is up on it, and nothing is being retried. A
-// server's connection reads serving only once its first serve of the map
-// has ended, each of its listeners serving, and a later map's version
-// once that map is served alike; it passes only with at least one worker,
-// each ready: sandboxed, and routed to by the listeners. The workers apply
-// the map after; their log says when.
+// server's version shows once its serve of that map has ended; serving
+// and nothing retried mean every listener of it serves. It passes only
+// with at least one worker, each ready: sandboxed, and routed to by the
+// listeners, which serve a new listener only once its workers are (or
+// after StopTimeout, a worker not ready then failing this check). The
+// workers apply the map after; their log says when.
 func mapApplied(version string) statusCheck {
 	return func(st nodeStatus) error {
 		switch {
