@@ -140,6 +140,41 @@
 // connection REALITY refuses and splices, so a legitimate hello at the
 // window's edge that REALITY refuses is cut after 15 s (known).
 //
+// Listen binds its address first, one address family only: "tcp4" for an
+// IPv4 or IPv4-mapped address, "tcp6" (IPV6_V6ONLY) for an IPv6 one, as udp
+// does. The map
+// gives a dual-stack server one listener per family on a port (0.0.0.0:443
+// and [::]:443), and on plain "tcp" Go would make the first wildcard a
+// dual-stack socket, leaving the second unable to bind for good. Listen
+// checks the target (below) only once its address bound, so a listener
+// that can't bind never dials the target; it closes that socket at once
+// and listens again after the check. Held through the check, the port
+// would take connections and answer none of them for seconds, which a
+// prober would see. (How a shared listener's first connections reach the
+// workers is the supervisor's: TP-278.)
+//
+// The agent retries a listener that failed every 5 s after its last apply
+// (agent.RetryAfter). A target whose check failed is held for a wait drawn
+// at random from the upper half of 10 s, doubling with each failure in a
+// row up to 2 minutes, per target and server names for the transport's
+// life; until then Listen fails at once with the last check's error,
+// dialling nothing. So a failing target isn't dialled at every retry. A
+// held check runs again only when a retry calls Listen after the wait
+// ended, so re-checks land on the retry's 5 s grid: about 10 s after the
+// first failure (a 5 to 10 s wait rounds up to the second retry), then 15
+// to 20 s, 25 to 40 s and, at the cap, 65 to 120 s apart, always whole
+// multiples of 5 s, which a censor folding their times by 5 s sees while
+// the target stays down (RESIDUAL-RISKS.md RR66; TP-281). The cap is a
+// trade-off: a server that started before its uplink (or its target) came
+// up serves within about 2 minutes of the target becoming reachable, and a
+// target that stays down is dialled about once every 1 to 2 minutes from
+// the server's address for as long as it stays down. Each re-check sends
+// one hello per server name, and after a check whose detection stalled it
+// re-runs REALITY's detection for the stalled keys (up to 6 connections
+// per server name, with ChangeCipherSpec records). A check that passed
+// isn't repeated: the agent keeps a listener that opened across its
+// retries, until the map changes it.
+//
 // Before checking the target, Listen has crypto/x509 read the system
 // roots, which on Linux and the BSDs it does from disk once per process,
 // on first use, with no bound: neither of the 10 s bounds below counts
@@ -190,7 +225,8 @@
 // silent never ends: its keys stay pending, and every later Listen for that
 // target fails until the process restarts. A caller retrying Listen should
 // know that a failure naming an earlier detection won't clear on retry while
-// the target stays silent.
+// the target stays silent; the checks' backoff (above) spaces those
+// retries out too.
 //
 // The dialer checks the certificate the same way. Anything else (a real
 // certificate: the connection was spliced, or a man in the middle
