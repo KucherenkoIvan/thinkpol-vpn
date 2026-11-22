@@ -4,6 +4,7 @@ package lab_test
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +36,17 @@ func TestRealityIdleServerLeavesItsTarget(t *testing.T) {
 	envelope, version := space.build(t)
 	space.install(t, server, "server-1", envelope)
 	up := startUp(t, server)
-	if _, err := statusWithin(server, 60*time.Second, nil, mapApplied(version)); err != nil {
+	// The supervisor's own line ends start-up: its status reads the map
+	// applied, not retrying, while the first apply still opens the
+	// listeners and checks the target.
+	applied := regexp.MustCompile(`msg="map applied" service=thinkpol version=` + regexp.QuoteMeta(version) + ` `)
+	for start := time.Now(); !applied.MatchString(up.Output()); {
+		if time.Since(start) > 60*time.Second {
+			t.Fatalf("server-1 didn't apply map %s within 60s\n%s", version, failedLines(up.Output()))
+		}
+		time.Sleep(time.Second)
+	}
+	if _, err := statusWithin(server, 10*time.Second, nil, mapApplied(version)); err != nil {
 		t.Fatalf("server-1: %v\n%s", err, failedLines(up.Output()))
 	}
 	// The target is IPv4 (CAMOUFLAGE_IPV4): every connection to it opens
@@ -57,7 +68,7 @@ func TestRealityIdleServerLeavesItsTarget(t *testing.T) {
 	if syns := dials.Stop(); len(syns) > 0 {
 		var from []string
 		for _, p := range syns {
-			from = append(from, fmt.Sprintf("%s %s", p.Time.Format("15:04:05.000"), p.Src))
+			from = append(from, fmt.Sprintf("%s %s", p.Time.UTC().Format("15:04:05.000"), p.Src))
 		}
 		t.Errorf("the target got %d connections from an idle server-1 within %v of its start-up: %s\n%s",
 			len(syns), idleHold, strings.Join(from, ", "), failedLines(up.Output()))
