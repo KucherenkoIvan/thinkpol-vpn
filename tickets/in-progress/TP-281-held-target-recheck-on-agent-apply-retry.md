@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [RR66]
-owner: ""
-branch: ""
+owner: "agent-tp-281"
+branch: "tp-281-recheck-off-the-retry-grid"
 ---
 
 ## Goal
@@ -31,3 +31,4 @@ While a reality target's check keeps failing, the server's re-checks of it are n
 
 ## Log
 - 2026-11-22 created in backlog (from TP-230's review)
+- 2026-11-22 backlog → in-progress, owner: agent-tp-281
