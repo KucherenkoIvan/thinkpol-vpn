@@ -141,7 +141,7 @@ func readData(data *ipc.Conn, shared *sharedListeners, cancel context.CancelCaus
 }
 
 // readControl delivers each Config and Listeners the supervisor sends
-// (latest-wins; each Listeners acknowledged) and each stream it hands
+// (latest-wins; each Listeners answered) and each stream it hands
 // over, and ends the worker on Stop, EOF or anything unexpected.
 func readControl(control *ipc.Conn, shared *sharedListeners, ch channels, seeds *Seeds, cancel context.CancelCauseFunc) {
 	for {

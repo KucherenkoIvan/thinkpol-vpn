@@ -439,7 +439,9 @@ type WorkerInfo struct {
 	// PID is the running worker's process id in the root namespace, 0
 	// between restarts.
 	PID int
-	// Ready is set once the running worker has sandboxed itself.
+	// Ready is set once the running worker has sandboxed itself and the
+	// shared listeners route to it (it answered with every listener it may
+	// be routed).
 	Ready bool
 	// Starts counts the worker's processes so far.
 	Starts int

@@ -217,7 +217,8 @@ func TestTheDefaultUpstreamsFollowTheUplinkFamily(t *testing.T) {
 func exitSpaces(t *testing.T, ups ...netip.AddrPort) (*serverSpaces, *bytes.Buffer) {
 	t.Helper()
 	var buf bytes.Buffer
-	s := &serverSpaces{dns: true, report: &report{mode: ModeServer}, dnsUpstreams: ups}
+	// A server serving its map: its health is the upstreams'.
+	s := &serverSpaces{dns: true, report: &report{mode: ModeServer, serverRunning: true, serving: true}, dnsUpstreams: ups}
 	s.follow.section.Node.Kind = netmap.NodeServer
 	s.follow.section.Node.AllowEgress = true
 	s.log = slog.New(slog.NewTextHandler(&buf, nil))

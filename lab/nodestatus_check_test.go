@@ -67,6 +67,8 @@ func TestStatusChecksFailWithoutTheirFact(t *testing.T) {
 			func(s *localapiv1.Status) { s.Retrying = true },
 			func(s *localapiv1.Status) { s.Workers = nil },
 			func(s *localapiv1.Status) { s.Workers[0].Ready = false },
+			// its first serve still opening listeners
+			func(s *localapiv1.Status) { s.Connection = localapiv1.Connection_CONNECTION_CONNECTING },
 		}},
 		{"mode", device, inMode("device"), []func(*localapiv1.Status){
 			func(s *localapiv1.Status) { s.Mode = localapiv1.Mode_MODE_SERVER },

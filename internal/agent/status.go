@@ -107,14 +107,24 @@ type Status struct {
 type Connection uint8
 
 const (
-	// Disconnected: a device whose data plane is down on purpose.
+	// Disconnected: a device whose data plane is down on purpose, or a
+	// node, device or server, that isn't running.
 	Disconnected Connection = iota
 	// Connecting: a device meant to be connected whose data plane isn't up
-	// (removed from its space, or its start failed and is retried).
+	// (removed from its space, or its start failed and is retried), or a
+	// running server that serves none of its map's listeners: its first
+	// serve of the map hasn't ended, every listener failed (Retrying), or
+	// it is out of its space (Removed).
 	Connecting
 	// Connected: a device's data plane is up.
 	Connected
-	// Serving: a server, which serves its spaces whenever it runs.
+	// Serving: a running server whose first serve of its map has ended
+	// with at least one of the map's listeners serving, or with none
+	// listed. Others failing are retried (Retrying, health degraded); a
+	// listener serves once each space's worker knows it, or after the
+	// supervisor's StopTimeout, a worker that isn't routed to yet then
+	// reading not ready (health down: worker_down). A later map shows its
+	// version once its serve has ended, served or retried alike.
 	Serving
 )
 
@@ -209,6 +219,10 @@ type report struct {
 	// retrying: a start, an Apply (a connected device's too) or a
 	// server's map waits to be retried.
 	retrying bool
+	// serverRunning: a server's map loop runs (serverSpaces.run).
+	// serving: it serves its map (Serving), set once each serve of a map
+	// has ended.
+	serverRunning, serving bool
 	// engine is a device's running engine; it is cleared before the engine
 	// closes, and Status calls it under mu, so it is never used closed.
 	engine    *dataplane.Engine
@@ -298,8 +312,12 @@ func (p *report) statusWith(dp *dataplane.Status) Status {
 		s.KillSwitch = p.killSwitch
 	}
 	switch {
-	case p.mode == ModeServer:
+	case p.mode == ModeServer && !p.serverRunning:
+		s.Connection = Disconnected
+	case p.mode == ModeServer && p.serving:
 		s.Connection = Serving
+	case p.mode == ModeServer:
+		s.Connection = Connecting
 	case p.conn == connConnected:
 		s.Connection = Connected
 	case p.conn != connDisconnected:

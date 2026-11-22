@@ -942,3 +942,64 @@ func TestUnsolicitedListenersAnswerIsAProtocolError(t *testing.T) {
 		return nil
 	})
 }
+
+// A worker reads ready only once the shared listeners route to it, and
+// SetListeners returns only then: one that answers its Listeners slowAnswer
+// late, though it reported Ready at once, isn't ready before that, and is
+// ready the moment SetListeners returns. A server logs "map applied" and
+// reads serving only once SetListeners returns (the agent's
+// TestServerSaysAppliedOnceItsListenersServe), so neither comes before a
+// connection can reach the worker.
+func TestWorkerIsReadyOnceRoutedTo(t *testing.T) {
+	needsLab(t)
+	opts := sharedOptions()
+	opts.Env = append(opts.Env, envAnswers+"="+answerSlow)
+	// Room for a loaded machine: an answer slowAnswer late is far inside
+	// the answer timeout, which would kill the worker.
+	opts.StopTimeout = slowAnswer + 9*time.Second
+	space := netmap.NewSpaceID()
+	s, err := supervisor.New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := s.SetSpaces(spacesOf(space)); err != nil {
+		t.Fatal(err)
+	}
+	begin := time.Now()
+	returned := make(chan error, 1)
+	go func() {
+		returned <- s.SetListeners([]supervisor.Listener{{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort)}})
+	}()
+	var started time.Time
+	for deadline := begin.Add(2*slowAnswer + opts.StopTimeout); ; time.Sleep(10 * time.Millisecond) {
+		select {
+		case err := <-returned:
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w, _ := info(s, space); !w.Ready || w.Starts != 1 {
+				t.Fatalf("SetListeners returned after %v with the worker %+v, want it ready, started once", time.Since(begin), w)
+			}
+			return
+		default:
+		}
+		w, _ := info(s, space)
+		if w.PID != 0 && started.IsZero() {
+			started = time.Now()
+		}
+		if w.Ready && time.Since(started) < slowAnswer/2 {
+			t.Fatalf("ready %v after its process started, want not before it answered the listeners (%v): %+v", time.Since(started), slowAnswer, w)
+		}
+		if w.LastExit != "" {
+			t.Fatalf("the worker ended: %s", w.LastExit)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("SetListeners still waiting after %v, want it back once the worker answered", time.Since(begin))
+		}
+	}
+}

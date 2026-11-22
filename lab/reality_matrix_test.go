@@ -55,7 +55,7 @@ func setupReality(t *testing.T, l *lab.Lab) (probeTarget, error) {
 		return probeTarget{}, err
 	}
 	if recordedOffCell(t, rowReality) {
-		if err := idleServerLeavesItsTarget(t, server, site, up, version); err != nil {
+		if err := idleServerLeavesItsTarget(t, server, site, up); err != nil {
 			return probeTarget{}, err
 		}
 	}
@@ -91,17 +91,9 @@ const offCase = "off"
 // TP-230, [::]:443 couldn't bind next to 0.0.0.0:443's dual-stack socket,
 // and every retry, every 5 s, made a TLS handshake with the target from
 // the server's address.
-func idleServerLeavesItsTarget(t *testing.T, server, site *lab.Node, up *lab.Process, version string) error {
-	// The supervisor's own line ends start-up: the status (mapApplied)
-	// reads the map applied, not retrying, while the first apply still
-	// opens the listeners and checks the target (TP-279).
-	applied := regexp.MustCompile(`msg="map applied" service=thinkpol version=` + regexp.QuoteMeta(version) + ` `)
-	for start := time.Now(); !applied.MatchString(up.Output()); {
-		if time.Since(start) > 60*time.Second {
-			return fmt.Errorf("server-1 didn't log map %s applied within 60s\n%s", version, failedLines(up.Output()))
-		}
-		time.Sleep(time.Second)
-	}
+func idleServerLeavesItsTarget(t *testing.T, server, site *lab.Node, up *lab.Process) error {
+	// Start-up has ended: the caller's mapApplied passes only once the
+	// first apply has opened every listener and checked the target.
 	// The target is IPv4 (CAMOUFLAGE_IPV4): every connection to it opens
 	// with a SYN this filter sees.
 	dials := site.Capture(t, "tcp dst port 443 and tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn")

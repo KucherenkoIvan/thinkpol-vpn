@@ -48,7 +48,8 @@ func newSession(sup *Supervisor, w *worker, p *process, control, data *ipc.Conn,
 	}
 }
 
-// awaitReady sends the worker its Init message and waits for its Ready: a
+// awaitReady sends the worker its Init message and waits for its Ready
+// message (WorkerInfo.Ready waits for the listeners too: serve): a
 // read or protocol failure or the process's own exit end it before it is
 // ready, the ready timeout ends it after; a worker being stopped while not
 // yet ready is simply torn down (stopped, no error).
@@ -92,12 +93,17 @@ func (sn *session) awaitReady() (stopped bool, err error) {
 	case <-sn.w.ctx.Done():
 		return true, nil
 	}
+	return false, nil
+}
+
+// markReady marks the worker ready (WorkerInfo.Ready): sandboxed, and the
+// shared listeners route to it.
+func (sn *session) markReady() {
 	sn.w.mu.Lock()
 	sn.w.ready = true
 	sn.w.readyAt = sn.sup.opts.now()
 	sn.w.mu.Unlock()
 	sn.log.Info("worker ready")
-	return false, nil
 }
 
 // serve is one ready worker process's event loop, until it stops or ends:
@@ -128,6 +134,7 @@ func (sn *session) serve() error {
 		if !attached {
 			if d, ok := sn.sup.shared.attachKnowing(transport.SpaceID(sn.w.space), sn.ws); ok {
 				detach, attached = d, true
+				sn.markReady()
 			}
 		}
 		switch lagging := sn.ws.listenersAnswered.Load() < sn.ws.listenersSent.Load(); {

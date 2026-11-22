@@ -514,7 +514,8 @@ func runDeafWorker() int {
 }
 
 // envAnswers makes the test worker runAnsweringWorker, answering its
-// Listeners messages as the value says: answerFirst or answerTwice.
+// Listeners messages as the value says: answerFirst, answerTwice or
+// answerSlow.
 const envAnswers = "SUPERVISOR_TEST_ANSWERS"
 
 const (
@@ -524,6 +525,12 @@ const (
 	answerFirst = "first"
 	// answerTwice answers each Listeners message twice.
 	answerTwice = "twice"
+	// answerSlow answers each Listeners message slowAnswer late.
+	answerSlow = "slow"
+	// slowAnswer: two answers in a row (a first Listeners sent before the
+	// listener opened, then the new set) fit in the StopTimeout
+	// TestWorkerIsReadyOnceRoutedTo sets, with 9 s to spare each.
+	slowAnswer = time.Second
 )
 
 // answerListeners answers the Listeners message m times times, as a
@@ -585,8 +592,11 @@ func runAnsweringWorker(mode string) int {
 				}
 			}
 			times := 1
-			if mode == answerTwice {
+			switch mode {
+			case answerTwice:
 				times = 2
+			case answerSlow:
+				time.Sleep(slowAnswer)
 			}
 			if err := answerListeners(c, m, times); err != nil {
 				return 1

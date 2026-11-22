@@ -65,8 +65,9 @@
 // socket pairs (package ipc): a control socket (Init, config, lifecycle,
 // stream handoff) and a data socket (forwarded datagrams). The supervisor
 // sends Init, waits for Ready (ReadyTimeout, 10 s by default) and only then
-// routes traffic to the worker; Stop gives it StopTimeout (5 s) before a
-// kill.
+// routes traffic to the worker, once it has also answered for the shared
+// listeners ("Shared listeners"; [WorkerInfo.Ready] is set from then on);
+// Stop gives it StopTimeout (5 s) before a kill.
 //
 // A worker that exits is restarted with backoff ([DefaultBackoff]: 500 ms,
 // doubling up to 30 s, back to 500 ms after a run of a minute), each time
