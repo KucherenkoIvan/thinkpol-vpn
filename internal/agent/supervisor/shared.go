@@ -126,11 +126,6 @@ func (ws *workerSockets) sendListeners(m ipc.Message, send func(ipc.Message) err
 	return nil
 }
 
-// unanswered is how many Listeners messages the process hasn't answered.
-func (ws *workerSockets) unanswered() int64 {
-	return ws.listenersSent.Load() - ws.listenersAnswered.Load()
-}
-
 // knows reports whether the worker answered with every listener in ls.
 func (ws *workerSockets) knows(ls []ipc.Listener) bool {
 	known := ws.known.Load()

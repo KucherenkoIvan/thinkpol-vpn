@@ -130,7 +130,7 @@ func (sn *session) serve() error {
 				detach, attached = d, true
 			}
 		}
-		switch lagging := sn.ws.unanswered() > 0; {
+		switch lagging := sn.ws.listenersAnswered.Load() < sn.ws.listenersSent.Load(); {
 		case lagging && answerTimeout == nil:
 			answerTimer.Reset(sn.sup.opts.StopTimeout)
 			answerTimeout = answerTimer.C
