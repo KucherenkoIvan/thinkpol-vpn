@@ -52,7 +52,7 @@ help: ## list targets
 build: ## build bin/thinkpol for this machine
 	go build -trimpath -ldflags "-X main.version=$(VERSION)" -o bin/thinkpol ./cmd/thinkpol
 
-# Every recipe that runs tests starts with this: lab/devicetest/safety refuses group-writable dirs, so under a group-writable umask (0002) its tests fail.
+# test, test-race, lab-test (and its streams), lab-harness-cached and lab-gotest start with this, because lab/devicetest/safety refuses group-writable dirs: under a group-writable umask (0002) its tests' temp dirs are refused and they fail. In-node runs go through docker exec and don't inherit it.
 TEST_UMASK := umask 022
 
 test: ## unit tests (lab tests skip outside the lab)
