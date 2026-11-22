@@ -14,8 +14,8 @@
 // it; a lab whose check fails, or whose test failed, is torn down (or
 // kept, with KeepEnv). A test whose own start for a pool still waits for
 // its slot takes a lab that comes back meanwhile, and the start leaves the
-// slot queue (withSlotWaitStop). The check reads only what nodeStateScript lists: a
-// test that changes anything else needs a lab of its own (Start).
+// slot queue (withSlotWaitStop). The check reads only what nodeStateScript
+// lists: a test that changes anything else needs a lab of its own (Start).
 //
 // Lab starts take lab slots first come first served (the slot queue), so
 // the order tests start in is the order their labs come up. The longest

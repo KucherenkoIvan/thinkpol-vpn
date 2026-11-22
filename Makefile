@@ -141,9 +141,9 @@ LAB_TIMEOUT ?= 60m
 LAB_SLOTS = $(or $(THINKPOL_LAB_MAX_LABS),12)
 # The lab/ phases' tests at once (-parallel): every one of them. A parallel
 # test holds its place while it waits for a pool's lab or a lab slot, so
-# with places no more than slots, the tests queued behind a pool kept the
-# longest ones from starting; the slots and the pools' sizes bound the
-# labs, and a test waiting for one costs a goroutine.
+# with no more places than slots the longest tests would wait behind those;
+# the slots and the pools' sizes bound the labs, and a test waiting for
+# one costs a goroutine.
 LAB_TEST_PARALLEL = 256
 # The node phase's package test builds at once: the CPU-bound part, so the
 # CPU share the job has on the machine, not its labs.
