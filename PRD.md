@@ -123,7 +123,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 |---|---|---|---|
 | C1 | No WireGuard (or other known VPN) fingerprint on any link | must | M0 |
 | C2 | `reality` transport: browser-grade TLS fingerprint (REALITY's handshake); unauthenticated connections forwarded to a real site | must | M2 |
-| C3 | Transport chosen per link, changeable from the panel without reinstalling anything | must | M2 |
+| C3 | Transport chosen per link in the map (each endpoint names its transport); a newer map that changes it takes effect without reinstalling anything (owner, 2026-11-16). Changing it from the panel is A7's (owner, 2026-11-16) | must | M2 |
 | C4 | Censor lab: Compose environment with switchable censor modules (IP/SNI blocklists, VPN fingerprints, fully-encrypted heuristics, active prober, JA3/JA4, whitelist mode, throttling) and a generated pass/fail matrix | must | M2–M3 |
 | C5 | `ws` transport usable behind a CDN | should | — |
 | C6 | Each transport owns traffic shape: padding, batching and timing that hide inner packet sizes and rhythm, configurable per transport; the lab measures what's enough | must: the contract; later: tuned shaping | M2 |
@@ -148,7 +148,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | D3 | Tray: connect/disconnect, status (chain, entry in use, health), space switcher, rule preset switcher | must | M5 |
 | D4 | Kill switch toggle (default off): when on and the tunnel is down, nothing leaves except traffic to entry nodes; allow-LAN option. Its off state is made unmissable: the tray's colour and notifications (TP-049), and status shows it (owner, 2026-11-12). After an agent crash the device **fails closed by default** under the "everything" and "all but domestic" presets (opt-out); a deliberate disconnect follows the toggle | must | M2 (macOS, Linux), M5 (Windows) |
 | D5 | Connect-on-boot toggle (default off) | must | M2 (macOS, Linux), M5 (tray toggle, Windows) |
-| D6 | No IPv6 leaks: IPv6 goes through the tunnel or is blocked while connected, and stays blocked after a crash, but for the rows of [RESIDUAL-RISKS.md](RESIDUAL-RISKS.md) whose Breaks column names D6 | must | M1 (Linux); macOS device proof once a network with native IPv6 is available (TP-096) |
+| D6 | No IPv6 leaks: IPv6 goes through the tunnel or is blocked while connected, and stays blocked after a crash, but for the rows of [RESIDUAL-RISKS.md](RESIDUAL-RISKS.md) whose Breaks column names D6 | must | M1 (Linux). macOS: the kill switch's IPv6 half and the route table's IPv6 routes are proven by proxy (owner, 2026-11-16: they share all their logic with IPv4 behaviour proven on a device), except the kill switch's IPv6-only passes (DHCPv6, neighbour discovery, MLD), RR16 and routes with a zoned (link-local) gateway; the IPv6 guard waits for a network with native IPv6 (RR15, TP-096; owner, 2026-11-17) |
 | D7 | Join a space from an invite link or QR code without a terminal; the device stays pending until the admin approves it | must | M5 |
 | D8 | CLI covering everything the tray does | must | M1 |
 | D9 | Enrolled in several spaces, one active at a time | must | M5 |
@@ -164,7 +164,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 | A4 | `node add root@host` over SSH: idempotent install, keys generated on the node, re-run repairs; the node starts with ingress and egress off | must | M4 |
 | A5 | Network map signed per space, distributed by gossip; nodes keep the last valid map; removal takes effect at the next map | must | M4 |
 | A6 | Web admin panel, reachable only through the overlay | must | M4 |
-| A7 | Canvas view: nodes, links, transports, chains; live state on top; editing topology on the canvas | must: view + live state; should: editing | M4 |
+| A7 | Canvas view: nodes, links, transports, chains; live state on top; editing topology on the canvas. A link's transport is changeable from the panel without reinstalling anything (from C3, owner, 2026-11-16) | must: view + live state, the transport change; should: other editing | M4 |
 | A8 | Dashboards: node health, connected devices, traffic rates, transports in use, active routes, failures per transport and entry | must | M4 |
 | A9 | Signed agent updates distributed through the network | should | M4 |
 | A10 | Hosting grants: a node owner offers a node to another space with a bandwidth cap and the ingress/egress the guest may use, that space's admin accepts, the node owner can revoke. Guest admins see their own slice's health only; node-level control (updates, grants) stays with the node owner | must | M4 |
@@ -202,7 +202,7 @@ Milestones as in [Release plan](#release-plan). Priority: **must** for the MVP, 
 
 ## Success metrics
 
-1. **Lab:** every MVP transport has a known result against every censor module; `reality` passes everything except whitelist mode. Chains through an allowlisted entry: deferred: whitelist mode is under research (owner, 2026-11-07).
+1. **Lab:** every MVP transport has a known result against every censor module; `reality` passes everything except whitelist mode, a block of the entry's own address, and a block of its camouflage name (RR67) (owner, 2026-11-16). Its WireGuard rhythm still shows to a censor that counts records each way, a known tell accepted until cover records go both ways (RR65, TP-237; owner, 2026-11-16). Chains through an allowlisted entry: deferred: whitelist mode is under research (owner, 2026-11-07).
 2. **Daily use:** once a disguised transport passes the censor lab (M2), the author replaces VLESS + Reality on macOS for a month without falling back.
 3. **Hand-off:** one family member or friend installs, joins and uses it without help.
 4. **Sharing:** a second space runs through the author's entry node, and the lab confirms nothing crosses between the two.
