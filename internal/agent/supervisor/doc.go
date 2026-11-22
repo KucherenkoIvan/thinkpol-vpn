@@ -285,6 +285,23 @@
 // its target), and SetListeners refuses a stream listener given a
 // Camouflage.
 //
+// A listener starts serving only once every running worker knows it: what
+// a worker is forwarded or handed names a listener id, and a worker
+// closes, as an unknown listener's, whatever names one it doesn't have.
+// SetListeners opens the new listeners without serving them (what
+// connects meanwhile waits in the socket's backlog), sends every worker
+// the new Listeners, and starts serving each new listener once every
+// running worker of a space it may be routed to has answered with a
+// ListenersKnown naming it. A worker that doesn't answer within
+// StopTimeout doesn't hold up the other spaces: the listener is served
+// then, and that worker is killed and restarted when its own sends time
+// out. A worker process is routed to only once it has answered for every
+// listener it may be routed (its first Listeners goes out before that),
+// and is killed if it doesn't answer one within StopTimeout; one that
+// starts while listeners change is sent them again. So a server's first
+// connection after it starts, or after a map adds a listener, is served,
+// not dropped. SetListeners returns once its new listeners serve.
+//
 // # Datagrams
 //
 // A datagram transport's connection id tells the Router which credential
@@ -337,8 +354,9 @@
 // and target included, and the target's records, learned here) reach,
 // with the Listeners message, only the workers of spaces whose inbound
 // table has links of its transport; a space's Listeners are sent again
-// when that changes. (A connection routed to a space in the moment
-// before its worker has the new Listeners is dropped by the worker.) Each
+// when that changes. (A connection routed to a space that has just gained
+// the transport, in the moment before its worker has the new Listeners,
+// is dropped by the worker.) Each
 // listener is described with the address it is bound to.
 //
 // The bounds on what a stream listener costs the supervisor are two

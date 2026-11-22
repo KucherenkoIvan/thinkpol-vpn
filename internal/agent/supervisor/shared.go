@@ -107,6 +107,20 @@ type workerSockets struct {
 		TrySendDatagram(ipc.DatagramHeader, []byte) error
 	}
 	control interface{ TrySend(ipc.Message) error }
+	// known are the listener ids the worker process acknowledged last
+	// (ListenersKnown); nil before its first acknowledgement.
+	known atomic.Pointer[map[uint32]bool]
+}
+
+// knows reports whether the worker acknowledged every listener in ls.
+func (ws *workerSockets) knows(ls []ipc.Listener) bool {
+	known := ws.known.Load()
+	for _, l := range ls {
+		if known == nil || !(*known)[l.ID] {
+			return false
+		}
+	}
+	return true
 }
 
 // shared is the supervisor's shared listeners: the public sockets, the
@@ -121,6 +135,15 @@ type shared struct {
 
 	// routingLimit is maxRoutingStreams, smaller in tests.
 	routingLimit int
+	// ackTimeout bounds how long serveOpened waits for the workers to
+	// acknowledge a new listener (the supervisor's StopTimeout); zero
+	// doesn't wait.
+	ackTimeout time.Duration
+
+	changeMu sync.Mutex
+	// changed is closed, and replaced, whenever a worker acknowledges its
+	// listeners or the listeners change.
+	changed chan struct{}
 
 	mu        sync.Mutex // setSpaces and setListeners
 	nextID    uint32
@@ -147,6 +170,7 @@ func newShared(reg *transport.Registry, fair FairShare, log *slog.Logger, now fu
 		reg: reg, fair: fair, log: log, now: now, routingLimit: maxRoutingStreams,
 		listeners: map[string]*publicListener{}, tables: map[string]*transport.PeerTable{},
 		packetRouters: map[string]transport.PacketRouter{}, streamRouters: map[string]transport.StreamRouter{},
+		changed: make(chan struct{}),
 	}
 	s.routes.Store(&map[transport.SpaceID]*route{})
 	s.byID.Store(&map[uint32]*publicListener{})
@@ -189,6 +213,7 @@ type publicListener struct {
 	closing sync.Once
 	wg      sync.WaitGroup
 	routing chan struct{} // a token per stream being routed
+	serving bool          // its serve loop started; s.mu
 
 	routed, unauthenticated, noSpace, streamsOverloaded, streamsBoundClosed atomic.Uint64
 }
@@ -331,13 +356,15 @@ func (s *shared) streamRouter(name string, t transport.StreamRoutable) transport
 	return r
 }
 
-// setListeners opens, keeps and closes public listeners so the node listens
-// on exactly ls. A listener whose transport, address and settings stay
-// keeps its socket (and its id). One whose settings changed is closed and
-// opened again, under a new id: its port is free in between, and lost if
-// the reopen fails (reported, the others served). It reports whether the
-// set changed, for the workers' Listeners message.
-func (s *shared) setListeners(ctx context.Context, ls []Listener) (bool, error) {
+// openListeners opens, keeps and closes public listeners so the node
+// listens on exactly ls. A listener whose transport, address and settings
+// stay keeps its socket (and its id). One whose settings changed is closed
+// and opened again, under a new id: its port is free in between, and lost
+// if the reopen fails (reported, the others served). A listener it opens
+// isn't served yet (serveOpened): what connects meanwhile waits in its
+// socket. It reports whether the set changed, for the workers' Listeners
+// message.
+func (s *shared) openListeners(ctx context.Context, ls []Listener) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -389,6 +416,9 @@ func (s *shared) setListeners(ctx context.Context, ls []Listener) (bool, error) 
 		byID[pl.id] = pl
 	}
 	s.byID.Store(&byID)
+	if changed {
+		s.wake() // a listener serveOpened waits on may be gone
+	}
 	return changed, errors.Join(errs...)
 }
 
@@ -400,7 +430,7 @@ func (s *shared) transport(name string) (transport.Transport, bool) {
 	return s.reg.Get(name)
 }
 
-// open opens one public listener and starts serving it; s.mu held.
+// open opens one public listener, not served yet; s.mu held.
 func (s *shared) open(ctx context.Context, l Listener) (*publicListener, error) {
 	if s.reg == nil {
 		return nil, errors.New("no transports")
@@ -434,13 +464,105 @@ func (s *shared) open(ctx context.Context, l Listener) (*publicListener, error) 
 	s.nextID++
 	pl.id = s.nextID
 	pl.ctx, pl.cancel = context.WithCancel(context.Background())
-	pl.wg.Add(1)
-	if pl.udp != nil {
-		go s.serveDatagrams(pl)
-	} else {
-		go s.serveStreams(pl)
-	}
 	return pl, nil
+}
+
+// serveOpened starts serving the listeners opened but not served yet, once
+// every running worker has acknowledged each one it may be routed
+// (ipcListeners): a connection handed to a worker before it has the
+// listener's id is closed there. A worker not running yet gets them in its
+// first Listeners, before it is attached. A worker that doesn't
+// acknowledge within ackTimeout doesn't hold the others' listeners: they
+// are served, and it is killed and restarted once its Listeners send
+// times out (or it dies), and a restarted worker has them from its start.
+func (s *shared) serveOpened() {
+	timeout := time.NewTimer(s.ackTimeout)
+	defer timeout.Stop()
+wait:
+	for {
+		changed := s.changes()
+		lagging := s.unacknowledged()
+		if len(lagging) == 0 {
+			break
+		}
+		select {
+		case <-changed:
+		case <-timeout.C:
+			s.log.Warn("serving new listeners before every worker acknowledged them", "spaces", len(lagging), "waited", s.ackTimeout)
+			break wait
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	for _, pl := range s.listeners {
+		if pl.serving {
+			continue
+		}
+		pl.serving = true
+		pl.wg.Add(1)
+		if pl.udp != nil {
+			go s.serveDatagrams(pl)
+		} else {
+			go s.serveStreams(pl)
+		}
+	}
+}
+
+// unacknowledged are the spaces whose running worker hasn't acknowledged
+// a listener not served yet that it may be routed.
+func (s *shared) unacknowledged() []transport.SpaceID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	opened := map[uint32]bool{}
+	for _, pl := range s.listeners {
+		if !pl.serving {
+			opened[pl.id] = true
+		}
+	}
+	if len(opened) == 0 || s.closed {
+		return nil
+	}
+	var lagging []transport.SpaceID
+	for space, r := range *s.routes.Load() {
+		ws := r.end.Load()
+		if ws == nil {
+			continue
+		}
+		waiting := slices.DeleteFunc(s.ipcListeners(space), func(l ipc.Listener) bool { return !opened[l.ID] })
+		if !ws.knows(waiting) {
+			lagging = append(lagging, space)
+		}
+	}
+	return lagging
+}
+
+// changes is closed at the next acknowledgement or change of the
+// listeners: taken before a check, so none is missed.
+func (s *shared) changes() <-chan struct{} {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
+	return s.changed
+}
+
+// wake closes changes' channel.
+func (s *shared) wake() {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
+	close(s.changed)
+	s.changed = make(chan struct{})
+}
+
+// acknowledged records that a worker process has exactly the listeners ids.
+func (s *shared) acknowledged(ws *workerSockets, ids []uint32) {
+	known := make(map[uint32]bool, len(ids))
+	for _, id := range ids {
+		known[id] = true
+	}
+	ws.known.Store(&known)
+	s.wake()
 }
 
 func (pl *publicListener) setCamouflage(c transport.Camouflage) { pl.camo.Store(&c) }
@@ -532,9 +654,25 @@ func (s *shared) close() {
 	clear(s.listeners)
 	s.byID.Store(&map[uint32]*publicListener{})
 	s.mu.Unlock()
+	s.wake()
 	for _, pl := range ls {
 		pl.close()
 	}
+}
+
+// attachKnowing attaches ws, as attach does, only if its worker has
+// acknowledged every listener it may be routed: a worker's first Listeners
+// may predate the latest set, and what it is routed must name a listener
+// it has. s.mu keeps the set as checked until ws is attached, so a
+// listener opened after that waits for ws's acknowledgement too
+// (serveOpened).
+func (s *shared) attachKnowing(space transport.SpaceID, ws *workerSockets) (detach func(), ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !ws.knows(s.ipcListeners(space)) {
+		return nil, false
+	}
+	return s.attach(space, ws), true
 }
 
 // attach routes space's traffic to a running worker's sockets until the

@@ -86,6 +86,7 @@ func New(opts Options) (*Supervisor, error) {
 		maxFlows:   maxFlows(opts.MaxFlowsPerSpace, opts.sysctls),
 		stopWatch:  make(chan struct{}), watchDone: make(chan struct{}),
 	}
+	s.shared.ackTimeout = opts.StopTimeout
 	// A predecessor's forwarding, if it died without restoring it: still
 	// the supervisor's to confine and put back, even if this start fails.
 	if err := s.forwarding.load(opts.RuntimeDir); err != nil {
@@ -547,7 +548,9 @@ func (s *Supervisor) stopAll(ws []*worker) {
 // SetListeners makes the node listen on exactly ls, for every space it
 // serves (see Listener). Listeners that stay keep their sockets. A listener
 // that can't be opened is reported and the others are served. Every worker
-// is told the new set.
+// is told the new set, and a new listener is served once the running
+// workers have acknowledged it (or after StopTimeout): SetListeners
+// returns once it is.
 func (s *Supervisor) SetListeners(ls []Listener) error {
 	var refused []error
 	ls = slices.DeleteFunc(slices.Clone(ls), func(l Listener) bool {
@@ -558,7 +561,7 @@ func (s *Supervisor) SetListeners(ls []Listener) error {
 		}
 		return false
 	})
-	changed, err := s.shared.setListeners(context.Background(), ls)
+	changed, err := s.shared.openListeners(context.Background(), ls)
 	err = errors.Join(append(refused, err)...)
 	if changed {
 		s.mu.Lock()
@@ -567,6 +570,7 @@ func (s *Supervisor) SetListeners(ls []Listener) error {
 		}
 		s.mu.Unlock()
 	}
+	s.shared.serveOpened()
 	return err
 }
 

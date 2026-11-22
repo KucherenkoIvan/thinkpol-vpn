@@ -43,6 +43,13 @@ type fakeWorker struct {
 	streams chan handedStream
 	// onListeners, if set, is called with each Listeners message sent.
 	onListeners func([]ipc.Listener)
+	// acks, once set (acking), is the sockets the worker acknowledges each
+	// Listeners message as, and known what it acknowledged last: like the
+	// real worker, it closes a connection naming a listener it doesn't
+	// know, and counts it in unknownStreams.
+	acks           *workerSockets
+	known          atomic.Pointer[map[uint32]bool]
+	unknownStreams atomic.Int64
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -92,6 +99,14 @@ func newFakeWorker(s *shared, space transport.SpaceID) *fakeWorker {
 
 func (w *fakeWorker) sockets() *workerSockets { return &workerSockets{data: w, control: w} }
 
+// acking makes the worker acknowledge each Listeners message, as the
+// sockets it returns.
+func (w *fakeWorker) acking() *workerSockets {
+	w.acks = w.sockets()
+	w.known.Store(&map[uint32]bool{})
+	return w.acks
+}
+
 func (w *fakeWorker) TrySendDatagram(h ipc.DatagramHeader, d []byte) error {
 	if w.full.Load() {
 		return ipc.ErrFull
@@ -111,11 +126,29 @@ func (w *fakeWorker) TrySend(m ipc.Message) error {
 		if err == nil && w.onListeners != nil {
 			w.onListeners(ls)
 		}
+		if err == nil && w.acks != nil {
+			known := map[uint32]bool{}
+			ids := make([]uint32, 0, len(ls))
+			for _, l := range ls {
+				known[l.ID] = true
+				ids = append(ids, l.ID)
+			}
+			w.known.Store(&known)
+			w.s.acknowledged(w.acks, ids)
+		}
 		return err
 	}
 	st, f, tf, err := ipc.DecodeStream(m)
 	if err != nil {
 		return err
+	}
+	if known := w.known.Load(); known != nil && !(*known)[st.Listener] {
+		w.unknownStreams.Add(1)
+		_ = f.Close()
+		if tf != nil {
+			_ = tf.Close()
+		}
+		return nil
 	}
 	conn, err := net.FileConn(f) // a descriptor of its own, as SCM_RIGHTS gives
 	if err != nil {
@@ -168,6 +201,14 @@ func (w *fakeWorker) LocalAddr() net.Addr              { return &net.UDPAddr{} }
 func (w *fakeWorker) SetDeadline(time.Time) error      { return nil }
 func (w *fakeWorker) SetReadDeadline(time.Time) error  { return nil }
 func (w *fakeWorker) SetWriteDeadline(time.Time) error { return nil }
+
+// setListeners opens ls and serves them, without waiting for the fake
+// workers (ackTimeout is zero unless a test sets it).
+func (s *shared) setListeners(ctx context.Context, ls []Listener) (bool, error) {
+	changed, err := s.openListeners(ctx, ls)
+	s.serveOpened()
+	return changed, err
+}
 
 func newTestShared(t *testing.T, fair FairShare, transports ...transport.Transport) *shared {
 	t.Helper()
@@ -1195,6 +1236,11 @@ type lineTransport struct {
 	target string
 	camo   transport.Camouflage
 	waited chan struct{}
+	// hold, if set, is called before each listener opens, with its
+	// configured address; bound, if set, gets each listener's bound
+	// address once open.
+	hold  func(address string)
+	bound chan<- string
 }
 
 func (lineTransport) Name() string                                     { return "line" }
@@ -1211,8 +1257,14 @@ func (lt lineTransport) ListenStream(ctx context.Context, cfg transport.ListenCo
 	if !ok {
 		return nil, fmt.Errorf("a %T", r)
 	}
+	if lt.hold != nil {
+		lt.hold(cfg.Address)
+	}
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.Address)
+	if err == nil && lt.bound != nil {
+		lt.bound <- ln.Addr().String()
+	}
 	return lineListener{Listener: ln, lt: lt, peers: lr.peers}, err
 }
 func (lineTransport) Handoff(string, []byte, transport.Admission) (transport.HandoffListener, error) {
@@ -1641,5 +1693,204 @@ func TestReplaysAcrossListeners(t *testing.T) {
 	}
 	if remotes := (*s.routes.Load())[space].remotesForTest(); len(remotes) != 1 {
 		t.Fatalf("remembered %v, want the genuine sender only", remotes)
+	}
+}
+
+// announce sends ws the Listeners message space's worker gets, as its
+// session does when the listeners change.
+func announce(s *shared, space transport.SpaceID, ws *workerSockets) error {
+	m, err := ipc.ListenersMessage(s.ipcListeners(space))
+	if err != nil {
+		return err
+	}
+	return ws.control.TrySend(m)
+}
+
+// freeAddress is a loopback TCP address nothing listens on.
+func freeAddress(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().String()
+}
+
+func alphaLink() []transport.PeerLink {
+	return []transport.PeerLink{{Peer: transport.Identity{Node: transport.NodeID{1}}, Verifier: []byte("alpha")}}
+}
+
+// handedOver waits for w's next handoff and checks it is the member's.
+func handedOver(t *testing.T, w *fakeWorker, credential string) {
+	t.Helper()
+	select {
+	case hs := <-w.streams:
+		_ = hs.conn.Close()
+		if string(hs.consumed) != credential+"\n" {
+			t.Fatalf("handed over %q", hs.consumed)
+		}
+	case <-time.After(wait):
+		t.Fatalf("no handoff (%d closed by the worker as an unknown listener's)", w.unknownStreams.Load())
+	}
+	if n := w.unknownStreams.Load(); n != 0 {
+		t.Fatalf("%d connections closed by the worker as an unknown listener's", n)
+	}
+}
+
+// A connection accepted on a listener while a later one of the same set
+// is still opening waits until the space's running worker has acknowledged
+// the listener, then is handed over under an id the worker knows, not
+// closed by the worker as an unknown listener's (as SetListeners does it:
+// open, tell the workers, serve).
+func TestConnectionDuringOpenWaitsForTheWorkers(t *testing.T) {
+	second := freeAddress(t)
+	opening, release := make(chan struct{}), make(chan struct{})
+	bound := make(chan string, 2)
+	s := newTestShared(t, nil, lineTransport{bound: bound, hold: func(address string) {
+		if address == second {
+			close(opening)
+			<-release
+		}
+	}})
+	s.ackTimeout = wait
+	space := randomSpace()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {"line": alphaLink()}})
+	w := newFakeWorker(s, space)
+	ws := w.acking()
+	s.attach(space, ws)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.openListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}, {Transport: "line", Address: second}})
+		if err == nil {
+			err = announce(s, space, ws)
+		}
+		s.serveOpened()
+		done <- err
+	}()
+	var first string
+	select {
+	case first = <-bound:
+	case <-time.After(wait):
+		t.Fatal("the first listener never opened")
+	}
+	<-opening
+	conn, err := net.Dial("tcp", first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.Write([]byte("alpha\nhello")); err != nil {
+		t.Fatal(err)
+	}
+	// Served now, the first listener would hand the connection to a worker
+	// that doesn't know it yet.
+	time.Sleep(quiet)
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	handedOver(t, w, "alpha")
+}
+
+// A worker process is attached, and so routed to, only once it has
+// acknowledged every listener it may be routed.
+func TestWorkerAttachedOnceItKnowsTheListeners(t *testing.T) {
+	s := newTestShared(t, nil, lineTransport{})
+	space := randomSpace()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {"line": alphaLink()}})
+	if _, err := s.setListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
+		t.Fatal(err)
+	}
+	w := newFakeWorker(s, space)
+	ws := w.acking()
+	if _, ok := s.attachKnowing(space, ws); ok {
+		t.Fatal("attached before it acknowledged the listener")
+	}
+	if err := announce(s, space, ws); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.attachKnowing(space, ws); !ok {
+		t.Fatal("not attached once it acknowledged the listener")
+	}
+	conn, err := net.Dial("tcp", lineAddress(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.Write([]byte("alpha\n")); err != nil {
+		t.Fatal(err)
+	}
+	handedOver(t, w, "alpha")
+}
+
+// A worker that never acknowledges holds a new listener up for ackTimeout
+// only: then it is served, for the other spaces too.
+func TestUnacknowledgingWorkerHoldsUpNothingLong(t *testing.T) {
+	s := newTestShared(t, nil, lineTransport{})
+	s.ackTimeout = quiet
+	deaf, live := randomSpace(), randomSpace()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{
+		deaf: {"line": {{Peer: transport.Identity{Node: transport.NodeID{9}}, Verifier: []byte("deaf")}}},
+		live: {"line": alphaLink()},
+	})
+	s.attach(deaf, newFakeWorker(s, deaf).sockets())
+	w := newFakeWorker(s, live)
+	ws := w.acking()
+	s.attach(live, ws)
+	begin := time.Now()
+	if _, err := s.openListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := announce(s, live, ws); err != nil {
+		t.Fatal(err)
+	}
+	s.serveOpened()
+	if took := time.Since(begin); took < quiet || took > wait {
+		t.Fatalf("served after %v, want the ack timeout %v", took, quiet)
+	}
+	conn, err := net.Dial("tcp", lineAddress(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.Write([]byte("alpha\n")); err != nil {
+		t.Fatal(err)
+	}
+	handedOver(t, w, "alpha")
+}
+
+// A listener closed while it waits for the workers is never served, and
+// the wait ends with it.
+func TestListenerClosedWhileWaitingIsNotServed(t *testing.T) {
+	s := newTestShared(t, nil, lineTransport{})
+	s.ackTimeout = time.Minute
+	space := randomSpace()
+	s.setSpaces(map[transport.SpaceID]map[string][]transport.PeerLink{space: {"line": alphaLink()}})
+	s.attach(space, newFakeWorker(s, space).sockets()) // never acknowledges
+	if _, err := s.openListeners(context.Background(), []Listener{{Transport: "line", Address: "127.0.0.1:0"}}); err != nil {
+		t.Fatal(err)
+	}
+	pl := (*s.byID.Load())[1]
+	served := make(chan struct{})
+	go func() {
+		s.serveOpened()
+		close(served)
+	}()
+	time.Sleep(quiet / 3) // let it wait
+	if _, err := s.openListeners(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-served:
+	case <-time.After(wait):
+		t.Fatal("still waiting for a listener that closed")
+	}
+	s.mu.Lock()
+	serving := pl.serving
+	s.mu.Unlock()
+	if serving {
+		t.Fatal("a closed listener was served")
 	}
 }

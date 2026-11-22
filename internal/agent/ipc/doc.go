@@ -4,8 +4,8 @@
 // Each worker has two AF_UNIX SOCK_SEQPACKET sockets, both halves of pairs
 // the supervisor makes, inherited as file descriptors:
 //
-//   - the control socket (ControlFD = 3): Init, Config, Listeners, Ready,
-//     Stop, and the stream handoff. Reliable; a control message is never
+//   - the control socket (ControlFD = 3): Init, Config, Listeners and
+//     their acknowledgement, Ready, Stop, and the stream handoff. Reliable; a control message is never
 //     queued behind bulk data. The supervisor hands a stream over without
 //     blocking (Conn.TrySend): a full socket refuses the connection.
 //   - the data socket (DataFD = 4): forwarded datagrams both ways. The
@@ -29,6 +29,7 @@
 //	supervisor → worker  Config  (JSON, or a sealed memfd for a large one) after Init and on change
 //	worker → supervisor  Ready   (empty) once sandboxed: the worker serves from now on
 //	supervisor → worker  Listeners (JSON []Listener) after Ready and whenever the shared listeners change
+//	worker → supervisor  ListenersKnown (JSON []uint32) after each Listeners, once taken in: the ids the worker has now
 //	supervisor → worker  Stream  (listener id, consumed bytes, bytes read from the target; the connection's fd and the target's, if any) per routed connection
 //	supervisor → worker  Counters (JSON SharedCounters) periodically: the space's own shared-listener figures
 //	supervisor → worker  Blob    (a sealed memfd attached) each of the space's blob seeds, once per worker, before the Config that names it
