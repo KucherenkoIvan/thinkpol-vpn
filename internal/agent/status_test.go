@@ -1454,13 +1454,13 @@ func TestAStartWhileDisconnectedClearsACrashedRunsRoutes(t *testing.T) {
 }
 
 // A device whose only exit refuses its dial says no_link_up at once, long
-// before DeadAfter: a failed dial is not a dial still waiting for an
+// before the dial timeout: a failed dial is not a dial still waiting for an
 // answer. The link coming up clears it.
 func TestADialThatFailedIsNoLinkUp(t *testing.T) {
 	s := newTestSpace(t)
 	_, reg := memoryRegistry(t)
-	const deadAfter = time.Minute
-	b := startDevice(t, s, reg, true, deviceOpt{tuning: func(t *tuning) { t.path.DeadAfter = deadAfter }})
+	const dialTimeout = time.Minute
+	b := startDevice(t, s, reg, true, deviceOpt{tuning: func(t *tuning) { t.path.DialTimeout = dialTimeout }})
 	b.connection(t, Connected)
 	var h Health
 	eventually(t, func() bool { h = b.node.Status().Health(); return slices.Contains(h.Problems, ProblemNoLinkUp) })

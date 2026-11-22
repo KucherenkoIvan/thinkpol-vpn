@@ -26,16 +26,19 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/netmap"
 )
 
-// fastPaths are path timings six times faster than the defaults. A link
-// is dead after a second without proof: a busy machine can hold a probe up
-// for hundreds of milliseconds, and a link closed for that drops what is
-// sent meanwhile, a WireGuard handshake included, which is only retried
-// after WireGuard's 5 s.
+// fastPaths are path timings several times faster than the defaults. A
+// suspect link waits a second for an answer: a busy machine can hold a
+// probe up for hundreds of milliseconds, and a link closed for that drops
+// what is sent meanwhile, a WireGuard handshake included, which is only
+// retried after WireGuard's 5 s.
 var fastPaths = path.Options{
-	ProbeInterval: 300 * time.Millisecond,
-	DeadAfter:     time.Second,
-	RedialMin:     10 * time.Millisecond,
-	RedialMax:     100 * time.Millisecond,
+	Burst:       path.Range{Min: 100 * time.Millisecond, Max: 300 * time.Millisecond},
+	Response:    path.Range{Min: 100 * time.Millisecond, Max: 200 * time.Millisecond},
+	IdleDefault: path.Range{Min: 500 * time.Millisecond, Max: time.Second},
+	ControlHold: 400 * time.Millisecond,
+	DialTimeout: time.Second,
+	RedialMin:   10 * time.Millisecond,
+	RedialMax:   100 * time.Millisecond,
 }
 
 const testRetry = 300 * time.Millisecond

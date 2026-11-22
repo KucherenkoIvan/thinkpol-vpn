@@ -46,9 +46,9 @@ func TestOverlayMTU(t *testing.T) {
 		pc, in := dataplane.PathConfigFrom(s, reg), dataplane.InboundFrom(s, reg, transport.SpaceID{9})
 		return dataplane.OverlayMTU(&pc, &in, reg, linkMTU)
 	}
-	// TP-006 and TP-027's figure: 1500 − 48 − 74 (udp) − 18 (path) − 32.
-	if got := mtu(section(nil, nil), 0); got != 1328 {
-		t.Fatalf("unshaped udp over 1500: %d, want 1328", got)
+	// 1500 − 48 − 74 (udp) − 26 (path) − 32.
+	if got := mtu(section(nil, nil), 0); got != 1320 {
+		t.Fatalf("unshaped udp over 1500: %d, want 1320", got)
 	}
 	// Jumbo links: as much as the path layer carries.
 	if got := mtu(section(nil, nil), 9000); got != path.MaxMessageSize-32 {
@@ -57,12 +57,12 @@ func TestOverlayMTU(t *testing.T) {
 	// Buckets cap what a link carries at the largest bucket that fits
 	// (1200), on either end of the node's links.
 	for name, s := range map[string]netmap.Section{"dialed": section(shaped, nil), "accepted": section(nil, shaped)} {
-		if got, want := mtu(s, 0), 1200-74-18-32; got != want {
+		if got, want := mtu(s, 0), 1200-74-26-32; got != want {
 			t.Fatalf("%s link shaped: %d, want %d", name, got, want)
 		}
 	}
-	if got := mtu(netmap.Section{Node: netmap.NodeSettings{ID: nid(1)}}, 0); got != 1328 {
-		t.Fatalf("no links: %d, want udp's 1328", got)
+	if got := mtu(netmap.Section{Node: netmap.NodeSettings{ID: nid(1)}}, 0); got != 1320 {
+		t.Fatalf("no links: %d, want udp's 1320", got)
 	}
 
 	// A link that leaves less than the minimum is dropped, not the section.
@@ -72,8 +72,8 @@ func TestOverlayMTU(t *testing.T) {
 	}
 	for name, s := range map[string]netmap.Section{"dialed": section(tiny, nil), "accepted": section(nil, tiny)} {
 		pc, in := dataplane.PathConfigFrom(s, reg), dataplane.InboundFrom(s, reg, transport.SpaceID{9})
-		if got := dataplane.OverlayMTU(&pc, &in, reg, 0); got != 1328 {
-			t.Fatalf("%s link too small: MTU %d, want the other link's 1328", name, got)
+		if got := dataplane.OverlayMTU(&pc, &in, reg, 0); got != 1320 {
+			t.Fatalf("%s link too small: MTU %d, want the other link's 1320", name, got)
 		}
 		skipped := append(pc.Skipped, in.Skipped...)
 		if len(pc.Table.Links)+len(in.Links["udp"]) != 1 || len(skipped) == 0 || skipped[0].Reason != dataplane.ReasonMTUTooSmall {

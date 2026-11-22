@@ -24,10 +24,13 @@ import (
 const wait = 10 * time.Second
 
 var fast = path.Options{
-	ProbeInterval: 30 * time.Millisecond,
-	DeadAfter:     150 * time.Millisecond,
-	RedialMin:     10 * time.Millisecond,
-	RedialMax:     100 * time.Millisecond,
+	Burst:       path.Range{Min: 30 * time.Millisecond, Max: 60 * time.Millisecond},
+	Response:    path.Range{Min: 20 * time.Millisecond, Max: 40 * time.Millisecond},
+	IdleDefault: path.Range{Min: 100 * time.Millisecond, Max: 200 * time.Millisecond},
+	ControlHold: 40 * time.Millisecond,
+	DialTimeout: 150 * time.Millisecond,
+	RedialMin:   10 * time.Millisecond,
+	RedialMax:   100 * time.Millisecond,
 }
 
 func id(name string) path.NodeID {

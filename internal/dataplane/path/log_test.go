@@ -53,14 +53,14 @@ func TestALinksLifeIsLoggedAtInfoLevel(t *testing.T) {
 	f.silence("A", "B", true)
 	eventually(t, "A sees B down", func() bool { return !f.isUp("A", "B") })
 	// Several redials go unanswered meanwhile.
-	time.Sleep(4 * fastOptions.DeadAfter)
+	time.Sleep(4 * fastOptions.DialTimeout)
 	var closed string // A's
 	for _, l := range log.lines("link closed") {
 		if strings.Contains(l, "neighbor="+hexID("B")) {
 			closed = l
 		}
 	}
-	for _, want := range []string{"reason=\"no answer to its probes within 150ms\"", "dialed=true", "proven_for=", "last_in=", "last_proof=", "local_port=", "remote="} {
+	for _, want := range []string{"reason=\"no answer within T of turning suspect\"", "dialed=true", "proven_for=", "last_in=", "last_answer=", "local_port=", "remote="} {
 		if !strings.Contains(closed, want) {
 			t.Errorf("A's link closed line %q lacks %s", closed, want)
 		}

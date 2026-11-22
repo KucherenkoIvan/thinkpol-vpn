@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
 // errHostUnreach stands for the kernel's error (the path layer names no
@@ -98,7 +100,7 @@ func TestARemoteThatMovesIsLoggedByItsTag(t *testing.T) {
 	before := net.UDPAddrFromAddrPort(netip.MustParseAddrPort("198.51.100.20:61000"))
 	after := net.UDPAddrFromAddrPort(netip.MustParseAddrPort("198.51.100.20:61999"))
 	tl := &fakeLink{remote: before, done: make(chan struct{})}
-	l := n.addLink(NodeID{2}, tl, false, "udp", -1)
+	l := n.addLink(NodeID{2}, tl, false, "udp", -1, transport.Shaping{})
 	l.watchRemote()
 	if strings.Contains(out.String(), "moved") {
 		t.Fatalf("logged a move that didn't happen:\n%s", out.String())

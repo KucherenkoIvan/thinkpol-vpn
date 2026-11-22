@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -18,28 +19,39 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/memory"
 )
 
-// Wall-clock timings: a silent link is down after 150 ms.
+// Wall-clock timings: a link silent under traffic is closed within
+// about 180 ms (S + R + T), an idle one within about 280 ms (I + T).
 var fastOptions = path.Options{
-	ProbeInterval: 30 * time.Millisecond,
-	DeadAfter:     150 * time.Millisecond,
-	FollowFor:     150 * time.Millisecond,
-	RedialMin:     10 * time.Millisecond,
-	RedialMax:     100 * time.Millisecond,
-	Selector:      path.Failover{HoldDown: 500 * time.Millisecond},
+	Burst:       path.Range{Min: 30 * time.Millisecond, Max: 60 * time.Millisecond},
+	Response:    path.Range{Min: 20 * time.Millisecond, Max: 40 * time.Millisecond},
+	IdleDefault: path.Range{Min: 100 * time.Millisecond, Max: 200 * time.Millisecond},
+	ControlHold: 40 * time.Millisecond,
+	DialTimeout: 150 * time.Millisecond,
+	FollowFor:   150 * time.Millisecond,
+	RedialMin:   10 * time.Millisecond,
+	RedialMax:   100 * time.Millisecond,
+	Selector:    path.Failover{HoldDown: 500 * time.Millisecond},
 }
 
 // Timings for a fake clock, which tests step by fakeStep, giving the nodes
-// fakeSlack of wall time per step. A link probed every ProbeInterval has
-// (DeadAfter - ProbeInterval) / fakeStep steps, 200 ms of wall time, for a
-// reply to come back: room for a race-detector stall.
+// fakeSlack of wall time per step: the defaults but for idle waits of
+// 2–4 s. A link silent under traffic is closed within 4.5 s, an idle one
+// within 6 s.
 var fakeOptions = path.Options{
-	ProbeInterval: time.Second,
-	DeadAfter:     5 * time.Second,
-	FollowFor:     5 * time.Second,
-	RedialMin:     5 * time.Millisecond, // wall clock
-	RedialMax:     20 * time.Millisecond,
-	Selector:      path.Failover{HoldDown: 10 * time.Second},
+	IdleDefault: path.Range{Min: 2 * time.Second, Max: 4 * time.Second},
+	DialTimeout: 5 * time.Second,
+	FollowFor:   5 * time.Second,
+	RedialMin:   5 * time.Millisecond, // wall clock
+	RedialMax:   20 * time.Millisecond,
+	Selector:    path.Failover{HoldDown: 10 * time.Second},
 }
+
+// fakeDeadBusy and fakeDeadIdle bound when fakeOptions close a link that
+// went silent: S + R + T under traffic, I + T idle (T = 2 s unshaped).
+const (
+	fakeDeadBusy = 4500 * time.Millisecond
+	fakeDeadIdle = 6 * time.Second
+)
 
 const (
 	fakeStep  = 100 * time.Millisecond
@@ -70,9 +82,18 @@ func eachSemanticsFake(t *testing.T, test func(t *testing.T, f *fabric)) {
 	}
 }
 
+// fakeClock is a clock tests step, with timers that go off as it passes
+// their time.
 type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
+	mu     sync.Mutex
+	now    time.Time
+	timers []*fakeTimer
+}
+
+type fakeTimer struct {
+	c  *fakeClock
+	at time.Time // zero: stopped or gone off
+	f  func()
 }
 
 func (c *fakeClock) Now() time.Time {
@@ -81,10 +102,61 @@ func (c *fakeClock) Now() time.Time {
 	return c.now
 }
 
-func (c *fakeClock) add(d time.Duration) {
+func (c *fakeClock) AfterFunc(d time.Duration, f func()) path.Timer {
+	t := &fakeTimer{c: c, f: f}
+	t.Reset(d)
+	return t
+}
+
+func (t *fakeTimer) Reset(d time.Duration) bool {
+	c := t.c
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
+	was := !t.at.IsZero()
+	t.at = c.now.Add(max(d, 0))
+	if !was {
+		c.timers = append(c.timers, t)
+	}
+	return was
+}
+
+func (t *fakeTimer) Stop() bool {
+	c := t.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	was := !t.at.IsZero()
+	t.at = time.Time{}
+	c.timers = slices.DeleteFunc(c.timers, func(x *fakeTimer) bool { return x == t })
+	return was
+}
+
+// add moves the clock on by d and runs the timers due by then, earliest
+// first, each with the clock at its time.
+func (c *fakeClock) add(d time.Duration) {
+	c.mu.Lock()
+	end := c.now.Add(d)
+	c.mu.Unlock()
+	for {
+		c.mu.Lock()
+		var due *fakeTimer
+		for _, t := range c.timers {
+			if !t.at.After(end) && (due == nil || t.at.Before(due.at)) {
+				due = t
+			}
+		}
+		if due == nil {
+			c.now = end
+			c.mu.Unlock()
+			return
+		}
+		if due.at.After(c.now) {
+			c.now = due.at
+		}
+		due.at = time.Time{}
+		c.timers = slices.DeleteFunc(c.timers, func(x *fakeTimer) bool { return x == due })
+		c.mu.Unlock()
+		due.f()
+	}
 }
 
 // fabric is a set of nodes on one memory network. Links can be silenced:
@@ -117,7 +189,7 @@ func newFabric(t *testing.T, sem memory.Semantics) *fabric {
 func newFakeFabric(t *testing.T, sem memory.Semantics) *fabric {
 	f := newFabric(t, sem)
 	f.clock = &fakeClock{now: time.Unix(1_000_000, 0)}
-	f.opts = path.WatchEvery(fakeOptions, time.Millisecond)
+	f.opts = path.FakeTimers(path.WatchEvery(fakeOptions, time.Millisecond), f.clock.AfterFunc)
 	f.opts.Now = f.clock.Now
 	return f
 }
@@ -256,7 +328,7 @@ func (f *fabric) isUp(at, of string) bool {
 
 // waitUp waits until at's link to of is up. On a fake clock it steps the
 // clock meanwhile: a first dial can race the listener's table update and
-// open a link that never hears back, which goes only when DeadAfter passes.
+// open a link that never hears back, which goes only when DialTimeout passes.
 func (f *fabric) waitUp(at, of string) {
 	f.t.Helper()
 	eventually(f.t, at+" sees "+of+" up", func() bool {
@@ -577,8 +649,8 @@ func (b *rawBind) drain() (received, bool) {
 }
 
 // reachesHop sends from from to ep until a Send picks hop toward peer. The
-// hop is chosen per Send, and on the wall clock a load stall past
-// DeadAfter can leave every hop unproven for a moment: Failover then takes
+// hop is chosen per Send, and on the wall clock a load stall past T can
+// close a link and leave every hop unproven for a moment: Failover then takes
 // the first hop with any link, or none (ErrNoPath), until probes are
 // answered again. The "settle" packets it sends stay in the receiver's
 // got: a strict expect on that bind afterwards must drain it first.
