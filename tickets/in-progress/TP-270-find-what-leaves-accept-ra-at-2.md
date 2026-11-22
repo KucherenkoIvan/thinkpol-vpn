@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-270"
+branch: "tp-270-accept-ra-left-at-2"
 ---
 
 ## Goal
@@ -26,3 +26,4 @@ After `internal/agent/supervisor`'s tests, a lab node has `net.ipv6.conf.{defaul
 
 ## Log
 - 2026-11-20 created in backlog (TP-269 review)
+- 2026-11-22 backlog → in-progress, owner: agent-tp-270
