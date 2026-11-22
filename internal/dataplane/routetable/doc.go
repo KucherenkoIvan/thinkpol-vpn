@@ -167,8 +167,8 @@
 // route is the firewall's, as are interface-bound sockets and sockets
 // routed by their source address: for IPv6 the leak guard's pf anchor
 // refuses all of them on the physical interfaces (package firewall; not
-// yet proven on a device: TP-096); IPv4 waits for the kill switch
-// (TP-048).
+// yet proven on a network with native IPv6: RR15, TP-096); IPv4's are
+// held only while the kill switch is in place (RR21).
 //
 // No route of ours takes an identity another route holds
 // ([netcfg.Survey.Held]): where another VPN has its own split routes, or
