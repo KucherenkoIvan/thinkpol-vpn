@@ -30,6 +30,14 @@ After `internal/agent/supervisor`'s tests, a lab node has `net.ipv6.conf.{defaul
 - Product hole found on the way, fixed here: a failed IPv6 start (an `accept_ra` write refused, or `sideKeys` failing) left the values already written at 2, with forwarding off and no record. Now every failure before the switch is flipped puts them back (doc.go, "Root forwarding", says so).
 - `default` is written to 2 on purpose, so an interface that appears while IPv6 forwarding is on (a re-plugged uplink) keeps taking advertisements; it is recorded and put back like the rest.
 
+## Review findings
+Round 1 (2026-11-22).
+- [ ] R1.1 `enable`'s `fail` (forwarding.go ~230) sets `f.fams[fam] = c` and calls `restoreFamily`, which also writes the switch back to `was` when it reads the "1" written. If another program (a container runtime, say) turns that family's forwarding on between our read and the failure, we'd switch its forwarding off; and if that write fails, `restoreFamily` returns early with `f.fams[fam]` still set, so `ensure` saves a record and we'd own and confine someone else's forwarding. Before the switch is flipped nothing of ours is there to restore. Fix: the undo puts back only the `c.Before` entries that still read their Written value (the same `held` rule), joins their errors, and never touches `f.fams` or the switch. Name it for what it does (`undo`, not `fail`).
+- [ ] R1.2 forwarding_test.go: the `sideKeys` failure path has no case (`fakeKernelSys`'s Glob can't fail): add a hook and a third case, mutation-checked (drop the undo on that path → the test fails). Add a case for R1.1's race: the switch reads "1" (someone else's) when the attempt fails → it stays "1", not owned, no record.
+- [ ] R1.3 doc.go ~210: "so a failed start leaves none changed" overclaims when a put-back write fails: say it puts back the accept_ra values it wrote (what it can't is in the error).
+- [ ] R1.4 Test failure messages in got/want form: forwarding_test.go ("IPv6 forwarding = %s after the failed attempt, want 0"), leftovers_linux_test.go ~67 ("%s = %s after the dead supervisor's leftovers were cleared, want %s").
+- [ ] R1.5 The Notes say the product can't leave accept_ra at 2. Not quite: `load()` (forwarding.go ~142-149) drops a family whose switch no longer holds what was written, together with its Before entries, so if the supervisor crashes and an admin or networkd turns that forwarding off, accept_ra stays 2 for the rest of the boot (low harm: 2 acts like 1 while forwarding is off). Correct the Notes; the fix goes into a follow-up ticket, not this branch.
+
 ## Log
 - 2026-11-20 created in backlog (TP-269 review)
 - 2026-11-22 backlog → in-progress, owner: agent-tp-270
@@ -40,3 +48,4 @@ After `internal/agent/supervisor`'s tests, a lab node has `net.ipv6.conf.{defaul
 - 2026-11-22 out of scope: `enable` writes accept_ra and the switch before `ensure` saves the record, so a crash between the writes and the save leaves them unrecorded (forwarding on, unconfined, accept_ra 2) for a successor to take as the node's own
 - 2026-11-22 make lint and make test green on 6de23b4f
 - 2026-11-22 in-progress → review
+- 2026-11-22 review → has-errors (round 1: R1.1–R1.5)
