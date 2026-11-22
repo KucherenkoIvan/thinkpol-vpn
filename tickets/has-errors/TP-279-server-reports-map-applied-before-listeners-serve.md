@@ -33,6 +33,13 @@ A server's status, and its "map applied" log line, say the map is applied only o
 - A worker's `Ready` (WorkerInfo, the local API's worker ready) is now set when the shared listeners attach it, not at its Ready message: between the two, a connection routed to its space would be refused for lack of a worker, and `mapApplied` waits for every worker ready.
 - Built on TP-278 (branch `tp-279-applied-means-serving` starts from TP-278's): merge TP-278 first. Not in `depends_on`, since the board allows backlog → in-progress only once every dependency is done.
 
+## Review findings
+Round 1 (2026-11-22, on dda4e0f0): correctness (fix first), style (fix first), design (fix first), second opinion (fix first).
+- [ ] R1.1 Blocker: serving and "map applied" follow SetListeners returning, which TP-278's round 1 R1.1 shows returns at once while the space's worker is starting (not attached): both come before a connection can be handed to a worker. Fixed with TP-278's R1.1; add a test that the status and the log line never come before the first stream would reach an attached worker.
+- [ ] R1.2 `serving` means "the first apply returned": a failed apply (Retrying, every listener down) and the StopTimeout fallback read serving. Decide and document what a server's Connection reads for: first apply in progress; every listener failed (Retrying); some failed; the StopTimeout fallback used; a later failed replace. Rename the field if it keeps another meaning.
+- [ ] R1.3 A stopped server reads Connecting, unlike a stopped device (Disconnected): make it read like one, unless the package doc says why not.
+- [ ] R1.4 Names and tests: `session.routed` → `markReady`; got/want in `TestServerSaysAppliedOnceItsListenersServe`'s messages; `TestWorkerIsReadyOnceRoutedTo`'s polling loop bounded.
+
 ## Log
 - 2026-11-22 created in backlog (from TP-230's review)
 - 2026-11-22 backlog → in-progress, owner: agent-tp-279
@@ -42,3 +49,4 @@ A server's status, and its "map applied" log line, say the map is applied only o
 - 2026-11-22 not verified: the local API and CLI showing a starting server as connecting on a real host (covered by Status and convert's existing mapping); no full make lab-test (brief: targeted runs only)
 - 2026-11-22 in-progress → review
 - 2026-11-22 rewrite fa427ca0 merged (75bcbdb8), runs again on it: make lint 0 issues, make test pass; lab-gotest supervisor/reality/udp ok, none cached (55.7 s, 1m24.4 s, 1m12.7 s); TestStatusChecksFailWithoutTheirFact and the matrix udp and reality rows ok in 216.6 s, five labs PASS, reality × active prober NOT JUDGED as before
+- 2026-11-22 review → has-errors: round 1 findings R1.1-R1.4 (fix first)
