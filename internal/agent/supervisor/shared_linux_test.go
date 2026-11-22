@@ -839,7 +839,15 @@ func startAnswering(t *testing.T, mode string) (*supervisor.Supervisor, netmap.S
 	opts := sharedOptions()
 	opts.Env = append(opts.Env, envAnswers+"="+mode)
 	space := netmap.NewSpaceID()
-	s := start(t, opts, space)
+	s, err := supervisor.New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	// Not waiting for it ready: one that breaks the protocol may never be.
+	if err := s.SetSpaces(spacesOf(space)); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.SetListeners([]supervisor.Listener{{Transport: udp.Name, Address: fmt.Sprintf("0.0.0.0:%d", sharedPort)}}); err != nil {
 		t.Fatal(err)
 	}
