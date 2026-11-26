@@ -162,7 +162,36 @@ func AcquirePerfLock(ctx context.Context) (func(), error) {
 	}, nil
 }
 
+// slotClass is a slot waiter's rank in the slot queue: a freed slot goes to
+// the oldest waiter of the default stream, and to the oldest of the long
+// stream only while no default one waits. The default stream runs under a
+// time budget and the long one doesn't (lab/README.md, "Streams"), so the
+// long stream's labs give way. A waiter outside a stream counts as default.
+// slotUntagged is no waiter's class: it is the class of a ticket taken by
+// code from before the classes, whose name carries none.
+type slotClass int
+
+const (
+	slotDefault slotClass = iota
+	slotLong
+	slotUntagged
+)
+
+// streamSlotClass is the slot class of this process's waiters, by its
+// stream (Stream). A misspelt stream waits as default: Stream's other
+// callers report it.
+func streamSlotClass() slotClass {
+	if s, err := Stream(); err == nil && s == StreamLong {
+		return slotLong
+	}
+	return slotDefault
+}
+
 func acquireHostSlot(ctx context.Context) (func(), error) {
+	return acquireHostSlotAs(ctx, streamSlotClass())
+}
+
+func acquireHostSlotAs(ctx context.Context, class slotClass) (func(), error) {
 	dir, err := lockDir()
 	if err != nil {
 		return nil, err
@@ -173,7 +202,7 @@ func acquireHostSlot(ctx context.Context) (func(), error) {
 			return nil, err
 		}
 	}
-	release, err := acquireSlotLock(ctx, dir)
+	release, err := acquireSlotLock(ctx, dir, class)
 	if err != nil {
 		shared()
 		return nil, err
@@ -184,7 +213,7 @@ func acquireHostSlot(ctx context.Context) (func(), error) {
 	}, nil
 }
 
-func acquireSlotLock(ctx context.Context, dir string) (func(), error) {
+func acquireSlotLock(ctx context.Context, dir string, class slotClass) (func(), error) {
 	var err error
 	n := defaultMaxLabs
 	if v := os.Getenv(MaxLabsEnv); v != "" {
@@ -206,7 +235,7 @@ func acquireSlotLock(ctx context.Context, dir string) (func(), error) {
 		}
 		return waitLock(ctx, what, paths...)
 	}
-	q, err := joinSlotQueue(ctx, dir)
+	q, err := joinSlotQueue(ctx, dir, class)
 	if err != nil {
 		return unqueued(err)
 	}
@@ -222,6 +251,9 @@ func acquireSlotLock(ctx context.Context, dir string) (func(), error) {
 			q.leave()
 			return unqueued(err)
 		case head:
+			if hook := slotHeadHook.Load(); hook != nil {
+				(*hook)()
+			}
 			for _, p := range paths {
 				f, ok, err := tryLockMode(p, true)
 				if err != nil {
@@ -256,21 +288,67 @@ var slotQueueTimes = slotQueueTiming{
 }
 
 const (
-	slotQueueSuffix    = ".wait"
-	slotQueueLockRetry = 10 * time.Millisecond
+	slotQueueSuffix  = ".wait"
+	slotQueueLongTag = "-long" // ends a long-stream ticket's name, before the suffix
+	// slotQueueDefaultTag ends a default ticket's name, before the suffix. An
+	// untagged ticket is an older run's (slotUntagged).
+	slotQueueDefaultTag = "-default"
+	slotQueueLockRetry  = 10 * time.Millisecond
 )
+
+// slotQueueTag is the tag a ticket of class carries in its name.
+func slotQueueTag(class slotClass) string {
+	switch class {
+	case slotLong:
+		return slotQueueLongTag
+	case slotDefault:
+		return slotQueueDefaultTag
+	}
+	return ""
+}
+
+// slotHeadHook, when set, is called each time a waiter finds itself the
+// head, before it tries the slots: tests wait on it.
+var slotHeadHook atomic.Pointer[func()]
 
 // slotQueue is one waiter's place in the slot queue: every slot waiter,
 // whichever run or process it belongs to, holds a ticket while it waits, a
-// file in slot-queue/ named <sequence>-<pid>-<random>.wait and locked
-// (flock) by its waiter. The sequence is one more than the highest live
-// ticket's, assigned under slot-queue.lock held exclusively, so tickets are
-// numbered in arrival order; scans take slot-queue.lock shared, so no scan
-// sees a ticket before its lock. Only the head, the waiter with no live
-// ticket older than its own, tries the slot locks; every other waiter
-// watches the ticket just ahead of its own and looks again when that one
-// leaves. So a freed slot goes to the oldest waiter, and a waiter that isn't
-// first costs a lock attempt and a stat per poll, not a sweep of every slot.
+// file in slot-queue/ named <sequence>-<pid>-<random>-default.wait, or
+// <sequence>-<pid>-<random>-long.wait for a long-stream waiter (slotClass),
+// and locked (flock) by its waiter. The sequence is one more than the
+// highest live ticket's, assigned under slot-queue.lock held exclusively, so
+// tickets are numbered in arrival order; scans take slot-queue.lock shared,
+// so no scan sees a ticket before its lock. Only the head tries the slot
+// locks: a default waiter with no live default ticket older than its own,
+// or a long waiter with no live long ticket older than its own and no live
+// default ticket at all. Every other waiter watches the ticket in its way
+// (the default ticket just ahead of a default one's; the long ticket just
+// ahead of a long one's, else the newest default ticket) and looks again
+// when that one leaves. So a freed slot goes to the oldest default waiter,
+// else to the oldest long one, and a waiter that isn't first costs a lock
+// attempt and a stat per poll, not a sweep of every slot. A long head also
+// lists the queue every poll for a default ticket that has joined since: a
+// default waiter that joins in the moment between that look and the long
+// head's slot attempt can still lose that one slot to it. Long waiters
+// wait as long as default ones keep coming, from any run: "the default
+// stream ends first" holds within one run, not across runs. Nothing ages a
+// long waiter forward; its run's LAB_TIMEOUT bounds the wait.
+//
+// Runs of code from before the classes may share the queue. Their tickets
+// are untagged (<sequence>-<pid>-<random>.wait), and their waiters watch the
+// nearest older live ticket of any kind, never looking again while it
+// lives. Untagged tickets count when numbering a new ticket and are removed
+// when dead like any other, but this code orders by tagged tickets only: an
+// untagged ticket is in the way of none of its waiters. Reading one as
+// default would deadlock: a long head watching an older run's waiter that
+// in turn watches it, both refreshing, neither ever trying a slot. As it
+// is, no wait goes round: an untagged waiter waits only on older tickets, a
+// default waiter only on older default ones, and a long waiter only on
+// default ones or older long ones, so nothing leads from a default waiter
+// back to a long or an untagged one, and every wait on an older ticket ends
+// at the oldest. An older run's waiter thus waits behind every tagged ticket
+// older than its own and none newer, and the code here waits behind none of
+// its: a newer run's waiters can take slots ahead of it.
 //
 // Nothing in the queue can hold the slots up for long:
 //   - a waiter that dies loses its ticket's lock with its process, and a
@@ -292,7 +370,9 @@ const (
 //     "slot-wait unqueued" line in the timeline (TimelineEnv).
 type slotQueue struct {
 	timing    slotQueueTiming
-	dir, lock string // slot-queue and slot-queue.lock
+	class     slotClass
+	warned    time.Time // when a skipped ticket was last warned of
+	dir, lock string    // slot-queue and slot-queue.lock
 	seq       uint64
 	path      string
 	own       *os.File // this waiter's ticket, locked
@@ -301,9 +381,10 @@ type slotQueue struct {
 	scanned   time.Time
 }
 
-// joinSlotQueue takes a ticket behind every live one in dir's slot queue.
-func joinSlotQueue(ctx context.Context, dir string) (*slotQueue, error) {
-	q := &slotQueue{timing: slotQueueTimes, dir: filepath.Join(dir, "slot-queue"), lock: filepath.Join(dir, "slot-queue.lock")}
+// joinSlotQueue takes a ticket of class behind every live one in dir's slot
+// queue.
+func joinSlotQueue(ctx context.Context, dir string, class slotClass) (*slotQueue, error) {
+	q := &slotQueue{timing: slotQueueTimes, class: class, dir: filepath.Join(dir, "slot-queue"), lock: filepath.Join(dir, "slot-queue.lock")}
 	if err := os.MkdirAll(q.dir, 0o700); err != nil {
 		return nil, err
 	}
@@ -312,7 +393,7 @@ func joinSlotQueue(ctx context.Context, dir string) (*slotQueue, error) {
 		return nil, err
 	}
 	defer unlock()
-	last, ahead, err := q.scan(math.MaxUint64)
+	last, ahead, err := q.scan(math.MaxUint64, class)
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +404,7 @@ func joinSlotQueue(ctx context.Context, dir string) (*slotQueue, error) {
 	q.seq, q.ahead = last+1, ahead
 	q.beat = time.Now()
 	q.scanned = q.beat
-	q.path = filepath.Join(q.dir, fmt.Sprintf("%020d-%d-%08x%s", q.seq, os.Getpid(), rand.Uint32(), slotQueueSuffix))
+	q.path = filepath.Join(q.dir, fmt.Sprintf("%020d-%d-%08x%s%s", q.seq, os.Getpid(), rand.Uint32(), slotQueueTag(class), slotQueueSuffix))
 	f, err := os.OpenFile(q.path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if err != nil {
 		closeFile(ahead)
@@ -376,10 +457,11 @@ func (q *slotQueue) lockQueue(ctx context.Context, exclusive bool) (func(), erro
 	return unlock, err
 }
 
-// atHead reports whether no live ticket is ahead of this waiter's, looking
-// again for the one ahead once the one it watched has left, died or gone
-// stale, and every heartbeat while it is the head. It refreshes the
-// waiter's own ticket on the way.
+// atHead reports whether no live ticket is in this waiter's way (see
+// slotQueue), looking again once the one it watched has left, died or gone
+// stale, every heartbeat while it is the head, and, for a long head, as
+// soon as a fresh default ticket shows up. It refreshes the waiter's own
+// ticket on the way.
 func (q *slotQueue) atHead(ctx context.Context) (bool, error) {
 	now := time.Now()
 	if now.Sub(q.beat) >= q.timing.heartbeat {
@@ -392,7 +474,7 @@ func (q *slotQueue) atHead(ctx context.Context) (bool, error) {
 		}
 		closeFile(q.ahead)
 		q.ahead = nil
-	} else if now.Sub(q.scanned) < q.timing.heartbeat {
+	} else if now.Sub(q.scanned) < q.timing.heartbeat && (q.class != slotLong || !q.defaultMayWait(now)) {
 		return true, nil
 	}
 	unlock, err := q.lockQueue(ctx, false)
@@ -400,9 +482,32 @@ func (q *slotQueue) atHead(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	defer unlock()
-	_, q.ahead, err = q.scan(q.seq - 1)
+	_, q.ahead, err = q.scan(q.seq-1, q.class)
+	if err == nil && q.ahead == nil && q.class == slotLong {
+		_, q.ahead, err = q.scan(math.MaxUint64, slotDefault)
+	}
 	q.scanned = time.Now()
 	return q.ahead == nil, err
+}
+
+// defaultMayWait reports whether the queue lists a default ticket refreshed
+// within the stale limit, by name and modification time alone: a ticket it
+// finds may be a dead waiter's, which the scan that follows clears away. A
+// queue that can't be listed counts as one.
+func (q *slotQueue) defaultMayWait(now time.Time) bool {
+	entries, err := os.ReadDir(q.dir)
+	if err != nil {
+		return true
+	}
+	for _, e := range entries {
+		if _, ok := ticketSeq(e.Name()); !ok || ticketClass(e.Name()) != slotDefault {
+			continue
+		}
+		if info, err := e.Info(); err == nil && info.Mode().IsRegular() && now.Sub(info.ModTime()) < q.timing.stale {
+			return true
+		}
+	}
+	return false
 }
 
 // ticketLive reports whether f, a ticket, is held locked by a waiter that
@@ -417,10 +522,11 @@ func ticketLive(f *os.File, now time.Time, stale time.Duration) bool {
 }
 
 // scan looks through the tickets numbered up to upTo, newest first,
-// removing the dead ones, until it meets a live one that isn't stale. It
-// returns the highest sequence held by a live ticket (stale or not; 0 with
-// none) and that first fresh ticket, open, or nil if there is none.
-func (q *slotQueue) scan(upTo uint64) (last uint64, ahead *os.File, err error) {
+// removing the dead ones, until it meets a live one of class that isn't
+// stale. It returns the highest sequence held by a live ticket of any class
+// (stale or not; 0 with none) and that first fresh ticket, open, or nil if
+// there is none.
+func (q *slotQueue) scan(upTo uint64, class slotClass) (last uint64, ahead *os.File, err error) {
 	entries, err := os.ReadDir(q.dir)
 	if err != nil {
 		return 0, nil, err
@@ -442,7 +548,7 @@ func (q *slotQueue) scan(upTo uint64) (last uint64, ahead *os.File, err error) {
 		f, err := os.OpenFile(path, os.O_RDWR, 0)
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) { // gone since ReadDir: its waiter left
-				warnSkippedTicket(path, err)
+				q.warnSkippedTicket(path, err)
 			}
 			continue
 		}
@@ -453,7 +559,7 @@ func (q *slotQueue) scan(upTo uint64) (last uint64, ahead *os.File, err error) {
 		}
 		dead, err := tryLockFile(f, true)
 		if err != nil {
-			warnSkippedTicket(path, err)
+			q.warnSkippedTicket(path, err)
 			_ = f.Close()
 			continue
 		}
@@ -465,7 +571,7 @@ func (q *slotQueue) scan(upTo uint64) (last uint64, ahead *os.File, err error) {
 			continue
 		}
 		last = max(last, t.seq)
-		if now.Sub(fi.ModTime()) < q.timing.stale {
+		if ticketClass(t.name) == class && now.Sub(fi.ModTime()) < q.timing.stale {
 			return last, f, nil
 		}
 		_ = f.Close()
@@ -475,9 +581,14 @@ func (q *slotQueue) scan(upTo uint64) (last uint64, ahead *os.File, err error) {
 
 // warnSkippedTicket says a ticket was passed over for an error (EMFILE,
 // ENOLCK, …) rather than for being dead or stale: its waiter, maybe live,
-// loses its place to this one.
-func warnSkippedTicket(path string, err error) {
-	fmt.Fprintf(os.Stderr, "lab: slot queue: skipping ticket %s: %v\n", path, err)
+// loses its place to this one. A long head that lists such a ticket as a
+// fresh default one scans on every poll, so the warning comes at most once
+// a heartbeat.
+func (q *slotQueue) warnSkippedTicket(path string, err error) {
+	if now := time.Now(); now.Sub(q.warned) >= q.timing.heartbeat {
+		q.warned = now
+		fmt.Fprintf(os.Stderr, "lab: slot queue: skipping ticket %s: %v\n", path, err)
+	}
 }
 
 // ticketSeq is the sequence a slot queue ticket's name gives.
@@ -488,6 +599,17 @@ func ticketSeq(name string) (uint64, bool) {
 	}
 	n, err := strconv.ParseUint(seq, 10, 64)
 	return n, err == nil
+}
+
+// ticketClass is the class a slot queue ticket's name gives.
+func ticketClass(name string) slotClass {
+	switch {
+	case strings.HasSuffix(name, slotQueueLongTag+slotQueueSuffix):
+		return slotLong
+	case strings.HasSuffix(name, slotQueueDefaultTag+slotQueueSuffix):
+		return slotDefault
+	}
+	return slotUntagged
 }
 
 // leave removes the waiter's ticket, which lets the one behind it move up.
