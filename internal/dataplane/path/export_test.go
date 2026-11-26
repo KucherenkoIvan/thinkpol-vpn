@@ -9,6 +9,16 @@ func WatchEvery(o Options, d time.Duration) Options {
 	return o
 }
 
+// Timer is what a fake clock's AfterFunc returns.
+type Timer = timer
+
+// FakeTimers runs the links' deadline timers on after: tests run them on a
+// fake clock.
+func FakeTimers(o Options, after func(time.Duration, func()) Timer) Options {
+	o.afterFunc = after
+	return o
+}
+
 // LastSeen is the node time of the last sign of life from peer through via.
 func (b *Bind) LastSeen(peer, via NodeID) int64 {
 	ps := (*b.peers.Load())[peer]

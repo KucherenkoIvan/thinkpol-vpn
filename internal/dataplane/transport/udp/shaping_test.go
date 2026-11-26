@@ -14,11 +14,11 @@ import (
 )
 
 // wireguardLikeSizes are the packets the path layer hands a transport:
-// its 18-byte header around WireGuard's keepalive (32), cookie reply (64),
+// its 26-byte header around WireGuard's keepalive (32), cookie reply (64),
 // handshake response (92) and initiation (148), and data messages (32 plus
 // an inner packet padded to 16 bytes), up to a 1452-byte datagram.
 func wireguardLikeSizes() []int {
-	const pathHeader = 18
+	const pathHeader = 26
 	sizes := []int{pathHeader + 64, pathHeader + 92, pathHeader + 148}
 	for inner := 0; pathHeader+32+inner+Overhead <= 1452; inner += 16 {
 		sizes = append(sizes, pathHeader+32+inner)

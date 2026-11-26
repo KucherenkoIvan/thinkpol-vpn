@@ -59,7 +59,7 @@ func ipv6OffCode(err error) IPv6Off {
 // link it accepts, each with its own transport and shaping, less WireGuard's
 // overhead, on a network of linkMTU under each link (0 means
 // DefaultLinkMTU). Links are budgeted as IPv6 whatever the family of their
-// endpoint, so nodes agree as long as their links do: 1328 for unshaped udp
+// endpoint, so nodes agree as long as their links do: 1320 for unshaped udp
 // over 1500. This is the node's own floor: the space-wide overlay MTU is
 // the map builder's (TP-030), and a relay drops and counts what is too long
 // for its next link (path.Counters.TooLarge).

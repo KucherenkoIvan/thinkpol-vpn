@@ -25,16 +25,19 @@ import (
 
 const wait = 10 * time.Second
 
-// fastPaths are path timings six times faster than the defaults. A link
-// is dead after a second without proof: a busy machine can hold a probe up
-// for hundreds of milliseconds, and a link closed for that drops what is
-// sent meanwhile, a WireGuard handshake included, which is only retried
-// after WireGuard's 5 s.
+// fastPaths are path timings several times faster than the defaults. A
+// suspect link waits a second for an answer: a busy machine can hold a
+// probe up for hundreds of milliseconds, and a link closed for that drops
+// what is sent meanwhile, a WireGuard handshake included, which is only
+// retried after WireGuard's 5 s.
 var fastPaths = path.Options{
-	ProbeInterval: 300 * time.Millisecond,
-	DeadAfter:     time.Second,
-	RedialMin:     10 * time.Millisecond,
-	RedialMax:     100 * time.Millisecond,
+	Burst:       path.Range{Min: 100 * time.Millisecond, Max: 300 * time.Millisecond},
+	Response:    path.Range{Min: 100 * time.Millisecond, Max: 200 * time.Millisecond},
+	IdleDefault: path.Range{Min: 500 * time.Millisecond, Max: time.Second},
+	ControlHold: 400 * time.Millisecond,
+	DialTimeout: time.Second,
+	RedialMin:   10 * time.Millisecond,
+	RedialMax:   100 * time.Millisecond,
 }
 
 var (
@@ -130,7 +133,7 @@ func (nd *node) start(t *testing.T, net *memory.Network) {
 	// Applied before listening, so the listener admits the section's
 	// inbound links from its first dial: a running listener learns of a
 	// table change on its own goroutine, and a dial that comes first gets
-	// a link nothing answers, which only the dialer's DeadAfter on its path
+	// a link nothing answers, which only the dialer's DialTimeout on its path
 	// clock closes (never, while a test holds that clock still).
 	nd.apply(t)
 	if nd.listen.IsValid() {
@@ -474,7 +477,7 @@ func TestRevocationIsNotHeldBackByABadLink(t *testing.T) {
 	}}})
 	a.apply(t)
 	st := a.engine.Status()
-	if len(st.Peers) != 1 || st.Peers[0].ID != s.id || st.MTU != 1402 {
+	if len(st.Peers) != 1 || st.Peers[0].ID != s.id || st.MTU != 1394 {
 		t.Fatalf("status %+v, want server-1 alone, at the good link's MTU", st)
 	}
 	if !slices.Contains(st.Skipped, dataplane.Skip{Node: b.id, What: dataplane.ItemLink, Reason: dataplane.ReasonMTUTooSmall}) {
@@ -498,7 +501,7 @@ func TestASectionThatCannotRunStillRevokes(t *testing.T) {
 	if err := a.engine.Apply(context.Background(), broken); err == nil {
 		t.Fatal("applied a section without an IPv4 address")
 	}
-	if st := a.engine.Status(); st.LastApplyError != dataplane.StepSection || len(st.Peers) != 1 || st.MTU != 1402 {
+	if st := a.engine.Status(); st.LastApplyError != dataplane.StepSection || len(st.Peers) != 1 || st.MTU != 1394 {
 		t.Fatalf("status %+v", st)
 	}
 	assertCutOff(t, b, a)

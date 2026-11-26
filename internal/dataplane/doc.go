@@ -38,7 +38,7 @@
 // The overlay's MTU ([OverlayMTU]) is what the node's links leave after
 // the transport, the path header and WireGuard. Links are budgeted as
 // IPv6 whatever their endpoint's family, so nodes agree as long as their
-// links do: 1328 for unshaped udp over a link MTU of 1500
+// links do: 1320 for unshaped udp over a link MTU of 1500
 // ([DefaultLinkMTU]). The overlay MTU is meant to be space-wide, computed
 // by the map builder from every link's budget (TP-030); until then each
 // node uses the floor of its own links, and a relay drops and counts the

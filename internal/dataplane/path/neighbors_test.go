@@ -83,7 +83,7 @@ func waitUpOnce(t *testing.T, f *fabric, a *fnode) {
 }
 
 // A dial that has failed lists the node, down, at once: the fake clock
-// never moves, so DeadAfter can't be what lists it.
+// never moves, so DialTimeout can't be what lists it.
 func TestNeighborsListAFailedDialAtOnce(t *testing.T) {
 	eachSemanticsFake(t, func(t *testing.T, f *fabric) {
 		var down atomic.Bool
@@ -97,16 +97,16 @@ func TestNeighborsListAFailedDialAtOnce(t *testing.T) {
 	})
 }
 
-// A dial still waiting for an answer isn't listed until DeadAfter has
+// A dial still waiting for an answer isn't listed until DialTimeout has
 // passed since it started; then it is, down; a link that comes up shows it up.
-func TestNeighborsListAnUnansweredDialPastDeadAfter(t *testing.T) {
+func TestNeighborsListAnUnansweredDialPastTheDialTimeout(t *testing.T) {
 	eachSemanticsFake(t, func(t *testing.T, f *fabric) {
 		open := make(chan struct{})
 		a := dialB(f, unanswered{f: f, open: open})
 
-		f.advance(fakeOptions.DeadAfter-2*fakeStep, nil)
+		f.advance(fakeOptions.DialTimeout-2*fakeStep, nil)
 		if s, ok := f.neighbor("A", "B"); ok {
-			t.Fatalf("B is listed before DeadAfter: %+v", s)
+			t.Fatalf("B is listed before the dial timeout: %+v", s)
 		}
 		f.advance(2*fakeStep, nil)
 		wantDownNoLinks(t, f)

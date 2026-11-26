@@ -23,7 +23,7 @@ func twoRelays(t *testing.T, f *fabric, aHops, bHops []string) (a, b *rawBind) {
 var r1r2 = []string{"R1", "R2"}
 
 // The NFR on the wall clock: a first hop that dies silently is replaced
-// within a few DeadAfters.
+// within a few dial timeouts.
 func TestSwitchesPathWhenTheFirstHopGoesSilent(t *testing.T) {
 	eachSemantics(t, func(t *testing.T, f *fabric) {
 		a, b := twoRelays(t, f, r1r2, r1r2)
@@ -40,22 +40,22 @@ func TestSwitchesPathWhenTheFirstHopGoesSilent(t *testing.T) {
 		reachesHop(t, a, toB, "B", "R2")
 		keepSending(t, b, a, got.ep, "and back")
 		reachesHop(t, b, got.ep, "A", "R2")
-		if limit := 10 * f.opts.DeadAfter; took > limit {
+		if limit := 10 * f.opts.DialTimeout; took > limit {
 			t.Fatalf("switching took %v, more than %v", took, limit)
 		}
-		t.Logf("switched to R2 %v after R1 went silent (DeadAfter %v)", took, f.opts.DeadAfter)
+		t.Logf("switched to R2 %v after R1 went silent", took)
 	})
 }
 
-// On the fake clock: the switch comes once the link has been silent for
-// DeadAfter, not before.
+// On the fake clock, under traffic: the switch comes within S + R + T of
+// the last answer (2.0–4.5 s), not before.
 func TestSwitchTimingOnTheFakeClock(t *testing.T) {
 	eachSemanticsFake(t, func(t *testing.T, f *fabric) {
 		a, b := twoRelays(t, f, r1r2, r1r2)
 		toB := a.endpoint(t, "B")
 		a.send(t, toB, "before")
 		b.expect(t, "before")
-		f.advance(5*f.opts.ProbeInterval, func() { _ = a.Send([][]byte{wgMsg("steady")}, toB) })
+		f.advance(5*time.Second, func() { exchange(a, b, toB, wgMsg("steady")) })
 		if hop := a.current("B"); hop != "R1" {
 			t.Fatalf("A is on %q before anything failed, want R1", hop)
 		}
@@ -63,17 +63,15 @@ func TestSwitchTimingOnTheFakeClock(t *testing.T) {
 		f.silence("A", "R1", true)
 		f.silence("B", "R1", true)
 		var elapsed, switchedAt time.Duration
-		f.advance(2*f.opts.DeadAfter, func() {
+		f.advance(2*fakeDeadBusy, func() {
 			elapsed += fakeStep
-			_ = a.Send([][]byte{wgMsg("probe")}, toB)
+			exchange(a, b, toB, wgMsg("traffic"))
 			if switchedAt == 0 && a.current("B") == "R2" {
 				switchedAt = elapsed
 			}
 		})
-		o := f.opts
-		if switchedAt < o.DeadAfter-o.ProbeInterval-2*fakeStep || switchedAt > o.DeadAfter+2*fakeStep {
-			t.Fatalf("switched %v after R1 went silent, want between %v and %v", switchedAt,
-				o.DeadAfter-o.ProbeInterval-2*fakeStep, o.DeadAfter+2*fakeStep)
+		if lo, hi := 2*time.Second-2*fakeStep, fakeDeadBusy+2*fakeStep; switchedAt < lo || switchedAt > hi {
+			t.Fatalf("switched %v after R1 went silent, want between %v and %v", switchedAt, lo, hi)
 		}
 	})
 }
@@ -145,7 +143,7 @@ func TestTheFollowerTakesTheLeadersPath(t *testing.T) {
 		pingPong(t, a, b, toB, "before")
 
 		f.silence("A", "R1", true)
-		f.advance(f.opts.DeadAfter+f.opts.ProbeInterval, nil)
+		f.advance(fakeDeadIdle+fakeStep, nil)
 		a.send(t, toB, "through R2")
 		b.expect(t, "through R2")
 		if hop := a.current("B"); hop != "R2" {
@@ -178,7 +176,7 @@ func TestAFailedOverPairReturnsAfterTheHoldDown(t *testing.T) {
 		traffic := func() { exchange(a, b, toB, wgMsg("traffic")) }
 		f.silence("A", "R1", true)
 		f.silence("B", "R1", true)
-		f.advance(f.opts.DeadAfter+f.opts.ProbeInterval, traffic)
+		f.advance(fakeDeadIdle+fakeStep, traffic)
 		if aHop, bHop := pingPong(t, a, b, toB, "failed over"); aHop != "R2" || bHop != "R2" {
 			t.Fatalf("after R1 died: A on %q, B on %q, want R2", aHop, bHop)
 		}
@@ -217,7 +215,7 @@ func TestAnIdleFollowerDoesNotSwitchBack(t *testing.T) {
 		toB, toA := a.endpoint(t, "B"), b.endpoint(t, "A")
 		f.silence("A", "R1", true)
 		f.silence("B", "R1", true)
-		f.advance(f.opts.DeadAfter+f.opts.ProbeInterval, func() { exchange(a, b, toB, wgMsg("traffic")) })
+		f.advance(fakeDeadIdle+fakeStep, func() { exchange(a, b, toB, wgMsg("traffic")) })
 		if aHop, bHop := pingPong(t, a, b, toB, "failed over"); aHop != "R2" || bHop != "R2" {
 			t.Fatalf("after R1 died: A on %q, B on %q, want R2", aHop, bHop)
 		}
@@ -250,7 +248,7 @@ func TestOneWayFlowsFailOver(t *testing.T) {
 			to.await(t, "before")
 			f.silence("A", "R1", true)
 			f.silence("B", "R1", true)
-			f.advance(f.opts.DeadAfter+f.opts.ProbeInterval, func() { _ = from.Send([][]byte{wgMsg("lost")}, ep) })
+			f.advance(fakeDeadIdle+fakeStep, func() { _ = from.Send([][]byte{wgMsg("lost")}, ep) })
 			from.send(t, ep, "after")
 			to.await(t, "after")
 			if hop := from.current(dir.to); hop != "R2" {
@@ -261,8 +259,8 @@ func TestOneWayFlowsFailOver(t *testing.T) {
 }
 
 // A link that delivers only one way is down for both ends: here the
-// accepting end's packets are lost on the way, and its probes go
-// unanswered.
+// accepting end's packets are lost on the way. The dialer finds it by the
+// idle rule and its close notice reaches R, or R finds it the same way.
 func TestOneWayLossOnAnAcceptedLinkIsDetected(t *testing.T) {
 	eachSemanticsFake(t, func(t *testing.T, f *fabric) {
 		f.add("A", "R")
@@ -270,15 +268,14 @@ func TestOneWayLossOnAnAcceptedLinkIsDetected(t *testing.T) {
 		f.waitUp("R", "A")
 		f.silenceInbound("A", "R") // what R sends to A is lost
 		var elapsed, down time.Duration
-		f.advance(f.opts.DeadAfter+time.Second, func() {
+		f.advance(fakeDeadIdle+time.Second, func() {
 			elapsed += fakeStep
 			if down == 0 && !f.isUp("R", "A") {
 				down = elapsed
 			}
 		})
-		o := f.opts
-		if down == 0 || down < o.DeadAfter-o.ProbeInterval-2*fakeStep || down > o.DeadAfter+2*fakeStep {
-			t.Fatalf("R saw its link to A down %v after the loss began, want about DeadAfter (%v)", down, o.DeadAfter)
+		if lo := fakeOptions.IdleDefault.Min; down == 0 || down < lo || down > fakeDeadIdle+2*fakeStep {
+			t.Fatalf("R saw its link to A down %v after the loss began, want between %v and %v", down, lo, fakeDeadIdle+2*fakeStep)
 		}
 	})
 }
@@ -320,7 +317,7 @@ func TestMidChainRelayFailsOverOnItsOwnLinks(t *testing.T) {
 	}
 
 	f.silence("N", "M1", true)
-	f.advance(f.opts.DeadAfter+f.opts.ProbeInterval, func() { _ = d.Send([][]byte{wgMsg("lost")}, toC) })
+	f.advance(fakeDeadIdle+fakeStep, func() { _ = d.Send([][]byte{wgMsg("lost")}, toC) })
 	if hop := round("failed over"); hop != "M2" {
 		t.Fatalf("after N lost M1: through %s, want M2", hop)
 	}

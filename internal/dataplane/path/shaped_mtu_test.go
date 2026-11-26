@@ -15,7 +15,7 @@ func TestFollowerWithShapedOverlayMTU(t *testing.T) {
 	for _, tc := range []struct {
 		leaderMTU, followerMTU int
 	}{
-		{1228, 1328},
+		{1228, 1320},
 		{1276, 1228},
 	} {
 		t.Run(fmt.Sprintf("leader-%d-follower-%d", tc.leaderMTU, tc.followerMTU), func(t *testing.T) {
@@ -63,14 +63,14 @@ func testFollowerFullMTU(t *testing.T, f *fabric, leaderMTU, followerMTU int) {
 
 func TestUnshapedOverlayMTUStillCountsFullMTU(t *testing.T) {
 	eachSemanticsFake(t, func(t *testing.T, f *fabric) {
-		const tunMTU = 1328
+		const tunMTU = 1320
 		a, b := twoRelays(t, f, r1r2, r1r2)
 		full := wgFullMTUData(tunMTU)
 		toB := a.endpoint(t, "B")
 		a.sendWG(t, toB, full)
 		got := b.expectWG(t, full)
 		if b.LastSeen(id("A"), id("R1")) == 0 {
-			t.Fatal("lastSeen not set for full-MTU frame on unshaped 1328")
+			t.Fatal("lastSeen not set for full-MTU frame on unshaped 1320")
 		}
 		b.sendWG(t, got.ep, full)
 		a.expectWG(t, full)

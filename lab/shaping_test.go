@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/path"
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/udp"
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
 )
@@ -20,8 +21,8 @@ import (
 func TestShapingCapture(t *testing.T) {
 	t.Parallel()
 	const unshapedPort, shapedPort = 4500, 4501
-	// udp's wireguardLikeSizes (87) times labRepeats (3), on each port.
-	const perPort = 261
+	// udp's wireguardLikeSizes (86) times labRepeats (3), on each port.
+	const perPort = 258
 	// labBuckets in udp's tests.
 	buckets := []int{128, 256, 512, 1024, 1452}
 
@@ -62,11 +63,11 @@ func TestShapingCapture(t *testing.T) {
 	t.Logf("shaped:   %d datagrams in %d sizes: %v", total(sizes[shapedPort]), len(shaped), sizes[shapedPort])
 
 	// Unshaped, each packet size shows as itself plus udp's overhead: the
-	// WireGuard handshake (148 + 18 path header + overhead) among them.
+	// WireGuard handshake (148 + the path header + overhead) among them.
 	if len(unshaped) < 80 {
 		t.Errorf("unshaped traffic showed only %d sizes", len(unshaped))
 	}
-	if sizes[unshapedPort][18+148+udp.Overhead] == 0 {
+	if sizes[unshapedPort][path.HeaderSize+148+udp.Overhead] == 0 {
 		t.Errorf("no handshake-sized datagram in the unshaped capture")
 	}
 	// Padded, only the buckets show.

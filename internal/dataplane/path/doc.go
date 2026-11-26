@@ -11,8 +11,9 @@
 // keeps a link to every adjacent node its [Table] says to dial and takes
 // the links adjacent nodes open to it ([Node.Serve]). Each WireGuard
 // message travels in a packet frame with a header of [HeaderSize] bytes:
-// destination node id, source node id and a hop limit (see frame.go for
-// the layout). The header sits inside the transport's seal, so none of it
+// destination node id, source node id, a hop limit, and the link's seq
+// and ack (see frame.go for the layout; a relay writes its own seq and
+// ack). The header sits inside the transport's seal, so none of it
 // shows on the wire. A node receiving a packet:
 //
 //   - addressed to itself, hands it to the [Bind] that has the source as a
@@ -51,23 +52,76 @@
 // # Liveness
 //
 // Links don't report liveness: a datagram link whose far end died just goes
-// quiet. Both ends of a link probe it when their last proof is older than
-// [Options.ProbeInterval] (2 s by default), ahead of queued packets and
-// through transport.WriteControl; a link is up while a reply to one of its
-// own probes came back within [Options.DeadAfter] (three probe intervals,
-// 6 s, by default), proof that both directions work. A link without proof
-// for DeadAfter is closed, and a dialed link is redialed through its
-// endpoints in priority order with a backoff ([Options.RedialMin],
-// [Options.RedialMax]). [Node.Neighbors] lists a dialed node that never
-// gave a link as down once a dial attempt has failed (as with no route) or
-// DeadAfter has passed since the dial started, whichever comes first, so a
-// dial that never succeeds reads like a link that died; a first dial still
-// waiting for an answer isn't listed before that. The deadline counts from
-// the latest dial start: a map change of the node's endpoints restarts the
-// dial, and the clock. Probe tokens are random, and a reply counts only if
-// it answers a probe still awaited. Its round trip is an upper bound: a
-// transport that shapes may hold each probe and each reply up to
-// transport.MaxControlHold, which DeadAfter must leave room for. Latency
+// quiet. docs/design/path-liveness.md sets out the rules and their bounds;
+// liveness.go is them. Every frame carries a per-link seq and the newest
+// seq read from the far end (its ack), serial numbers inside the seal
+// (frame.go). An answer is a frame whose ack is newer than any before or
+// covers the latest frame written: proof that the far end reads this end.
+// Received traffic alone proves only that the far end reaches this one.
+// A seq more than a reorder window (1024) behind the newest read, or a V1
+// probe flagging acks on a link that reads seqs already, is a new link at
+// the far end (a udp redial or restart lands on this end's open link) and
+// is acked from then on.
+//
+// Busy: a frame that expects an answer (any but replies, close notices
+// and WireGuard keepalives, told by length) written S after both the
+// latest answer and the previous such frame opens a burst, due an answer
+// within S + R; one written S after the latest answer within a burst is
+// due one within R. S is drawn per answer from [Options.Burst], its top
+// shrunk by D, both ends' shaping delay; R is the probes' smoothed round
+// trip plus four deviations, clamped to [Options.Response]. Under two-way
+// traffic acks keep coming and no probe goes. A link past its deadline is
+// suspect: it probes at once, ahead of queued packets and through
+// transport.WriteControl, and if no answer came by T/2 again, to its
+// siblings too (its neighbor's other links, and the next up candidate of
+// every peer and route on its neighbor), which turn suspect themselves.
+// With no answer within T = 2·[Options.ControlHold] + D + R it closes,
+// sending a close notice the far end obeys, and a dialed link is redialed
+// through its endpoints in priority order with a backoff
+// ([Options.RedialMin], [Options.RedialMax]). So a link dying under
+// traffic is found within S + R + T of its last answer, 2.0–4.5 s
+// unshaped. Packets moving to another of a neighbor's links, or a peer's
+// to another first hop, make a link silent for R suspect at once.
+//
+// Idle: a link without an answer for I, drawn per wait from its
+// transport's range ([Options.Idle]: 8–24 s on reality, 5–14 s on udp),
+// turns suspect: one exchange per drawn wait, a dead idle link found
+// within I + T. A link is up from its first answer until it closes.
+// [Counters] counts liveness's own frames, probes, replies and close
+// notices, written and read (ControlSent, ControlReceived), so that busy
+// links sending none shows from outside (the lab checks it).
+//
+// Each link draws S, I and its first seq from a generator of its own
+// (math/rand/v2's ChaCha8), seeded once from crypto/rand when the link is
+// made; [Options.Rand] replaces them all, for tests.
+//
+// D is this end's shaping delay (transport.Shaping.MaxDelay), from the
+// dial config or, on an accepted link, the link itself, doubled: the far
+// end's isn't known here and is taken to be the same. Today's transports
+// refuse delay shaping, so D is 0 on them.
+//
+// Older nodes read neither acks nor frames with seq and ack (V1 nodes,
+// V1 frames): a link writes V1 frames, every probe flagging that this end
+// reads acks, and keeps the V1 rule (a probe every 2 s while unanswered
+// that long, closed 6 s after its last answer) until the far end sends a
+// probe with that flag or a frame with seq and ack. Replies don't count:
+// V1 nodes copy flags back. A relay writes its own seq and ack; a V1
+// node's packet with no room for them goes on as V1, neither counting nor
+// answering.
+//
+// A link never answered closes after [Options.DialTimeout] (6 s by
+// default). [Node.Neighbors] lists a dialed node that never gave a link as
+// down once a dial attempt has failed (as with no route) or DialTimeout has
+// passed since the dial started, whichever comes first, so a dial that
+// never succeeds reads like a link that died; a first dial still waiting
+// for an answer isn't listed before that. The deadline counts from the
+// latest dial start: a map change of the node's endpoints restarts the
+// dial, and the clock. A probe's token counts the link's probes (a V1
+// probe's first four bytes are the link's first seq less one instead),
+// and a reply counts by its token only if it answers a probe still
+// awaited. Its round trip is an
+// upper bound: a transport that shapes may hold each probe and each reply
+// up to transport.MaxControlHold, which T leaves room for. Latency
 // comparisons belong on traffic nobody holds, such as WireGuard's
 // handshake round trip.
 //
@@ -79,16 +133,17 @@
 // WireGuard's session is with the peer, not with the first hop, so
 // switching first hops (entries of a chain) keeps the exit and the
 // connections open through it. Traffic to an adjacent node stays on one of
-// its links while that link is up. Packets are never spread across first
-// hops packet by packet: they would arrive out of order, which TCP handles
-// badly.
+// its links: the lower node id keeps its link while it is up, the higher
+// sends where the lower's latest packet came from (else where its latest
+// answer came from). Packets are never spread across first hops packet by
+// packet: they would arrive out of order, which TCP handles badly.
 //
 // [Failover] follows the priority order with hysteresis: it stays on the
 // current hop while that is up, and a hop earlier in the order takes over
 // only once it has been up for [Failover.HoldDown] (20 s by default), so a
 // flapping primary doesn't pull traffic back and forth. Failover follows
 // links only: a node notices its own first or next hop failing, and
-// switches within about one dead interval of the last answered probe. A
+// switches once the link is closed (above). A
 // path that breaks further on goes unnoticed until end-to-end probes of
 // each path come with hop groups (TP-031).
 //

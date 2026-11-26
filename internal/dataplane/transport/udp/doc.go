@@ -152,8 +152,8 @@
 //     older sender, once the current sender has been quiet for 30 seconds
 //     (that is what a dialer whose clock went back looks like); with no
 //     link open it opens one toward the attacker's address, which lasts
-//     until DeadAfter; as with WireGuard's own roaming, it moves the link
-//     until the real dialer's next datagram;
+//     until the path layer's dial timeout; as with WireGuard's own
+//     roaming, it moves the link until the real dialer's next datagram;
 //   - a sender evicted from the slots and then pushed out of the evicted
 //     ids by more than 1024 further evictions while its datagrams could
 //     still be fresh is forgotten: it can take over again once the current

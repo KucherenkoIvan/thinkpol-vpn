@@ -119,8 +119,14 @@ func TestBindDropsWhatWireGuardCantHold(t *testing.T) {
 
 func TestOptionsAreChecked(t *testing.T) {
 	for name, o := range map[string]path.Options{
-		"DeadAfter not above ProbeInterval": {ProbeInterval: time.Second, DeadAfter: time.Second},
-		"RedialMax below RedialMin":         {RedialMin: time.Second, RedialMax: time.Millisecond},
+		"Burst upside down":          {Burst: path.Range{Min: time.Second, Max: time.Millisecond}},
+		"Burst from zero":            {Burst: path.Range{Max: time.Second}},
+		"Response upside down":       {Response: path.Range{Min: time.Second, Max: time.Millisecond}},
+		"IdleDefault upside down":    {IdleDefault: path.Range{Min: 10 * time.Second, Max: 9 * time.Second}},
+		"IdleDefault within Burst":   {IdleDefault: path.Range{Min: time.Second, Max: 9 * time.Second}},
+		"an idle range within Burst": {Idle: map[string]path.Range{"udp": {Min: time.Second, Max: 9 * time.Second}}},
+		"a negative idle range":      {Idle: map[string]path.Range{"udp": {Min: -time.Second, Max: 9 * time.Second}}},
+		"RedialMax below RedialMin":  {RedialMin: time.Second, RedialMax: time.Millisecond},
 	} {
 		if _, err := path.NewNode(id("A"), o); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -129,6 +135,11 @@ func TestOptionsAreChecked(t *testing.T) {
 	if _, err := path.NewNode(path.NodeID{}, path.Options{}); err == nil {
 		t.Error("zero node id accepted")
 	}
+	n, err := path.NewNode(id("A"), path.Options{Idle: map[string]path.Range{"udp": {Min: 2 * time.Second, Max: 3 * time.Second}}})
+	if err != nil {
+		t.Fatalf("the defaults with an idle range of its own refused: %v", err)
+	}
+	_ = n.Close()
 }
 
 func TestServeRefusesLinksOfAnotherSpace(t *testing.T) {

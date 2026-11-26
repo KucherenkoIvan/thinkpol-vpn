@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"reflect"
 	"slices"
@@ -16,20 +18,50 @@ import (
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport"
 )
 
+// Range is a span of durations a node draws from: Min up to Max.
+type Range struct{ Min, Max time.Duration }
+
+func (r Range) check(name string) error {
+	if r.Min <= 0 || r.Max < r.Min {
+		return fmt.Errorf("path: %s range %v–%v: want 0 < Min ≤ Max", name, r.Min, r.Max)
+	}
+	return nil
+}
+
 // Options tune liveness, failover and queues. The zero value of a field
-// means its default.
+// means its default. The liveness terms are docs/design/path-liveness.md's.
 type Options struct {
-	// ProbeInterval is how often each end probes a link whose last proof
-	// is older than that (default 2 s).
-	ProbeInterval time.Duration
-	// DeadAfter is how long a link may go without a reply to its probes
-	// before it counts as down and is closed; a dialed link is then
-	// redialed (default three probe intervals). It must exceed
-	// ProbeInterval, and should leave room for both ends' shaping delays
-	// and twice transport.MaxControlHold on links that shape.
-	DeadAfter time.Duration
+	// Burst is S's range (default 500 ms–1.5 s), drawn at each answer: a
+	// frame written S after both the latest answer and the previous frame
+	// opens a burst. On a shaped link the top shrinks by D, never below
+	// Min.
+	Burst Range
+	// Response bounds R, the time a link waits for an answer before it
+	// turns suspect: the probes' smoothed round trip plus four deviations,
+	// clamped to it (default 250 ms–1 s); Max until measured.
+	Response Range
+	// Idle is I's range per transport name: a link that got no answer for
+	// I probes. Transports it doesn't list take the defaults, 8–24 s for
+	// "reality" and IdleDefault for the rest.
+	Idle map[string]Range
+	// IdleDefault is I's range for transports Idle doesn't list (default
+	// 5–14 s, udp's).
+	IdleDefault Range
+	// ControlHold is the longest each end's transport may hold a control
+	// frame (default transport.MaxControlHold). A suspect link waits
+	// T = 2·ControlHold + D + R for an answer before it is closed.
+	ControlHold time.Duration
+	// DialTimeout is how long a dial, and a link that was never answered,
+	// may take (default 6 s). Neighbors lists a dialed node that never
+	// gave a link as down once it has passed.
+	DialTimeout time.Duration
+	// Rand, if set, is where every link's draws (S, I, its first seq) come
+	// from, read under one lock for the node: for tests. By default each
+	// link draws from a generator of its own, seeded once from
+	// crypto/rand. A Rand that fails panics.
+	Rand io.Reader
 	// FollowFor is how long the leader's latest path stays worth following
-	// after its last packet (default DeadAfter).
+	// after its last packet (default DialTimeout).
 	FollowFor time.Duration
 	// RedialMin and RedialMax bound the backoff between dials of one
 	// adjacent node (defaults 250 ms and 5 s); RedialMax ≥ RedialMin.
@@ -47,16 +79,29 @@ type Options struct {
 	// they belong to another.
 	Space transport.SpaceID
 	// Now is the clock (default time.Now). It must be monotonic: the node
-	// only ever subtracts its readings. Timers that only pace the work (the
-	// liveness check, dial backoff) stay on the wall clock.
+	// only ever subtracts its readings. Timers (liveness deadlines, dial
+	// backoff) run on the wall clock.
 	Now func() time.Time
 	// Log gets the links' lives at info level: up, closed and why, the
 	// first failed dial of a run and the first failed read or write of a
 	// link (the rest at debug). Nil discards them.
 	Log *slog.Logger
 
-	watchEvery time.Duration // how often links are checked (tests)
+	watchEvery time.Duration // how often links' remotes are checked (tests)
+	// afterFunc starts the links' deadline timers (tests run them on a
+	// fake clock).
+	afterFunc func(time.Duration, func()) timer
 }
+
+// timer is the part of *time.Timer a link's deadline needs.
+type timer interface {
+	Reset(time.Duration) bool
+	Stop() bool
+}
+
+// defaultIdle are the idle ranges of transports with their own
+// (docs/design/path-liveness.md, owner's decision 2).
+var defaultIdle = map[string]Range{"reality": {8 * time.Second, 24 * time.Second}}
 
 func (o Options) withDefaults() (Options, error) {
 	def := func(d *time.Duration, v time.Duration) {
@@ -64,12 +109,26 @@ func (o Options) withDefaults() (Options, error) {
 			*d = v
 		}
 	}
-	def(&o.ProbeInterval, 2*time.Second)
-	def(&o.DeadAfter, 3*o.ProbeInterval)
-	def(&o.FollowFor, o.DeadAfter)
+	defRange := func(r *Range, v Range) {
+		if *r == (Range{}) {
+			*r = v
+		}
+	}
+	defRange(&o.Burst, Range{500 * time.Millisecond, 1500 * time.Millisecond})
+	defRange(&o.Response, Range{250 * time.Millisecond, time.Second})
+	defRange(&o.IdleDefault, Range{5 * time.Second, 14 * time.Second})
+	idle := maps.Clone(defaultIdle)
+	maps.Copy(idle, o.Idle)
+	o.Idle = idle
+	def(&o.ControlHold, transport.MaxControlHold)
+	def(&o.DialTimeout, 6*time.Second)
+	def(&o.FollowFor, o.DialTimeout)
 	def(&o.RedialMin, 250*time.Millisecond)
 	def(&o.RedialMax, max(5*time.Second, o.RedialMin))
-	def(&o.watchEvery, max(o.ProbeInterval/4, 5*time.Millisecond))
+	def(&o.watchEvery, 500*time.Millisecond)
+	if o.afterFunc == nil {
+		o.afterFunc = func(d time.Duration, f func()) timer { return time.AfterFunc(d, f) }
+	}
 	if o.HopLimit == 0 {
 		o.HopLimit = DefaultHopLimit
 	}
@@ -85,13 +144,20 @@ func (o Options) withDefaults() (Options, error) {
 	if o.Log == nil {
 		o.Log = slog.New(slog.DiscardHandler)
 	}
-	switch {
-	case o.DeadAfter <= o.ProbeInterval:
-		return o, fmt.Errorf("path: DeadAfter %v must exceed ProbeInterval %v", o.DeadAfter, o.ProbeInterval)
-	case o.RedialMax < o.RedialMin:
-		return o, fmt.Errorf("path: RedialMax %v is below RedialMin %v", o.RedialMax, o.RedialMin)
+	errs := []error{o.Burst.check("Burst"), o.Response.check("Response"), o.IdleDefault.check("IdleDefault")}
+	for name, r := range o.Idle {
+		errs = append(errs, r.check("Idle["+name+"]"))
+		if r.Min <= o.Burst.Max {
+			errs = append(errs, fmt.Errorf("path: Idle[%s] starts at %v, within Burst's %v", name, r.Min, o.Burst.Max))
+		}
 	}
-	return o, nil
+	if o.IdleDefault.Min <= o.Burst.Max {
+		errs = append(errs, fmt.Errorf("path: IdleDefault starts at %v, within Burst's %v", o.IdleDefault.Min, o.Burst.Max))
+	}
+	if o.RedialMax < o.RedialMin {
+		errs = append(errs, fmt.Errorf("path: RedialMax %v is below RedialMin %v", o.RedialMax, o.RedialMin))
+	}
+	return o, errors.Join(errs...)
 }
 
 // Table is what a node's map section says about adjacency and forwarding.
@@ -161,6 +227,8 @@ type Node struct {
 	peers  atomic.Pointer[map[NodeID]*peerState] // every Bind's peers
 
 	counters counters
+
+	randMu sync.Mutex // Options.Rand, if set
 }
 
 // NewNode starts the path layer of node id. Give it a Table with Update and
@@ -362,7 +430,7 @@ func (n *Node) Serve(transportName string, l transport.Listener) error {
 		case peer.Node == (NodeID{}) || peer.Node == n.id:
 			_ = tl.Close()
 		default:
-			n.addLink(peer.Node, tl, false, transportName, -1)
+			n.addLink(peer.Node, tl, false, transportName, -1, transport.Shaping{})
 		}
 	}
 }
@@ -405,8 +473,8 @@ func (n *Node) candidate(h NodeID, now int64) Candidate {
 	return c
 }
 
-// watch closes links that went silent, probes dialed links, and now and
-// then forgets adjacent nodes no longer used.
+// watch logs links' far ends moving and now and then forgets adjacent
+// nodes no longer used. Liveness runs on each link's own timer.
 func (n *Node) watch() {
 	tick := time.NewTicker(n.opts.watchEvery)
 	defer tick.Stop()
@@ -418,7 +486,7 @@ func (n *Node) watch() {
 		case <-tick.C:
 		}
 		now := n.now()
-		if now-pruned >= int64(n.opts.DeadAfter) {
+		if now-pruned >= int64(n.opts.DialTimeout) {
 			n.mu.Lock()
 			n.pruneLocked()
 			n.mu.Unlock()
@@ -432,7 +500,7 @@ func (n *Node) watch() {
 		n.nmu.RUnlock()
 		for _, nb := range nbs {
 			for _, l := range nb.all() {
-				l.tick(now)
+				l.watchRemote()
 			}
 		}
 	}
@@ -441,43 +509,85 @@ func (n *Node) watch() {
 // handle takes one frame read from l and owns b from then on.
 func (n *Node) handle(l *link, b *[]byte) {
 	f := *b
+	now := n.now()
 	switch f[0] {
 	case kindProbe:
-		if len(f) == probeSize {
-			f[0] = kindProbeReply
-			l.sendControl(b)
+		switch len(f) {
+		case probeSizeV1:
+			n.counters.controlReceived.Add(1)
+			if f[1]&flagReadsAcks != 0 {
+				l.readsAcks(f[2:6], now)
+			}
+			l.reply(b)
+			return
+		case probeSize:
+			n.counters.controlReceived.Add(1)
+			l.onFrame(now, f, probeSizeV1, 0)
+			if f[1]&flagClosing != 0 {
+				putBuf(b)
+				l.close("the far end closed it", nil)
+				return
+			}
+			l.reply(b)
 			return
 		}
 	case kindProbeReply:
-		if len(f) == probeSize {
-			l.probeReply(f, n.now())
+		if len(f) == probeSizeV1 || len(f) == probeSize {
+			n.counters.controlReceived.Add(1)
+			l.onFrame(now, f, seqAck(f), l.awaited(f))
 			putBuf(b)
 			return
 		}
-	case kindPacket:
-		h, ok := parsePacket(f)
-		switch {
-		case !ok:
-		case h.dst == n.id:
-			n.deliver(h.src, l.nb.id, b)
-			return
-		default:
-			n.forward(l, h, b)
-			return
+	case kindPacket, kindPacketV1:
+		h, off, ok := parsePacket(f)
+		if !ok {
+			break
 		}
+		if k := seqAck(f); k >= 0 {
+			l.onFrame(now, f, k, 0)
+		}
+		// Packets moving to another of the neighbor's links hint that the
+		// one they came on before went silent.
+		if prev := l.nb.lastRecv.Swap(l); prev != nil && prev != l && !prev.closed() {
+			prev.hint(now)
+		}
+		if h.dst == n.id {
+			n.deliver(h.src, l.nb.id, b, off)
+		} else {
+			n.forward(l, h, b)
+		}
+		return
 	}
 	n.counters.malformed.Add(1)
 	putBuf(b)
 }
 
-func (n *Node) deliver(src, via NodeID, b *[]byte) {
+// reply turns a probe in b into its reply and queues it. A link that reads
+// acks says so; one that doesn't echoes the probe's flags, as V1 nodes
+// do.
+func (l *link) reply(b *[]byte) {
+	f := (*b)[:probeSize]
+	if len(*b) == probeSizeV1 {
+		clear(f[probeSizeV1:])
+	}
+	f[0] = kindProbeReply
+	l.lmu.Lock()
+	if l.lv.acks {
+		f[1] = flagReadsAcks
+	}
+	l.lmu.Unlock()
+	*b = f
+	l.sendControl(b)
+}
+
+func (n *Node) deliver(src, via NodeID, b *[]byte, off int) {
 	ps := (*n.peers.Load())[src]
 	if ps == nil {
 		n.counters.unknownPeer.Add(1)
 		putBuf(b)
 		return
 	}
-	ps.bind.Load().deliver(ps, via, b, n.now())
+	ps.bind.Load().deliver(ps, via, b, off, n.now())
 }
 
 // forward relays a packet along this node's route for its destination,
@@ -497,7 +607,7 @@ func (n *Node) forward(from *link, h header, b *[]byte) {
 	case hops <= 1:
 		n.counters.hopLimit.Add(1)
 	default:
-		to := rs.pick(n, from.nb.id, n.now())
+		to := rs.pick(n, from.nb.id)
 		if to == nil {
 			n.counters.noPath.Add(1)
 			break
@@ -525,7 +635,8 @@ type routeState struct {
 
 // pick chooses the next hop's link, never exclude (split horizon), by the
 // route's selector on link liveness alone: relays don't follow.
-func (rs *routeState) pick(n *Node, exclude NodeID, now int64) *link {
+func (rs *routeState) pick(n *Node, exclude NodeID) *link {
+	now := n.now()
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	cands := rs.cands[:0]
@@ -552,7 +663,7 @@ func (rs *routeState) pick(n *Node, exclude NodeID, now int64) *link {
 	if nb == nil {
 		return nil
 	}
-	l, _ := nb.pick(now)
+	l, _ := nb.pick()
 	return l
 }
 
@@ -591,6 +702,10 @@ type Counters struct {
 	TooLarge    uint64
 	WriteFailed uint64 // a link's transport failed to write a packet for another reason
 	ReadFailed  uint64 // a link's transport failed a read (a packet lost, the link kept)
+	// Liveness's own frames, not packets: probes, their replies and close
+	// notices written to links, and read from them.
+	ControlSent     uint64
+	ControlReceived uint64
 }
 
 type counters struct {
@@ -598,6 +713,7 @@ type counters struct {
 	noRoute, spoofed, hopLimit, noPath, unknownPeer atomic.Uint64
 	queueFull, malformed, otherSpace                atomic.Uint64
 	tooLarge, writeFailed, readFailed               atomic.Uint64
+	controlSent, controlReceived                    atomic.Uint64
 }
 
 // Counters returns the node's counters.
@@ -608,7 +724,7 @@ func (n *Node) Counters() Counters {
 		NoRoute: c.noRoute.Load(), Spoofed: c.spoofed.Load(), HopLimit: c.hopLimit.Load(), NoPath: c.noPath.Load(),
 		UnknownPeer: c.unknownPeer.Load(), QueueFull: c.queueFull.Load(), Malformed: c.malformed.Load(),
 		OtherSpace: c.otherSpace.Load(), TooLarge: c.tooLarge.Load(), WriteFailed: c.writeFailed.Load(),
-		ReadFailed: c.readFailed.Load(),
+		ReadFailed: c.readFailed.Load(), ControlSent: c.controlSent.Load(), ControlReceived: c.controlReceived.Load(),
 	}
 }
 
@@ -650,7 +766,7 @@ type LinkStatus struct {
 // Neighbors reports every adjacent node the node knows of: each one it
 // has or had a link to, and each one it dials without ever getting a link
 // (down, with no links) once a dial attempt has failed or it has been
-// dialed for DeadAfter. A first dial still waiting for an answer isn't
+// dialed for DialTimeout. A first dial still waiting for an answer isn't
 // listed yet: it gets its chance.
 func (n *Node) Neighbors() []NeighborStatus {
 	now := n.now()
@@ -681,7 +797,7 @@ func (n *Node) Neighbors() []NeighborStatus {
 	// A dialed node keeps its neighbor once it had a link (pruning spares
 	// dialed nodes), so what is left never linked since its dial started.
 	for id, d := range dialing {
-		if d.failed.Load() || now-d.started >= int64(n.opts.DeadAfter) {
+		if d.failed.Load() || now-d.started >= int64(n.opts.DialTimeout) {
 			out = append(out, NeighborStatus{Node: id, Dialed: true})
 		}
 	}

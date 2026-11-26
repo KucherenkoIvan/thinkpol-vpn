@@ -78,6 +78,7 @@ var _ conn.Bind = (*Bind)(nil)
 
 type inbound struct {
 	buf *[]byte // a packet frame
+	off int     // where its message starts
 	ep  *peerEndpoint
 }
 
@@ -241,7 +242,7 @@ func (b *Bind) receiveFunc(open chan struct{}) conn.ReceiveFunc {
 			}
 			n := 0
 			for {
-				if m := (*in.buf)[HeaderSize:]; len(m) <= len(packets[n]) {
+				if m := (*in.buf)[in.off:]; len(m) <= len(packets[n]) {
 					sizes[n] = copy(packets[n], m)
 					eps[n] = in.ep
 					n++
@@ -271,7 +272,7 @@ func (b *Bind) receiveFunc(open chan struct{}) conn.ReceiveFunc {
 // node: maps need not route both ways alike, so a reply may come through a
 // hop that isn't one of the peer's first hops. Only one that is counts as
 // a sign of the peer's path, for following and HeardVia.
-func (b *Bind) deliver(ps *peerState, via NodeID, buf *[]byte, now int64) {
+func (b *Bind) deliver(ps *peerState, via NodeID, buf *[]byte, off int, now int64) {
 	c := &b.node.counters
 	b.rmu.RLock()
 	defer b.rmu.RUnlock()
@@ -281,11 +282,12 @@ func (b *Bind) deliver(ps *peerState, via NodeID, buf *[]byte, now int64) {
 	}
 	ep := ps.endpoint(via)
 	// Nor do cookie replies and junk.
-	if t := wgType((*buf)[HeaderSize:]); t != 0 && t != wgCookie && slices.Contains(*ps.hops.Load(), via) {
+	if t := wgType((*buf)[off:]); t != 0 && t != wgCookie && slices.Contains(*ps.hops.Load(), via) {
 		ep.lastSeen.Store(now)
+		b.node.peerVia(ps, via, now)
 	}
 	select {
-	case b.in <- inbound{buf: buf, ep: ep}:
+	case b.in <- inbound{buf: buf, off: off, ep: ep}:
 	default:
 		c.queueFull.Add(1)
 		putBuf(buf)
@@ -376,6 +378,27 @@ type peerState struct {
 	cands    []Candidate // scratch for route
 
 	eps sync.Map // via NodeID → *peerEndpoint
+
+	lastVia atomic.Pointer[NodeID] // the first hop the peer's latest packet came through
+}
+
+// peerVia notes that ps's packets came through via: if they came through
+// another first hop before, that hop's links may have gone silent (a hint,
+// liveness.go).
+func (n *Node) peerVia(ps *peerState, via NodeID, now int64) {
+	prev := ps.lastVia.Load()
+	if prev != nil && *prev == via {
+		return
+	}
+	ps.lastVia.Store(&via)
+	if prev == nil {
+		return
+	}
+	if nb := n.lookupNeighbor(*prev); nb != nil {
+		for _, l := range nb.all() {
+			l.hint(now)
+		}
+	}
 }
 
 func (ps *peerState) endpoint(via NodeID) *peerEndpoint {
@@ -423,7 +446,7 @@ func (ps *peerState) route(n *Node, pe *peerEndpoint, cookies bool) *link {
 	if nb == nil {
 		return nil
 	}
-	l, _ := nb.pick(now)
+	l, _ := nb.pick()
 	return l
 }
 

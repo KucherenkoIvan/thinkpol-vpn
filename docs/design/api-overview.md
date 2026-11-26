@@ -192,7 +192,7 @@ The node writes no log file. The log goes to stderr and into an in-memory ring, 
 
 | Surface | Behaviour |
 |---|---|
-| health | a node the device dials with no link is a neighbor, down, once a dial attempt has failed (no route, refused) or the path layer's dead interval (6 s) has passed since the dial started, whichever comes first; a first dial still waiting for an answer isn't listed before that. With no other neighbor up it is `no_link_up` (down), else `neighbor_down` (degraded). The code is reused: the case reads the same, no adjacent node answers |
+| health | a node the device dials with no link is a neighbor, down, once a dial attempt has failed (no route, refused) or the path layer's dial timeout (6 s) has passed since the dial started, whichever comes first; a first dial still waiting for an answer isn't listed before that. With no other neighbor up it is `no_link_up` (down), else `neighbor_down` (degraded). The code is reused: the case reads the same, no adjacent node answers |
 | health | a device's resolver with no direct upstream to ask, or an OS that names no DNS server now (its previous upstreams are still asked): `dns_no_upstream` (degraded). Not raised beside `dns_upstreams_stale`: unknown upstreams aren't absent ones |
 | `status`, `diag` | show them with the existing rendering; the never-linked node is listed under neighbors as `down` with no links |
 

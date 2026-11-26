@@ -131,7 +131,7 @@ func TestCensorMatrix(t *testing.T) {
 		if want == "fail" && c != nil {
 			budget.watch = c.watchBlocked(t, l, cc.blocker, tr.oneUnderlay)
 		}
-		held := cc.hold > 0 && tr.hold != nil
+		held := heldCell(tr, cc)
 		if held {
 			tr.hold(t, l, target, cc.hold, cc.idle, func() int { return c.blocks(t, cc.watch) })
 		}
@@ -204,6 +204,12 @@ func TestCensorMatrix(t *testing.T) {
 				t.Fatalf("%s against %s: %v", tr.name, cc.name, err)
 			}
 			cell.detail += "; known, accepted: " + k.why
+		}
+		if why, ok := cc.failFor[tr.name]; ok && cell.result == "fail" {
+			if err := failedFor(c, cc.blocker, why); err != nil {
+				cell.result, cell.detail = "error", fmt.Sprintf("%s; %v", cell.detail, err)
+				t.Fatalf("%s against %s: %v", tr.name, cc.name, err)
+			}
 		}
 		if want == "varies" {
 			cell.detail = strings.TrimPrefix(cell.detail+"; varies: "+cc.varies[tr.name], "; ")
@@ -330,7 +336,8 @@ func matrixLabs(stream string, rows []transport, cases []censorCase) []matrixLab
 
 // rowLabs is the row's labs in the stream, each starting with the off
 // cell (cases[0]) as its gate: the stream's censored cells, in cases'
-// order, held cells (heldCell) in the row's first lab, the rest dealt in
+// order, held cells (heldCell) in the row's first lab, one after another,
+// the rest dealt in
 // turn across the other labs, or across all of them when none is held, up
 // to transport.labs labs (fewer when the row has fewer cells). Only the
 // first lab records the off cell, so every cell is recorded once, and
@@ -349,7 +356,12 @@ func rowLabs(stream string, tr transport, cases []censorCase) []matrixLab {
 	if len(cells) == 0 && stream == lab.StreamLong {
 		return nil
 	}
-	n := min(max(tr.labs, 1), max(len(cells), 1))
+	// The held cells share the first lab, one after another.
+	need := len(cells)
+	if held := len(slices.DeleteFunc(slices.Clone(cells), func(cc censorCase) bool { return !heldCell(tr, cc) })); held > 1 {
+		need -= held - 1
+	}
+	n := min(max(tr.labs, 1), max(need, 1))
 	labs := make([]matrixLab, n)
 	for i := range labs {
 		labs[i] = matrixLab{tr: tr, part: i, cells: []labCell{{cc: off, record: i == 0}}}
@@ -495,8 +507,9 @@ func TestRowLabs(t *testing.T) {
 }
 
 // TestRhythmRealTarget: make lab-test-rhythm-real's -run filter, matched
-// as go test matches it, selects every held cell and the off cell of its
-// lab, and no other cell or lab, in the run without a stream it makes.
+// as go test matches it, selects every held cell that runs on WireGuard's
+// timers (scaledHold) and the off cell of its lab, and no other cell or
+// lab, in the run without a stream it makes.
 func TestRhythmRealTarget(t *testing.T) {
 	mk, err := os.ReadFile("../Makefile")
 	if err != nil {
@@ -518,7 +531,7 @@ func TestRhythmRealTarget(t *testing.T) {
 	matches := func(re *regexp.Regexp, name string) bool { return re.MatchString(strings.ReplaceAll(name, " ", "_")) }
 	held := 0
 	for _, ml := range matrixLabs("", transports, censorCases) {
-		labHolds := slices.ContainsFunc(ml.cells, func(lc labCell) bool { return heldCell(ml.tr, lc.cc) })
+		labHolds := slices.ContainsFunc(ml.cells, func(lc labCell) bool { return scaledHold(ml.tr, lc.cc) })
 		if !matches(res[1], ml.name()) {
 			if labHolds {
 				t.Errorf("filter %q leaves out %s, which has a held cell", filter, ml.name())
@@ -529,11 +542,11 @@ func TestRhythmRealTarget(t *testing.T) {
 			t.Errorf("filter %q starts %s, which has no held cell", filter, ml.name())
 		}
 		for i, lc := range ml.cells {
-			want := i == 0 || heldCell(ml.tr, lc.cc)
+			want := i == 0 || scaledHold(ml.tr, lc.cc)
 			if got := matches(res[2], lc.cc.name); got != want {
 				t.Errorf("filter %q: %s / %s selected %v, want %v", filter, ml.name(), lc.cc.name, got, want)
 			}
-			if i > 0 && heldCell(ml.tr, lc.cc) {
+			if i > 0 && scaledHold(ml.tr, lc.cc) {
 				held++
 			}
 		}
@@ -543,10 +556,18 @@ func TestRhythmRealTarget(t *testing.T) {
 	}
 }
 
+// scaledHold says whether a held cell runs on WireGuard's timers, which
+// make lab-test-rhythm-real runs at real time: the in-use holds. The idle
+// case keeps real time already (rhythmIdleCase).
+func scaledHold(tr transport, cc censorCase) bool { return heldCell(tr, cc) && !cc.idle }
+
 // heldCell says whether a cell holds its row's tunnel before the probe
-// (censorCase.hold, transport.hold): the matrix's longest waits (7.5
-// minutes at real time, rhythmHold), the long stream's.
-func heldCell(tr transport, cc censorCase) bool { return cc.hold > 0 && tr.hold != nil }
+// (censorCase.hold, transport.hold; a row held only idle, transport.idleOnly,
+// only by an idle case): the matrix's longest waits (7.5 minutes at real
+// time, rhythmHold; idleRhythmHold), the long stream's.
+func heldCell(tr transport, cc censorCase) bool {
+	return cc.hold > 0 && tr.hold != nil && (cc.idle || !tr.idleOnly)
+}
 
 // inStream says whether a censored cell is the stream's: held cells are
 // the long stream's, the rest the default stream's; "" (no stream) runs
@@ -625,12 +646,23 @@ func checkMatrix(cases []censorCase, rows []transport) error {
 		if len(cc.verdictSays) > 0 && cc.report == "" {
 			return fmt.Errorf("censor case %q checks verdicts but names no module to report", cc.name)
 		}
-		// udp shows WireGuard's timing untouched: a held row's pass means
-		// something only if the same hold catches udp.
+		// A held row's pass means something only if the same hold catches
+		// the case's control: in use, udp, which shows WireGuard's timing
+		// untouched; idle, the https row's TLS pinger, one fixed exchange
+		// at a fixed interval (holdPinger).
 		if cc.hold > 0 {
-			i := slices.IndexFunc(rows, func(tr transport) bool { return tr.name == rowUDP })
-			if i < 0 || rows[i].hold == nil || cc.expect[rowUDP] != "fail" {
-				return fmt.Errorf("censor case %q holds tunnels, but %s, the control, isn't a row held and expected to fail", cc.name, rowUDP)
+			control := rowUDP
+			if cc.idle {
+				control = rowHTTPS
+			}
+			i := slices.IndexFunc(rows, func(tr transport) bool { return tr.name == control })
+			if i < 0 || !heldCell(rows[i], cc) || cc.expect[control] != "fail" {
+				return fmt.Errorf("censor case %q holds tunnels, but %s, the control, isn't a row held and expected to fail", cc.name, control)
+			}
+		}
+		for tr := range cc.failFor {
+			if cc.expect[tr] != "fail" {
+				return fmt.Errorf("censor case %q names the signal %s fails for, but doesn't expect it to fail", cc.name, tr)
 			}
 		}
 		for _, tr := range rows {
@@ -663,9 +695,10 @@ func isReferenceOrControl(row string) bool {
 // gate row missing from the prober case's verdictSays, a TLS gate row
 // missing from the server-hello case's, a row tuning a report module
 // without a verdictSays entry, a row tuning a module that doesn't exist,
-// a held case without udp held and expected to fail (the control), an
-// accepted fail the case doesn't expect, and one that names no block
-// reason each fail the run.
+// a held case without its control held and expected to fail (udp in use,
+// the https row's pinger idle), an accepted fail the case doesn't expect,
+// one that names no block reason, and a signal named for a row not
+// expected to fail each fail the run.
 func TestCheckMatrix(t *testing.T) {
 	if err := checkMatrix(censorCases, transports); err != nil {
 		t.Fatalf("the matrix: %v", err)
@@ -700,6 +733,11 @@ func TestCheckMatrix(t *testing.T) {
 	held := func(expect map[string]string) []censorCase {
 		return []censorCase{{name: "off"}, {name: "held", modules: on, hold: time.Minute, expect: expect, blocker: "wireguard-rhythm"}}
 	}
+	heldIdle := func(expect map[string]string) []censorCase {
+		cases := held(expect)
+		cases[1].idle = true
+		return cases
+	}
 	hold := func(*testing.T, *lab.Lab, probeTarget, time.Duration, bool, func() int) {}
 	tunnel := func(*lab.Lab, censor.FlowKey) bool { return true }
 	for _, c := range []struct {
@@ -713,10 +751,29 @@ func TestCheckMatrix(t *testing.T) {
 		{"control not held", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowUDP, udp: true}}, true},
 		{"no control row", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowReality, hold: hold, tunnel: tunnel}}, true},
 		{"held row names no tunnel", held(map[string]string{rowUDP: "fail"}), []transport{{name: rowUDP, udp: true, hold: hold}}, true},
+		// Idle, the control is the https row's pinger, held only idle.
+		{"idle, pinger held, expected to fail", heldIdle(map[string]string{rowHTTPS: "fail"}), []transport{{name: rowHTTPS, hold: hold, tunnel: tunnel, idleOnly: true}}, false},
+		{"idle, pinger expected to pass", heldIdle(nil), []transport{{name: rowHTTPS, hold: hold, tunnel: tunnel, idleOnly: true}}, true},
+		{"idle, pinger not held", heldIdle(map[string]string{rowHTTPS: "fail"}), []transport{{name: rowHTTPS}}, true},
+		{"idle, only udp held and failing", heldIdle(map[string]string{rowUDP: "fail"}), []transport{{name: rowUDP, udp: true, hold: hold, tunnel: tunnel}}, true},
 	} {
 		if err := checkMatrix(c.cases, c.rows); (err != nil) != c.wantErr {
 			t.Errorf("%s: %v, want an error %v", c.name, err, c.wantErr)
 		}
+	}
+	// A row held only idle isn't held in use.
+	pinger := transport{name: rowHTTPS, hold: hold, tunnel: tunnel, idleOnly: true}
+	if heldCell(pinger, held(nil)[1]) || !heldCell(pinger, heldIdle(nil)[1]) {
+		t.Errorf("a row held only idle: held in use %v, idle %v; want false, true", heldCell(pinger, held(nil)[1]), heldCell(pinger, heldIdle(nil)[1]))
+	}
+	// A signal a row fails for is named only for a row expected to fail.
+	failing := censorCase{name: "failing", modules: on, blocker: "wireguard-rhythm", failFor: map[string]string{rowHTTPS: censor.WGRhythmBySteady}}
+	if err := checkMatrix([]censorCase{{name: "off"}, failing}, nil); err == nil {
+		t.Error("a signal named for a row the case doesn't expect to fail passed the checks")
+	}
+	failing.expect = map[string]string{rowHTTPS: "fail"}
+	if err := checkMatrix([]censorCase{{name: "off"}, failing}, nil); err != nil {
+		t.Errorf("a signal named for a row expected to fail: %v", err)
 	}
 	// An accepted fail is an expected fail, nothing else.
 	accepting := censorCase{name: "accepting", modules: on, blocker: "wireguard-rhythm",
@@ -943,8 +1000,9 @@ type censorCase struct {
 	// in the verdict log.
 	blocker string
 	// hold keeps the tunnel of a row with a hold up this long before the
-	// probe, in use or, with idle, idle after one ping, and the cell fails
-	// if watch, a module of the case, blocked its connection meanwhile.
+	// probe, in use or, with idle, idle after one ping (heldCell), and the
+	// cell fails if watch, a module of the case, blocked its connection
+	// meanwhile.
 	// trace is the path watch writes its trace to, which the cell logs a
 	// summary of.
 	hold  time.Duration
@@ -960,6 +1018,10 @@ type censorCase struct {
 	// known, never as news, and stays a correct cell like any expected
 	// fail, as long as the blocker blocked for that tell alone.
 	accepted map[string]knownTell
+	// failFor holds rows expected to fail for one signal: the blocker's
+	// reason must start with it, or the cell is an error (a control
+	// caught by another signal proves nothing of this one).
+	failFor map[string]string
 	// settle probes twice, the cell scoring the second, once the active
 	// modules have flagged every flow of server-1 a module tagged.
 	settle bool
@@ -1288,13 +1350,14 @@ var censorCases = []censorCase{
 	// (rhythmCase), and make lab-test-rhythm-real runs these cells at real
 	// time. reality is caught too, by counting its records each way: a
 	// known tell, accepted in RR65 until cover records go both ways (owner,
-	// 2026-11-16). The other rows aren't held, and pass. The idle case,
-	// rhythmCase("wireguard-rhythm (idle)", true), is out of the matrix
-	// until TP-080 (liveness rides on data, idle path probes back off)
-	// brings it back: an idle thinkpol tunnel sends no WireGuard rhythm,
-	// so udp can't be caught there, and thinkpol's path probes are the
-	// idle tell (TP-223's Notes).
+	// 2026-11-16). The other rows aren't held, and pass.
 	rhythmCase("wireguard-rhythm", false),
+	// The same module watching tunnels held idle (rhythmIdleCase): reality
+	// and udp pass, their idle path probes drawn at random
+	// (docs/design/path-liveness.md), and the https row's TLS pinger, one
+	// fixed exchange at a fixed interval, is the control the steady signal
+	// must catch.
+	rhythmIdleCase(),
 	// M2 gate checks (docs/design/milestones.md). Wu et al.'s exemptions
 	// on each connection's first data, UDP's first datagram too, and
 	// residual censorship after a block: thinkpol's udp sends random bytes
@@ -1489,6 +1552,9 @@ type transport struct {
 	// before the probe: in use, or idle. blocks counts the connections the
 	// case's module blocked so far, each a redial for the hold to allow.
 	hold func(t *testing.T, l *lab.Lab, to probeTarget, d time.Duration, idle bool, blocks func() int)
+	// idleOnly: only idle cases hold the row (the https row's pinger, the
+	// idle case's control).
+	idleOnly bool
 	// tunnel, on a held row, matches the held connection's flows from
 	// device-a to server-1, either family: what judgedFromTheStart reads.
 	tunnel func(l *lab.Lab, k censor.FlowKey) bool
@@ -1654,7 +1720,8 @@ var transports = []transport{
 	realityRow,
 	{name: rowUDP, setup: setupUDP, probe: probeWithDevice, sawFlows: sawUDP, udp: true, oneUnderlay: true, hold: holdWithDevice, tunnel: udpFlow, labs: 2, cellTime: 16 * time.Second},
 	{name: rowPlainTCP, setup: setupPlainTCP, probe: probePlainTCP, sawFlows: sawPlainTCP, cellTime: 8 * time.Second},
-	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPSOn(443), sawFlows: sawHTTPS, tls: true, cellTime: 11 * time.Second},
+	{name: rowHTTPS, setup: setupHTTPS, probe: probeHTTPSOn(443), sawFlows: sawHTTPS, tls: true, cellTime: 11 * time.Second,
+		hold: holdPinger, tunnel: pingerFlow, idleOnly: true},
 	{name: rowWireGuard, setup: setupWireGuard, probe: probeUDP, sawFlows: sawWireGuard, udp: true, cellTime: 11 * time.Second},
 	{name: rowOpenVPNUDP, setup: openVPN{"udp"}.setup, probe: openVPN{"udp"}.probe, sawFlows: openVPN{"udp"}.sawFlows, udp: true, labs: 2, cellTime: 15 * time.Second},
 	{name: rowOpenVPNTCP, setup: openVPN{"tcp"}.setup, probe: openVPN{"tcp"}.probe, sawFlows: openVPN{"tcp"}.sawFlows, labs: 2, cellTime: 14 * time.Second},

@@ -262,8 +262,8 @@ func TestNamespacesPingOverTheOverlay(t *testing.T) {
 		if err != nil || !strings.Contains(string(out), nd.v4.String()+"/16") || !strings.Contains(string(out), nd.v6.String()+"/48") {
 			t.Fatalf("%s: TUN addresses: %v\n%s", nd.name, err, out)
 		}
-		if out, err := inNamespace(nd.ns, "ip", "-o", "link", "show", "dev", tun.DefaultName); err != nil || !strings.Contains(string(out), "mtu 1328") {
-			t.Fatalf("%s: TUN link, want MTU 1328: %v\n%s", nd.name, err, out)
+		if out, err := inNamespace(nd.ns, "ip", "-o", "link", "show", "dev", tun.DefaultName); err != nil || !strings.Contains(string(out), "mtu 1320") {
+			t.Fatalf("%s: TUN link, want MTU 1320: %v\n%s", nd.name, err, out)
 		}
 	}
 
@@ -291,7 +291,7 @@ func TestNamespacesPingOverTheOverlay(t *testing.T) {
 	if err := nodes[a].engine.Apply(context.Background(), a.section); err != nil {
 		t.Fatal(err)
 	}
-	if st := nodes[a].engine.Status(); st.IPv6 || st.MTU != 1000-74-18-32 {
+	if st := nodes[a].engine.Status(); st.IPv6 || st.MTU != 1000-74-26-32 {
 		t.Fatalf("shaped: status %+v, want IPv4 only", st)
 	}
 	if out, err := inNamespace(nodes[a].ns, "ip", "-o", "addr", "show", "dev", tun.DefaultName); err != nil || strings.Contains(string(out), a.v6.String()) || !strings.Contains(string(out), a.v4.String()) {
@@ -305,7 +305,7 @@ func TestNamespacesPingOverTheOverlay(t *testing.T) {
 	if err := nodes[a].engine.Apply(context.Background(), a.section); err != nil {
 		t.Fatal(err)
 	}
-	if st := nodes[a].engine.Status(); !st.IPv6 || st.MTU != 1328 {
+	if st := nodes[a].engine.Status(); !st.IPv6 || st.MTU != 1320 {
 		t.Fatalf("unshaped again: status %+v", st)
 	}
 	nodes[a].ping(t, b.v6)
@@ -366,11 +366,11 @@ func TestTheOverlayComesBackAfterALinkBounce(t *testing.T) {
 	// put the address back before the MTU was changed, and the one that
 	// fixes the MTU comes only after the re-apply cooldown.
 	back := func() bool {
-		return strings.Contains(addrs(), a.v6.String()+"/48") && strings.Contains(link(), "mtu 1328")
+		return strings.Contains(addrs(), a.v6.String()+"/48") && strings.Contains(link(), "mtu 1320")
 	}
 	for deadline := time.Now().Add(wait); !back(); time.Sleep(50 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatalf("TUN not back after the bounce, want its IPv6 address and MTU 1328:\n%s%s", addrs(), link())
+			t.Fatalf("TUN not back after the bounce, want its IPv6 address and MTU 1320:\n%s%s", addrs(), link())
 		}
 	}
 	a.ping(t, s.v4)

@@ -7,7 +7,7 @@ import "time"
 // about to leave.
 type Candidate struct {
 	Hop NodeID
-	// Up: a link to Hop answered a probe within Options.DeadAfter.
+	// Up: a link to Hop was answered and hasn't closed since.
 	Up bool
 	// UpFor is how long Hop has been up without a gap; zero when down.
 	UpFor time.Duration
