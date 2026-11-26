@@ -245,12 +245,13 @@ const (
 // netem, in one exec inside the router: an exec from the host takes up to
 // seconds on a loaded machine, and four of them stretched a 1 s blackout. It
 // returns when each interface's blackout began and ended, by the router's
-// clock.
+// clock: stamped before each add and after each del, so a late stamp can
+// only widen a window, never hide part of the real drop.
 func (k *livenessLink) holdBlackout(t *testing.T, ifaces []string, d time.Duration) (on, off []time.Time) {
 	t.Helper()
 	script := "set -e\n"
 	for _, i := range ifaces {
-		script += "tc qdisc add dev " + i + " root netem loss 100%\ndate +%s%N\n"
+		script += "date +%s%N\ntc qdisc add dev " + i + " root netem loss 100%\n"
 	}
 	script += fmt.Sprintf("sleep %.3f\n", d.Seconds())
 	for _, i := range ifaces {
@@ -409,12 +410,17 @@ func blackoutRiddenOut(t *testing.T, k *livenessLink) {
 			after = r
 		}
 	}
-	t.Logf("%s, a %v blackout under pings: held %v toward the devices, %v toward the servers; replies stopped %v before it and came back %v after it lifted",
-		k.transport, blackout, held[0], held[1], began.Sub(before).Round(time.Millisecond), after.Sub(lifted).Round(time.Millisecond))
+	whole := lifted.Sub(began).Round(time.Millisecond)
+	t.Logf("%s, a %v blackout under pings: held %v toward the devices, %v toward the servers, %v from the first add to the last del; replies stopped %v before it and came back %v after it lifted",
+		k.transport, blackout, held[0], held[1], whole, began.Sub(before).Round(time.Millisecond), after.Sub(lifted).Round(time.Millisecond))
 	for n, d := range held {
 		if d < blackout || d > blackout+blackoutSlack {
 			t.Fatalf("broken setup, not a liveness failure: the blackout on %s held %v, want %v to %v", ifaces[n], d, blackout, blackout+blackoutSlack)
 		}
+	}
+	// The pings see the whole outage, from the first add to the last del.
+	if whole > blackout+blackoutSlack {
+		t.Fatalf("broken setup, not a liveness failure: the blackout held %v from the first add to the last del, want at most %v", whole, blackout+blackoutSlack)
 	}
 	for name, out := range map[string]string{"device-a": k.devUp.Output()[devFrom:], "server-1": k.serverUp.Output()[serverFrom:]} {
 		if m := linkClosed.FindStringSubmatch(out); m != nil {
