@@ -179,19 +179,43 @@ func probeSized(p lab.Packet) bool {
 // came back of how many.
 func (k *livenessLink) pingFor(t *testing.T, d time.Duration) func() (sent, got int) {
 	t.Helper()
-	done := make(chan [2]int, 1)
+	wait := k.pingTimed(t, d)
+	return func() (int, int) {
+		sent, got, _ := wait()
+		return sent, got
+	}
+}
+
+// pingTimed is pingFor that also returns when each reply came, by
+// device-a's clock (the lab's nodes share the host's).
+func (k *livenessLink) pingTimed(t *testing.T, d time.Duration) func() (sent, got int, replies []time.Time) {
+	t.Helper()
+	type result struct {
+		sent, got int
+		replies   []time.Time
+	}
+	done := make(chan result, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), d+30*time.Second)
 		defer cancel()
-		res, _ := k.dev.Exec(ctx, "ping", "-q", "-i", "0.02", "-W", "1", "-w", fmt.Sprint(int(d/time.Second)), k.target.String())
+		res, _ := k.dev.Exec(ctx, "ping", "-D", "-i", "0.02", "-W", "1", "-w", fmt.Sprint(int(d/time.Second)), k.target.String())
 		sent, got, _ := pingReceived(res.Stdout)
-		done <- [2]int{sent, got}
+		var replies []time.Time
+		for _, m := range pingReply.FindAllStringSubmatch(res.Stdout, -1) {
+			if at, err := strconv.ParseFloat(m[1], 64); err == nil {
+				replies = append(replies, time.Unix(0, int64(at*1e9)))
+			}
+		}
+		done <- result{sent, got, replies}
 	}()
-	return func() (int, int) {
+	return func() (int, int, []time.Time) {
 		r := <-done
-		return r[0], r[1]
+		return r.sent, r.got, r.replies
 	}
 }
+
+// pingReply matches a reply line of iputils' ping -D, its time.
+var pingReply = regexp.MustCompile(`(?m)^\[(\d+\.\d+)\] \d+ bytes from `)
 
 // blackhole drops what the router forwards between device-a and server-1:
 // both ways, or only from server-1 to device-a. The returned func lifts
@@ -207,6 +231,44 @@ func (k *livenessLink) blackhole(t *testing.T, bothWays bool) func() {
 	k.router.WriteFile(t, "/tmp/blackhole.nft", []byte("table inet blackhole {\n\tchain forward {\n\t\ttype filter hook forward priority -10; policy accept;\n\t\t"+rules+"\t}\n}\n"))
 	k.router.MustExec(t, "nft", "-f", "/tmp/blackhole.nft")
 	return func() { k.router.MustExec(t, "nft", "delete", "table", "inet", "blackhole") }
+}
+
+// blackout and blackoutSlack: blackoutRiddenOut's blackout, and how much
+// longer than it the router may hold it (a fork and a tc each end) before
+// the test calls its setup broken.
+const (
+	blackout      = time.Second
+	blackoutSlack = 250 * time.Millisecond
+)
+
+// holdBlackout drops everything leaving the router on ifaces for d, with
+// netem, in one exec inside the router: an exec from the host takes up to
+// seconds on a loaded machine, and four of them stretched a 1 s blackout. It
+// returns when each interface's blackout began and ended, by the router's
+// clock.
+func (k *livenessLink) holdBlackout(t *testing.T, ifaces []string, d time.Duration) (on, off []time.Time) {
+	t.Helper()
+	script := "set -e\n"
+	for _, i := range ifaces {
+		script += "tc qdisc add dev " + i + " root netem loss 100%\ndate +%s%N\n"
+	}
+	script += fmt.Sprintf("sleep %.3f\n", d.Seconds())
+	for _, i := range ifaces {
+		script += "tc qdisc del dev " + i + " root\ndate +%s%N\n"
+	}
+	out := k.router.MustExec(t, "sh", "-c", script)
+	var stamps []time.Time
+	for _, f := range strings.Fields(out) {
+		ns, err := strconv.ParseInt(f, 10, 64)
+		if err != nil {
+			t.Fatalf("the router's blackout printed %q: not timestamps", out)
+		}
+		stamps = append(stamps, time.Unix(0, ns))
+	}
+	if len(stamps) != 2*len(ifaces) {
+		t.Fatalf("the router's blackout printed %q, want %d timestamps", out, 2*len(ifaces))
+	}
+	return stamps[:len(ifaces)], stamps[len(ifaces):]
 }
 
 // linkClosed matches a node's log line for a link it closed, with how
@@ -324,47 +386,44 @@ func busyLinksSendNoProbes(t *testing.T, k *livenessLink) {
 // blackoutRiddenOut: under pings, netem on the router drops everything
 // between device-a and server-1 for 1 s, both ways; TCP retransmits once
 // it lifts, well within the busy rules' S + R + T, so neither end closes
-// its link and the pings come back.
+// its link and the pings come back. The router holds the blackout itself
+// (holdBlackout), so a loaded machine's slow execs can't stretch it.
 func blackoutRiddenOut(t *testing.T, k *livenessLink) {
 	t.Helper()
-	wait := k.pingFor(t, 12*time.Second)
+	wait := k.pingTimed(t, 12*time.Second)
 	time.Sleep(3 * time.Second)
 	devFrom, serverFrom := len(k.devUp.Output()), len(k.serverUp.Output())
 	ifaces := []string{k.router.Interface(lab.NetDevices), k.router.Interface(lab.NetServers)}
-	// WIP measurement of the four-exec blackout: router-side timestamps.
-	stamp := func(cmd string) (int64, time.Duration) {
-		at := time.Now()
-		out := k.router.MustExec(t, "sh", "-c", cmd+" && date +%s%N")
-		ns, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
-		if err != nil {
-			t.Fatalf("router timestamp %q: %v", out, err)
+	on, off := k.holdBlackout(t, ifaces, blackout)
+	sent, got, replies := wait()
+	var held []time.Duration
+	for n := range ifaces {
+		held = append(held, off[n].Sub(on[n]).Round(time.Millisecond))
+	}
+	began, lifted := slices.MinFunc(on, time.Time.Compare), slices.MaxFunc(off, time.Time.Compare)
+	var before, after time.Time
+	for _, r := range replies {
+		if r.Before(began) {
+			before = r
+		} else if after.IsZero() && r.After(lifted) {
+			after = r
 		}
-		return ns, time.Since(at)
 	}
-	var added, lifted [2]int64
-	var execs []time.Duration
-	for n, i := range ifaces {
-		var d time.Duration
-		added[n], d = stamp("tc qdisc add dev " + i + " root netem loss 100%")
-		execs = append(execs, d)
+	t.Logf("%s, a %v blackout under pings: held %v toward the devices, %v toward the servers; replies stopped %v before it and came back %v after it lifted",
+		k.transport, blackout, held[0], held[1], began.Sub(before).Round(time.Millisecond), after.Sub(lifted).Round(time.Millisecond))
+	for n, d := range held {
+		if d < blackout || d > blackout+blackoutSlack {
+			t.Fatalf("broken setup, not a liveness failure: the blackout on %s held %v, want %v to %v", ifaces[n], d, blackout, blackout+blackoutSlack)
+		}
 	}
-	time.Sleep(time.Second)
-	for n, i := range ifaces {
-		var d time.Duration
-		lifted[n], d = stamp("tc qdisc del dev " + i + " root")
-		execs = append(execs, d)
-	}
-	t.Logf("WIP %s four-exec blackout: toward devices %v, toward servers %v; exec walls %v", k.transport,
-		time.Duration(lifted[0]-added[0]).Round(time.Millisecond), time.Duration(lifted[1]-added[1]).Round(time.Millisecond), execs)
-	sent, got := wait()
 	for name, out := range map[string]string{"device-a": k.devUp.Output()[devFrom:], "server-1": k.serverUp.Output()[serverFrom:]} {
 		if m := linkClosed.FindStringSubmatch(out); m != nil {
-			t.Errorf("%s, a 1 s blackout under pings: %s closed its link (%q, last answer %s before)", k.transport, name, m[1], m[2])
+			t.Errorf("%s, a %v blackout under pings: %s closed its link (%q, last answer %s before)", k.transport, blackout, name, m[1], m[2])
 		}
 	}
-	t.Logf("%s, a 1 s blackout under pings: %d of %d pings came back", k.transport, got, sent)
+	t.Logf("%s, a %v blackout under pings: %d of %d pings came back", k.transport, blackout, got, sent)
 	if sent == 0 || got < sent*3/4 {
-		t.Errorf("%s, a 1 s blackout under pings: %d of %d pings came back, want the 1 s lost at most", k.transport, got, sent)
+		t.Errorf("%s, a %v blackout under pings: %d of %d pings came back, want the blackout lost at most", k.transport, blackout, got, sent)
 	}
 }
 
