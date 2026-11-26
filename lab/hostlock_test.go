@@ -174,6 +174,38 @@ func classStream(class slotClass) string {
 	return StreamDefault
 }
 
+func className(class slotClass) string {
+	if class == slotUntagged {
+		return "untagged"
+	}
+	return classStream(class)
+}
+
+// headSeen signals, from now on, each time a waiter in this process finds
+// itself the head of the slot queue (dropping signals nobody took).
+func headSeen(t *testing.T) <-chan struct{} {
+	seen := make(chan struct{}, 1)
+	hook := func() {
+		select {
+		case seen <- struct{}{}:
+		default:
+		}
+	}
+	slotHeadHook.Store(&hook)
+	t.Cleanup(func() { slotHeadHook.Store(nil) })
+	return seen
+}
+
+// waitHead returns once seen signals, failing the test after a minute.
+func waitHead(t *testing.T, seen <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-seen:
+	case <-time.After(time.Minute):
+		t.Fatal("no waiter became the head of the slot queue")
+	}
+}
+
 func TestSlotWaiterProcess(t *testing.T) {
 	v := os.Getenv(slotWaiterEnv)
 	if v == "" {
@@ -364,18 +396,15 @@ func fakeTicket(t *testing.T, dir string, seq uint64, beat time.Time) *os.File {
 	return fakeTicketOf(t, dir, seq, beat, slotDefault)
 }
 
-// fakeTicketOf is fakeTicket for a waiter of class.
+// fakeTicketOf is fakeTicket for a waiter of class (slotUntagged: an older
+// run's waiter).
 func fakeTicketOf(t *testing.T, dir string, seq uint64, beat time.Time, class slotClass) *os.File {
 	t.Helper()
 	q := filepath.Join(dir, "slot-queue")
 	if err := os.MkdirAll(q, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	tag := ""
-	if class == slotLong {
-		tag = slotQueueLongTag
-	}
-	path := filepath.Join(q, fmt.Sprintf("%020d-1-test%s%s", seq, tag, slotQueueSuffix))
+	path := filepath.Join(q, fmt.Sprintf("%020d-1-test%s%s", seq, slotQueueTag(class), slotQueueSuffix))
 	f, ok, err := tryLockMode(path, true)
 	if err != nil || !ok {
 		t.Fatalf("locking %s: %v", path, err)
@@ -476,12 +505,13 @@ func TestBrokenQueueDoesNotBlockSlots(t *testing.T) {
 }
 
 // TestDeadTicketIsRemoved: a ticket nobody holds locked is a dead waiter's,
-// whichever stream it was in, and the next waiter that meets it, of either
-// stream, clears it away without waiting for it to go stale.
+// whichever stream it was in (or none, an older run's), and the next waiter
+// that meets it, of either stream, clears it away without waiting for it to
+// go stale.
 func TestDeadTicketIsRemoved(t *testing.T) {
-	for _, dead := range []slotClass{slotDefault, slotLong} {
+	for _, dead := range []slotClass{slotDefault, slotLong, slotUntagged} {
 		for _, waiter := range []slotClass{slotDefault, slotLong} {
-			t.Run(classStream(dead)+" ticket, "+classStream(waiter)+" waiter", func(t *testing.T) {
+			t.Run(className(dead)+" ticket, "+classStream(waiter)+" waiter", func(t *testing.T) {
 				dir := oneSlotHost(t)
 				_ = fakeTicketOf(t, dir, 3, time.Now(), dead).Close()
 				_ = fakeTicketOf(t, dir, 9, time.Now(), dead).Close() // newer than the waiter's, too
@@ -574,9 +604,9 @@ func TestLongWaiterGivesWayToDefaultThatJoinsLater(t *testing.T) {
 	fastQueue(t, timing)
 	dir := oneSlotHost(t)
 	release := holdSlot(t, t.Context())
+	head := headSeen(t)
 	long := acquireInBackgroundAs(t, slotLong)
-	waitForTickets(t, dir, 1)
-	time.Sleep(5 * timing.poll) // the long waiter, alone, is the head
+	waitHead(t, head) // the long waiter, alone, is the head
 	// A default waiter that holds its ticket but doesn't poll the slots
 	// itself: the slot stays free for the long head to take or leave.
 	def := fakeTicketOf(t, dir, 2, time.Now(), slotDefault)
@@ -602,6 +632,36 @@ func TestLongWaiterGivesWayToDefaultThatJoinsLater(t *testing.T) {
 	}
 	if left := queueTickets(t, dir); len(left) != 0 {
 		t.Errorf("tickets left in the queue: %v", left)
+	}
+}
+
+// TestLongWaiterPassesOlderRunsTicket: an untagged ticket, an older run's
+// waiter (which waits behind every older ticket, so behind this one), is in
+// no waiter's way here: a long head takes a freed slot with one queued
+// behind it rather than wait on it, which would wait forever, each watching
+// the other.
+func TestLongWaiterPassesOlderRunsTicket(t *testing.T) {
+	timing := slotQueueTiming{poll: 20 * time.Millisecond, heartbeat: 10 * time.Second, stale: 30 * time.Second}
+	fastQueue(t, timing)
+	dir := oneSlotHost(t)
+	release := holdSlot(t, t.Context())
+	head := headSeen(t)
+	long := acquireInBackgroundAs(t, slotLong)
+	waitHead(t, head)
+	old := fakeTicketOf(t, dir, 2, time.Now(), slotUntagged)
+	release()
+
+	select {
+	case a := <-long:
+		if a.err != nil {
+			t.Fatal(a.err)
+		}
+		a.release()
+	case <-time.After(25 * timing.poll):
+		t.Fatal("the long waiter left a freed slot alone for an older run's waiter queued behind it")
+	}
+	if left := queueTickets(t, dir); len(left) != 1 || left[0] != filepath.Base(old.Name()) {
+		t.Errorf("tickets left in the queue: %v, want only the older run's", left)
 	}
 }
 
