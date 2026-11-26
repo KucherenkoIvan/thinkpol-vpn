@@ -30,7 +30,7 @@ A full `make lab-test` stays within the default stream's 15-minute budget while 
 - [x] (b) Within one class, arrival order holds, and a long-stream waiter still gets a slot when no default waiter is left (test).
 - [x] (c) A dead waiter of either class leaks no slot and blocks no one (the existing tests still pass, extended to both classes).
 - [x] (d) Measured: one full `make lab-test` of tp-080-path-liveness with this branch merged in: its default, long and total times, its exit, and the censor matrix's first slot wait, against the 3-parallel run above.
-- [x] (e) Measured: one full `make lab-test` of this branch alone (rewrite and the fix): default and total times, so rewrite isn't slower.
+- [ ] (e) Measured: one full `make lab-test` of this branch alone (rewrite and the fix): default and total times, so rewrite isn't slower.
 - [x] (f) lab/README.md and lab/hostlock.go's docs say how slots are handed out.
 
 ## Notes
@@ -49,6 +49,14 @@ A full `make lab-test` stays within the default stream's 15-minute budget while 
   0bafda95 is the throwaway branch `tp-287-measure-080`: origin/tp-080-path-liveness with this branch merged in (lab/README.md's conflict resolved keeping both sides), pushed only to measure, not for merging. Run 1 was cold: the change to `lab/` invalidates the harness phase's stamp and the node cache of every package that imports `lab`, so the harness phase ran (846 s) and 34 of 46 node packages ran in labs (summed slot wait 22m19s), against 1 package and no harness phase in the before-run. It failed once in the long stream: TestCensorMatrix/https_(control)'s snapshot (`tar … exit -1` on all four nodes) under that load, a load flake, so it was run again, warm: run 2 is the like-for-like comparison with the before-run, default stream 2m18s shorter and within budget, the matrix's first labs waiting 51 s instead of 2m16.6s. The long stream's own matrix lab (https (control)) waited longer than before (4m37s, was 3m1.8s): it gives way, as meant, and the long stream took 9 s longer than before (14m4s, was 13m55s), still 80 s inside the before-run's total.
   (e) was cold as well (harness phase ran, 386 s; 15 of 46 node packages ran, summed node slot wait 14m47s), so it isn't comparable with rewrite's warm ~12m26s: its 3 s over budget came from the default stream's own work, the long stream holding only its 2 labs for 4m12s. Whether rewrite with this change is as fast as rewrite warm is not measured here; the next warm full lab on rewrite after the merge shows it.
 
+## Review findings
+- [ ] R1.1 (blocker) Old and new code deadlock each other on a shared runner: code from before this change (TP-260's queue) watches the nearest older live ticket of any kind and never rescans while it lives, and this code reads an untagged ticket as default, with a long head watching the newest fresh default ticket. A new long head L (ticket 5) and an older run's waiter O (6, untagged) watch each other, both refresh, nobody tries a slot; every later waiter joins the cycle until the 45-min slot wait or LAB_TIMEOUT. Tag both classes (`-default.wait`, `-long.wait`), order by tagged tickets only (untagged ones still raise the sequence and are removed when dead), write why no cycle is left in the slotQueue doc; regression test (a long head, a fresh locked untagged ticket newer than its own, the slot freed: it takes the slot within a few polls), mutation: untagged counted as default; fix the Note on older runs.
+- [ ] R1.2 Box (e) is ticked without its evidence: the run was cold and 3 s over. Untick; measure two full labs of the final head back to back, the second warm; tick only if its default stream is about rewrite's warm ~12m26s (±30 s).
+- [ ] R1.3 streamSlotClass parses THINKPOL_LAB_STREAM itself while lab/stream.go's Stream already reads and validates it: reuse it.
+- [ ] R1.4 hostlock_test.go's `time.Sleep(5 * timing.poll)` in TestLongWaiterGivesWayToDefaultThatJoinsLater: wait for the condition instead (the long waiter has become the head).
+- [ ] R1.5 Docs: long waiters can starve while other runs' default streams keep coming; "the default stream ends first" holds only within one run. Say so in lab/README.md ("Streams", "A cap on labs") and the hostlock doc; no aging, LAB_TIMEOUT bounds it.
+- [ ] R1.6 A fresh default ticket that can't be locked makes a long head scan and warn on stderr every poll (~100 ms): warn at most once a heartbeat.
+
 ## Log
 - 2026-11-26 created in backlog (lab speed: tp-080-path-liveness over budget)
 - 2026-11-26 backlog → in-progress, owner: agent-tp-287
@@ -57,3 +65,4 @@ A full `make lab-test` stays within the default stream's 15-minute budget while 
 - 2026-11-26 runs: the queue tests -race -count=3 green; make lint and make test green at a96a08a1; full labs: (d) on the throwaway tp-287-measure-080 at 0bafda95 twice (run 1 cold, failed on a load flake in the long stream; run 2 passed, default 13m6s, total 14m4s); (e) on a96a08a1, tests passed, default 15m3s, over budget by 3 s, cold (harness phase and 15 node packages run); ./lab's untagged tests passed in a lab node in (e)'s node phase. Numbers in Notes
 - 2026-11-26 not verified: rewrite with this change on warm caches (e was cold); the race where a default waiter joins between a long head's listing and its slot attempt is not tested. The throwaway branch tp-287-measure-080 stays on origin until the orchestrator removes it
 - 2026-11-26 in-progress → review
+- 2026-11-26 review → has-errors: R1.1–R1.6 (review r1)
