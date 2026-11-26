@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [docs/design/path-liveness.md#busy-links, docs/design/path-liveness.md#idle-and-double-failure, RR48]
-owner: ""
-branch: ""
+owner: "agent-tp-290"
+branch: "tp-290-real-timer-oracles"
 ---
 
 ## Goal
@@ -46,3 +46,4 @@ The M2 gate needs a green full lab at real WireGuard timers (`THINKPOL_LAB_WG_TI
 
 ## Log
 - 2026-11-26 created in backlog (found in a real-timer full lab on 441e536e)
+- 2026-11-26 backlog → in-progress, owner: agent-tp-290
