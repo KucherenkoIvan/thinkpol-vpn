@@ -19,6 +19,10 @@
 // endpoint WireGuard last adopted for it, which tells the Bind the path the
 // peer chose.
 //
+// No preshared key is set yet: a key per peer pair, against an adversary
+// who records now and breaks Curve25519 later, is proposed in
+// docs/design/wg-psk.md (not built).
+//
 // A peer's status says when its oldest unanswered handshake initiation was
 // sent (PeerStatus.HandshakePendingSince), read from WireGuard's verbose
 // messages: wireguard-go reports no such thing, and its "did not complete"
