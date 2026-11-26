@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: [docs/design/path-liveness.md#chains-code-tests]
-owner: ""
-branch: ""
+owner: agent-tp-289
+branch: tp-289-blackout-retry
 ---
 
 ## Goal
@@ -36,3 +36,4 @@ branch: ""
 
 ## Log
 - 2026-11-26 created in backlog (found in TP-080's full lab runs)
+- 2026-11-26 backlog → in-progress, owner: agent-tp-289
