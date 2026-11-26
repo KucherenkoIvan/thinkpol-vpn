@@ -65,8 +65,9 @@ func TestHealthWithNoLinkUp(t *testing.T) {
 // device-a's chain ends at server-2, relayed by server-1. server-2 drops
 // every WireGuard handshake initiation that reaches it while its links
 // stay up, so device-a's first hop is up and its exit never answers:
-// `thinkpol status` says exit_no_handshake (TP-195), not no_link_up, and
-// health is ok again once the exit answers.
+// `thinkpol status` says exit_no_handshake (TP-195), not no_link_up,
+// within exitNoHandshakeBound of the first hop coming up, and health is ok
+// again once the exit answers.
 func TestHealthWithAnExitThatNeverHandshakes(t *testing.T) {
 	t.Parallel()
 	l := standardPool.Acquire(t)
@@ -84,11 +85,15 @@ func TestHealthWithAnExitThatNeverHandshakes(t *testing.T) {
 	// A relayed initiation reaches server-2 as one unpadded udp datagram:
 	// the path header and WireGuard's 148 bytes inside. Probes and
 	// WireGuard data (32 bytes and up, in 16-byte steps) never have that
-	// length, so the links stay up.
+	// length, so the links stay up. A link writes V1 frames, without seq
+	// and ack, until it learns that the far end reads acks
+	// (docs/design/path-liveness.md, "Older nodes"): server-1's new link
+	// to server-2 can carry the first initiation that way, 8 bytes
+	// shorter.
 	initiation := 8 + udp.Overhead + path.HeaderSize + device.MessageInitiationSize
 	s2.MustExec(t, "nft", "-f", "-", "--", fmt.Sprintf(`table inet tp195 {
-		chain input { type filter hook input priority -10; policy accept; udp dport 4500 udp length %d drop; }
-	}`, initiation))
+		chain input { type filter hook input priority -10; policy accept; udp dport 4500 udp length { %d, %d } drop; }
+	}`, initiation, initiation-seqAckSize))
 
 	nodes := map[string]*lab.Node{"server-1": s1, "server-2": s2, "device-a": devA}
 	up := map[string]*lab.Process{}
@@ -97,7 +102,8 @@ func TestHealthWithAnExitThatNeverHandshakes(t *testing.T) {
 		space.install(t, n, name, envelope)
 		up[name] = startUp(t, n, "-egress-allowed", servers)
 	}
-	waitStatus(t, devA, mapApplied(version))
+	waitStatus(t, devA, mapApplied(version), linkUp)
+	firstHopUp := time.Now()
 
 	// Each poll sends the exit traffic, so WireGuard keeps initiating.
 	status := func(checks ...statusCheck) error {
@@ -108,7 +114,8 @@ func TestHealthWithAnExitThatNeverHandshakes(t *testing.T) {
 		}
 		return st.check(checks...)
 	}
-	lab.Eventually(t, 90*time.Second, func() error { return status(health("down", "exit_no_handshake")) })
+	lab.Eventually(t, exitNoHandshakeBound(), func() error { return status(health("down", "exit_no_handshake")) })
+	t.Logf("exit_no_handshake %v after device-a's first hop was seen up, want within %v", time.Since(firstHopUp).Round(time.Millisecond), exitNoHandshakeBound())
 	if err := status(noProblem("no_link_up"), noProblem("neighbor_down")); err != nil {
 		t.Fatalf("the first hop is up: %v", err)
 	}
@@ -121,3 +128,25 @@ func TestHealthWithAnExitThatNeverHandshakes(t *testing.T) {
 		}
 	}
 }
+
+// seqAckSize is what a frame's seq and ack add to the path header
+// (docs/design/path-liveness.md, "Acks in the frames").
+const seqAckSize = 8
+
+// exitNoHandshakeBound is how soon after its first hop comes up a device
+// whose exit never answers says exit_no_handshake while it has traffic for
+// the exit: the health rules' 15 s, three REKEY_TIMEOUTs, counted from the
+// first initiation since the first hop's link came up (RR48; the health
+// row of docs/design/api-overview.md), which comes within one more
+// REKEY_TIMEOUT, all at the lab's timer scale (20 s at real time, 2 s at
+// the default ÷10), plus healthSlack. Written out, not
+// dataplane.ExitHandshakeDeadline, so the test holds the promise rather than
+// the constant; the slack lets a grown deadline through up to about
+// 5 × REKEY_TIMEOUT at real time and 23 at ÷10, so only a gross change fails.
+func exitNoHandshakeBound() time.Duration {
+	return (device.RekeyTimeout+3*device.RekeyTimeout)/time.Duration(wgTimerScale) + healthSlack
+}
+
+// healthSlack is what the polls (a ping of up to 1 s and a status read
+// each) and a loaded lab machine may add to the health rules' timers.
+const healthSlack = 10 * time.Second
