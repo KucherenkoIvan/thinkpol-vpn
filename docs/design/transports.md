@@ -30,7 +30,7 @@ Stream transports carry TCP inside TCP and degrade under loss; datagram transpor
 - **Refuse, never weaken:** an adapter refuses a link whose shaping it can't honour, and a node refuses shaping fields it doesn't know, rather than shape less than the map asks. Shaping sits inside the transport's encryption and never touches its authentication or replay protection.
 - **Rollout:** refusing is safe only if the controller never asks a node for what it can't do. So it puts a shaping (or a new shaping field or value) into a link only once both ends' nodes reported supporting it, in the version and capabilities agents report when they register and update; until then the link goes unshaped or keeps its old shaping.
 
-The lab measures how much shaping is enough per transport and tunes the defaults (none, until it says otherwise).
+The lab measures how much shaping is enough per transport and tunes the defaults: `reality` pads every record to at least 512 bytes when the map asks for no padding (TP-201); `udp` has none.
 
 ## Plugins (after the MVP)
 
