@@ -109,12 +109,17 @@ type acquired struct {
 // acquireInBackground waits for a slot in a goroutine. The wait ends with
 // the test, and a slot it got that the test didn't take is given back.
 func acquireInBackground(t *testing.T) <-chan acquired {
+	return acquireInBackgroundAs(t, slotDefault)
+}
+
+// acquireInBackgroundAs is acquireInBackground for a waiter of class.
+func acquireInBackgroundAs(t *testing.T, class slotClass) <-chan acquired {
 	ctx, cancel := context.WithCancel(context.Background())
 	got := make(chan acquired, 1)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		release, err := acquireHostSlot(ctx)
+		release, err := acquireHostSlotAs(ctx, class)
 		got <- acquired{release, err}
 	}()
 	t.Cleanup(func() {
@@ -134,13 +139,13 @@ func acquireInBackground(t *testing.T) <-chan acquired {
 const slotWaiterEnv = "THINKPOL_LAB_TEST_SLOT_WAITER"
 
 // startSlotWaiter runs TestSlotWaiterProcess in a child sharing this
-// test's lock directory. The child waits for a slot, appends id to
-// orderFile once it holds it, then gives it back and exits, or with hold
-// set prints "holding" and keeps it until killed.
-func startSlotWaiter(t *testing.T, id, orderFile string, hold bool) *exec.Cmd {
+// test's lock directory, in the stream of class. The child waits for a
+// slot, appends id to orderFile once it holds it, then gives it back and
+// exits, or with hold set prints "holding" and keeps it until killed.
+func startSlotWaiter(t *testing.T, id, orderFile string, hold bool, class slotClass) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestSlotWaiterProcess$", "-test.timeout=5m")
-	cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s,%s,%t", slotWaiterEnv, id, orderFile, hold))
+	cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s,%s,%t", slotWaiterEnv, id, orderFile, hold), StreamEnv+"="+classStream(class))
 	cmd.Stderr = os.Stderr
 	out, err := cmd.StdoutPipe()
 	if err != nil {
@@ -160,6 +165,13 @@ func startSlotWaiter(t *testing.T, id, orderFile string, hold bool) *exec.Cmd {
 		t.Fatalf("the child exited without a slot: %v", lines.Err())
 	}
 	return cmd
+}
+
+func classStream(class slotClass) string {
+	if class == slotLong {
+		return StreamLong
+	}
+	return StreamDefault
 }
 
 func TestSlotWaiterProcess(t *testing.T) {
@@ -210,7 +222,7 @@ func TestSlotsGoInArrivalOrder(t *testing.T) {
 	for i := range waiters {
 		id := fmt.Sprint(i)
 		if i%2 == 0 {
-			children = append(children, startSlotWaiter(t, id, order, false))
+			children = append(children, startSlotWaiter(t, id, order, false, slotDefault))
 		} else {
 			inProcess.Go(func() {
 				release, err := acquireHostSlot(ctx)
@@ -245,43 +257,61 @@ func TestSlotsGoInArrivalOrder(t *testing.T) {
 }
 
 // TestKilledWaiterLeavesNoGap: a waiter killed while queued doesn't hold
-// up the one behind it, its ticket is cleared away, and a waiter killed
-// while holding its slot leaks no slot.
+// up the one behind it, whichever stream either is in, its ticket is
+// cleared away by the waiters after it, and a waiter killed while holding
+// its slot leaks no slot.
 func TestKilledWaiterLeavesNoGap(t *testing.T) {
-	dir := oneSlotHost(t)
-	release := holdSlot(t, t.Context())
+	for _, tc := range []struct {
+		name           string
+		killed, behind slotClass
+	}{
+		{"default behind default", slotDefault, slotDefault},
+		{"long behind default", slotDefault, slotLong},
+		{"default behind long", slotLong, slotDefault},
+		{"long behind long", slotLong, slotLong},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := oneSlotHost(t)
+			release := holdSlot(t, t.Context())
 
-	killed := startSlotWaiter(t, "killed", filepath.Join(t.TempDir(), "order"), false)
-	waitForTickets(t, dir, 1)
-	got := acquireInBackground(t)
-	waitForTickets(t, dir, 2)
-	if err := killed.Process.Kill(); err != nil {
-		t.Fatal(err)
-	}
-	_ = killed.Wait()
-	release()
+			killed := startSlotWaiter(t, "killed", filepath.Join(t.TempDir(), "order"), false, tc.killed)
+			waitForTickets(t, dir, 1)
+			got := acquireInBackgroundAs(t, tc.behind)
+			waitForTickets(t, dir, 2)
+			if err := killed.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			_ = killed.Wait()
+			release()
 
-	select {
-	case a := <-got:
-		if a.err != nil {
-			t.Fatal(a.err)
-		}
-		a.release()
-	case <-time.After(slotQueueTimes.stale / 2):
-		// Sooner than a stale ticket is passed over: the dead one's lock is
-		// what lets the waiter behind it on.
-		t.Fatal("the waiter behind a killed one didn't get the slot")
+			select {
+			case a := <-got:
+				if a.err != nil {
+					t.Fatal(a.err)
+				}
+				a.release()
+			case <-time.After(slotQueueTimes.stale / 2):
+				// Sooner than a stale ticket is passed over: the dead one's lock
+				// is what lets the waiter behind it on.
+				t.Fatal("the waiter behind a killed one didn't get the slot")
+			}
+			if err := startSlotWaiter(t, "holder", filepath.Join(t.TempDir(), "order"), true, tc.killed).Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			release, err := acquireHostSlotAs(ctx, tc.behind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			release()
+			// A default waiter needn't look past a long ticket ahead of it, so
+			// the killed one's ticket may stay until a later waiter meets it.
+			if left := queueTickets(t, dir); len(left) != 0 {
+				t.Errorf("the killed waiter's ticket is still queued: %v", left)
+			}
+		})
 	}
-	if left := queueTickets(t, dir); len(left) != 0 {
-		t.Errorf("the killed waiter's ticket is still queued: %v", left)
-	}
-
-	if err := startSlotWaiter(t, "holder", filepath.Join(t.TempDir(), "order"), true).Process.Kill(); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-	holdSlot(t, ctx)()
 }
 
 // TestWaiterPastDeadlineLeavesQueue: a waiter whose wait ends leaves the
@@ -327,15 +357,25 @@ func TestWaiterPastDeadlineLeavesQueue(t *testing.T) {
 	}
 }
 
-// fakeTicket puts a ticket with sequence seq in dir's queue, locked as a
-// waiter's (the lock is the returned file's), last refreshed at beat.
+// fakeTicket puts a default ticket with sequence seq in dir's queue, locked
+// as a waiter's (the lock is the returned file's), last refreshed at beat.
 func fakeTicket(t *testing.T, dir string, seq uint64, beat time.Time) *os.File {
+	t.Helper()
+	return fakeTicketOf(t, dir, seq, beat, slotDefault)
+}
+
+// fakeTicketOf is fakeTicket for a waiter of class.
+func fakeTicketOf(t *testing.T, dir string, seq uint64, beat time.Time, class slotClass) *os.File {
 	t.Helper()
 	q := filepath.Join(dir, "slot-queue")
 	if err := os.MkdirAll(q, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(q, fmt.Sprintf("%020d-1-test%s", seq, slotQueueSuffix))
+	tag := ""
+	if class == slotLong {
+		tag = slotQueueLongTag
+	}
+	path := filepath.Join(q, fmt.Sprintf("%020d-1-test%s%s", seq, tag, slotQueueSuffix))
 	f, ok, err := tryLockMode(path, true)
 	if err != nil || !ok {
 		t.Fatalf("locking %s: %v", path, err)
@@ -355,7 +395,7 @@ func TestNewcomerWaitsBehindLiveWaiter(t *testing.T) {
 	fakeTicket(t, dir, 7, time.Now())
 	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
-	q, err := joinSlotQueue(ctx, dir)
+	q, err := joinSlotQueue(ctx, dir, slotDefault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,14 +476,130 @@ func TestBrokenQueueDoesNotBlockSlots(t *testing.T) {
 }
 
 // TestDeadTicketIsRemoved: a ticket nobody holds locked is a dead waiter's,
-// and the next waiter that meets it clears it away.
+// whichever stream it was in, and the next waiter that meets it, of either
+// stream, clears it away without waiting for it to go stale.
 func TestDeadTicketIsRemoved(t *testing.T) {
+	for _, dead := range []slotClass{slotDefault, slotLong} {
+		for _, waiter := range []slotClass{slotDefault, slotLong} {
+			t.Run(classStream(dead)+" ticket, "+classStream(waiter)+" waiter", func(t *testing.T) {
+				dir := oneSlotHost(t)
+				_ = fakeTicketOf(t, dir, 3, time.Now(), dead).Close()
+				_ = fakeTicketOf(t, dir, 9, time.Now(), dead).Close() // newer than the waiter's, too
+				ctx, cancel := context.WithTimeout(t.Context(), slotQueueTimes.stale/2)
+				defer cancel()
+				release, err := acquireHostSlotAs(ctx, waiter)
+				if err != nil {
+					t.Fatal(err)
+				}
+				release()
+				if left := queueTickets(t, dir); len(left) != 0 {
+					t.Errorf("tickets left in the queue: %v", left)
+				}
+			})
+		}
+	}
+}
+
+// TestDefaultStreamTakesFreedSlotsFirst: long-stream waiters queued before
+// default-stream ones, from other processes and this one, get a freed slot
+// only once no default waiter is left; within each stream slots go in
+// arrival order.
+func TestDefaultStreamTakesFreedSlotsFirst(t *testing.T) {
 	dir := oneSlotHost(t)
-	dead := fakeTicket(t, dir, 3, time.Now())
-	_ = dead.Close()
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	order := filepath.Join(t.TempDir(), "order")
+	release := holdSlot(t, t.Context())
+
+	var children []*exec.Cmd
+	var inProcess sync.WaitGroup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer inProcess.Wait()
 	defer cancel()
-	holdSlot(t, ctx)()
+	waiters := []struct {
+		id    string
+		class slotClass
+	}{
+		{"long-0", slotLong},
+		{"long-1", slotLong},
+		{"default-2", slotDefault},
+		{"long-3", slotLong},
+		{"default-4", slotDefault},
+		{"default-5", slotDefault},
+	}
+	for i, w := range waiters {
+		if i%2 == 0 {
+			children = append(children, startSlotWaiter(t, w.id, order, false, w.class))
+		} else {
+			inProcess.Go(func() {
+				release, err := acquireHostSlotAs(ctx, w.class)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				appendLine(t, order, w.id)
+				release()
+			})
+		}
+		waitForTickets(t, dir, i+1)
+	}
+	// long-0 is the head and polls the slots: default-2, 4 and 5 joined
+	// after it did.
+	release()
+	for _, c := range children {
+		if err := c.Wait(); err != nil {
+			t.Errorf("a child waiter: %v", err)
+		}
+	}
+	inProcess.Wait()
+
+	got, err := os.ReadFile(order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "default-2\ndefault-4\ndefault-5\nlong-0\nlong-1\nlong-3\n"; string(got) != want {
+		t.Errorf("slots went to %q, want the default stream's first, each stream in arrival order: %q", got, want)
+	}
+	if left := queueTickets(t, dir); len(left) != 0 {
+		t.Errorf("tickets left in the queue: %v", left)
+	}
+}
+
+// TestLongWaiterGivesWayToDefaultThatJoinsLater: a long waiter that is
+// already the head, polling the slots, doesn't take a freed slot while a
+// default waiter that joined after it is queued, even between its
+// heartbeats' scans, and takes the slot once that waiter is gone.
+func TestLongWaiterGivesWayToDefaultThatJoinsLater(t *testing.T) {
+	// Heartbeats far apart: only the long head's look for new default
+	// tickets on every poll can see this one in time.
+	timing := slotQueueTiming{poll: 20 * time.Millisecond, heartbeat: 10 * time.Second, stale: 30 * time.Second}
+	fastQueue(t, timing)
+	dir := oneSlotHost(t)
+	release := holdSlot(t, t.Context())
+	long := acquireInBackgroundAs(t, slotLong)
+	waitForTickets(t, dir, 1)
+	time.Sleep(5 * timing.poll) // the long waiter, alone, is the head
+	// A default waiter that holds its ticket but doesn't poll the slots
+	// itself: the slot stays free for the long head to take or leave.
+	def := fakeTicketOf(t, dir, 2, time.Now(), slotDefault)
+	release()
+
+	select {
+	case a := <-long:
+		if a.release != nil {
+			a.release()
+		}
+		t.Fatal("the long waiter took the slot while a default one waited")
+	case <-time.After(50 * timing.poll):
+	}
+	_ = def.Close() // the default waiter is gone
+	select {
+	case a := <-long:
+		if a.err != nil {
+			t.Fatal(a.err)
+		}
+		a.release()
+	case <-time.After(timing.stale / 2):
+		t.Fatal("the long waiter never got the slot once no default waiter was left")
+	}
 	if left := queueTickets(t, dir); len(left) != 0 {
 		t.Errorf("tickets left in the queue: %v", left)
 	}
