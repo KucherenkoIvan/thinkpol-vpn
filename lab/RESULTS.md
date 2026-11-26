@@ -10,17 +10,18 @@ NOT JUDGED: 1 (reality / active prober).
 
 | transport | censor | result | detail |
 |---|---|---|---|
-| https (control) | active prober | pass | prober: accept, server 172.16.216.2:443 answers like the reference 172.16.184.3:443: replay: answered a TLS handshake (831 bytes, first after 4.8ms), open; random 3: answered nothing, open; random 16: answered an HTTP response (309 bytes, first after 900µs), closed; random 49: answered an HTTP response (309 bytes, first after 600µs), closed; random 221: answered nothing, closed; random 1000: answered an HTTP response (309 bytes, first after 500µs), closed; TLS: the server JA4S t130200_1301_a56c5b993250, JA3S f4febc55ea12b31ae17cfb7e614afda8 (771,4865,43-51), extensions [43 51], ALPN none, negotiated ALPN "h2"; the reference JA4S t130200_1301_a56c5b993250, JA3S f4febc55ea12b31ae17cfb7e614afda8 (771,4865,43-51), extensions [43 51], ALPN none, negotiated ALPN "h2"; connections to the reference during 0 of 7 probes |
+| https (control) | active prober | pass | prober: accept, server 172.16.164.2:443 answers like the reference 172.16.71.2:443: replay: answered a TLS handshake (829 bytes, first after 2.3ms), open; random 3: answered an HTTP response (309 bytes, first after 1.2ms), closed; random 16: answered nothing, closed; random 49: answered an HTTP response (309 bytes, first after 900µs), closed; random 221: answered an HTTP response (309 bytes, first after 900µs), closed; random 1000: answered nothing, closed; TLS: the server JA4S t130200_1301_a56c5b993250, JA3S f4febc55ea12b31ae17cfb7e614afda8 (771,4865,43-51), extensions [43 51], ALPN none, negotiated ALPN "h2"; the reference JA4S t130200_1301_a56c5b993250, JA3S f4febc55ea12b31ae17cfb7e614afda8 (771,4865,43-51), extensions [43 51], ALPN none, negotiated ALPN "h2"; connections to the reference during 0 of 7 probes |
 | https (control) | blocklists (elsewhere) | pass |  |
 | https (control) | fully-encrypted | pass |  |
 | https (control) | ip-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
 | https (control) | off | pass |  |
 | https (control) | openvpn-fingerprint | pass |  |
-| https (control) | server-hello | pass | server-hello: accept, server hello matches the site 172.16.184.3:443's for camouflage.example.net: JA4S t130200_1302_a56c5b993250, JA3S 15af977ce25de452b96affa2addb1036 (771,4866,43-51), extensions [43 51], ALPN none |
+| https (control) | server-hello | pass | server-hello: accept, server hello matches the site 172.16.71.2:443's for camouflage.example.net: JA4S t130200_1302_a56c5b993250, JA3S 15af977ce25de452b96affa2addb1036 (771,4866,43-51), extensions [43 51], ALPN none |
 | https (control) | sni-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor reset them |
 | https (control) | wireguard-fingerprint | pass |  |
 | https (control) | wireguard-rhythm | pass |  |
-| openvpn-tcp (reference) | active prober | fail | neither IPv4 nor IPv6 crossed; the censor dropped them; prober: drop, server 172.16.159.2:8443 unlike the reference 172.16.165.2:443: replay: the server answered nothing, reset, the reference answered an HTTP response (309 bytes, first after 3.7ms), closed; random 3: the server answered nothing, no connection, the reference answered an HTTP response (309 bytes, first after 600µs), closed; random 16: the server answered nothing, no connection, the reference answered an HTTP response (309 bytes, first after 800µs), closed; random 49: the server answered nothing, no connection, the reference answered an HTTP response (309 bytes, first after 1.1ms), closed; random 221: the server answered nothing, no connection, the reference answered an HTTP response (309 bytes, first after 900µs), closed; random 1000: the server answered nothing, no connection, the reference answered an HTTP response (309 bytes, first after 900µs), closed |
+| https (control) | wireguard-rhythm (idle) | fail | the censor dropped the connection held idle (WireGuard's timers ×10) for 4m0s: steady exchanges: 16 idle exchanges of 22 and 22 bytes, 6s to 6s apart |
+| openvpn-tcp (reference) | active prober | fail | neither IPv4 nor IPv6 crossed; the censor dropped them; prober: drop, server [fdbb:7c48:1c30:1::2]:9443 unlike the reference [fdbb:7c48:1c30:2::3]:443: replay: the server answered nothing, reset, the reference answered an HTTP response (309 bytes, first after 900µs), closed; random 3: the server answered nothing, no connection, the reference answered nothing, open; random 16: the server answered nothing, no connection, the reference answered an HTTP response (309 bytes, first after 400µs), closed; random 49: the server answered nothing, no connection, the reference answered nothing, closed; random 221: the server answered nothing, no connection, the reference answered an HTTP response (309 bytes, first after 700µs), closed; random 1000: the server answered nothing, no connection, the reference answered nothing, closed |
 | openvpn-tcp (reference) | blocklists (elsewhere) | pass |  |
 | openvpn-tcp (reference) | fully-encrypted | pass |  |
 | openvpn-tcp (reference) | ip-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
@@ -30,6 +31,7 @@ NOT JUDGED: 1 (reality / active prober).
 | openvpn-tcp (reference) | sni-blocklist (entry) | pass |  |
 | openvpn-tcp (reference) | wireguard-fingerprint | pass |  |
 | openvpn-tcp (reference) | wireguard-rhythm | pass |  |
+| openvpn-tcp (reference) | wireguard-rhythm (idle) | pass |  |
 | openvpn-udp (reference) | active prober | pass |  |
 | openvpn-udp (reference) | blocklists (elsewhere) | pass |  |
 | openvpn-udp (reference) | fully-encrypted | pass |  |
@@ -40,6 +42,7 @@ NOT JUDGED: 1 (reality / active prober).
 | openvpn-udp (reference) | sni-blocklist (entry) | pass |  |
 | openvpn-udp (reference) | wireguard-fingerprint | pass |  |
 | openvpn-udp (reference) | wireguard-rhythm | pass |  |
+| openvpn-udp (reference) | wireguard-rhythm (idle) | pass |  |
 | plain-tcp (control) | active prober | pass |  |
 | plain-tcp (control) | blocklists (elsewhere) | pass |  |
 | plain-tcp (control) | fully-encrypted | pass |  |
@@ -50,7 +53,8 @@ NOT JUDGED: 1 (reality / active prober).
 | plain-tcp (control) | sni-blocklist (entry) | pass |  |
 | plain-tcp (control) | wireguard-fingerprint | pass |  |
 | plain-tcp (control) | wireguard-rhythm | pass |  |
-| random-tcp (reference) | active prober | fail | neither IPv4 nor IPv6 crossed; the censor dropped them; prober: drop, server 172.16.188.2:8388 unlike the reference 172.16.137.2:443: replay: the server answered an echo (256 bytes, first after 2.9ms), open, the reference answered nothing, closed; random 3: the server answered an echo (3 bytes, first after 7.3ms), open, the reference answered an HTTP response (309 bytes, first after 2.3ms), closed; random 16: the server answered an echo (16 bytes, first after 8ms), open, the reference answered nothing, closed; random 49: the server answered an echo (49 bytes, first after 7.8ms), open, the reference answered an HTTP response (309 bytes, first after 2.8ms), closed; random 221: the server answered an echo (221 bytes, first after 6.8ms), open, the reference answered an HTTP response (309 bytes, first after 4ms), closed; random 1000: the server answered an echo (1000 bytes, first after 9.2ms), open, the reference answered nothing, closed |
+| plain-tcp (control) | wireguard-rhythm (idle) | pass |  |
+| random-tcp (reference) | active prober | fail | neither IPv4 nor IPv6 crossed; the censor dropped them; prober: drop, server 172.16.202.2:8388 unlike the reference 172.16.52.2:443: replay: the server answered an echo (256 bytes, first after 4.3ms), open, the reference answered nothing, closed; random 3: the server answered an echo (3 bytes, first after 6.5ms), open, the reference answered nothing, open; random 16: the server answered an echo (16 bytes, first after 3.6ms), open, the reference answered an HTTP response (309 bytes, first after 900µs), closed; random 49: the server answered an echo (49 bytes, first after 5.1ms), open, the reference answered an HTTP response (309 bytes, first after 2.2ms), closed; random 221: the server answered an echo (221 bytes, first after 6.8ms), open, the reference answered an HTTP response (309 bytes, first after 1.5ms), closed; random 1000: the server answered an echo (1000 bytes, first after 2.8ms), open, the reference answered nothing, closed |
 | random-tcp (reference) | blocklists (elsewhere) | pass |  |
 | random-tcp (reference) | fully-encrypted | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
 | random-tcp (reference) | ip-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
@@ -60,26 +64,29 @@ NOT JUDGED: 1 (reality / active prober).
 | random-tcp (reference) | sni-blocklist (entry) | pass |  |
 | random-tcp (reference) | wireguard-fingerprint | pass |  |
 | random-tcp (reference) | wireguard-rhythm | pass |  |
-| reality | active prober | not judged | prober: accept, server 172.16.216.2:443 answers like the reference 172.16.184.3:443: replay: answered a TLS handshake (844 bytes, first after 4.3ms), open; random 3: answered an HTTP response (309 bytes, first after 2.8ms), closed; random 16: answered an HTTP response (309 bytes, first after 1.4ms), closed; random 49: answered nothing, closed; random 221: answered an HTTP response (309 bytes, first after 2.7ms), closed; random 1000: answered an HTTP response (309 bytes, first after 2.9ms), closed; TLS: the server JA4S t130200_1301_a56c5b993250, JA3S f4febc55ea12b31ae17cfb7e614afda8 (771,4865,43-51), extensions [43 51], ALPN none, negotiated ALPN "h2"; the reference JA4S t130200_1301_a56c5b993250, JA3S f4febc55ea12b31ae17cfb7e614afda8 (771,4865,43-51), extensions [43 51], ALPN none, negotiated ALPN "h2"; upstream tell: a connection from 172.16.216.2 or another address of its host to the reference during every probe (7 of 7; 7 dials in 5.518s of probes, 1 in 367ms outside them, a baseline shorter than the probing, too short to call the tell unattributable), reported, not flagged |
+| random-tcp (reference) | wireguard-rhythm (idle) | pass |  |
+| reality | active prober | not judged | prober: accept, server 172.16.164.2:443 answers like the reference 172.16.71.2:443: replay: answered a TLS handshake (845 bytes, first after 5.3ms), open; random 3: answered an HTTP response (309 bytes, first after 2.4ms), closed; random 16: answered an HTTP response (309 bytes, first after 1.6ms), closed; random 49: answered nothing, closed; random 221: answered nothing, closed; random 1000: answered an HTTP response (309 bytes, first after 1.8ms), closed; TLS: the server JA4S t130200_1301_a56c5b993250, JA3S f4febc55ea12b31ae17cfb7e614afda8 (771,4865,43-51), extensions [43 51], ALPN none, negotiated ALPN "h2"; the reference JA4S t130200_1301_a56c5b993250, JA3S f4febc55ea12b31ae17cfb7e614afda8 (771,4865,43-51), extensions [43 51], ALPN none, negotiated ALPN "h2"; upstream tell: a connection from 172.16.164.2 or another address of its host to the reference during every probe (7 of 7; 7 dials in 5.516s of probes, 1 in 565ms outside them, a baseline shorter than the probing, too short to call the tell unattributable), reported, not flagged |
 | reality | blocklists (elsewhere) | pass |  |
 | reality | fully-encrypted | pass |  |
 | reality | ip-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
 | reality | off | pass |  |
 | reality | openvpn-fingerprint | pass |  |
-| reality | server-hello | pass | server-hello: accept, server hello matches the site 172.16.53.2:443's for camouflage.example.net: JA4S t130200_1301_a56c5b993250, JA3S f4febc55ea12b31ae17cfb7e614afda8 (771,4865,43-51), extensions [43 51], ALPN none |
+| reality | server-hello | pass | server-hello: accept, server hello matches the site 172.16.104.3:443's for camouflage.example.net: JA4S t130200_1301_a56c5b993250, JA3S f4febc55ea12b31ae17cfb7e614afda8 (771,4865,43-51), extensions [43 51], ALPN none |
 | reality | sni-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor reset them |
 | reality | wireguard-fingerprint | pass |  |
-| reality | wireguard-rhythm | fail | the censor dropped the connection held in use (WireGuard's timers ×10) for 55s: WireGuard rekey by record count: the difference each way stepped 3 times by +1, the last 12s apart, flat in between; the censor dropped them; known, accepted: each rekey leaves one more record from the device than from the server, counted each way and in a burst of 3 against 2 every 2 minutes: the floor hides sizes, not counts; RR65 accepts it until cover records go both ways |
-| relay-tcp (reference) | active prober | fail | neither IPv4 nor IPv6 crossed; the censor dropped them; prober: drop, server 172.16.216.2:9443 unlike the reference 172.16.184.3:443: upstream tell: a connection from 172.16.216.2 or another address of its host to the reference during every probe (7 of 7; 8 dials in 5.521s of probes, 1 in 897ms outside them, a baseline shorter than the probing, too short to call the tell unattributable) |
+| reality | wireguard-rhythm | fail | the censor dropped the connection held in use (WireGuard's timers ×10) for 55s: WireGuard rekey by burst: 3 records one way and 2 the other within 10ms, 3 times, the last 12s apart; the censor dropped them; known, accepted: each rekey leaves one more record from the device than from the server, counted each way and in a burst of 3 against 2 every 2 minutes: the floor hides sizes, not counts; RR65 accepts it until cover records go both ways |
+| reality | wireguard-rhythm (idle) | pass | held idle (WireGuard's timers ×10) 4m0s first |
+| relay-tcp (reference) | active prober | fail | neither IPv4 nor IPv6 crossed; the censor dropped them; prober: drop, server 172.16.208.2:9443 unlike the reference 172.16.218.3:443: upstream tell: a connection from 172.16.208.2 or another address of its host to the reference during every probe (7 of 7; 8 dials in 5.527s of probes, 1 in 501ms outside them, a baseline shorter than the probing, too short to call the tell unattributable) |
 | relay-tcp (reference) | blocklists (elsewhere) | pass |  |
 | relay-tcp (reference) | fully-encrypted | pass |  |
 | relay-tcp (reference) | ip-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
 | relay-tcp (reference) | off | pass |  |
 | relay-tcp (reference) | openvpn-fingerprint | pass |  |
-| relay-tcp (reference) | server-hello | pass | server-hello: accept, server hello matches the site 172.16.184.3:443's for camouflage.example.net: JA4S t130200_1302_a56c5b993250, JA3S 15af977ce25de452b96affa2addb1036 (771,4866,43-51), extensions [43 51], ALPN none |
+| relay-tcp (reference) | server-hello | pass | server-hello: accept, server hello matches the site 172.16.218.3:443's for camouflage.example.net: JA4S t130200_1302_a56c5b993250, JA3S 15af977ce25de452b96affa2addb1036 (771,4866,43-51), extensions [43 51], ALPN none |
 | relay-tcp (reference) | sni-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor reset them |
 | relay-tcp (reference) | wireguard-fingerprint | pass |  |
 | relay-tcp (reference) | wireguard-rhythm | pass |  |
+| relay-tcp (reference) | wireguard-rhythm (idle) | pass |  |
 | udp | active prober | pass | prober: accept, not probed: the prober probes TCP servers |
 | udp | blocklists (elsewhere) | pass |  |
 | udp | fully-encrypted | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
@@ -89,10 +96,11 @@ NOT JUDGED: 1 (reality / active prober).
 | udp | server-hello | pass |  |
 | udp | sni-blocklist (entry) | pass |  |
 | udp | wireguard-fingerprint | pass |  |
-| udp | wireguard-rhythm | fail | the censor dropped the connection held in use (WireGuard's timers ×10) for 55s: WireGuard rekey: records of 240 and 184 bytes exchanged 3 times, the last 12s apart; the censor dropped them |
+| udp | wireguard-rhythm | fail | the censor dropped the connection held in use (WireGuard's timers ×10) for 55s: WireGuard rekey: records of 248 and 192 bytes exchanged 3 times, the last 12s apart; the censor dropped them |
+| udp | wireguard-rhythm (idle) | pass | held idle (WireGuard's timers ×10) 4m0s first |
 | wireguard (reference) | active prober | pass | prober: accept, not probed: the prober probes TCP servers |
 | wireguard (reference) | blocklists (elsewhere) | pass |  |
-| wireguard (reference) | fully-encrypted | fail | neither IPv4 nor IPv6 crossed; the censor dropped them; varies: a WireGuard initiation (mac2's 16 zero bytes) averages about 3.47 set bits per byte, and Wu et al.'s first exemption (3.4 or fewer) passes about one in four, its tunnel with it |
+| wireguard (reference) | fully-encrypted | pass | varies: a WireGuard initiation (mac2's 16 zero bytes) averages about 3.47 set bits per byte, and Wu et al.'s first exemption (3.4 or fewer) passes about one in four, its tunnel with it |
 | wireguard (reference) | ip-blocklist (entry) | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
 | wireguard (reference) | off | pass |  |
 | wireguard (reference) | openvpn-fingerprint | pass |  |
@@ -100,3 +108,4 @@ NOT JUDGED: 1 (reality / active prober).
 | wireguard (reference) | sni-blocklist (entry) | pass |  |
 | wireguard (reference) | wireguard-fingerprint | fail | neither IPv4 nor IPv6 crossed; the censor dropped them |
 | wireguard (reference) | wireguard-rhythm | pass |  |
+| wireguard (reference) | wireguard-rhythm (idle) | pass |  |
