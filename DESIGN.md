@@ -22,6 +22,7 @@ Each area's design is a file of its own under `docs/design/`; this file is the e
 | [Overlay](docs/design/overlay.md) | the data plane, IPv6 addressing, destination routing, direct paths, the node agent |
 | [Transports](docs/design/transports.md) | the transport port and traffic shape |
 | [Path liveness](docs/design/path-liveness.md) | how a link is proven alive: liveness on data, idle probes backing off (TP-080; approved by the owner, 2026-11-22) |
+| [Reality ClientHello](docs/design/reality-hello.md) | the `reality` link's ClientHello as a map option: a classical X25519-only profile beside the hybrid default (proposed 2026-11-26, awaiting the owner's approval) |
 | [Server agent](docs/design/server-agent.md) | the supervisor, one worker per space, egress |
 | [Routing](docs/design/routing.md) | routing rules, the route table, DNS, lists |
 | [Desktop client](docs/design/desktop-client.md) | the client and the local API |

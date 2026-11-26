@@ -16,8 +16,10 @@
 //
 // The client share is the hello's standalone X25519 share, else the X25519
 // half of its X25519MLKEM768 share; a hello without X25519MLKEM768 before
-// its X25519 share is refused, as REALITY's server refuses it. The short id
-// (8 bytes, the link's credential and verifier) is a shared secret.
+// its X25519 share is refused, as REALITY's server refuses it. (A classical
+// X25519-only profile, for networks that stall this hello, is proposed in
+// docs/design/reality-hello.md, awaiting approval.) The short id (8 bytes,
+// the link's credential and verifier) is a shared secret.
 //
 // The listener reads the first TLS record before answering anything. It
 // must be one ClientHello for one of the listener's server names, offering
