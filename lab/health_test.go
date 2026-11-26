@@ -140,7 +140,9 @@ const seqAckSize = 8
 // row of docs/design/api-overview.md), which comes within one more
 // REKEY_TIMEOUT, all at the lab's timer scale (20 s at real time, 2 s at
 // the default ÷10), plus healthSlack. Written out, not
-// dataplane.ExitHandshakeDeadline, so a change to that constant fails here.
+// dataplane.ExitHandshakeDeadline, so the test holds the promise rather than
+// the constant; the slack lets a grown deadline through up to about
+// 5 × REKEY_TIMEOUT at real time and 23 at ÷10, so only a gross change fails.
 func exitNoHandshakeBound() time.Duration {
 	return (device.RekeyTimeout+3*device.RekeyTimeout)/time.Duration(wgTimerScale) + healthSlack
 }
