@@ -235,7 +235,9 @@ func (k *livenessLink) blackhole(t *testing.T, bothWays bool) func() {
 
 // blackout and blackoutSlack: blackoutRiddenOut's blackout, and how much
 // longer than it the router may hold it (a fork and a tc each end) before
-// the test calls its setup broken.
+// the test calls its setup broken. Measured from the first add to the last
+// del: 1.019 s in four quiet runs, 1.016 to 1.025 s in three at load 14 to
+// 15.
 const (
 	blackout      = time.Second
 	blackoutSlack = 250 * time.Millisecond
