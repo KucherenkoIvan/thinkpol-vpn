@@ -157,7 +157,8 @@ func (k *livenessLink) captureServerSends(t *testing.T) *lab.Capture {
 // sentAfter describes the packets carrying frames that a capture saw from
 // cut on: each one's time after the cut and payload size, and on TCP how
 // many of its bytes no packet before it carried (the rest a
-// retransmission of what was sent already).
+// retransmission of what was sent already: a stalled stream's new frames
+// wait behind it, unseen).
 func sentAfter(packets []lab.Packet, cut time.Time) string {
 	var out []string
 	var end uint32 // the end of the TCP sequence space seen so far
@@ -559,13 +560,16 @@ func deadBothWays(t *testing.T, k *livenessLink) {
 	devFrom, serverFrom := len(k.devUp.Output()), len(k.serverUp.Output())
 	cut := time.Now()
 	lift := k.blackhole(t, true)
+	// Stamped once nft returns: replies to pings that crossed before the
+	// rule took hold are not server-1's own.
+	inForce := time.Now()
 	devAfter, devWhy := closed(t, k.devUp, "device-a", devFrom, v1Bound+10*time.Second)
 	devSeen := time.Since(cut)
 	serverBound := serverBoundBothWays(k.transport)
 	serverAfter, serverWhy := closed(t, k.serverUp, "server-1", serverFrom, serverBound+loadSlack+10*time.Second)
 	t.Logf("%s, cut both ways under pings: device-a closed its link %v after its last answer (%q), seen %v after the cut; server-1 %v after its last answer (%q), seen %v after the cut",
 		k.transport, devAfter, devWhy, devSeen.Round(time.Millisecond), serverAfter, serverWhy, time.Since(cut).Round(time.Millisecond))
-	t.Logf("%s, cut both ways: server-1 sent after the cut: %s", k.transport, sentAfter(sends.Stop(), cut))
+	t.Logf("%s, cut both ways: what server-1 sent once the blackhole was in force, %v after the cut: %s", k.transport, inForce.Sub(cut).Round(time.Millisecond), sentAfter(sends.Stop(), inForce))
 	checkBusyBound(t, k.transport+", cut both ways", "device-a", devAfter, 0)
 	if serverAfter > serverBound+loadSlack {
 		t.Errorf("%s, cut both ways: server-1 closed its link %v after its last answer, want within %v (WireGuard's handshake retry %v and the busy bound, or the idle bound %v, whichever is lower) and the load's slack %v",
