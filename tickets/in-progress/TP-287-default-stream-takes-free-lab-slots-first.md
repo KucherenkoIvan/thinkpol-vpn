@@ -8,8 +8,8 @@ repo: thinkpol-vpn
 size: S
 depends_on: []
 refs: []
-owner: ""
-branch: ""
+owner: "agent-tp-287"
+branch: "tp-287-default-stream-slots-first"
 ---
 
 ## Goal
@@ -38,3 +38,4 @@ A full `make lab-test` stays within the default stream's 15-minute budget while 
 
 ## Log
 - 2026-11-26 created in backlog (lab speed: tp-080-path-liveness over budget)
+- 2026-11-26 backlog → in-progress, owner: agent-tp-287
