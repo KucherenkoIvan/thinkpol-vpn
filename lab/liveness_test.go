@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -330,13 +331,31 @@ func blackoutRiddenOut(t *testing.T, k *livenessLink) {
 	time.Sleep(3 * time.Second)
 	devFrom, serverFrom := len(k.devUp.Output()), len(k.serverUp.Output())
 	ifaces := []string{k.router.Interface(lab.NetDevices), k.router.Interface(lab.NetServers)}
-	for _, i := range ifaces {
-		k.router.MustExec(t, "tc", "qdisc", "add", "dev", i, "root", "netem", "loss", "100%")
+	// WIP measurement of the four-exec blackout: router-side timestamps.
+	stamp := func(cmd string) (int64, time.Duration) {
+		at := time.Now()
+		out := k.router.MustExec(t, "sh", "-c", cmd+" && date +%s%N")
+		ns, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+		if err != nil {
+			t.Fatalf("router timestamp %q: %v", out, err)
+		}
+		return ns, time.Since(at)
+	}
+	var added, lifted [2]int64
+	var execs []time.Duration
+	for n, i := range ifaces {
+		var d time.Duration
+		added[n], d = stamp("tc qdisc add dev " + i + " root netem loss 100%")
+		execs = append(execs, d)
 	}
 	time.Sleep(time.Second)
-	for _, i := range ifaces {
-		k.router.MustExec(t, "tc", "qdisc", "del", "dev", i, "root")
+	for n, i := range ifaces {
+		var d time.Duration
+		lifted[n], d = stamp("tc qdisc del dev " + i + " root")
+		execs = append(execs, d)
 	}
+	t.Logf("WIP %s four-exec blackout: toward devices %v, toward servers %v; exec walls %v", k.transport,
+		time.Duration(lifted[0]-added[0]).Round(time.Millisecond), time.Duration(lifted[1]-added[1]).Round(time.Millisecond), execs)
 	sent, got := wait()
 	for name, out := range map[string]string{"device-a": k.devUp.Output()[devFrom:], "server-1": k.serverUp.Output()[serverFrom:]} {
 		if m := linkClosed.FindStringSubmatch(out); m != nil {
