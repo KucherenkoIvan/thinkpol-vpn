@@ -397,13 +397,19 @@ func fakeTicket(t *testing.T, dir string, seq uint64, beat time.Time) *os.File {
 }
 
 // fakeTicketOf is fakeTicket for a waiter of class (slotUntagged: an older
-// run's waiter).
+// run's waiter). It is created under slot-queue.lock, as a real ticket is:
+// a scan meeting it not yet locked would remove it as dead.
 func fakeTicketOf(t *testing.T, dir string, seq uint64, beat time.Time, class slotClass) *os.File {
 	t.Helper()
 	q := filepath.Join(dir, "slot-queue")
 	if err := os.MkdirAll(q, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	unlock, err := pollLock(t.Context(), slotQueueLockRetry, true, filepath.Join(dir, "slot-queue.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
 	path := filepath.Join(q, fmt.Sprintf("%020d-1-test%s%s", seq, slotQueueTag(class), slotQueueSuffix))
 	f, ok, err := tryLockMode(path, true)
 	if err != nil || !ok {
@@ -662,6 +668,41 @@ func TestLongWaiterPassesOlderRunsTicket(t *testing.T) {
 	}
 	if left := queueTickets(t, dir); len(left) != 1 || left[0] != filepath.Base(old.Name()) {
 		t.Errorf("tickets left in the queue: %v, want only the older run's", left)
+	}
+}
+
+// TestWaiterJoiningBehindOlderRunsTicket: a waiter of either stream that
+// joins behind an older run's live, fresh ticket takes a freed slot, even
+// after scanning the queue again as the head: the untagged ticket is in
+// neither stream's way.
+func TestWaiterJoiningBehindOlderRunsTicket(t *testing.T) {
+	for _, class := range []slotClass{slotLong, slotDefault} {
+		t.Run(classStream(class), func(t *testing.T) {
+			// Heartbeats short: the head scans the queue again several
+			// times before the slot is freed.
+			timing := slotQueueTiming{poll: 20 * time.Millisecond, heartbeat: 60 * time.Millisecond, stale: 30 * time.Second}
+			fastQueue(t, timing)
+			dir := oneSlotHost(t)
+			release := holdSlot(t, t.Context())
+			old := fakeTicketOf(t, dir, 1, time.Now(), slotUntagged)
+			got := acquireInBackgroundAs(t, class)
+			waitForTickets(t, dir, 2)
+			time.Sleep(4 * timing.heartbeat)
+			release()
+
+			select {
+			case a := <-got:
+				if a.err != nil {
+					t.Fatal(a.err)
+				}
+				a.release()
+			case <-time.After(25 * timing.poll):
+				t.Fatal("the waiter left a freed slot alone for an older run's waiter queued ahead of it")
+			}
+			if left := queueTickets(t, dir); len(left) != 1 || left[0] != filepath.Base(old.Name()) {
+				t.Errorf("tickets left in the queue: %v, want only the older run's", left)
+			}
+		})
 	}
 }
 
