@@ -4,6 +4,7 @@ package lab_test
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net/netip"
 	"regexp"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.zx2c4.com/wireguard/device"
 
 	"github.com/KucherenkoIvan/thinkpol-vpn/internal/dataplane/transport/udp"
 	"github.com/KucherenkoIvan/thinkpol-vpn/lab"
@@ -44,6 +47,14 @@ const (
 	// takes under a millisecond): what a close notice adds.
 	labTrip = 100 * time.Millisecond
 )
+
+// wgRetry is how long after its last data WireGuard sends a handshake
+// initiation when nothing has come back since: KEEPALIVE_TIMEOUT +
+// REKEY_TIMEOUT and the top of its jitter, at the lab's timer scale
+// (15.3 s at real time, 1.5 s at the default ÷10).
+func wgRetry() time.Duration {
+	return (device.KeepaliveTimeout + device.RekeyTimeout + device.RekeyTimeoutJitterMaxMs*time.Millisecond) / time.Duration(wgTimerScale)
+}
 
 // idleRange is I's range per transport, and idleBound how soon a dead idle
 // link is found: I's top and T (2 s).
@@ -96,18 +107,17 @@ func upLink(t *testing.T, transport string, capture int) *livenessLink {
 	}
 	k := &livenessLink{transport: transport, l: l, dev: l.Node(lab.DeviceA), server: l.Node(lab.Server1), router: l.Node(lab.Router)}
 	space := newM0Space(t, k.router, k.server)
-	proto, port := "udp", 4500
 	if transport == "reality" {
 		camouflage := lab.StartCamouflage(t, l)
 		space.spec = "/src/lab/maps/reality.yaml"
 		space.env = append(space.env, "CAMOUFLAGE_IPV4="+camouflage[0].Addr().String())
-		proto, port = "tcp", 443
 	}
 	envelope, version := space.build(t)
 	space.install(t, k.dev, "device-a", envelope)
 	space.install(t, k.server, "server-1", envelope)
 	k.serverUp = startUp(t, k.server)
 	waitStatusFor(t, k.server, 60*time.Second, nil, mapApplied(version))
+	proto, port := k.wire()
 	devs := []string{k.dev.IPv4(lab.NetDevices).String(), k.dev.IPv6(lab.NetDevices).String()}
 	filter := fmt.Sprintf("outbound and %s port %d and (host %s or host %s)", proto, port, devs[0], devs[1])
 	switch capture {
@@ -125,6 +135,80 @@ func upLink(t *testing.T, transport string, capture int) *livenessLink {
 	waitStatus(t, k.dev, linkUp)
 	k.target, _ = space.overlay(1)
 	return k
+}
+
+// wire is the protocol and server-1's port the link runs over.
+func (k *livenessLink) wire() (proto string, port int) {
+	if k.transport == "reality" {
+		return "tcp", 443
+	}
+	return "udp", 4500
+}
+
+// captureServerSends captures, on the router, what server-1 sends towards
+// device-a from now on, before the router's blackhole can drop it.
+func (k *livenessLink) captureServerSends(t *testing.T) *lab.Capture {
+	t.Helper()
+	proto, port := k.wire()
+	return k.router.Capture(t, fmt.Sprintf("inbound and %s src port %d and (src host %s or src host %s)",
+		proto, port, k.server.IPv4(lab.NetServers), k.server.IPv6(lab.NetServers)))
+}
+
+// sentAfter describes the packets carrying frames that a capture saw from
+// cut on: each one's time after the cut and payload size, and on TCP how
+// many of its bytes no packet before it carried (the rest a
+// retransmission of what was sent already).
+func sentAfter(packets []lab.Packet, cut time.Time) string {
+	var out []string
+	var end uint32 // the end of the TCP sequence space seen so far
+	seen := false
+	for _, p := range packets {
+		if !carrying(p) {
+			continue
+		}
+		fresh := -1
+		if seq, ok := tcpSeq(p); ok {
+			e := seq + uint32(len(p.Payload))
+			switch {
+			case !seen:
+				fresh = len(p.Payload)
+			case int32(e-end) > 0:
+				fresh = min(int(e-end), len(p.Payload))
+			default:
+				fresh = 0
+			}
+			if !seen || int32(e-end) > 0 {
+				end, seen = e, true
+			}
+		}
+		if p.Time.Before(cut) {
+			continue
+		}
+		s := fmt.Sprintf("+%v %d B", p.Time.Sub(cut).Round(time.Millisecond), len(p.Payload))
+		if fresh >= 0 {
+			s += fmt.Sprintf(" (%d new)", fresh)
+		}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return "nothing"
+	}
+	return strings.Join(out, ", ")
+}
+
+// tcpSeq is a captured TCP segment's sequence number.
+func tcpSeq(p lab.Packet) (uint32, bool) {
+	if p.Proto != 6 || len(p.IP) == 0 {
+		return 0, false
+	}
+	off := 40 // IPv6, which the lab's links send without extension headers
+	if p.IP[0]>>4 == 4 {
+		off = int(p.IP[0]&0x0f) * 4
+	}
+	if len(p.IP) < off+8 {
+		return 0, false
+	}
+	return binary.BigEndian.Uint32(p.IP[off+4:]), true
 }
 
 // counters reads device-a's control counters: liveness's own frames
@@ -329,7 +413,9 @@ func closed(t *testing.T, p *lab.Process, name string, from int, within time.Dur
 //     reply or notice either way;
 //   - on reality, a 1 s blackout ridden out (blackoutRiddenOut);
 //   - dead both ways (deadBothWays): a blackhole under the pings, found
-//     within the busy bound at each end;
+//     within the busy bound by device-a, and by server-1 within the bound
+//     for an end that sends nothing of its own after the cut
+//     (serverBoundBothWays);
 //   - dead one way (deadOneWay): a blackhole from server-1 under a
 //     one-way stream from device-a, found within the busy bound by
 //     device-a and by server-1, the receive-only end, on udp (by
@@ -460,26 +546,48 @@ func blackoutRiddenOut(t *testing.T, k *livenessLink) {
 	}
 }
 
-// deadBothWays: a blackhole both ways under the pings, where each end
-// finds the link dead within the busy bound of its last answer (S + R + T,
-// 4.5 s; the V1 rule took up to 6.5 s).
+// deadBothWays: a blackhole both ways under the pings. device-a, still
+// sending pings, finds the link dead within the busy bound of its last
+// answer (S + R + T, 4.5 s; the V1 rule took up to 6.5 s). server-1 only
+// answered the pings: once they stop it sends nothing of its own, so it
+// has serverBoundBothWays. What server-1 sent after the cut is logged.
 func deadBothWays(t *testing.T, k *livenessLink) {
 	t.Helper()
 	wait := k.pingFor(t, 12*time.Second)
 	time.Sleep(3 * time.Second)
+	sends := k.captureServerSends(t)
 	devFrom, serverFrom := len(k.devUp.Output()), len(k.serverUp.Output())
 	cut := time.Now()
 	lift := k.blackhole(t, true)
 	devAfter, devWhy := closed(t, k.devUp, "device-a", devFrom, v1Bound+10*time.Second)
 	devSeen := time.Since(cut)
-	serverAfter, serverWhy := closed(t, k.serverUp, "server-1", serverFrom, v1Bound+10*time.Second)
-	t.Logf("%s, cut both ways under pings: device-a closed its link %v after its last answer (%q), seen %v after the cut; server-1 %v after its last answer (%q)",
-		k.transport, devAfter, devWhy, devSeen.Round(time.Millisecond), serverAfter, serverWhy)
+	serverBound := serverBoundBothWays(k.transport)
+	serverAfter, serverWhy := closed(t, k.serverUp, "server-1", serverFrom, serverBound+loadSlack+10*time.Second)
+	t.Logf("%s, cut both ways under pings: device-a closed its link %v after its last answer (%q), seen %v after the cut; server-1 %v after its last answer (%q), seen %v after the cut",
+		k.transport, devAfter, devWhy, devSeen.Round(time.Millisecond), serverAfter, serverWhy, time.Since(cut).Round(time.Millisecond))
+	t.Logf("%s, cut both ways: server-1 sent after the cut: %s", k.transport, sentAfter(sends.Stop(), cut))
 	checkBusyBound(t, k.transport+", cut both ways", "device-a", devAfter, 0)
-	checkBusyBound(t, k.transport+", cut both ways", "server-1", serverAfter, 0)
+	if serverAfter > serverBound+loadSlack {
+		t.Errorf("%s, cut both ways: server-1 closed its link %v after its last answer, want within %v (WireGuard's handshake retry %v and the busy bound, or the idle bound %v, whichever is lower) and the load's slack %v",
+			k.transport, serverAfter, serverBound, wgRetry(), idleBound[k.transport], loadSlack)
+	}
 	lift()
 	wait()
 	waitStatus(t, k.dev, linkUp)
+}
+
+// serverBoundBothWays is how soon after its last answer server-1 finds
+// its link dead once a cut both ways stops device-a's pings: it sent
+// only replies to them, so from then on it is not an end still sending
+// (docs/design/path-liveness.md, "Busy links": the busy bound holds "at
+// any end still sending"). The idle rule finds the link dead within the
+// idle bound (I's top and T, "Idle and double failure"), unless
+// WireGuard's handshake retry, its first frame of its own (wgRetry
+// after its last ping reply), comes first: a sparse sender's next frame
+// opens a burst, dead within the busy bound of it ("B1, B2", "Sparse
+// sender": dead at a + X + 2.0–4.5 s).
+func serverBoundBothWays(transport string) time.Duration {
+	return min(idleBound[transport], wgRetry()+busyBound)
 }
 
 // deadOneWay: device-a streams to server-1, which sends nothing of its own
